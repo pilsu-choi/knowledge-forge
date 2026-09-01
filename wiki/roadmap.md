@@ -11,6 +11,10 @@
 - **4개 SaaS 커넥터 전부 실구현**: Slack/Gmail/Google Drive/Notion — 인증된 클라이언트를
   주입받아 초기/증분 동기화 수행([`saas-connectors.md`](saas-connectors.md)). 모킹 테스트만
   검증됨, CLI 연동은 아직 없음(아래 참고).
+- **Context Reconstruction**: Collector와 Parser 사이에 신설된 단계 — Slack은 스레드 그룹핑 +
+  시간 간격 기반 Conversation Segmentation, Gmail은 `threadId` 기준 Thread Reconstruction으로
+  원본 메시지 스트림을 semantic unit으로 병합한다. File/Notion/Google Drive는 항등(변경 없음).
+  자세한 내용은 [`context-reconstruction.md`](context-reconstruction.md) 참고.
 - **저장(Storage)**: 원본은 디스크(content-addressed), Source/Document/Chunk/KnowledgeObject는
   PostgreSQL — opt-in, `--store`/`KF_DATABASE_URL`([`storage.md`](storage.md)).
 - **스케줄링**: `knowledge-forge schedule`로 프로세스 내 주기 실행
@@ -73,10 +77,14 @@ Dashboard / Chat UI다. 이들을 지금 만들지 않는 이유는 스코프 �
 - ~~저장(Storage)~~ — 완료([`storage.md`](storage.md)).
 - ~~스케줄링~~ — 완료([`scheduling.md`](scheduling.md)).
 
-### 4단계 — Source-aware Context Reconstruction (설계 방향, 미구현)
+### 4단계 — Source-aware Context Reconstruction
 
-사용자가 제시한 설계 방향을 액션 아이템으로 기록한다. **아직 구현되지 않음** — 1단계(SaaS
-CLI/인증 연동)로 실제 SaaS 소스를 붙이기 시작할 때 반드시 반영해야 할 아키텍처 변경이다.
+사용자가 제시한 설계 방향을 코드로 구현했다 —
+[`context-reconstruction.md`](context-reconstruction.md) 참고. 단, **1단계(SaaS CLI/인증
+연동)가 아직 없어 실제로 실행할 방법은 없다** — `run_pipeline`이 `SlackCollector`/
+`GmailCollector`를 받으면 자동으로 이 재구성을 거치도록 배선은 끝났지만, CLI에서 그 컬렉터를
+만들어 넘기는 진입점 자체가 없다는 뜻이다. 아래 액션 아이템 중 1~2는 구현 완료, 3~5는 여전히
+미구현이다.
 
 **핵심 문제의식**: 현재 파이프라인은 "하나의 수집 단위(RawItem) = 하나의 독립적인 의미 단위"를
 암묵적으로 가정한다(File Collector에는 맞는 가정 — 파일 자체가 독립적 정보 단위). 하지만
@@ -96,22 +104,20 @@ Knowledge가 나온다.
 
 **핵심 설계 원칙 (액션 아이템)**:
 
-1. **Source ≠ Knowledge Unit** — 각 Collector가 만든 `RawItem`을 곧바로 Chunk로 넘기지 않는다.
-   소스별로 "Context Reconstruction" 단계를 Parser와 Adaptive Chunker 사이(또는 Parser 내부의
-   전처리 단계)에 새로 둔다.
-2. **소스별 Context Reconstruction 전략**:
+1. ~~**Source ≠ Knowledge Unit**~~ — 완료. 각 Collector가 만든 `RawItem`을 곧바로 Chunk로
+   넘기지 않고, `ContextReconstructor`(`src/knowledge_forge/context/`)가 Collector와 Parser
+   사이에서 소스별로 재구성한다 — [`context-reconstruction.md`](context-reconstruction.md) 참고.
+2. ~~**소스별 Context Reconstruction 전략**~~ — 완료:
    - File(PDF/DOCX/XLSX/PPTX/Image/HWPX): 파일 자체가 독립 정보 단위 — 지금처럼 Parsing →
-     바로 Chunking (변경 없음).
+     바로 Chunking (변경 없음, `NoopReconstructor`).
    - Notion: Page → Block/Section 구조가 이미 명확 — 지금처럼 즉시 Parsing (변경 없음).
    - GDrive(Google Docs 등): Document → 구조 Parsing — 지금처럼 즉시 Parsing (변경 없음).
-   - **Gmail**: 개별 이메일이 아니라 **Thread**를 semantic unit으로 재구성하는 단계 필요
-     (`threadId`로 그룹핑 후 시간순 정렬해 하나의 대화로 합치는 로직 — `GmailCollector`가
-     이미 `metadata`에 `thread_id`를 담고 있어 나중에 이 재구성 단계를 추가하기 쉬움).
-   - **Slack**: 메시지를 곧바로 청크하지 않고 **Conversation Reconstruction →
-     Conversation Segmentation**(대화 흐름이 끊기는 지점을 찾아 에피소드 단위로 분할) 단계가
-     필요. `SlackCollector`가 이미 스레드(`thread_ts`)는 별도로 수집하지만, 스레드가 아닌
-     연속 메시지들 간의 대화 경계 탐지는 아직 없음 — 신규 구현 필요.
-3. **첨부파일은 항상 File Pipeline으로 라우팅** — Slack/Gmail/Notion/GDrive 어디서 오든
+   - **Gmail**: `GmailThreadReconstructor`가 `threadId`로 그룹핑 후 시간순 정렬해 하나의
+     대화로 합친다.
+   - **Slack**: `SlackConversationReconstructor`가 **Conversation Reconstruction →
+     Conversation Segmentation**(스레드는 그 자체로 하나의 에피소드, 나머지는 시간 간격이
+     `gap_seconds`를 넘으면 새 에피소드로 분할)을 수행한다.
+3. **첨부파일은 항상 File Pipeline으로 라우팅** — 미구현. Slack/Gmail/Notion/GDrive 어디서 오든
    첨부파일이 발견되면 기존 File Collector→Parser 경로로 넘긴다(별도 재구현 없이 기존
    파이프라인 재사용). 현재 4개 SaaS 커넥터는 아직 첨부파일 감지/추출 자체를 하지 않음
    ([`saas-connectors.md`](saas-connectors.md)) — 이것도 1단계에서 함께 다뤄야 한다.

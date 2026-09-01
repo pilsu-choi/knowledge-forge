@@ -13,7 +13,8 @@ flowchart TD
     end
 
     F --> C["Collector\n(initial_sync / incremental_sync)"]
-    C -->|RawItem| P["Parser\n(registry가 확장자별로 디스패치,\nPDF/Image/PPTX는 VLM 하이브리드)"]
+    C -->|RawItem| CR["Context Reconstruction\n(Slack: 대화 세그멘테이션,\nGmail: 스레드 병합,\nFile/Notion/GDrive: 항등)"]
+    CR -->|RawItem| P["Parser\n(registry가 확장자/URI 스킴별로 디스패치,\nPDF/Image/PPTX는 VLM 하이브리드)"]
     P -->|Document| CH["Adaptive Chunker\n(Document→Chapter→Section→...)"]
     CH -->|Chunk| E["Knowledge Extraction\n(ClaudeExtractor)"]
     E -->|KnowledgeObject| KO[(Knowledge Object JSON)]
@@ -48,14 +49,30 @@ flowchart TD
 - `LocalFileCollector`는 실제로 동작하며, JSON 매니페스트(경로→해시/mtime)를 저장해 증분
   동기화 시 변경/신규/삭제를 구분한다. `uri`는 항상 `file://{절대경로}` 형태로 원본 위치를
   보존한다.
-- Slack/Gmail/GoogleDrive/Notion 커넥터는 이번 MVP에서 인터페이스만 정의한다(실제 SDK 클라이언트를
-  주입받는 생성자 시그니처는 확정, 동기화 메서드는 `NotImplementedError`). 자세한 구현 계획은
-  각 클래스의 docstring과 [`roadmap.md`](roadmap.md) 참고.
+- Slack/Gmail/GoogleDrive/Notion 커넥터는 실제 SDK 연동으로 동작한다 — 다만 CLI에서 실행할 방법은
+  아직 없다. 자세한 내용은 [`saas-connectors.md`](saas-connectors.md)와 [`roadmap.md`](roadmap.md)
+  참고.
+
+### Context Reconstruction (`src/knowledge_forge/context/`)
+
+- Collector가 만든 `RawItem` 하나가 항상 독립된 의미 단위인 건 아니다 — 파일은 맞지만, Slack
+  메시지 하나나 Gmail 이메일 하나는 그 자체로 의미가 불완전할 수 있다. `ContextReconstructor` ABC의
+  `reconstruct(items) -> Iterator[RawItem]`가 Collector와 Parser 사이에서 원본 아이템 스트림을
+  재구성해 semantic unit으로 병합한다.
+- `default_reconstructor_for(source_type)`가 소스별 기본 구현을 고른다: File/Notion/Google
+  Drive는 `NoopReconstructor`(항등, 변경 없음), Slack은 `SlackConversationReconstructor`(스레드
+  그룹핑 + 시간 간격 기반 Conversation Segmentation), Gmail은 `GmailThreadReconstructor`
+  (`threadId` 기준 병합)다. `pipeline.run_pipeline`이 별도 인자를 안 주면 이 기본값을 쓴다.
+- 병합된 `RawItem`은 URI에 파일 확장자가 없으므로(`slack://...`, `gmail://thread/...`),
+  `ParserRegistry`가 확장자뿐 아니라 URI 스킴으로도 디스패치할 수 있게 확장되어 있고, 새
+  `ConversationParser`(`parsers/conversation.py`)가 두 스킴을 모두 처리한다.
+- 자세한 설계와 예시는 [`context-reconstruction.md`](context-reconstruction.md) 참고.
 
 ### Parser (`src/knowledge_forge/parsers/`)
 
 - `Parser` ABC의 `parse(item, source_ref) -> Document` 하나로 모든 포맷을 공통 `Document` 구조로
-  변환한다. `ParserRegistry`가 파일 확장자를 보고 알맞은 Parser를 찾아 디스패치한다.
+  변환한다. `ParserRegistry`가 파일 확장자(또는 Context Reconstruction이 만든 아이템의 URI
+  스킴)를 보고 알맞은 Parser를 찾아 디스패치한다.
 - `Document.elements`는 `Heading` / `TextBlock` / `TableElement` / `ListElement` / `ImageElement`의
   판별 유니온(discriminated union)이며, 각 요소는 `element_id`, `page`(가능한 경우), `bbox`(페이지 내
   위치, 현재는 PDF만)를 갖는다. `TableElement`/`ImageElement`는 추가로 `extraction_method`

@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Iterator
 
 from knowledge_forge.chunking.base import Chunker
 from knowledge_forge.collectors.base import Collector, RawItem
+from knowledge_forge.context.base import ContextReconstructor
+from knowledge_forge.context.registry import default_reconstructor_for
 from knowledge_forge.exceptions import KnowledgeExtractionError
 from knowledge_forge.extraction.base import Extractor
 from knowledge_forge.ids import stable_id
@@ -43,6 +45,7 @@ def run_pipeline(
     extractor: Extractor,
     cursor=None,
     store: "PipelineStore | None" = None,
+    context_reconstructor: ContextReconstructor | None = None,
 ) -> Iterator[KnowledgeObject]:
     """Run the full pipeline over everything a Collector yields.
 
@@ -55,8 +58,15 @@ def run_pipeline(
     produced (raw bytes + Source to disk/Postgres, then Document, then
     Chunks, then each KnowledgeObject) - `store=None` (the default) runs
     exactly as before, print-only, with no persistence side effects.
+
+    Before parsing, `context_reconstructor` re-groups the Collector's raw
+    item stream into semantically complete units (see knowledge_forge.context)
+    - a Slack message or Gmail email in isolation is often incomplete.
+    Defaults to `default_reconstructor_for(collector.source_type)`, which is
+    a no-op for File/Notion/Google Drive sources.
     """
-    for item in collector.sync(cursor):
+    reconstructor = context_reconstructor or default_reconstructor_for(collector.source_type)
+    for item in reconstructor.reconstruct(collector.sync(cursor)):
         if item.deleted:
             logger.info("skipping deleted item: %s", item.uri)
             continue
