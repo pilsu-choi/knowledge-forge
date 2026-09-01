@@ -121,3 +121,8 @@ KnowledgeObject (knowledge_object_id)
 파이프라인 실행 중에는 `Source`/`Document`/`Chunk`의 전체 레코드가 각각 한 번씩만 생성되고,
 `KnowledgeObject`는 이들의 id를 참조로만 들고 있다. 따라서 전체 provenance를 복원하려면
 `KnowledgeObject.source.source_id → document.document_id → chunk.chunk_id`를 따라가면 된다.
+
+`document_id`로 원본 `Document`를 찾으면(저장이 켜져 있다면 PostgreSQL의 `documents` 테이블,
+[`storage.md`](storage.md) 참고), 그 `elements`에서 페이지 내 정확한 위치(`bbox`)와 표/이미지가
+VLM으로 추출됐는지 여부(`extraction_method`)까지 추적할 수 있다 —
+[`vision-extraction.md`](vision-extraction.md) 참고.

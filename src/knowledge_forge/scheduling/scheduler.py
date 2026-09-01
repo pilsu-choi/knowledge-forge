@@ -1,0 +1,99 @@
+"""In-process scheduling for periodic incremental sync.
+
+Runs the same Collector -> Parser -> Adaptive Chunker -> Knowledge
+Extraction pipeline as `knowledge-forge extract`, but on a repeating
+interval inside one long-lived process - an alternative to wiring an
+external cron/systemd timer around the one-shot CLI command.
+"""
+
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, Callable, Optional
+
+from apscheduler.schedulers.blocking import BlockingScheduler
+
+from knowledge_forge.chunking import AdaptiveChunker
+from knowledge_forge.collectors.local_file import LocalFileCollector
+from knowledge_forge.extraction import ClaudeExtractor
+from knowledge_forge.parsers.registry import default_registry
+from knowledge_forge.pipeline import run_pipeline
+
+if TYPE_CHECKING:
+    from knowledge_forge.storage.store import PipelineStore
+
+logger = logging.getLogger(__name__)
+
+
+def build_tick(
+    collector: LocalFileCollector,
+    registry,
+    chunker,
+    extractor,
+    store_factory: Optional[Callable[[], "PipelineStore"]] = None,
+) -> Callable[[], None]:
+    """Returns a zero-arg tick function that runs one incremental sync pass.
+
+    Exposed separately from run_scheduled_sync so it can be unit-tested by
+    calling it directly, bypassing BlockingScheduler's (permanently
+    blocking) start() loop entirely.
+
+    `collector.incremental_sync(collector.get_cursor())` behaves correctly
+    even on the very first call - with no prior persisted state,
+    get_cursor() returns an empty manifest, so every file comes back as
+    "new" (the same effect as initial_sync()). No first-tick special case
+    is needed; every tick, including the first, just does this uniformly
+    via run_pipeline(..., cursor=collector.get_cursor()).
+
+    Each tick opens its own store connection (via store_factory, a
+    zero-arg callable returning a fresh PipelineStore) and closes it when
+    the tick finishes, rather than holding one Postgres connection open
+    across the whole scheduler's lifetime - simpler lifecycle, and it
+    self-heals from a connection dropped between ticks.
+    """
+
+    def _tick() -> None:
+        try:
+            cursor = collector.get_cursor()
+            if store_factory is not None:
+                with store_factory() as store:
+                    store.init_schema()  # idempotent (CREATE TABLE IF NOT EXISTS)
+                    knowledge_objects = list(
+                        run_pipeline(collector, registry, chunker, extractor, cursor=cursor, store=store)
+                    )
+            else:
+                knowledge_objects = list(
+                    run_pipeline(collector, registry, chunker, extractor, cursor=cursor, store=None)
+                )
+            logger.info("scheduled sync tick produced %d Knowledge Object(s)", len(knowledge_objects))
+        except Exception:  # noqa: BLE001 - one failed tick must not kill the scheduler
+            logger.exception("scheduled sync tick failed")
+
+    return _tick
+
+
+def run_scheduled_sync(
+    root: Path | str,
+    interval_seconds: int,
+    max_tokens: int,
+    model: str,
+    store_factory: Optional[Callable[[], "PipelineStore"]] = None,
+    state_path: Path | str | None = None,
+) -> None:
+    """Blocks forever, running an incremental sync of `root` every
+    `interval_seconds` (firing once immediately at startup, then on the
+    interval) until interrupted (Ctrl-C / SIGINT).
+    """
+    collector = LocalFileCollector(root=root, state_path=state_path)
+    registry = default_registry()
+    chunker = AdaptiveChunker(max_tokens_per_chunk=max_tokens)
+    extractor = ClaudeExtractor(model=model)
+    tick = build_tick(collector, registry, chunker, extractor, store_factory=store_factory)
+
+    scheduler = BlockingScheduler()
+    scheduler.add_job(tick, "interval", seconds=interval_seconds, next_run_time=datetime.now())
+    try:
+        scheduler.start()
+    except (KeyboardInterrupt, SystemExit):
+        scheduler.shutdown()
+        logger.info("scheduler stopped")

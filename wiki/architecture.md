@@ -13,16 +13,28 @@ flowchart TD
     end
 
     F --> C["Collector\n(initial_sync / incremental_sync)"]
-    C -->|RawItem| P["Parser\n(registry가 확장자별로 디스패치)"]
+    C -->|RawItem| P["Parser\n(registry가 확장자별로 디스패치,\nPDF/Image/PPTX는 VLM 하이브리드)"]
     P -->|Document| CH["Adaptive Chunker\n(Document→Chapter→Section→...)"]
     CH -->|Chunk| E["Knowledge Extraction\n(ClaudeExtractor)"]
     E -->|KnowledgeObject| KO[(Knowledge Object JSON)]
 
+    C -. "knowledge-forge schedule" 사용 시\n일정 간격으로 반복 호출 .-> C
+    C -.->|record_source| ST[(PipelineStore\nPostgres + 디스크)]
+    P -.->|record_document| ST
+    CH -.->|record_chunks| ST
+    E -.->|record_knowledge_object| ST
+
     style KO fill:#2b6,stroke:#164,color:#fff
+    style ST fill:#458,stroke:#124,color:#fff
 ```
 
 각 화살표 라벨이 단계 간에 오가는 자료형이다. `RawItem → Document → Chunk → KnowledgeObject`
 순으로 갈수록 더 구조화되고, 동시에 원본으로 되돌아갈 수 있는 참조(provenance)를 계속 유지한다.
+
+점선은 옵션 경로다: `PipelineStore`(저장, [`storage.md`](storage.md) 참고)는 `--store`/
+`KF_DATABASE_URL`이 설정된 경우에만 각 단계 산출물을 Postgres+디스크에 기록하며, 없어도 파이프라인은
+동일하게 동작한다(출력만 생성). `knowledge-forge schedule`([`scheduling.md`](scheduling.md) 참고)은
+`extract`와 동일한 파이프라인을 한 프로세스 안에서 반복 실행하는 대안적 진입점이다.
 
 ## 컴포넌트별 책임
 
@@ -45,9 +57,14 @@ flowchart TD
 - `Parser` ABC의 `parse(item, source_ref) -> Document` 하나로 모든 포맷을 공통 `Document` 구조로
   변환한다. `ParserRegistry`가 파일 확장자를 보고 알맞은 Parser를 찾아 디스패치한다.
 - `Document.elements`는 `Heading` / `TextBlock` / `TableElement` / `ListElement` / `ImageElement`의
-  판별 유니온(discriminated union)이며, 각 요소는 `element_id`와 `page`(가능한 경우)를 갖는다.
-- PDF/DOCX/Markdown/TXT는 실제 동작하고, XLSX/PPTX/Image/HWPX는 스텁이다. 포맷별 라이브러리와
-  라이선스 근거는 [`parsers.md`](parsers.md) 참고.
+  판별 유니온(discriminated union)이며, 각 요소는 `element_id`, `page`(가능한 경우), `bbox`(페이지 내
+  위치, 현재는 PDF만)를 갖는다. `TableElement`/`ImageElement`는 추가로 `extraction_method`
+  (`"rule_based"` | `"vlm"` | `None`)를 가져 어느 경로로 만들어졌는지 추적할 수 있다.
+- PDF/DOCX/Markdown/TXT/XLSX/PPTX/Image는 실제 동작하고, HWPX만 스텁으로 남아있다.
+- **PDF/Image/PPTX는 순수 규칙 기반이 아니라 VLM 하이브리드다**: 일반 텍스트는 여전히
+  결정론적으로 추출하지만, 표/이미지/차트/다이어그램은 항상 Claude vision(`VisionExtractor`)으로
+  보낸다. 설계 근거와 상세 동작은 [`vision-extraction.md`](vision-extraction.md) 참고.
+- 포맷별 라이브러리와 라이선스 근거는 [`parsers.md`](parsers.md) 참고.
 
 ### Adaptive Chunker (`src/knowledge_forge/chunking/`)
 
@@ -60,6 +77,23 @@ flowchart TD
 - `Extractor` ABC의 `extract(chunk, document, source) -> KnowledgeObject`. `ClaudeExtractor`가
   Claude LLM을 호출해 Entity/Relation/Summary/Key Facts/Topic/Document Type을 추출한다.
 - 스키마와 프롬프트 설계는 [`knowledge-object-schema.md`](knowledge-object-schema.md) 참고.
+- `extraction/auth.py`가 Anthropic 자격 증명(`ANTHROPIC_API_KEY` 또는 `ant auth login` OAuth
+  프로필)이 존재하는지 CLI 시작 시점에 미리 점검한다 — Knowledge Extraction과 Vision 추출
+  (아래) 둘 다 이 자격 증명을 공유한다.
+
+### Storage (`src/knowledge_forge/storage/`) — 선택적
+
+- `PipelineStore`가 파이프라인의 각 단계 산출물을 저장하는 파사드다: 원본 바이트는 디스크에
+  (`RawBlobStore`), `Source`/`Document`/`Chunk`/`KnowledgeObject`는 PostgreSQL에
+  (`PostgresStore`). `pipeline.run_pipeline(..., store=...)`가 `None`이면(기본값) Phase 1과
+  동일하게 저장 없이 동작한다.
+- 상세 스키마와 사용법은 [`storage.md`](storage.md) 참고.
+
+### Scheduling (`src/knowledge_forge/scheduling/`) — 선택적
+
+- `knowledge-forge extract`는 1회성 실행이고, `knowledge-forge schedule`은 동일한 파이프라인을
+  `APScheduler`로 일정 간격마다 반복 실행하는 장기 실행 프로세스다. 상세 동작은
+  [`scheduling.md`](scheduling.md) 참고.
 
 ## 확장 포인트
 

@@ -9,3 +9,5 @@ build/
 .knowledge-forge-state/
 *.jsonl
 !tests/fixtures/*.jsonl
+/data/
+/input/

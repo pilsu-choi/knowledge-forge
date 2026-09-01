@@ -10,9 +10,9 @@ import logging
 from datetime import datetime, timezone
 
 import anthropic
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from knowledge_forge.exceptions import KnowledgeExtractionError
+from knowledge_forge.extraction.auth import CREDENTIAL_HINT_KO
 from knowledge_forge.extraction.base import Extractor
 from knowledge_forge.extraction.prompts import SYSTEM_PROMPT, render_user_prompt
 from knowledge_forge.extraction.schemas import ExtractionResult
@@ -27,17 +27,12 @@ from knowledge_forge.models.knowledge_object import (
     Relation,
 )
 from knowledge_forge.models.source import Source, SourceRef
+from knowledge_forge.retry import RETRYABLE_ANTHROPIC_ERRORS, anthropic_retry
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "claude-opus-5"
 DEFAULT_MAX_TOKENS = 8000
-
-_RETRYABLE = (
-    anthropic.RateLimitError,
-    anthropic.APIConnectionError,
-    anthropic.InternalServerError,
-)
 
 
 class ClaudeExtractor(Extractor):
@@ -75,12 +70,7 @@ class ClaudeExtractor(Extractor):
             model_used=self._model,
         )
 
-    @retry(
-        retry=retry_if_exception_type(_RETRYABLE),
-        wait=wait_exponential(multiplier=1, min=1, max=30),
-        stop=stop_after_attempt(5),
-        reraise=True,
-    )
+    @anthropic_retry()
     def _call_with_retry(self, chunk: Chunk, document: Document) -> ExtractionResult:
         try:
             response = self._client.messages.parse(
@@ -90,11 +80,22 @@ class ClaudeExtractor(Extractor):
                 messages=[{"role": "user", "content": render_user_prompt(chunk, document)}],
                 output_format=ExtractionResult,
             )
-        except _RETRYABLE:
+        except RETRYABLE_ANTHROPIC_ERRORS:
             raise
         except anthropic.APIError as exc:
             raise KnowledgeExtractionError(
                 f"knowledge extraction failed for chunk {chunk.chunk_id}: {exc}",
                 chunk_id=chunk.chunk_id,
             ) from exc
+        except TypeError as exc:
+            # The SDK raises a bare TypeError (not an APIError subclass) from
+            # _build_headers when no credential resolves at request time -
+            # see extraction.auth for the full resolution chain and the
+            # CLI-level preflight check that normally catches this earlier.
+            if "Could not resolve authentication" in str(exc):
+                raise KnowledgeExtractionError(
+                    f"{CREDENTIAL_HINT_KO} (chunk {chunk.chunk_id})",
+                    chunk_id=chunk.chunk_id,
+                ) from exc
+            raise
         return response.parsed_output

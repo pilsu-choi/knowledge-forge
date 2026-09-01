@@ -9,6 +9,10 @@ from knowledge_forge.models.source import SourceRef
 class ElementBase(BaseModel):
     element_id: str
     page: int | None = None
+    # (x0, top, x1, bottom) in the source page's coordinate space, when the
+    # parser can supply one (currently: PDF only). Lets a Knowledge Object
+    # cite not just "which page" but "where on the page" it came from.
+    bbox: tuple[float, float, float, float] | None = None
 
 
 class Heading(ElementBase):
@@ -26,6 +30,10 @@ class TableElement(ElementBase):
     type: Literal["table"] = "table"
     rows: list[list[str]]
     caption: str | None = None
+    # "vlm" when a vision model transcribed this table from a rendered
+    # crop (see vision.extractor); "rule_based" for a deterministic parser
+    # (openpyxl, python-docx, ...); None when the parser predates this field.
+    extraction_method: Literal["rule_based", "vlm"] | None = None
 
 
 class ListElement(ElementBase):
@@ -38,7 +46,11 @@ class ImageElement(ElementBase):
     type: Literal["image"] = "image"
     uri: str | None = None
     alt_text: str | None = None
+    # A vision model's transcription/description of the image content
+    # (figure, chart, diagram, scanned text, photo) - despite the name, this
+    # is VLM-produced text, not raw OCR (see vision.extractor).
     ocr_text: str | None = None
+    extraction_method: Literal["rule_based", "vlm"] | None = None
 
 
 DocumentElement = Annotated[

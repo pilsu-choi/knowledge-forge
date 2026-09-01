@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: kf
+      POSTGRES_PASSWORD: kf
+      POSTGRES_DB: knowledge_forge
+    ports:
+      - "15432:5432"
+    volumes:
+      - kf-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kf"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      KF_DATABASE_URL: postgresql://kf:kf@postgres:5432/knowledge_forge
+      KF_DATA_DIR: /app/data
+      # Anthropic credentials pass through from the host shell - never
+      # hardcode a key in this file. `ANTHROPIC_AUTH_TOKEN` covers the
+      # `ant auth login` OAuth path if that's what the host has configured.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
+    volumes:
+      - ./data:/app/data
+      - ./input:/app/input:ro
+    # Default: initialize the schema so `docker compose up` proves the
+    # wiring works end-to-end. Real work is run via `docker compose run`,
+    # e.g.:
+    #   docker compose run --rm app extract /app/input/sample.md --pretty
+    #   docker compose run --rm app schedule /app/input --interval-seconds 3600
+    command: ["db", "init"]
+
+volumes:
+  kf-postgres-data:

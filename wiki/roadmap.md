@@ -1,13 +1,21 @@
 # 로드맵
 
-## MVP 범위
+## 완료된 범위 (Phase 1 + Phase 2)
 
 - **전체 아키텍처 스캐폴딩**: Collector/Parser/Adaptive Chunker/Knowledge Extraction/Knowledge
   Object 전 구간의 인터페이스와 모델을 PRD가 명시한 4개 SaaS + 8개 파일 포맷을 아우르도록 설계.
-- **실제 동작하는 수직 슬라이스**: 로컬 파일(PDF/DOCX/Markdown/TXT) → Parser → Adaptive Chunker
-  → Claude 기반 Knowledge Extraction → Knowledge Object까지 end-to-end로 동작.
-- SaaS 커넥터(Slack/Gmail/GoogleDrive/Notion)와 나머지 파일 포맷(XLSX/PPTX/Image/HWPX)은
-  인터페이스만 정의.
+- **로컬 파일 전 포맷 end-to-end 동작**: PDF/DOCX/Markdown/TXT/XLSX/PPTX/Image → Parser →
+  Adaptive Chunker → Claude 기반 Knowledge Extraction → Knowledge Object. PDF/Image/PPTX의
+  표·이미지·차트는 VLM 하이브리드로 추출한다([`vision-extraction.md`](vision-extraction.md)).
+- **저장(Storage)**: 원본은 디스크(content-addressed), Source/Document/Chunk/KnowledgeObject는
+  PostgreSQL — opt-in, `--store`/`KF_DATABASE_URL`([`storage.md`](storage.md)).
+- **스케줄링**: `knowledge-forge schedule`로 프로세스 내 주기 실행
+  ([`scheduling.md`](scheduling.md)).
+- **컨테이너화**: `Dockerfile` + `docker-compose.yml`(앱 + Postgres) — [`dev-guide.md`](dev-guide.md).
+- **인증**: Anthropic 자격 증명(`ANTHROPIC_API_KEY` 또는 `ant auth login` OAuth) 사전 점검 +
+  친절한 에러 메시지.
+- SaaS 커넥터(Slack/Gmail/GoogleDrive/Notion)와 HWPX 파일 포맷은 여전히 인터페이스/스텁만
+  정의되어 있다 — 아래 "단계별 후속 계획" 참고.
 
 ## 제외 범위와 "왜 막지 않는가"
 
@@ -37,17 +45,24 @@ Dashboard / Chat UI다. 이들을 지금 만들지 않는 이유는 스코프 �
   기반 증분 동기화.
 - 공통으로 인증 정보 관리(OAuth 토큰 저장/갱신), rate limit 대응이 필요.
 
-### 2단계 — 나머지 파일 포맷
+### 2단계 — 나머지 파일 포맷 및 시각 자료 처리 고도화
 
-- XLSX(`openpyxl`), PPTX(`python-pptx`)는 라이브러리가 이미 성숙해 상대적으로 빠르게 구현 가능.
-- Image OCR(`Pillow`+`pytesseract`)은 시스템 의존성(tesseract-ocr, 언어팩) 설치 및 배포 전략
-  필요.
-- HWPX는 별도 스코프의 커스텀 파서 개발이 필요 — [`parsers.md`](parsers.md) 참고.
+- HWPX는 별도 스코프의 커스텀 파서(`zipfile`+`lxml`로 OWPML 스키마 직접 파싱) 개발이 필요 —
+  [`parsers.md`](parsers.md) 참고.
+- PPTX 네이티브 차트 객체(Picture가 아닌 차트 XML 도형) 래스터화 — LibreOffice headless 등
+  외부 슬라이드 렌더링 백엔드 연동이 필요 — [`parsers.md`](parsers.md) 참고.
+- ~~XLSX(`openpyxl`), PPTX(`python-pptx`) 실구현~~ — 완료.
+- ~~Image OCR~~ — VLM으로 대체되어 시스템 의존성(tesseract-ocr) 자체가 사라짐, 완료.
 
 ### 3단계 — 운영 최적화
 
-- **Batches API**: 현재는 청크당 1회 동기 LLM 호출이라, 대량 문서 처리 시 비용/지연이 커진다.
-  Anthropic Message Batches API(비동기, 표준 대비 50% 비용)로 전환하면 대량 배치 처리에 유리하다.
+- **Batches API**: 현재는 청크당(그리고 표/이미지 하나당) 1회 동기 LLM 호출이라, 대량
+  문서·표·이미지가 많은 문서 처리 시 비용/지연이 커진다. Anthropic Message Batches
+  API(비동기, 표준 대비 50% 비용)로 전환하면 대량 배치 처리에 유리하다 — Knowledge
+  Extraction과 Vision 추출 양쪽 다 후보.
 - 토큰 카운팅 정확도 개선(`messages.count_tokens`로 청크 경계 최종 검증).
-- 인덱싱/저장 레이어(위 "제외 범위" 표 참고) 연동은 이 파이프라인의 출력(JSONL)을 그대로
-  소비하는 형태로 설계되어 있어 별도 어댑터만 추가하면 된다.
+- 인덱싱/저장 레이어(위 "제외 범위" 표 참고) 연동은 이 파이프라인의 출력(JSONL 또는
+  PostgreSQL의 `knowledge_objects` 테이블)을 그대로 소비하는 형태로 설계되어 있어 별도
+  어댑터만 추가하면 된다.
+- ~~저장(Storage)~~ — 완료([`storage.md`](storage.md)).
+- ~~스케줄링~~ — 완료([`scheduling.md`](scheduling.md)).

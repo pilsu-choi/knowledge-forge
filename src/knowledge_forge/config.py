@@ -11,6 +11,11 @@ class Settings(BaseSettings):
 
     extraction_model: str = "claude-opus-5"
     max_tokens_per_chunk: int = 4000
+    # PostgreSQL DSN for Source/Document/Chunk/KnowledgeObject persistence.
+    # None disables storage - the pipeline runs print-only, as before.
+    database_url: str | None = None
+    # Root directory for the content-addressed raw blob store (RawBlobStore).
+    data_dir: str = "./data"
 
 
 settings = Settings()

@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass, field
 
 from knowledge_forge.chunking.base import Chunker
-from knowledge_forge.chunking.hierarchy import Node, build_tree, split_to_next_level
+from knowledge_forge.chunking.hierarchy import Node, build_tree, split_table_by_rows, split_to_next_level
 from knowledge_forge.chunking.tokenizer import count_tokens, decode, encode
 from knowledge_forge.ids import stable_id
 from knowledge_forge.models.chunk import Chunk, HierarchyLevel
@@ -75,7 +75,16 @@ class AdaptiveChunker(Chunker):
             # Largest semantic unit that still fits the budget - keep it whole.
             return [RenderedChunk(level=node.level, text=node.text, element_ids=node.element_ids, pages=node.pages)]
 
-        children = node.children if node.children is not None else split_to_next_level(node)
+        if node.children is not None:
+            children = node.children
+        elif node.table_rows is not None:
+            # Tabular data: split by row (header repeated) rather than the
+            # generic sentence/line split, which would cut mid-row and lose
+            # the header. Falls through to the generic path if row-splitting
+            # can't make progress (e.g. a single oversized row).
+            children = split_table_by_rows(node, self._budget) or split_to_next_level(node)
+        else:
+            children = split_to_next_level(node)
         if not children:
             return self._hard_split(node)
 

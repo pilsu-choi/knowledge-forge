@@ -12,6 +12,7 @@ nodes we'll never use would be wasted work for every document.
 import re
 from dataclasses import dataclass, field
 
+from knowledge_forge.chunking.tokenizer import count_tokens
 from knowledge_forge.models.chunk import HierarchyLevel
 from knowledge_forge.models.document import (
     Document,
@@ -54,6 +55,12 @@ class Node:
     # None for Paragraph (and finer) nodes - their children, if any, are
     # produced lazily by split_to_next_level() rather than stored here.
     children: list["Node"] | None = None
+    # Set only on a Paragraph node that renders a TableElement - lets
+    # split_table_by_rows() split by row (with the header repeated) instead
+    # of the generic sentence/line split, which is meaningless for tabular
+    # data. None for every other node.
+    table_rows: list[list[str]] | None = None
+    table_caption: str | None = None
 
     @property
     def page_range(self) -> tuple[int, int] | None:
@@ -114,6 +121,8 @@ def _build_paragraph(element: DocumentElement) -> Node:
         element_ids=[element.element_id],
         pages=[element.page] if element.page is not None else [],
         children=None,
+        table_rows=element.rows if isinstance(element, TableElement) else None,
+        table_caption=element.caption if isinstance(element, TableElement) else None,
     )
 
 
@@ -193,4 +202,46 @@ def split_to_next_level(node: Node) -> list[Node] | None:
     return [
         Node(level=level, text=piece, element_ids=node.element_ids, pages=node.pages, children=None)
         for piece in pieces
+    ]
+
+
+def split_table_by_rows(node: Node, budget: int) -> list[Node] | None:
+    """Row-aware split for a Paragraph node that renders a table: groups
+    data rows greedily under `budget`, repeating the header row (and
+    caption) in every group so each emitted chunk stays self-describing
+    independent of the others - a plain sentence/line split would instead
+    cut mid-row and drop the header, losing which column is which.
+
+    Returns None (falling through to the generic split/hard-split path) when
+    there's no header+data-row structure to split on, or when grouping makes
+    no forward progress (e.g. a single oversized row) - the caller's normal
+    recursion then re-checks and, if still too big, falls back further.
+    """
+    if not node.table_rows or len(node.table_rows) < 2:
+        return None
+    header, *data_rows = node.table_rows
+    prefix_lines = [node.table_caption] if node.table_caption else []
+    header_line = " | ".join(header)
+
+    def render(rows: list[list[str]]) -> str:
+        return "\n".join([*prefix_lines, header_line, *(" | ".join(r) for r in rows)])
+
+    groups: list[list[list[str]]] = []
+    current: list[list[str]] = []
+    for row in data_rows:
+        candidate = current + [row]
+        if not current or count_tokens(render(candidate)) <= budget:
+            current = candidate
+        else:
+            groups.append(current)
+            current = [row]
+    if current:
+        groups.append(current)
+
+    if len(groups) <= 1:
+        return None
+
+    return [
+        Node(level=HierarchyLevel.PARAGRAPH, text=render(g), element_ids=node.element_ids, pages=node.pages)
+        for g in groups
     ]
