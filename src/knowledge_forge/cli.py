@@ -9,9 +9,8 @@ import typer
 from knowledge_forge.chunking import AdaptiveChunker
 from knowledge_forge.collectors.local_file import LocalFileCollector
 from knowledge_forge.config import settings
-from knowledge_forge.extraction import ClaudeExtractor
-from knowledge_forge.extraction.auth import CREDENTIAL_HINT_KO, has_resolvable_credentials
-from knowledge_forge.extraction.claude_extractor import DEFAULT_MODEL
+from knowledge_forge.extraction.auth import credential_hint_ko, has_resolvable_credentials
+from knowledge_forge.extraction.factory import get_extractor
 from knowledge_forge.parsers.registry import default_registry
 from knowledge_forge.pipeline import run_pipeline
 from knowledge_forge.storage import PipelineStore
@@ -23,7 +22,7 @@ app.add_typer(db_app, name="db")
 
 def _ensure_authenticated() -> None:
     if not has_resolvable_credentials():
-        typer.echo(CREDENTIAL_HINT_KO, err=True)
+        typer.echo(credential_hint_ko(), err=True)
         raise typer.Exit(1)
 
 
@@ -53,7 +52,9 @@ def _main() -> None:
 def extract(
     path: Path = typer.Argument(..., help="A local file or directory to ingest."),
     max_tokens: int = typer.Option(4000, "--max-tokens", help="Max tokens per chunk before splitting further."),
-    model: str = typer.Option(DEFAULT_MODEL, "--model", help="Claude model used for Knowledge Extraction."),
+    model: Optional[str] = typer.Option(
+        None, "--model", help="Extraction model. Defaults to the active provider's (KF_LLM_PROVIDER) own default model."
+    ),
     output: Optional[Path] = typer.Option(None, "--output", help="Output file. Defaults to stdout."),
     pretty: bool = typer.Option(False, "--pretty", help="Write an indented JSON array instead of JSONL."),
     store: bool = typer.Option(
@@ -65,7 +66,7 @@ def extract(
     collector = LocalFileCollector(root=path)
     registry = default_registry()
     chunker = AdaptiveChunker(max_tokens_per_chunk=max_tokens)
-    extractor = ClaudeExtractor(model=model)
+    extractor = get_extractor(model=model)
     pipeline_store = _open_store() if store else None
 
     async def _run():
@@ -99,7 +100,9 @@ def schedule(
     path: Path = typer.Argument(..., help="A local file or directory to ingest."),
     interval_seconds: int = typer.Option(3600, "--interval-seconds", help="Seconds between incremental sync runs."),
     max_tokens: int = typer.Option(4000, "--max-tokens", help="Max tokens per chunk before splitting further."),
-    model: str = typer.Option(DEFAULT_MODEL, "--model", help="Claude model used for Knowledge Extraction."),
+    model: Optional[str] = typer.Option(
+        None, "--model", help="Extraction model. Defaults to the active provider's (KF_LLM_PROVIDER) own default model."
+    ),
     store: bool = typer.Option(
         True, "--store/--no-store", help="Persist Source/Document/Chunk/KnowledgeObject to Postgres + raw bytes to disk."
     ),

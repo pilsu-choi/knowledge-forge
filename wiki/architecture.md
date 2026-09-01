@@ -77,10 +77,12 @@ flowchart TD
   판별 유니온(discriminated union)이며, 각 요소는 `element_id`, `page`(가능한 경우), `bbox`(페이지 내
   위치, 현재는 PDF만)를 갖는다. `TableElement`/`ImageElement`는 추가로 `extraction_method`
   (`"rule_based"` | `"vlm"` | `None`)를 가져 어느 경로로 만들어졌는지 추적할 수 있다.
-- PDF/DOCX/Markdown/TXT/XLSX/PPTX/Image는 실제 동작하고, HWPX만 스텁으로 남아있다.
-- **PDF/Image/PPTX는 순수 규칙 기반이 아니라 VLM 하이브리드다**: 일반 텍스트는 여전히
-  결정론적으로 추출하지만, 표/이미지/차트/다이어그램은 항상 Claude vision(`VisionExtractor`)으로
-  보낸다. 설계 근거와 상세 동작은 [`vision-extraction.md`](vision-extraction.md) 참고.
+- PDF/DOCX/Markdown/TXT/XLSX/PPTX/Image/HWPX 전부 실제 동작한다(HWPX는 `python-hwpx` 기반,
+  실제 한컴 생성 파일로는 미검증 — [`parsers.md`](parsers.md) 참고).
+- **PDF/DOCX/PPTX/HWPX/Image는 순수 규칙 기반이 아니라 VLM 하이브리드다**: 일반 텍스트/네이티브
+  표(DOCX/PPTX/HWPX)·PPTX 네이티브 차트는 여전히 결정론적으로 추출하지만, PDF의 표/이미지와
+  모든 포맷의 임베드 이미지·독립 이미지 파일은 항상 Vision Provider(기본 Claude vision, 아래
+  참고)로 보낸다. 설계 근거와 상세 동작은 [`vision-extraction.md`](vision-extraction.md) 참고.
 - 포맷별 라이브러리와 라이선스 근거는 [`parsers.md`](parsers.md) 참고.
 
 ### Adaptive Chunker (`src/knowledge_forge/chunking/`)
@@ -91,12 +93,20 @@ flowchart TD
 
 ### Knowledge Extraction (`src/knowledge_forge/extraction/`)
 
-- `Extractor` ABC의 `extract(chunk, document, source) -> KnowledgeObject`. `ClaudeExtractor`가
-  Claude LLM을 호출해 Entity/Relation/Summary/Key Facts/Topic/Document Type을 추출한다.
+- `Extractor` ABC의 `extract(chunk, document, source) -> KnowledgeObject`. 기본 구현
+  `ClaudeExtractor`가 Claude LLM을 호출해 Entity/Relation/Summary/Key Facts/Topic/Document
+  Type을 추출한다.
 - 스키마와 프롬프트 설계는 [`knowledge-object-schema.md`](knowledge-object-schema.md) 참고.
-- `extraction/auth.py`가 Anthropic 자격 증명(`ANTHROPIC_API_KEY` 또는 `ant auth login` OAuth
-  프로필)이 존재하는지 CLI 시작 시점에 미리 점검한다 — Knowledge Extraction과 Vision 추출
-  (아래) 둘 다 이 자격 증명을 공유한다.
+- **LLM Provider 추상화**: `extraction/factory.py`의 `get_extractor()`와
+  `vision/factory.py`의 `get_vision_extractor()`가 `KF_LLM_PROVIDER`(`anthropic`(기본)|
+  `openrouter`)에 따라 `ClaudeExtractor`/`VisionExtractor` 또는 `OpenRouterExtractor`/
+  `OpenRouterVisionExtractor`를 고른다 — 두 구현 모두 같은 ABC/인터페이스를 만족해 CLI·파서
+  쪽 코드는 프로바이더가 바뀌어도 그대로다. 자세한 내용은 [`llm-providers.md`](llm-providers.md)
+  참고.
+- `extraction/auth.py`가 활성 프로바이더에 맞는 자격 증명(Anthropic이면
+  `ANTHROPIC_API_KEY`/`ant auth login`, OpenRouter면 `OPENROUTER_API_KEY`)이 존재하는지 CLI
+  시작 시점에 미리 점검한다 — Knowledge Extraction과 Vision 추출(아래) 둘 다 이 자격 증명을
+  공유한다.
 
 ### Storage (`src/knowledge_forge/storage/`) — 선택적
 

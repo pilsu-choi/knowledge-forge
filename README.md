@@ -2,7 +2,7 @@
 
 Enterprise Knowledge Extraction Pipeline: Collector -> Parser -> Adaptive Chunker -> Knowledge Extraction -> Knowledge Object.
 
-See [`../PRD.md`](../PRD.md) for the product requirements and [`wiki/`](wiki/) for architecture, schema, and design-decision documentation.
+See [`../PRD.md`](../PRD.md) for the product requirements and [`wiki/README.md`](wiki/README.md) for an index of the architecture, schema, and design-decision documentation.
 
 ## Quickstart
 
