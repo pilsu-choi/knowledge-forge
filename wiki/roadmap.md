@@ -1,6 +1,6 @@
 # 로드맵
 
-## 완료된 범위 (Phase 1 + Phase 2 + Phase 3)
+## 완료된 범위 (Phase 1 + Phase 2 + Phase 3 + Phase 4)
 
 - **전체 아키텍처 스캐폴딩**: Collector/Parser/Adaptive Chunker/Knowledge Extraction/Knowledge
   Object 전 구간의 인터페이스와 모델을 PRD가 명시한 4개 SaaS + 8개 파일 포맷을 아우르도록 설계.
@@ -20,8 +20,18 @@
 - **스케줄링**: `knowledge-forge schedule`로 프로세스 내 주기 실행
   ([`scheduling.md`](scheduling.md)).
 - **컨테이너화**: `Dockerfile` + `docker-compose.yml`(앱 + Postgres) — [`dev-guide.md`](dev-guide.md).
-- **인증**: Anthropic 자격 증명(`ANTHROPIC_API_KEY` 또는 `ant auth login` OAuth) 사전 점검 +
-  친절한 에러 메시지.
+- **인증**: 활성 LLM Provider에 맞는 자격 증명(Anthropic: `ANTHROPIC_API_KEY`/`ant auth login`
+  OAuth, OpenRouter: `OPENROUTER_API_KEY`) 사전 점검 + 친절한 에러 메시지.
+- **LLM Provider 추상화**: Knowledge Extraction/Vision 추출 모두 `KF_LLM_PROVIDER`로
+  Anthropic(기본, 운영 경로) ↔ OpenRouter(대체, 다양한 라우팅 모델 실험용)를 전환 가능 —
+  [`llm-providers.md`](llm-providers.md). OpenRouter 경로는 모킹 테스트만 존재, 이 환경에
+  `OPENROUTER_API_KEY`가 없어 라이브 검증은 못함.
+- **라이브 검증(부분)**: 이 환경에 정식 `ANTHROPIC_API_KEY`는 없지만, 이미 로그인된 Claude Code
+  세션(claude.ai OAuth)을 `claude-agent-sdk`로 재사용해 Markdown 추출 경로와 PDF VLM 하이브리드
+  경로(표+이미지) 둘 다 실제 Claude Haiku 호출로 end-to-end 검증함(총 $0.04, 일회성 검증
+  스크립트로 진행, 프로젝트 코드에는 포함 안 됨). 이 방식은 호출당 최소 $0.01~0.07의 하네스
+  오버헤드가 있어 운영 백엔드로는 부적합 — 운영은 여전히 `ANTHROPIC_API_KEY`(또는
+  `OPENROUTER_API_KEY`) 기준.
 
 ## 제외 범위와 "왜 막지 않는가"
 
@@ -70,6 +80,10 @@ Dashboard / Chat UI다. 이들을 지금 만들지 않는 이유는 스코프 �
   문서·표·이미지가 많은 문서 처리 시 비용/지연이 커진다. Anthropic Message Batches
   API(비동기, 표준 대비 50% 비용)로 전환하면 대량 배치 처리에 유리하다 — Knowledge
   Extraction과 Vision 추출 양쪽 다 후보.
+- **모델/프로바이더 비용 레버**: `--model`/`KF_EXTRACTION_MODEL`로 Anthropic 모델 등급을
+  낮추거나(Opus→Sonnet→Haiku), `KF_LLM_PROVIDER=openrouter`로 전환해 다른 모델을 시도하는
+  것도 비용 최적화 옵션 — [`llm-providers.md`](llm-providers.md) 참고. 단 OpenRouter는 라이브
+  검증 전이라 실제 비용/품질 비교는 아직 못함.
 - 토큰 카운팅 정확도 개선(`messages.count_tokens`로 청크 경계 최종 검증).
 - 인덱싱/저장 레이어(위 "제외 범위" 표 참고) 연동은 이 파이프라인의 출력(JSONL 또는
   PostgreSQL의 `knowledge_objects` 테이블)을 그대로 소비하는 형태로 설계되어 있어 별도
