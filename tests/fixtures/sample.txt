@@ -1,0 +1,4 @@
+This is the first paragraph of a plain text sample document. It has a
+couple of sentences so the chunker has something to split on later.
+
+This is the second paragraph, separated from the first by a blank line.
