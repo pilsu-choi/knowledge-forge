@@ -38,5 +38,39 @@ services:
     #   docker compose run --rm app schedule /app/input --interval-seconds 3600
     command: ["db", "init"]
 
+  # `POST /ingest` enqueues a job to the `jobs` table and returns 202
+  # immediately - it never calls the LLM itself, so it needs no Anthropic
+  # credentials (unlike `app`/`worker`). See wiki/api.md.
+  api:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      KF_DATABASE_URL: postgresql://kf:kf@postgres:5432/knowledge_forge
+      KF_DATA_DIR: /app/data
+    ports:
+      - "8000:8000"
+    command: ["serve", "--host", "0.0.0.0", "--port", "8000"]
+
+  # Polls `jobs` (FOR UPDATE SKIP LOCKED) and runs the actual pipeline for
+  # each claimed job - the "process" half of Ingest/Process separation
+  # (wiki/roadmap.md 4단계). Needs Anthropic credentials since it performs
+  # the real extraction, unlike `api`.
+  worker:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      KF_DATABASE_URL: postgresql://kf:kf@postgres:5432/knowledge_forge
+      KF_DATA_DIR: /app/data
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
+    volumes:
+      - ./data:/app/data
+      - ./input:/app/input:ro
+    command: ["worker"]
+
 volumes:
   kf-postgres-data:

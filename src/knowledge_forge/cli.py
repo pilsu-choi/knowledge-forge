@@ -165,6 +165,46 @@ def schedule(
     )
 
 
+@app.command()
+def serve(
+    host: str = typer.Option("0.0.0.0", "--host", help="Bind address for the API server."),
+    port: int = typer.Option(8000, "--port", help="Bind port for the API server."),
+) -> None:
+    """Run the FastAPI ingest/read server (see wiki/api.md). `POST /ingest`
+    enqueues a job and returns immediately - `knowledge-forge worker`
+    (a separate process) does the actual pipeline work."""
+    # No _ensure_authenticated() here: unlike extract/schedule/worker, this
+    # process never calls the LLM itself (it only enqueues jobs and reads
+    # from Postgres) - requiring Anthropic credentials just to accept
+    # ingest requests would be wrong.
+    import uvicorn
+
+    uvicorn.run("knowledge_forge.api.app:create_app", factory=True, host=host, port=port)
+
+
+@app.command()
+def worker(
+    poll_interval_seconds: float = typer.Option(2.0, "--poll-interval-seconds", help="Delay between empty polls of the job queue."),
+) -> None:
+    """Run the job-queue worker: polls `jobs` (populated by `POST /ingest`)
+    and runs the pipeline for each claimed job (see wiki/api.md). A
+    long-running process, deployed separately from `serve` (Ctrl-C to stop)."""
+    _ensure_authenticated()
+    if not settings.database_url:
+        typer.echo("KF_DATABASE_URL이 설정되지 않았습니다 - worker는 job queue가 필수입니다.", err=True)
+        raise typer.Exit(1)
+
+    from knowledge_forge.worker import run_worker
+
+    asyncio.run(
+        run_worker(
+            database_url=settings.database_url,
+            data_dir=settings.data_dir,
+            poll_interval_seconds=poll_interval_seconds,
+        )
+    )
+
+
 @db_app.command("init")
 def db_init() -> None:
     """Create the PostgreSQL schema (sources/documents/chunks/knowledge_objects/relations)."""
