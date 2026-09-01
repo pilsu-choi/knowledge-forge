@@ -9,11 +9,13 @@ instead, per the user's explicit choice to always use VLM for those rather
 than a rule-based-first-fallback-to-VLM policy.
 """
 
+import asyncio
 import base64
 import logging
 
 import anthropic
 
+from knowledge_forge.config import settings
 from knowledge_forge.exceptions import KnowledgeExtractionError
 from knowledge_forge.extraction.auth import CREDENTIAL_HINT_KO
 from knowledge_forge.retry import RETRYABLE_ANTHROPIC_ERRORS, anthropic_retry
@@ -28,54 +30,57 @@ DEFAULT_MAX_TOKENS = 4096
 class VisionExtractor:
     def __init__(
         self,
-        client: anthropic.Anthropic | None = None,
+        client: anthropic.AsyncAnthropic | None = None,
         model: str = DEFAULT_MODEL,
         max_tokens: int = DEFAULT_MAX_TOKENS,
+        max_concurrency: int | None = None,
     ):
-        self._client = client or anthropic.Anthropic()
+        self._client = client or anthropic.AsyncAnthropic()
         self._model = model
         self._max_tokens = max_tokens
+        self._semaphore = asyncio.Semaphore(max_concurrency or settings.max_concurrent_llm_requests)
 
-    def extract_table_markdown(self, image_bytes: bytes, media_type: str = "image/png") -> str:
+    async def extract_table_markdown(self, image_bytes: bytes, media_type: str = "image/png") -> str:
         """Returns a GFM markdown table transcription of the cropped region."""
-        return self._call(image_bytes, media_type, TABLE_PROMPT)
+        return await self._call(image_bytes, media_type, TABLE_PROMPT)
 
-    def describe_figure(self, image_bytes: bytes, media_type: str = "image/png") -> str:
+    async def describe_figure(self, image_bytes: bytes, media_type: str = "image/png") -> str:
         """Returns a descriptive paragraph for a cropped figure/chart/diagram."""
-        return self._call(image_bytes, media_type, FIGURE_PROMPT)
+        return await self._call(image_bytes, media_type, FIGURE_PROMPT)
 
-    def transcribe_image(self, image_bytes: bytes, media_type: str = "image/png") -> str:
+    async def transcribe_image(self, image_bytes: bytes, media_type: str = "image/png") -> str:
         """Returns a transcription/description for a standalone image file
         (not a crop of a larger page)."""
-        return self._call(image_bytes, media_type, TRANSCRIBE_PROMPT)
+        return await self._call(image_bytes, media_type, TRANSCRIBE_PROMPT)
 
     @anthropic_retry()
-    def _call(self, image_bytes: bytes, media_type: str, prompt: str) -> str:
+    async def _call(self, image_bytes: bytes, media_type: str, prompt: str) -> str:
         data = base64.standard_b64encode(image_bytes).decode("ascii")
-        try:
-            response = self._client.messages.create(
-                model=self._model,
-                max_tokens=self._max_tokens,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image",
-                                "source": {"type": "base64", "media_type": media_type, "data": data},
-                            },
-                            {"type": "text", "text": prompt},
-                        ],
-                    }
-                ],
-            )
-        except RETRYABLE_ANTHROPIC_ERRORS:
-            raise
-        except anthropic.APIError as exc:
-            raise KnowledgeExtractionError(f"vision extraction failed: {exc}") from exc
-        except TypeError as exc:
-            if "Could not resolve authentication" in str(exc):
-                raise KnowledgeExtractionError(CREDENTIAL_HINT_KO) from exc
-            raise
+        async with self._semaphore:
+            try:
+                response = await self._client.messages.create(
+                    model=self._model,
+                    max_tokens=self._max_tokens,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {"type": "base64", "media_type": media_type, "data": data},
+                                },
+                                {"type": "text", "text": prompt},
+                            ],
+                        }
+                    ],
+                )
+            except RETRYABLE_ANTHROPIC_ERRORS:
+                raise
+            except anthropic.APIError as exc:
+                raise KnowledgeExtractionError(f"vision extraction failed: {exc}") from exc
+            except TypeError as exc:
+                if "Could not resolve authentication" in str(exc):
+                    raise KnowledgeExtractionError(CREDENTIAL_HINT_KO) from exc
+                raise
         text_blocks = [b.text for b in response.content if b.type == "text"]
         return "".join(text_blocks).strip()

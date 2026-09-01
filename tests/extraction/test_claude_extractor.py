@@ -76,7 +76,7 @@ class _FakeMessages:
         self._side_effects = list(side_effects)
         self.calls = 0
 
-    def parse(self, **kwargs):
+    async def parse(self, **kwargs):
         self.calls += 1
         effect = self._side_effects.pop(0)
         if isinstance(effect, Exception):
@@ -89,11 +89,11 @@ class _FakeClient:
         self.messages = _FakeMessages(side_effects)
 
 
-def test_extract_maps_extraction_result_into_knowledge_object():
+async def test_extract_maps_extraction_result_into_knowledge_object():
     client = _FakeClient([_sample_result()])
     extractor = ClaudeExtractor(client=client, model="claude-opus-5")
 
-    ko = extractor.extract(_sample_chunk(), _sample_document(), _sample_source())
+    ko = await extractor.extract(_sample_chunk(), _sample_document(), _sample_source())
 
     assert ko.summary == "A short summary."
     assert ko.facts == ["Fact one."]
@@ -108,23 +108,23 @@ def test_extract_maps_extraction_result_into_knowledge_object():
     assert client.messages.calls == 1
 
 
-def test_retries_once_on_rate_limit_then_succeeds():
+async def test_retries_once_on_rate_limit_then_succeeds():
     client = _FakeClient([_rate_limit_error(), _sample_result()])
     extractor = ClaudeExtractor(client=client)
 
-    ko = extractor.extract(_sample_chunk(), _sample_document(), _sample_source())
+    ko = await extractor.extract(_sample_chunk(), _sample_document(), _sample_source())
 
     assert ko.summary == "A short summary."
     assert client.messages.calls == 2
 
 
-def test_bad_request_is_not_retried_and_raises_knowledge_extraction_error():
+async def test_bad_request_is_not_retried_and_raises_knowledge_extraction_error():
     from knowledge_forge.exceptions import KnowledgeExtractionError
 
     client = _FakeClient([_bad_request_error()])
     extractor = ClaudeExtractor(client=client)
 
     with pytest.raises(KnowledgeExtractionError):
-        extractor.extract(_sample_chunk(), _sample_document(), _sample_source())
+        await extractor.extract(_sample_chunk(), _sample_document(), _sample_source())
 
     assert client.messages.calls == 1

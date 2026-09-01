@@ -10,7 +10,7 @@ from knowledge_forge.parsers.xlsx import XlsxParser
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "sample.xlsx"
 
 
-def test_xlsx_parses_sheet_into_a_table_element():
+async def test_xlsx_parses_sheet_into_a_table_element():
     data = FIXTURE.read_bytes()
     item = RawItem(
         uri=f"file://{FIXTURE}",
@@ -20,7 +20,7 @@ def test_xlsx_parses_sheet_into_a_table_element():
     )
     source_ref = SourceRef(source_id="s1", source_type=SourceType.LOCAL_FILE, uri=item.uri)
 
-    document = XlsxParser().parse(item, source_ref)
+    document = await XlsxParser().parse(item, source_ref)
 
     tables = [e for e in document.elements if isinstance(e, TableElement)]
     assert len(tables) == 1

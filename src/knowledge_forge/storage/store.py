@@ -20,25 +20,25 @@ class PipelineStore:
         self._db = PostgresStore(database_url)
         self._raw = RawBlobStore(data_dir)
 
-    def __enter__(self) -> "PipelineStore":
-        self._db.connect()
+    async def __aenter__(self) -> "PipelineStore":
+        await self._db.connect()
         return self
 
-    def __exit__(self, *exc_info: object) -> None:
-        self._db.close()
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self._db.close()
 
-    def init_schema(self) -> None:
-        self._db.init_schema()
+    async def init_schema(self) -> None:
+        await self._db.init_schema()
 
-    def record_source(self, source: Source, item: RawItem) -> None:
+    async def record_source(self, source: Source, item: RawItem) -> None:
         raw_path = self._raw.save(item)
-        self._db.save_source(source, str(raw_path))
+        await self._db.save_source(source, str(raw_path))
 
-    def record_document(self, document: Document) -> None:
-        self._db.save_document(document)
+    async def record_document(self, document: Document) -> None:
+        await self._db.save_document(document)
 
-    def record_chunks(self, chunks: list[Chunk]) -> None:
-        self._db.save_chunks(chunks)
+    async def record_chunks(self, chunks: list[Chunk]) -> None:
+        await self._db.save_chunks(chunks)
 
-    def record_knowledge_object(self, ko: KnowledgeObject) -> None:
-        self._db.save_knowledge_object(ko)
+    async def record_knowledge_object(self, ko: KnowledgeObject) -> None:
+        await self._db.save_knowledge_object(ko)

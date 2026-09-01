@@ -24,8 +24,8 @@ def _source_ref() -> SourceRef:
     return SourceRef(source_id="s1", source_type=SourceType.LOCAL_FILE, uri=f"file://{FIXTURE}")
 
 
-def test_markdown_parses_heading_paragraph_list_table():
-    document = MarkdownParser().parse(_raw_item(), _source_ref())
+async def test_markdown_parses_heading_paragraph_list_table():
+    document = await MarkdownParser().parse(_raw_item(), _source_ref())
 
     headings = [e for e in document.elements if isinstance(e, Heading)]
     texts = [e for e in document.elements if isinstance(e, TextBlock)]

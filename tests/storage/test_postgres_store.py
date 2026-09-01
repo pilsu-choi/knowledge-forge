@@ -11,6 +11,7 @@ import os
 from datetime import datetime, timezone
 
 import pytest
+import pytest_asyncio
 
 from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.document import Document, DocumentMetadata, TextBlock
@@ -65,50 +66,52 @@ def _sample_records():
     return src, doc, chunk, ko
 
 
-@pytest.fixture
-def store():
-    with PostgresStore(DSN) as db:
-        db.init_schema()
+@pytest_asyncio.fixture
+async def store():
+    async with PostgresStore(DSN) as db:
+        await db.init_schema()
         yield db
-        db.conn.execute("DELETE FROM knowledge_objects WHERE knowledge_object_id LIKE 'test-%'")
-        db.conn.execute("DELETE FROM chunks WHERE chunk_id LIKE 'test-%'")
-        db.conn.execute("DELETE FROM documents WHERE document_id LIKE 'test-%'")
-        db.conn.execute("DELETE FROM sources WHERE source_id LIKE 'test-%'")
+        await db.conn.execute("DELETE FROM knowledge_objects WHERE knowledge_object_id LIKE 'test-%'")
+        await db.conn.execute("DELETE FROM chunks WHERE chunk_id LIKE 'test-%'")
+        await db.conn.execute("DELETE FROM documents WHERE document_id LIKE 'test-%'")
+        await db.conn.execute("DELETE FROM sources WHERE source_id LIKE 'test-%'")
 
 
-def test_save_and_upsert_all_tables_is_idempotent(store):
+async def test_save_and_upsert_all_tables_is_idempotent(store):
     src, doc, chunk, ko = _sample_records()
 
     for _ in range(2):  # second pass exercises the ON CONFLICT upsert path
-        store.save_source(src, raw_path="/data/raw/aa/h1")
-        store.save_document(doc)
-        store.save_chunks([chunk])
-        store.save_knowledge_object(ko)
+        await store.save_source(src, raw_path="/data/raw/aa/h1")
+        await store.save_document(doc)
+        await store.save_chunks([chunk])
+        await store.save_knowledge_object(ko)
 
-    assert store.conn.execute(
+    count_row = await (await store.conn.execute(
         "SELECT count(*) FROM sources WHERE source_id = %s", (src.source_id,)
-    ).fetchone()[0] == 1
-    assert store.conn.execute(
+    )).fetchone()
+    assert count_row[0] == 1
+    count_row = await (await store.conn.execute(
         "SELECT count(*) FROM knowledge_objects WHERE knowledge_object_id = %s", (ko.knowledge_object_id,)
-    ).fetchone()[0] == 1
+    )).fetchone()
+    assert count_row[0] == 1
 
-    row = store.conn.execute(
+    row = await (await store.conn.execute(
         "SELECT summary, entities, topics, document_type FROM knowledge_objects WHERE knowledge_object_id = %s",
         (ko.knowledge_object_id,),
-    ).fetchone()
+    )).fetchone()
     assert row[0] == "s"
     assert row[1] == [{"name": "Acme", "type": "ORG", "description": None}]
     assert row[2] == ["t"]
     assert row[3] == "report"
 
 
-def test_save_chunks_persists_page_range(store):
+async def test_save_chunks_persists_page_range(store):
     src, doc, chunk, _ = _sample_records()
-    store.save_source(src, raw_path=None)
-    store.save_document(doc)
-    store.save_chunks([chunk])
+    await store.save_source(src, raw_path=None)
+    await store.save_document(doc)
+    await store.save_chunks([chunk])
 
-    row = store.conn.execute(
+    row = await (await store.conn.execute(
         "SELECT page_start, page_end FROM chunks WHERE chunk_id = %s", (chunk.chunk_id,)
-    ).fetchone()
+    )).fetchone()
     assert row == (1, 2)

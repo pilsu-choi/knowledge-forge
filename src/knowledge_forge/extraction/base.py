@@ -10,5 +10,5 @@ class Extractor(ABC):
     """Runs Knowledge Extraction over a single Chunk, producing a KnowledgeObject."""
 
     @abstractmethod
-    def extract(self, chunk: Chunk, document: Document, source: Source) -> KnowledgeObject:
+    async def extract(self, chunk: Chunk, document: Document, source: Source) -> KnowledgeObject:
         ...

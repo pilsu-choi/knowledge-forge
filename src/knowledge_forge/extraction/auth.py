@@ -4,7 +4,7 @@ The Anthropic SDK itself resolves credentials lazily, at request time, in
 this order: ANTHROPIC_API_KEY -> ANTHROPIC_AUTH_TOKEN -> an `ant auth login`
 OAuth profile -> Workload Identity Federation env vars -> the default
 profile on disk. `ClaudeExtractor` already relies on that by constructing
-a bare `anthropic.Anthropic()` - this module does NOT replace that
+a bare `anthropic.AsyncAnthropic()` - this module does NOT replace that
 resolution logic (only the SDK is authoritative on whether a call will
 actually succeed). It exists so the CLI can fail fast with a clear Korean
 message *before* running a whole pipeline, instead of the raw `TypeError`

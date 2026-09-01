@@ -23,7 +23,7 @@ class _FakeVisionExtractor(VisionExtractor):
     def __init__(self):
         self.figure_calls = 0
 
-    def describe_figure(self, image_bytes: bytes, media_type: str = "image/png") -> str:
+    async def describe_figure(self, image_bytes: bytes, media_type: str = "image/png") -> str:
         self.figure_calls += 1
         return _FIGURE_DESCRIPTION
 
@@ -36,7 +36,7 @@ def test_heading_level_detects_english_and_korean_outline_styles():
     assert _heading_level(_FakeStyle("Outline 9", "개요 9")) == 6  # clamped to 6
 
 
-def test_hwpx_parses_heading_paragraph_table_and_image():
+async def test_hwpx_parses_heading_paragraph_table_and_image():
     data = FIXTURE.read_bytes()
     item = RawItem(
         uri=f"file://{FIXTURE}",
@@ -47,7 +47,7 @@ def test_hwpx_parses_heading_paragraph_table_and_image():
     source_ref = SourceRef(source_id="s1", source_type=SourceType.LOCAL_FILE, uri=item.uri)
 
     vision = _FakeVisionExtractor()
-    document = HwpxParser(vision_extractor=vision).parse(item, source_ref)
+    document = await HwpxParser(vision_extractor=vision).parse(item, source_ref)
 
     headings = [e for e in document.elements if isinstance(e, Heading)]
     texts = [e for e in document.elements if isinstance(e, TextBlock)]

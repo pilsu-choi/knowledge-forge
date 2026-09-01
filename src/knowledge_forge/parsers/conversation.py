@@ -26,7 +26,7 @@ class ConversationParser(Parser):
 
     supported_schemes = {"slack", "gmail"}
 
-    def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
+    async def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
         text = item.content.decode("utf-8", errors="replace")
         blocks = [b.strip() for b in _BLANK_LINE.split(text) if b.strip()]
 

@@ -6,12 +6,13 @@ interval inside one long-lived process - an alternative to wiring an
 external cron/systemd timer around the one-shot CLI command.
 """
 
+import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
-from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from knowledge_forge.chunking import AdaptiveChunker
 from knowledge_forge.collectors.local_file import LocalFileCollector
@@ -31,12 +32,12 @@ def build_tick(
     chunker,
     extractor,
     store_factory: Optional[Callable[[], "PipelineStore"]] = None,
-) -> Callable[[], None]:
-    """Returns a zero-arg tick function that runs one incremental sync pass.
+) -> Callable[[], "asyncio.Future[None]"]:
+    """Returns a zero-arg async tick function that runs one incremental sync pass.
 
     Exposed separately from run_scheduled_sync so it can be unit-tested by
-    calling it directly, bypassing BlockingScheduler's (permanently
-    blocking) start() loop entirely.
+    awaiting it directly, bypassing AsyncIOScheduler's (permanently running)
+    event loop entirely.
 
     `collector.incremental_sync(collector.get_cursor())` behaves correctly
     even on the very first call - with no prior persisted state,
@@ -52,19 +53,21 @@ def build_tick(
     self-heals from a connection dropped between ticks.
     """
 
-    def _tick() -> None:
+    async def _tick() -> None:
         try:
             cursor = collector.get_cursor()
             if store_factory is not None:
-                with store_factory() as store:
-                    store.init_schema()  # idempotent (CREATE TABLE IF NOT EXISTS)
-                    knowledge_objects = list(
-                        run_pipeline(collector, registry, chunker, extractor, cursor=cursor, store=store)
-                    )
+                async with store_factory() as store:
+                    await store.init_schema()  # idempotent (CREATE TABLE IF NOT EXISTS)
+                    knowledge_objects = [
+                        ko
+                        async for ko in run_pipeline(collector, registry, chunker, extractor, cursor=cursor, store=store)
+                    ]
             else:
-                knowledge_objects = list(
-                    run_pipeline(collector, registry, chunker, extractor, cursor=cursor, store=None)
-                )
+                knowledge_objects = [
+                    ko
+                    async for ko in run_pipeline(collector, registry, chunker, extractor, cursor=cursor, store=None)
+                ]
             logger.info("scheduled sync tick produced %d Knowledge Object(s)", len(knowledge_objects))
         except Exception:  # noqa: BLE001 - one failed tick must not kill the scheduler
             logger.exception("scheduled sync tick failed")
@@ -72,7 +75,7 @@ def build_tick(
     return _tick
 
 
-def run_scheduled_sync(
+async def run_scheduled_sync(
     root: Path | str,
     interval_seconds: int,
     max_tokens: int,
@@ -80,9 +83,10 @@ def run_scheduled_sync(
     store_factory: Optional[Callable[[], "PipelineStore"]] = None,
     state_path: Path | str | None = None,
 ) -> None:
-    """Blocks forever, running an incremental sync of `root` every
-    `interval_seconds` (firing once immediately at startup, then on the
-    interval) until interrupted (Ctrl-C / SIGINT).
+    """Runs forever as a background job on the current event loop,
+    incrementally syncing `root` every `interval_seconds` (firing once
+    immediately at startup, then on the interval) until interrupted
+    (Ctrl-C / SIGINT).
     """
     collector = LocalFileCollector(root=root, state_path=state_path)
     registry = default_registry()
@@ -90,10 +94,13 @@ def run_scheduled_sync(
     extractor = ClaudeExtractor(model=model)
     tick = build_tick(collector, registry, chunker, extractor, store_factory=store_factory)
 
-    scheduler = BlockingScheduler()
+    scheduler = AsyncIOScheduler()
     scheduler.add_job(tick, "interval", seconds=interval_seconds, next_run_time=datetime.now())
+    scheduler.start()
     try:
-        scheduler.start()
+        await asyncio.Event().wait()
     except (KeyboardInterrupt, SystemExit):
+        pass
+    finally:
         scheduler.shutdown()
         logger.info("scheduler stopped")

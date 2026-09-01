@@ -15,7 +15,7 @@ class TxtParser(Parser):
 
     supported_extensions = {".txt"}
 
-    def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
+    async def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
         try:
             text = item.content.decode("utf-8")
         except UnicodeDecodeError:

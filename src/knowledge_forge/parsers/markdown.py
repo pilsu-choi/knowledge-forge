@@ -38,7 +38,7 @@ class MarkdownParser(Parser):
     def __init__(self) -> None:
         self._md = MarkdownIt("gfm-like").disable("linkify")
 
-    def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
+    async def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
         try:
             text = item.content.decode("utf-8")
             root = SyntaxTreeNode(self._md.parse(text))

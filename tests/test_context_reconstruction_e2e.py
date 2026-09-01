@@ -52,7 +52,7 @@ class _FakeSlackCollector(Collector):
 
 
 class _FakeMessages:
-    def parse(self, **kwargs):
+    async def parse(self, **kwargs):
         return SimpleNamespace(
             parsed_output=ExtractionResult(
                 summary="stub summary",
@@ -70,13 +70,13 @@ class _FakeClient:
         self.messages = _FakeMessages()
 
 
-def test_slack_messages_are_merged_into_fewer_knowledge_objects_by_conversation():
+async def test_slack_messages_are_merged_into_fewer_knowledge_objects_by_conversation():
     collector = _FakeSlackCollector()
     registry = default_registry()
     chunker = AdaptiveChunker(max_tokens_per_chunk=4000)
     extractor = ClaudeExtractor(client=_FakeClient())
 
-    knowledge_objects = list(run_pipeline(collector, registry, chunker, extractor))
+    knowledge_objects = [ko async for ko in run_pipeline(collector, registry, chunker, extractor)]
 
     # 4 raw messages, but only 2 semantic episodes (a 3-message conversation
     # + 1 unrelated later message split off by the time-gap threshold) -> 2

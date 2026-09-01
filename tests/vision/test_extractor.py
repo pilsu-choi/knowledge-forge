@@ -16,7 +16,7 @@ class _FakeMessages:
         self.calls = 0
         self.last_kwargs = None
 
-    def create(self, **kwargs):
+    async def create(self, **kwargs):
         self.calls += 1
         self.last_kwargs = kwargs
         effect = self._side_effects.pop(0)
@@ -34,11 +34,11 @@ def _text_response(text: str):
     return SimpleNamespace(content=[SimpleNamespace(type="text", text=text)])
 
 
-def test_extract_table_markdown_returns_text_and_sends_image_block():
+async def test_extract_table_markdown_returns_text_and_sends_image_block():
     client = _FakeClient([_text_response("| a | b |\n|---|---|\n| 1 | 2 |")])
     extractor = VisionExtractor(client=client)
 
-    result = extractor.extract_table_markdown(b"fake-png-bytes", media_type="image/png")
+    result = await extractor.extract_table_markdown(b"fake-png-bytes", media_type="image/png")
 
     assert result == "| a | b |\n|---|---|\n| 1 | 2 |"
     content = client.messages.last_kwargs["messages"][0]["content"]
@@ -47,32 +47,32 @@ def test_extract_table_markdown_returns_text_and_sends_image_block():
     assert content[1]["type"] == "text"
 
 
-def test_describe_figure_uses_figure_prompt():
+async def test_describe_figure_uses_figure_prompt():
     client = _FakeClient([_text_response("A bar chart showing revenue growth.")])
     extractor = VisionExtractor(client=client)
 
-    result = extractor.describe_figure(b"fake-png-bytes")
+    result = await extractor.describe_figure(b"fake-png-bytes")
 
     assert "revenue" in result
     prompt_text = client.messages.last_kwargs["messages"][0]["content"][1]["text"]
     assert "figure" in prompt_text.lower() or "chart" in prompt_text.lower()
 
 
-def test_retries_once_on_rate_limit_then_succeeds():
+async def test_retries_once_on_rate_limit_then_succeeds():
     response = httpx2.Response(429, request=_REQUEST, json={"error": {"type": "rate_limit_error", "message": "slow"}})
     err = anthropic.RateLimitError("slow", response=response, body=None)
     client = _FakeClient([err, _text_response("ok")])
 
-    result = VisionExtractor(client=client).describe_figure(b"x")
+    result = await VisionExtractor(client=client).describe_figure(b"x")
 
     assert result == "ok"
     assert client.messages.calls == 2
 
 
-def test_bad_request_raises_knowledge_extraction_error():
+async def test_bad_request_raises_knowledge_extraction_error():
     response = httpx2.Response(400, request=_REQUEST, json={"error": {"type": "invalid_request_error", "message": "bad"}})
     err = anthropic.BadRequestError("bad", response=response, body=None)
     client = _FakeClient([err])
 
     with pytest.raises(KnowledgeExtractionError):
-        VisionExtractor(client=client).extract_table_markdown(b"x")
+        await VisionExtractor(client=client).extract_table_markdown(b"x")

@@ -1,3 +1,4 @@
+import asyncio
 import io
 import logging
 
@@ -44,12 +45,12 @@ class DocxParser(Parser):
             self._vision = VisionExtractor()
         return self._vision
 
-    def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
+    async def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
         try:
             docx_document = DocxDocument(io.BytesIO(item.content))
             elements = self._convert_paragraphs(docx_document, item.uri)
             elements.extend(self._convert_tables(docx_document, item.uri, len(elements)))
-            elements.extend(self._convert_images(docx_document, item.uri, len(elements)))
+            elements.extend(await self._convert_images(docx_document, item.uri, len(elements)))
         except Exception as exc:  # noqa: BLE001 - surfaced as a typed parsing error
             raise ParsingError(f"Failed to parse docx '{item.uri}': {exc}") from exc
 
@@ -128,23 +129,27 @@ class DocxParser(Parser):
             )
         return elements
 
-    def _convert_images(
+    async def _convert_images(
         self, docx_document: DocxDocument, uri: str, start_index: int
     ) -> list[DocumentElement]:
-        elements: list[DocumentElement] = []
+        picture_parts = []
         for shape in docx_document.inline_shapes:
             if shape.type != WD_INLINE_SHAPE_TYPE.PICTURE:
                 continue
-
             rId = shape._inline.graphic.graphicData.pic.blipFill.blip.embed
-            part = docx_document.part.related_parts[rId]
+            picture_parts.append(docx_document.part.related_parts[rId])
 
-            description = None
+        async def _describe(part) -> str | None:
             try:
-                description = self._vision_extractor().describe_figure(part.blob, media_type=part.content_type) or None
+                return await self._vision_extractor().describe_figure(part.blob, media_type=part.content_type) or None
             except Exception as exc:  # noqa: BLE001 - degrade this image, not the whole document
                 logger.warning("VLM figure description failed on %s: %s", uri, exc)
+                return None
 
+        descriptions = await asyncio.gather(*(_describe(part) for part in picture_parts))
+
+        elements: list[DocumentElement] = []
+        for description in descriptions:
             elements.append(
                 ImageElement(
                     element_id=stable_id("element", uri, str(start_index + len(elements)), "image"),

@@ -1,6 +1,6 @@
+import asyncio
 import json
 import sys
-from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
 
@@ -68,12 +68,14 @@ def extract(
     extractor = ClaudeExtractor(model=model)
     pipeline_store = _open_store() if store else None
 
-    with pipeline_store or nullcontext():
+    async def _run():
         if pipeline_store is not None:
-            pipeline_store.init_schema()  # idempotent (CREATE TABLE IF NOT EXISTS)
-        knowledge_objects = list(
-            run_pipeline(collector, registry, chunker, extractor, store=pipeline_store)
-        )
+            async with pipeline_store:
+                await pipeline_store.init_schema()  # idempotent (CREATE TABLE IF NOT EXISTS)
+                return [ko async for ko in run_pipeline(collector, registry, chunker, extractor, store=pipeline_store)]
+        return [ko async for ko in run_pipeline(collector, registry, chunker, extractor, store=None)]
+
+    knowledge_objects = asyncio.run(_run())
 
     out = output.open("w", encoding="utf-8") if output else sys.stdout
     try:
@@ -122,12 +124,14 @@ def schedule(
     )
     from knowledge_forge.scheduling.scheduler import run_scheduled_sync
 
-    run_scheduled_sync(
-        root=path,
-        interval_seconds=interval_seconds,
-        max_tokens=max_tokens,
-        model=model,
-        store_factory=store_factory,
+    asyncio.run(
+        run_scheduled_sync(
+            root=path,
+            interval_seconds=interval_seconds,
+            max_tokens=max_tokens,
+            model=model,
+            store_factory=store_factory,
+        )
     )
 
 
@@ -137,8 +141,12 @@ def db_init() -> None:
     if not settings.database_url:
         typer.echo("KF_DATABASE_URL이 설정되지 않았습니다.", err=True)
         raise typer.Exit(1)
-    with PipelineStore(settings.database_url, settings.data_dir) as store:
-        store.init_schema()
+
+    async def _run():
+        async with PipelineStore(settings.database_url, settings.data_dir) as store:
+            await store.init_schema()
+
+    asyncio.run(_run())
     typer.echo("스키마 초기화 완료", err=True)
 
 

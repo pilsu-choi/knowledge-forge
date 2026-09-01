@@ -10,7 +10,7 @@ from knowledge_forge.parsers.pdf import PDFParser
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "sample.pdf"
 
 
-def test_pdf_detects_heading_by_font_size_and_merges_paragraph_lines():
+async def test_pdf_detects_heading_by_font_size_and_merges_paragraph_lines():
     data = FIXTURE.read_bytes()
     item = RawItem(
         uri=f"file://{FIXTURE}",
@@ -20,7 +20,7 @@ def test_pdf_detects_heading_by_font_size_and_merges_paragraph_lines():
     )
     source_ref = SourceRef(source_id="s1", source_type=SourceType.LOCAL_FILE, uri=item.uri)
 
-    document = PDFParser().parse(item, source_ref)
+    document = await PDFParser().parse(item, source_ref)
 
     assert document.metadata.page_count == 1
 

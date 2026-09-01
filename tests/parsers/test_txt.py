@@ -10,7 +10,7 @@ from knowledge_forge.parsers.txt import TxtParser
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "sample.txt"
 
 
-def test_txt_splits_into_paragraphs_by_blank_line():
+async def test_txt_splits_into_paragraphs_by_blank_line():
     data = FIXTURE.read_bytes()
     item = RawItem(
         uri=f"file://{FIXTURE}",
@@ -20,7 +20,7 @@ def test_txt_splits_into_paragraphs_by_blank_line():
     )
     source_ref = SourceRef(source_id="s1", source_type=SourceType.LOCAL_FILE, uri=item.uri)
 
-    document = TxtParser().parse(item, source_ref)
+    document = await TxtParser().parse(item, source_ref)
 
     assert len(document.elements) == 2
     assert all(isinstance(e, TextBlock) for e in document.elements)

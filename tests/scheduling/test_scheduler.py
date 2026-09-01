@@ -1,7 +1,7 @@
 """Tests for the scheduler's per-tick logic (build_tick), not the actual
-BlockingScheduler loop - BlockingScheduler.start() blocks forever, so
-run_scheduled_sync itself isn't unit-testable; build_tick exists precisely
-so the tick body can be exercised directly.
+AsyncIOScheduler loop - run_scheduled_sync runs forever as a background job
+on the event loop, so it isn't unit-testable; build_tick exists precisely
+so the (async) tick body can be exercised directly.
 """
 
 import logging
@@ -26,7 +26,7 @@ class _FakeMessages:
         self._raise_error = raise_error
         self.calls = 0
 
-    def parse(self, **kwargs):
+    async def parse(self, **kwargs):
         self.calls += 1
         if self._raise_error:
             raise RuntimeError("simulated LLM outage")
@@ -64,7 +64,7 @@ def _produced_count(caplog) -> int:
     raise AssertionError(f"no 'produced N Knowledge Object(s)' log line found in {[r.getMessage() for r in caplog.records]}")
 
 
-def test_first_tick_runs_initial_sync_and_produces_knowledge_objects(tmp_path, caplog):
+async def test_first_tick_runs_initial_sync_and_produces_knowledge_objects(tmp_path, caplog):
     (tmp_path / "a.md").write_text("# A\n\nHello world.")
     (tmp_path / "b.txt").write_text("Just some plain text.")
 
@@ -72,13 +72,13 @@ def test_first_tick_runs_initial_sync_and_produces_knowledge_objects(tmp_path, c
     collector, tick = _make_tick(tmp_path, client)
 
     with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
-        tick()
+        await tick()
 
     assert _produced_count(caplog) >= 2  # at least one KO per file
     assert client.messages.calls >= 2
 
 
-def test_second_tick_only_picks_up_new_file_incrementally(tmp_path, caplog):
+async def test_second_tick_only_picks_up_new_file_incrementally(tmp_path, caplog):
     (tmp_path / "a.md").write_text("# A\n\nHello world.")
     (tmp_path / "b.txt").write_text("Just some plain text.")
 
@@ -86,14 +86,14 @@ def test_second_tick_only_picks_up_new_file_incrementally(tmp_path, caplog):
     collector, tick = _make_tick(tmp_path, client)
 
     with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
-        tick()
+        await tick()
     first_calls = client.messages.calls
 
     (tmp_path / "c.txt").write_text("A brand new file added after the first tick.")
 
     caplog.clear()
     with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
-        tick()
+        await tick()
 
     second_tick_count = _produced_count(caplog)
     # Only the new file's chunk(s) should have been (re-)extracted this tick.
@@ -102,7 +102,7 @@ def test_second_tick_only_picks_up_new_file_incrementally(tmp_path, caplog):
     assert client.messages.calls - first_calls == second_tick_count
 
 
-def test_tick_swallows_exceptions_and_logs_instead_of_raising(tmp_path, caplog):
+async def test_tick_swallows_exceptions_and_logs_instead_of_raising(tmp_path, caplog):
     (tmp_path / "a.txt").write_text("Some text that will fail extraction.")
 
     client = _FakeClient(raise_error=False)
@@ -121,7 +121,7 @@ def test_tick_swallows_exceptions_and_logs_instead_of_raising(tmp_path, caplog):
     collector, tick = _make_tick(tmp_path, failing_client)
 
     with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
-        tick()  # must not raise
+        await tick()  # must not raise
 
     assert any("scheduled sync tick failed" in r.getMessage() for r in caplog.records if r.name == LOGGER_NAME)
 
@@ -130,7 +130,7 @@ DSN = os.environ.get("KF_TEST_DATABASE_URL")
 
 
 @pytest.mark.skipif(not DSN, reason="KF_TEST_DATABASE_URL not set - no Postgres to test against")
-def test_tick_persists_to_store_when_store_factory_given(tmp_path, caplog):
+async def test_tick_persists_to_store_when_store_factory_given(tmp_path, caplog):
     from knowledge_forge.storage.store import PipelineStore
 
     (tmp_path / "a.txt").write_text("Persisted via the scheduler tick.")
@@ -140,18 +140,18 @@ def test_tick_persists_to_store_when_store_factory_given(tmp_path, caplog):
     )
 
     with caplog.at_level(logging.INFO, logger=LOGGER_NAME):
-        tick()
+        await tick()
 
     assert _produced_count(caplog) >= 1
 
     uri = f"file://{(tmp_path / 'a.txt').resolve()}"
-    with PipelineStore(DSN, tmp_path / "raw-data") as store:
+    async with PipelineStore(DSN, tmp_path / "raw-data") as store:
         conn = store._db.conn
-        row = conn.execute("SELECT source_id FROM sources WHERE uri = %s", (uri,)).fetchone()
+        row = await (await conn.execute("SELECT source_id FROM sources WHERE uri = %s", (uri,))).fetchone()
         assert row is not None
         source_id = row[0]
         # FK-safe cleanup order: children before the parent `sources` row.
-        conn.execute("DELETE FROM knowledge_objects WHERE source_id = %s", (source_id,))
-        conn.execute("DELETE FROM chunks WHERE source_id = %s", (source_id,))
-        conn.execute("DELETE FROM documents WHERE source_id = %s", (source_id,))
-        conn.execute("DELETE FROM sources WHERE source_id = %s", (source_id,))
+        await conn.execute("DELETE FROM knowledge_objects WHERE source_id = %s", (source_id,))
+        await conn.execute("DELETE FROM chunks WHERE source_id = %s", (source_id,))
+        await conn.execute("DELETE FROM documents WHERE source_id = %s", (source_id,))
+        await conn.execute("DELETE FROM sources WHERE source_id = %s", (source_id,))

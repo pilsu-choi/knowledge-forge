@@ -39,12 +39,12 @@ class ImageParser(Parser):
             self._vision = VisionExtractor()
         return self._vision
 
-    def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
+    async def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
         extension = next((ext for ext in self.supported_extensions if item.uri.lower().endswith(ext)), ".png")
         media_type = _MEDIA_TYPES.get(extension, "image/png")
 
         try:
-            text = self._vision_extractor().transcribe_image(item.content, media_type=media_type)
+            text = await self._vision_extractor().transcribe_image(item.content, media_type=media_type)
         except Exception as exc:  # noqa: BLE001 - surfaced as a typed parsing error
             raise ParsingError(f"Failed to parse image '{item.uri}': {exc}") from exc
 

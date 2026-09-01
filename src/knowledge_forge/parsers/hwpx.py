@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 
@@ -51,13 +52,13 @@ class HwpxParser(Parser):
             self._vision = VisionExtractor()
         return self._vision
 
-    def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
+    async def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
         try:
             doc = HwpxDocument.open(item.content)
             elements: list[DocumentElement] = []
             elements.extend(self._convert_paragraphs(doc, item.uri))
             elements.extend(self._convert_tables(doc, item.uri, len(elements)))
-            elements.extend(self._convert_images(doc, item.uri, len(elements)))
+            elements.extend(await self._convert_images(doc, item.uri, len(elements)))
         except Exception as exc:  # noqa: BLE001 - surfaced as a typed parsing error
             raise ParsingError(f"Failed to parse hwpx '{item.uri}': {exc}") from exc
 
@@ -109,17 +110,23 @@ class HwpxParser(Parser):
             )
         return elements
 
-    def _convert_images(self, doc: HwpxDocument, uri: str, start_index: int) -> list[DocumentElement]:
-        elements: list[DocumentElement] = []
-        for item in doc.media.images:
-            description = None
+    async def _convert_images(self, doc: HwpxDocument, uri: str, start_index: int) -> list[DocumentElement]:
+        images = list(doc.media.images)
+
+        async def _describe(item) -> str | None:
             try:
                 image_bytes = doc.package.read(item.href)
-                description = self._vision_extractor().describe_figure(
+                return await self._vision_extractor().describe_figure(
                     image_bytes, media_type=f"image/{item.format}"
                 ) or None
             except Exception as exc:  # noqa: BLE001 - degrade this image, not the whole document
                 logger.warning("VLM figure description failed on %s image %s: %s", uri, item.item_id, exc)
+                return None
+
+        descriptions = await asyncio.gather(*(_describe(item) for item in images))
+
+        elements: list[DocumentElement] = []
+        for description in descriptions:
             elements.append(
                 ImageElement(
                     element_id=stable_id("element", uri, str(start_index + len(elements)), "image"),

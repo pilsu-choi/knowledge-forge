@@ -17,7 +17,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class _FakeMessages:
-    def parse(self, **kwargs):
+    async def parse(self, **kwargs):
         return SimpleNamespace(
             parsed_output=ExtractionResult(
                 summary="stub summary",
@@ -35,13 +35,13 @@ class _FakeClient:
         self.messages = _FakeMessages()
 
 
-def test_pipeline_runs_end_to_end_against_markdown_fixture():
+async def test_pipeline_runs_end_to_end_against_markdown_fixture():
     collector = LocalFileCollector(root=FIXTURES / "sample.md")
     registry = default_registry()
     chunker = AdaptiveChunker(max_tokens_per_chunk=4000)
     extractor = ClaudeExtractor(client=_FakeClient())
 
-    knowledge_objects = list(run_pipeline(collector, registry, chunker, extractor))
+    knowledge_objects = [ko async for ko in run_pipeline(collector, registry, chunker, extractor)]
 
     assert len(knowledge_objects) >= 1
     for ko in knowledge_objects:

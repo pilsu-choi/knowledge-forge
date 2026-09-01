@@ -1,3 +1,4 @@
+import asyncio
 import io
 import logging
 
@@ -46,12 +47,15 @@ class PptxParser(Parser):
             self._vision = VisionExtractor()
         return self._vision
 
-    def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
+    async def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
         try:
             elements: list[DocumentElement] = []
             presentation = Presentation(io.BytesIO(item.content))
-            for slide_index, slide in enumerate(presentation.slides, start=1):
-                elements.extend(self._parse_slide(slide, item.uri, slide_index, len(elements)))
+            slides = list(presentation.slides)
+            descriptions = await self._describe_all_pictures(item.uri, slides)
+            desc_iter = iter(descriptions)
+            for slide_index, slide in enumerate(slides, start=1):
+                elements.extend(self._parse_slide(slide, item.uri, slide_index, len(elements), desc_iter))
         except Exception as exc:  # noqa: BLE001 - surfaced as a typed parsing error
             raise ParsingError(f"Failed to parse pptx '{item.uri}': {exc}") from exc
 
@@ -60,6 +64,23 @@ class PptxParser(Parser):
             source=source_ref,
             elements=elements,
         )
+
+    async def _describe_all_pictures(self, uri: str, slides) -> list[str | None]:
+        picture_shapes = [
+            (slide_index, shape)
+            for slide_index, slide in enumerate(slides, start=1)
+            for shape in slide.shapes
+            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE
+        ]
+
+        async def _describe(slide_index: int, shape) -> str | None:
+            try:
+                return await self._vision_extractor().describe_figure(shape.image.blob, media_type=shape.image.content_type) or None
+            except Exception as exc:  # noqa: BLE001 - degrade this image, not the whole slide/deck
+                logger.warning("VLM figure description failed on %s slide %d: %s", uri, slide_index, exc)
+                return None
+
+        return await asyncio.gather(*(_describe(si, s) for si, s in picture_shapes))
 
     def _parse_chart(self, shape, uri: str, page: int, start_index: int, elements: list[DocumentElement]) -> None:
         chart = shape.chart
@@ -80,12 +101,9 @@ class PptxParser(Parser):
             )
         )
 
-    def _parse_picture(self, shape, uri: str, page: int, start_index: int, elements: list[DocumentElement]) -> None:
-        description = None
-        try:
-            description = self._vision_extractor().describe_figure(shape.image.blob, media_type=shape.image.content_type) or None
-        except Exception as exc:  # noqa: BLE001 - degrade this image, not the whole slide/deck
-            logger.warning("VLM figure description failed on %s slide %d: %s", uri, page, exc)
+    def _parse_picture(
+        self, shape, uri: str, page: int, start_index: int, elements: list[DocumentElement], description: str | None
+    ) -> None:
         elements.append(
             ImageElement(
                 element_id=stable_id("element", uri, str(start_index + len(elements)), "image"),
@@ -95,7 +113,7 @@ class PptxParser(Parser):
             )
         )
 
-    def _parse_slide(self, slide, uri: str, page: int, start_index: int) -> list[DocumentElement]:
+    def _parse_slide(self, slide, uri: str, page: int, start_index: int, desc_iter) -> list[DocumentElement]:
         elements: list[DocumentElement] = []
         title_shape = slide.shapes.title
         title_text = title_shape.text.strip() if title_shape is not None and title_shape.has_text_frame else ""
@@ -118,7 +136,7 @@ class PptxParser(Parser):
                 continue
 
             if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                self._parse_picture(shape, uri, page, start_index, elements)
+                self._parse_picture(shape, uri, page, start_index, elements, next(desc_iter))
                 continue
 
             if shape.has_chart:

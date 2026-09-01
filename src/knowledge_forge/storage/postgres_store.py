@@ -22,34 +22,34 @@ _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 class PostgresStore:
     def __init__(self, dsn: str):
         self._dsn = dsn
-        self._conn: psycopg.Connection | None = None
+        self._conn: psycopg.AsyncConnection | None = None
 
-    def connect(self) -> "PostgresStore":
-        self._conn = psycopg.connect(self._dsn, autocommit=True)
+    async def connect(self) -> "PostgresStore":
+        self._conn = await psycopg.AsyncConnection.connect(self._dsn, autocommit=True)
         return self
 
-    def close(self) -> None:
+    async def close(self) -> None:
         if self._conn is not None:
-            self._conn.close()
+            await self._conn.close()
             self._conn = None
 
-    def __enter__(self) -> "PostgresStore":
-        return self.connect()
+    async def __aenter__(self) -> "PostgresStore":
+        return await self.connect()
 
-    def __exit__(self, *exc_info: object) -> None:
-        self.close()
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.close()
 
     @property
-    def conn(self) -> psycopg.Connection:
+    def conn(self) -> psycopg.AsyncConnection:
         if self._conn is None:
             raise RuntimeError("PostgresStore is not connected - use it as a context manager or call connect()")
         return self._conn
 
-    def init_schema(self) -> None:
-        self.conn.execute(_SCHEMA_PATH.read_text(encoding="utf-8"))
+    async def init_schema(self) -> None:
+        await self.conn.execute(_SCHEMA_PATH.read_text(encoding="utf-8"))
 
-    def save_source(self, source: Source, raw_path: str | None) -> None:
-        self.conn.execute(
+    async def save_source(self, source: Source, raw_path: str | None) -> None:
+        await self.conn.execute(
             """
             INSERT INTO sources (source_id, source_type, uri, content_hash, raw_path,
                                   collected_at, modified_at, metadata)
@@ -75,8 +75,8 @@ class PostgresStore:
             ),
         )
 
-    def save_document(self, document: Document) -> None:
-        self.conn.execute(
+    async def save_document(self, document: Document) -> None:
+        await self.conn.execute(
             """
             INSERT INTO documents (document_id, source_id, elements, metadata)
             VALUES (%s, %s, %s, %s)
@@ -93,7 +93,7 @@ class PostgresStore:
             ),
         )
 
-    def save_chunks(self, chunks: list[Chunk]) -> None:
+    async def save_chunks(self, chunks: list[Chunk]) -> None:
         rows: list[tuple[Any, ...]] = [
             (
                 chunk.chunk_id,
@@ -112,8 +112,8 @@ class PostgresStore:
         ]
         if not rows:
             return
-        with self.conn.cursor() as cur:
-            cur.executemany(
+        async with self.conn.cursor() as cur:
+            await cur.executemany(
                 """
                 INSERT INTO chunks (chunk_id, document_id, source_id, hierarchy_level,
                                      sequence_index, parent_chunk_id, text, token_count,
@@ -134,8 +134,8 @@ class PostgresStore:
                 rows,
             )
 
-    def save_knowledge_object(self, ko: KnowledgeObject) -> None:
-        self.conn.execute(
+    async def save_knowledge_object(self, ko: KnowledgeObject) -> None:
+        await self.conn.execute(
             """
             INSERT INTO knowledge_objects (knowledge_object_id, source_id, document_id, chunk_id,
                                             summary, facts, entities, relations, topics,

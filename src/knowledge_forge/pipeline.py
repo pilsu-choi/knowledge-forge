@@ -5,9 +5,10 @@ stays swappable (a different Collector, Parser registry, Chunker, or
 Extractor implementation) without touching this module's logic.
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Iterator
+from typing import TYPE_CHECKING, AsyncIterator
 
 from knowledge_forge.chunking.base import Chunker
 from knowledge_forge.collectors.base import Collector, RawItem
@@ -38,7 +39,7 @@ def _make_source(collector: Collector, item: RawItem) -> Source:
     )
 
 
-def run_pipeline(
+async def run_pipeline(
     collector: Collector,
     parser_registry: ParserRegistry,
     chunker: Chunker,
@@ -46,7 +47,7 @@ def run_pipeline(
     cursor=None,
     store: "PipelineStore | None" = None,
     context_reconstructor: ContextReconstructor | None = None,
-) -> Iterator[KnowledgeObject]:
+) -> AsyncIterator[KnowledgeObject]:
     """Run the full pipeline over everything a Collector yields.
 
     Items a Parser doesn't support (UnsupportedFormatError/NotImplementedError)
@@ -74,11 +75,11 @@ def run_pipeline(
         source = _make_source(collector, item)
         source_ref = SourceRef.from_source(source)
         if store is not None:
-            store.record_source(source, item)
+            await store.record_source(source, item)
 
         try:
             parser = parser_registry.get_parser_for(item.uri)
-            document = parser.parse(item, source_ref)
+            document = await parser.parse(item, source_ref)
         except NotImplementedError as exc:
             logger.warning("no working parser for %s, skipping: %s", item.uri, exc)
             continue
@@ -86,18 +87,30 @@ def run_pipeline(
             logger.error("failed to parse %s, skipping: %s", item.uri, exc)
             continue
         if store is not None:
-            store.record_document(document)
+            await store.record_document(document)
 
         chunks = chunker.chunk(document)
         if store is not None:
-            store.record_chunks(chunks)
+            await store.record_chunks(chunks)
 
-        for chunk in chunks:
+        async def _extract(chunk):
             try:
-                ko = extractor.extract(chunk, document, source)
+                return await extractor.extract(chunk, document, source)
             except KnowledgeExtractionError as exc:
                 logger.error("extraction failed for chunk %s, skipping: %s", chunk.chunk_id, exc)
+                return None
+
+        # Chunks within one document are extracted concurrently (bounded by
+        # the Extractor's own semaphore); `return_exceptions=True` so one
+        # chunk's unexpected failure doesn't strand its siblings' results -
+        # they're still yielded/stored before the exception is re-raised.
+        results = await asyncio.gather(*(_extract(c) for c in chunks), return_exceptions=True)
+        unexpected = next((r for r in results if isinstance(r, BaseException)), None)
+        for ko in results:
+            if ko is None or isinstance(ko, BaseException):
                 continue
             if store is not None:
-                store.record_knowledge_object(ko)
+                await store.record_knowledge_object(ko)
             yield ko
+        if unexpected is not None:
+            raise unexpected

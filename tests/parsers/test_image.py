@@ -15,7 +15,7 @@ class _FakeVisionExtractor(VisionExtractor):
     def __init__(self, result: str):
         self._result = result
 
-    def transcribe_image(self, image_bytes: bytes, media_type: str = "image/png") -> str:
+    async def transcribe_image(self, image_bytes: bytes, media_type: str = "image/png") -> str:
         return self._result
 
 
@@ -29,11 +29,11 @@ def _item() -> RawItem:
     )
 
 
-def test_image_parser_wires_vlm_transcription_into_image_element():
+async def test_image_parser_wires_vlm_transcription_into_image_element():
     item = _item()
     source_ref = SourceRef(source_id="s1", source_type=SourceType.LOCAL_FILE, uri=item.uri)
 
-    document = ImageParser(vision_extractor=_FakeVisionExtractor("hello world")).parse(item, source_ref)
+    document = await ImageParser(vision_extractor=_FakeVisionExtractor("hello world")).parse(item, source_ref)
 
     images = [e for e in document.elements if isinstance(e, ImageElement)]
     assert len(images) == 1
@@ -42,11 +42,11 @@ def test_image_parser_wires_vlm_transcription_into_image_element():
     assert images[0].extraction_method == "vlm"
 
 
-def test_image_parser_handles_empty_vlm_result_without_crashing():
+async def test_image_parser_handles_empty_vlm_result_without_crashing():
     item = _item()
     source_ref = SourceRef(source_id="s1", source_type=SourceType.LOCAL_FILE, uri=item.uri)
 
-    document = ImageParser(vision_extractor=_FakeVisionExtractor("")).parse(item, source_ref)
+    document = await ImageParser(vision_extractor=_FakeVisionExtractor("")).parse(item, source_ref)
 
     images = [e for e in document.elements if isinstance(e, ImageElement)]
     assert len(images) == 1

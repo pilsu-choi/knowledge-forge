@@ -19,7 +19,7 @@ class XlsxParser(Parser):
 
     supported_extensions = {".xlsx"}
 
-    def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
+    async def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
         try:
             elements: list[DocumentElement] = []
             workbook = openpyxl.load_workbook(io.BytesIO(item.content), data_only=True)

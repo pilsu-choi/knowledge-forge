@@ -17,12 +17,12 @@ class _FakeVisionExtractor(VisionExtractor):
     def __init__(self):
         self.figure_calls = 0
 
-    def describe_figure(self, image_bytes: bytes, media_type: str = "image/png") -> str:
+    async def describe_figure(self, image_bytes: bytes, media_type: str = "image/png") -> str:
         self.figure_calls += 1
         return _FIGURE_DESCRIPTION
 
 
-def test_pptx_parses_title_body_table_picture_and_chart_across_slides():
+async def test_pptx_parses_title_body_table_picture_and_chart_across_slides():
     data = FIXTURE.read_bytes()
     item = RawItem(
         uri=f"file://{FIXTURE}",
@@ -33,7 +33,7 @@ def test_pptx_parses_title_body_table_picture_and_chart_across_slides():
     source_ref = SourceRef(source_id="s1", source_type=SourceType.LOCAL_FILE, uri=item.uri)
 
     vision = _FakeVisionExtractor()
-    document = PptxParser(vision_extractor=vision).parse(item, source_ref)
+    document = await PptxParser(vision_extractor=vision).parse(item, source_ref)
 
     headings = [e for e in document.elements if isinstance(e, Heading)]
     texts = [e for e in document.elements if isinstance(e, TextBlock)]

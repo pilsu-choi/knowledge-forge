@@ -24,6 +24,7 @@ and `extraction_method` so a Knowledge Object built from it can be traced
 back to exactly where on the page it came from.
 """
 
+import asyncio
 import io
 import logging
 import statistics
@@ -95,13 +96,13 @@ class PDFParser(Parser):
             self._vision = VisionExtractor()
         return self._vision
 
-    def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
+    async def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
         try:
             elements: list[DocumentElement] = []
             with pdfplumber.open(io.BytesIO(item.content)) as pdf:
                 page_count = len(pdf.pages)
                 for page in pdf.pages:
-                    elements.extend(self._parse_page(page, item.uri, len(elements)))
+                    elements.extend(await self._parse_page(page, item.uri, len(elements)))
         except Exception as exc:  # noqa: BLE001 - surfaced as a typed parsing error
             raise ParsingError(f"Failed to parse pdf '{item.uri}': {exc}") from exc
 
@@ -118,13 +119,14 @@ class PDFParser(Parser):
         cropped.original.save(buf, format="PNG")
         return buf.getvalue()
 
-    def _parse_tables(self, page, uri: str, start_index: int, elements: list[DocumentElement]) -> list[tuple[float, float, float, float]]:
-        covered: list[tuple[float, float, float, float]] = []
-        for idx, table in enumerate(page.find_tables()):
+    async def _parse_tables(self, page, uri: str, start_index: int, elements: list[DocumentElement]) -> list[tuple[float, float, float, float]]:
+        tables = list(page.find_tables())
+        covered = [tuple(t.bbox) for t in tables]
+
+        async def _one(idx: int, table) -> tuple[int, tuple, list, str]:
             bbox = tuple(table.bbox)
-            covered.append(bbox)
             try:
-                markdown = self._vision_extractor().extract_table_markdown(self._render_region(page, bbox))
+                markdown = await self._vision_extractor().extract_table_markdown(self._render_region(page, bbox))
                 rows = parse_markdown_table(markdown)
                 extraction_method = "vlm"
             except Exception as exc:  # noqa: BLE001 - degrade this table, not the whole document
@@ -132,6 +134,10 @@ class PDFParser(Parser):
                 raw_rows = table.extract() or []
                 rows = [["" if cell is None else str(cell) for cell in row] for row in raw_rows]
                 extraction_method = "rule_based"
+            return idx, bbox, rows, extraction_method
+
+        results = await asyncio.gather(*(_one(idx, table) for idx, table in enumerate(tables)))
+        for idx, bbox, rows, extraction_method in results:
             if not rows:
                 continue
             elements.append(
@@ -145,16 +151,19 @@ class PDFParser(Parser):
             )
         return covered
 
-    def _parse_images(self, page, uri: str, start_index: int, elements: list[DocumentElement]) -> list[tuple[float, float, float, float]]:
-        covered: list[tuple[float, float, float, float]] = []
-        for idx, img in enumerate(page.images):
-            bbox = (img["x0"], img["top"], img["x1"], img["bottom"])
-            covered.append(bbox)
-            description = None
+    async def _parse_images(self, page, uri: str, start_index: int, elements: list[DocumentElement]) -> list[tuple[float, float, float, float]]:
+        images = list(page.images)
+        covered = [(img["x0"], img["top"], img["x1"], img["bottom"]) for img in images]
+
+        async def _one(idx: int, bbox) -> str | None:
             try:
-                description = self._vision_extractor().describe_figure(self._render_region(page, bbox)) or None
+                return await self._vision_extractor().describe_figure(self._render_region(page, bbox)) or None
             except Exception as exc:  # noqa: BLE001 - degrade this image, not the whole document
                 logger.warning("VLM figure description failed on %s page %d image %d: %s", uri, page.page_number, idx, exc)
+                return None
+
+        descriptions = await asyncio.gather(*(_one(idx, bbox) for idx, bbox in enumerate(covered)))
+        for idx, (bbox, description) in enumerate(zip(covered, descriptions)):
             elements.append(
                 ImageElement(
                     element_id=stable_id("element", uri, str(start_index + len(elements)), "image", str(idx)),
@@ -166,12 +175,12 @@ class PDFParser(Parser):
             )
         return covered
 
-    def _parse_page(self, page, uri: str, start_index: int) -> list[DocumentElement]:
+    async def _parse_page(self, page, uri: str, start_index: int) -> list[DocumentElement]:
         elements: list[DocumentElement] = []
         page_number = page.page_number
 
-        covered_bboxes = self._parse_tables(page, uri, start_index, elements)
-        covered_bboxes += self._parse_images(page, uri, start_index, elements)
+        covered_bboxes = await self._parse_tables(page, uri, start_index, elements)
+        covered_bboxes += await self._parse_images(page, uri, start_index, elements)
 
         lines = page.extract_text_lines()
         if not lines:

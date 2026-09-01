@@ -25,16 +25,16 @@ class _FakeVisionExtractor(VisionExtractor):
         self.table_calls = 0
         self.figure_calls = 0
 
-    def extract_table_markdown(self, image_bytes: bytes, media_type: str = "image/png") -> str:
+    async def extract_table_markdown(self, image_bytes: bytes, media_type: str = "image/png") -> str:
         self.table_calls += 1
         return _TABLE_MARKDOWN
 
-    def describe_figure(self, image_bytes: bytes, media_type: str = "image/png") -> str:
+    async def describe_figure(self, image_bytes: bytes, media_type: str = "image/png") -> str:
         self.figure_calls += 1
         return _FIGURE_DESCRIPTION
 
 
-def _parse(vision):
+async def _parse(vision):
     data = FIXTURE.read_bytes()
     item = RawItem(
         uri=f"file://{FIXTURE}",
@@ -43,12 +43,12 @@ def _parse(vision):
         modified_at=datetime.now(timezone.utc),
     )
     source_ref = SourceRef(source_id="s1", source_type=SourceType.LOCAL_FILE, uri=item.uri)
-    return PDFParser(vision_extractor=vision).parse(item, source_ref)
+    return await PDFParser(vision_extractor=vision).parse(item, source_ref)
 
 
-def test_table_is_extracted_via_vlm_and_parsed_into_rows():
+async def test_table_is_extracted_via_vlm_and_parsed_into_rows():
     vision = _FakeVisionExtractor()
-    document = _parse(vision)
+    document = await _parse(vision)
 
     tables = [e for e in document.elements if isinstance(e, TableElement)]
     assert len(tables) == 1
@@ -58,9 +58,9 @@ def test_table_is_extracted_via_vlm_and_parsed_into_rows():
     assert vision.table_calls == 1
 
 
-def test_image_is_described_via_vlm():
+async def test_image_is_described_via_vlm():
     vision = _FakeVisionExtractor()
-    document = _parse(vision)
+    document = await _parse(vision)
 
     images = [e for e in document.elements if isinstance(e, ImageElement)]
     assert len(images) == 1
@@ -70,8 +70,8 @@ def test_image_is_described_via_vlm():
     assert vision.figure_calls == 1
 
 
-def test_table_cell_text_is_not_duplicated_as_plain_text_blocks():
-    document = _parse(_FakeVisionExtractor())
+async def test_table_cell_text_is_not_duplicated_as_plain_text_blocks():
+    document = await _parse(_FakeVisionExtractor())
 
     texts = [e for e in document.elements if isinstance(e, TextBlock)]
     combined = " ".join(t.text for t in texts)
@@ -86,18 +86,18 @@ def test_table_cell_text_is_not_duplicated_as_plain_text_blocks():
     assert any("quarterly revenue" in t.text for t in texts)
 
 
-def test_vlm_failure_falls_back_to_pdfplumber_table_extraction():
+async def test_vlm_failure_falls_back_to_pdfplumber_table_extraction():
     class _FailingVision(VisionExtractor):
         def __init__(self):
             pass
 
-        def extract_table_markdown(self, image_bytes, media_type="image/png"):
+        async def extract_table_markdown(self, image_bytes, media_type="image/png"):
             raise RuntimeError("simulated VLM outage")
 
-        def describe_figure(self, image_bytes, media_type="image/png"):
+        async def describe_figure(self, image_bytes, media_type="image/png"):
             raise RuntimeError("simulated VLM outage")
 
-    document = _parse(_FailingVision())
+    document = await _parse(_FailingVision())
 
     tables = [e for e in document.elements if isinstance(e, TableElement)]
     assert len(tables) == 1

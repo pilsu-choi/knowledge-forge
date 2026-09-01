@@ -15,5 +15,5 @@ class Parser(ABC):
     supported_schemes: ClassVar[set[str]] = set()
 
     @abstractmethod
-    def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
+    async def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
         ...
