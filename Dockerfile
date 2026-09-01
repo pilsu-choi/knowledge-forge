@@ -11,10 +11,10 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 # Dependencies first, so editing source code doesn't invalidate this layer.
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-install-project --extra xlsx --extra pptx
+RUN uv sync --frozen --no-install-project --extra xlsx --extra pptx --extra hwpx
 
 COPY . .
-RUN uv sync --frozen --extra xlsx --extra pptx
+RUN uv sync --frozen --extra xlsx --extra pptx --extra hwpx
 
 ENTRYPOINT ["knowledge-forge"]
 CMD ["--help"]
