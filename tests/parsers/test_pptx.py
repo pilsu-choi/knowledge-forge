@@ -22,7 +22,7 @@ class _FakeVisionExtractor(VisionExtractor):
         return _FIGURE_DESCRIPTION
 
 
-def test_pptx_parses_title_body_table_and_picture_across_slides():
+def test_pptx_parses_title_body_table_picture_and_chart_across_slides():
     data = FIXTURE.read_bytes()
     item = RawItem(
         uri=f"file://{FIXTURE}",
@@ -48,10 +48,12 @@ def test_pptx_parses_title_body_table_and_picture_across_slides():
     assert "body paragraph" in texts[0].text
     assert texts[0].page == 1
 
-    assert len(tables) == 1
-    assert tables[0].page == 2
-    assert tables[0].rows[0] == ["Name", "Role"]
-    assert tables[0].rows[1] == ["Ada", "Engineer"]
+    # slide 2's native table is rule-based (exact cell text, no VLM needed).
+    assert len(tables) == 2
+    native_table = next(t for t in tables if t.page == 2)
+    assert native_table.rows[0] == ["Name", "Role"]
+    assert native_table.rows[1] == ["Ada", "Engineer"]
+    assert native_table.extraction_method == "rule_based"
 
     # slide 3's picture shape is described via VLM, not left unparsed.
     assert len(images) == 1
@@ -59,3 +61,12 @@ def test_pptx_parses_title_body_table_and_picture_across_slides():
     assert images[0].extraction_method == "vlm"
     assert images[0].ocr_text == _FIGURE_DESCRIPTION
     assert vision.figure_calls == 1
+
+    # slide 4's native chart object is extracted deterministically (category/
+    # series data), not sent through VLM - no rasterizing backend exists here
+    # and the numbers are already exact in the chart XML.
+    chart_table = next(t for t in tables if t.page == 4)
+    assert chart_table.extraction_method == "rule_based"
+    assert chart_table.rows[0] == ["", "A", "B"]
+    assert chart_table.rows[1] == ["Sales", "100", "80"]
+    assert chart_table.caption == "COLUMN_CLUSTERED chart"

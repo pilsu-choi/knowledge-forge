@@ -4,9 +4,11 @@ Re-run with `uv run python tests/fixtures/generate_docx_fixture.py` if the
 fixture needs to be regenerated (e.g. after a python-docx upgrade).
 """
 
+import io
 from pathlib import Path
 
 from docx import Document
+from PIL import Image as PILImage
 
 FIXTURE_PATH = Path(__file__).parent / "sample.docx"
 
@@ -23,6 +25,11 @@ def main() -> None:
     table.cell(0, 1).text = "Role"
     table.cell(1, 0).text = "Ada"
     table.cell(1, 1).text = "Engineer"
+
+    img_buf = io.BytesIO()
+    PILImage.new("RGB", (80, 50), color=(0, 120, 200)).save(img_buf, format="PNG")
+    img_buf.seek(0)
+    doc.add_picture(img_buf, width=None)
 
     doc.save(FIXTURE_PATH)
     print(f"wrote {FIXTURE_PATH}")

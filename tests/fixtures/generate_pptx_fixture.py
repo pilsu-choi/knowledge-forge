@@ -9,6 +9,8 @@ from pathlib import Path
 
 from PIL import Image as PILImage
 from pptx import Presentation
+from pptx.chart.data import CategoryChartData
+from pptx.enum.chart import XL_CHART_TYPE
 from pptx.util import Inches
 
 FIXTURE_PATH = Path(__file__).parent / "sample.pptx"
@@ -37,6 +39,14 @@ def main() -> None:
     PILImage.new("RGB", (80, 50), color=(0, 120, 200)).save(img_buf, format="PNG")
     img_buf.seek(0)
     slide3.shapes.add_picture(img_buf, Inches(1), Inches(1), Inches(2), Inches(1.5))
+
+    slide4 = prs.slides.add_slide(blank)
+    chart_data = CategoryChartData()
+    chart_data.categories = ["A", "B"]
+    chart_data.add_series("Sales", (100, 80))
+    slide4.shapes.add_chart(
+        XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(1), Inches(1), Inches(4), Inches(3), chart_data
+    )
 
     prs.save(FIXTURE_PATH)
     print(f"wrote {FIXTURE_PATH}")

@@ -15,18 +15,25 @@ from knowledge_forge.vision.extractor import VisionExtractor
 logger = logging.getLogger(__name__)
 
 
+def _format_chart_value(value: float | int | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
 class PptxParser(Parser):
     """Parses .pptx into a Document using python-pptx.
 
     Slide index (1-indexed) is used as `page`, consistent with how PDFParser
-    numbers pages. Native data tables are extracted deterministically
-    (python-pptx already gives exact cell text - a VLM could only guess at
-    what the deterministic API already knows for certain). Picture shapes
-    (embedded images/charts/diagrams) go through VisionExtractor instead,
-    same policy as PDF's figures - python-pptx exposes no chart-rasterizing
-    API, so a chart embedded as a native PowerPoint chart object (not a
-    picture) can't be rendered here without an external slide-rasterizing
-    backend (e.g. LibreOffice headless); that's a known gap, not attempted.
+    numbers pages. Native data tables AND native chart objects are extracted
+    deterministically (python-pptx exposes exact cell text and exact
+    category/series/value chart data - a VLM could only guess at numbers the
+    API already knows for certain, and this environment has no
+    slide-rasterizing backend to render a chart as an image anyway). Only
+    Picture shapes (embedded images/photos/pre-rendered figures with no
+    underlying structured data) go through VisionExtractor.
     """
 
     supported_extensions = {".pptx"}
@@ -52,6 +59,25 @@ class PptxParser(Parser):
             document_id=stable_id("document", item.uri, item.content_hash),
             source=source_ref,
             elements=elements,
+        )
+
+    def _parse_chart(self, shape, uri: str, page: int, start_index: int, elements: list[DocumentElement]) -> None:
+        chart = shape.chart
+        categories = [str(c) for c in chart.plots[0].categories]
+        header_row = ["", *categories]
+        data_rows = [
+            [series.name, *[_format_chart_value(v) for v in series.values]] for series in chart.series
+        ]
+        rows = [header_row, *data_rows]
+        caption = chart.chart_title.text_frame.text if chart.has_title else f"{chart.chart_type.name} chart"
+        elements.append(
+            TableElement(
+                element_id=stable_id("element", uri, str(start_index + len(elements)), "table"),
+                page=page,
+                rows=rows,
+                caption=caption,
+                extraction_method="rule_based",
+            )
         )
 
     def _parse_picture(self, shape, uri: str, page: int, start_index: int, elements: list[DocumentElement]) -> None:
@@ -95,6 +121,10 @@ class PptxParser(Parser):
                 self._parse_picture(shape, uri, page, start_index, elements)
                 continue
 
+            if shape.has_chart:
+                self._parse_chart(shape, uri, page, start_index, elements)
+                continue
+
             if shape.has_table:
                 rows = [[cell.text for cell in row.cells] for row in shape.table.rows]
                 elements.append(
@@ -102,6 +132,7 @@ class PptxParser(Parser):
                         element_id=stable_id("element", uri, str(start_index + len(elements)), "table"),
                         page=page,
                         rows=rows,
+                        extraction_method="rule_based",
                     )
                 )
                 continue

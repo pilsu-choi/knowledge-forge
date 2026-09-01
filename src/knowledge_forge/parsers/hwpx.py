@@ -1,30 +1,130 @@
+import logging
+import re
+
+from hwpx.document import HwpxDocument
+
 from knowledge_forge.collectors.base import RawItem
-from knowledge_forge.models.document import Document
+from knowledge_forge.exceptions import ParsingError
+from knowledge_forge.ids import stable_id
+from knowledge_forge.models.document import Document, DocumentElement, Heading, ImageElement, TableElement, TextBlock
 from knowledge_forge.models.source import SourceRef
 from knowledge_forge.parsers.base import Parser
+from knowledge_forge.vision.extractor import VisionExtractor
+
+logger = logging.getLogger(__name__)
+
+# HWP's built-in heading styles are named "Outline N" (eng_name) / "개요 N"
+# (name) - the same "style name encodes heading level" convention DOCX uses
+# for "Heading N".
+_OUTLINE_EN_RE = re.compile(r"^Outline\s+(\d+)$", re.IGNORECASE)
+_OUTLINE_KO_RE = re.compile(r"^개요\s*(\d+)$")
+
+
+def _heading_level(style) -> int | None:
+    for pattern, name in ((_OUTLINE_EN_RE, style.eng_name), (_OUTLINE_KO_RE, style.name)):
+        if not name:
+            continue
+        match = pattern.match(name)
+        if match:
+            return max(1, min(int(match.group(1)), 6))
+    return None
 
 
 class HwpxParser(Parser):
-    """Not yet implemented.
+    """Parses .hwpx into a Document using python-hwpx.
 
-    No viable pure-Python library exists for HWPX on Linux: `pyhwpx` wraps
-    Hangul-program COM automation (Windows-only, requires the Hangul word
-    processor installed - unusable server-side), while `hwp5`/`pyhwp`
-    target the legacy binary `.hwp` format, not the zip/XML-based `.hwpx`.
-
-    Intended approach: HWPX is a zip container of XML parts (OWPML schema,
-    structurally similar in spirit to OOXML/DOCX). A custom parser using
-    stdlib `zipfile` to read `Contents/section*.xml` and `lxml` to walk the
-    OWPML element tree (`<hp:p>` paragraphs, `<hp:tbl>` tables, `<hp:pic>`
-    images) would be required. This is a real implementation effort, scoped
-    as separate follow-up work - see wiki/roadmap.md.
+    HWPX has no page concept at the XML level (pagination is a rendering
+    detail), same reasoning as DOCX, so every element's `page` stays None.
+    Tables are extracted deterministically (cell text is exact, same as
+    DOCX/PPTX tables - no VLM needed). Embedded images go through
+    VisionExtractor, same policy and per-image degradation as PPTX's
+    Picture shapes: one bad image doesn't fail the whole document.
     """
 
     supported_extensions = {".hwpx"}
 
+    def __init__(self, vision_extractor: VisionExtractor | None = None):
+        self._vision = vision_extractor
+
+    def _vision_extractor(self) -> VisionExtractor:
+        if self._vision is None:
+            self._vision = VisionExtractor()
+        return self._vision
+
     def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
-        raise NotImplementedError(
-            "HwpxParser is a stub - no pure-Python HWPX library exists for "
-            "Linux. Needs a custom zipfile+lxml parser against the HWPX "
-            "OWPML XML schema. See this module's docstring and wiki/parsers.md."
+        try:
+            doc = HwpxDocument.open(item.content)
+            elements: list[DocumentElement] = []
+            elements.extend(self._convert_paragraphs(doc, item.uri))
+            elements.extend(self._convert_tables(doc, item.uri, len(elements)))
+            elements.extend(self._convert_images(doc, item.uri, len(elements)))
+        except Exception as exc:  # noqa: BLE001 - surfaced as a typed parsing error
+            raise ParsingError(f"Failed to parse hwpx '{item.uri}': {exc}") from exc
+
+        return Document(
+            document_id=stable_id("document", item.uri, item.content_hash),
+            source=source_ref,
+            elements=elements,
         )
+
+    def _convert_paragraphs(self, doc: HwpxDocument, uri: str) -> list[DocumentElement]:
+        elements: list[DocumentElement] = []
+        for paragraph in doc.paragraphs:
+            text = paragraph.text.strip()
+            if not text:
+                continue
+
+            style = doc.styles.get(paragraph.style_id_ref)
+            level = _heading_level(style) if style is not None else None
+            if level is not None:
+                elements.append(
+                    Heading(
+                        element_id=stable_id("element", uri, str(len(elements)), "heading"),
+                        level=level,
+                        text=text,
+                    )
+                )
+            else:
+                elements.append(
+                    TextBlock(
+                        element_id=stable_id("element", uri, str(len(elements)), "text"),
+                        text=text,
+                    )
+                )
+        return elements
+
+    def _convert_tables(self, doc: HwpxDocument, uri: str, start_index: int) -> list[DocumentElement]:
+        elements: list[DocumentElement] = []
+        for table in doc.tables:
+            rows = [
+                [table.cell(r, c).text for c in range(table.column_count)]
+                for r in range(table.row_count)
+            ]
+            elements.append(
+                TableElement(
+                    element_id=stable_id("element", uri, str(start_index + len(elements)), "table"),
+                    rows=rows,
+                    extraction_method="rule_based",
+                )
+            )
+        return elements
+
+    def _convert_images(self, doc: HwpxDocument, uri: str, start_index: int) -> list[DocumentElement]:
+        elements: list[DocumentElement] = []
+        for item in doc.media.images:
+            description = None
+            try:
+                image_bytes = doc.package.read(item.href)
+                description = self._vision_extractor().describe_figure(
+                    image_bytes, media_type=f"image/{item.format}"
+                ) or None
+            except Exception as exc:  # noqa: BLE001 - degrade this image, not the whole document
+                logger.warning("VLM figure description failed on %s image %s: %s", uri, item.item_id, exc)
+            elements.append(
+                ImageElement(
+                    element_id=stable_id("element", uri, str(start_index + len(elements)), "image"),
+                    ocr_text=description,
+                    extraction_method="vlm" if description is not None else None,
+                )
+            )
+        return elements

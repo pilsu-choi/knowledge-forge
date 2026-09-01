@@ -1,8 +1,9 @@
 # VLM 기반 Table/Image 추출
 
-PDF/Image/PPTX 파서는 표/이미지/차트/다이어그램을 `pdfplumber`나 `python-pptx`의 규칙 기반
-API만으로 처리하지 않고, `VisionExtractor`(`src/knowledge_forge/vision/extractor.py`)를 통해
-Claude vision 호출로 추출한다. 이 문서는 그 설계 배경과 동작을 다룬다.
+PDF/Image/PPTX/HWPX/DOCX 파서는 시각적 이미지 콘텐츠를 규칙 기반 API만으로 처리하지 않고,
+`VisionExtractor`(`src/knowledge_forge/vision/extractor.py`)를 통해 Claude vision 호출로
+추출한다(단, 이미 정확한 구조화 데이터가 존재하는 표·네이티브 차트는 규칙 기반을 유지 — 아래
+"독립 이미지 파일, PPTX, HWPX, DOCX" 참고). 이 문서는 그 설계 배경과 동작을 다룬다.
 
 ## 왜 "실패 시 폴백"이 아니라 "항상 VLM"인가
 
@@ -78,7 +79,7 @@ VLM 호출이 재시도까지 다 소진하고 실패하면:
 어느 경우든 한 표/이미지의 실패가 나머지 페이지·문서 파싱을 막지 않는다 — 로그에
 경고만 남기고 계속 진행한다.
 
-## 독립 이미지 파일과 PPTX
+## 독립 이미지 파일, PPTX, HWPX, DOCX
 
 - **`parsers/image.py`**: `.png`/`.jpg`/`.jpeg` 전체를 `transcribe_image()`에 통째로 보낸다.
   VLM이 재시도까지 실패하면 이건 문서 전체(=이미지 하나)의 파싱 실패이므로 `ParsingError`를
@@ -87,9 +88,20 @@ VLM 호출이 재시도까지 다 소진하고 실패하면:
 - **`parsers/pptx.py`**: 표는 `python-pptx`가 셀 텍스트를 정확히 알고 있으므로 그대로 규칙
   기반을 쓴다(VLM은 이미 확정된 값을 추측하게만 만들 뿐 이득이 없음). Picture 도형은
   `shape.image.blob`/`shape.image.content_type`으로 원본 이미지 바이트를 바로 얻어
-  `describe_figure()`에 보낸다 — 슬라이드를 통째로 렌더링할 필요가 없다. 네이티브 차트
-  객체(도형이 아니라 차트 XML)는 래스터화 API가 없어 스코프 아웃([`parsers.md`](parsers.md)
-  참고).
+  `describe_figure()`에 보낸다 — 슬라이드를 통째로 렌더링할 필요가 없다. **네이티브 차트
+  객체**(도형이 아니라 차트 XML)는 이 환경에 슬라이드 래스터화 백엔드가 없어 이미지로 만들 수
+  없지만, `python-pptx`의 차트 데이터 API로 카테고리/시리즈/값을 결정론적으로 바로 읽을 수
+  있어 VLM이 필요 없다(오히려 VLM으로 이미지를 "읽어서 추측"하는 것보다 정확) —
+  `extraction_method="rule_based"`인 `TableElement`로 처리한다. 자세한 내용은
+  [`parsers.md`](parsers.md) 참고.
+- **`parsers/hwpx.py`**: PPTX와 동일한 정책 — 표(`doc.tables`)는 셀 텍스트가 정확해 규칙
+  기반, 이미지(`doc.media.images`)는 `describe_figure()`로 VLM 처리. [`parsers.md`](parsers.md)의
+  "HWPX: `python-hwpx` 재발견" 참고.
+- **`parsers/docx.py`**: 표는 `python-docx`가 셀 텍스트를 정확히 알고 있으므로 규칙 기반.
+  임베드 이미지는 `inline_shapes`에서 Picture 타입만 골라 OOXML 관계 API
+  (`shape._inline.graphic.graphicData.pic.blipFill.blip.embed` →
+  `document.part.related_parts[rId].blob`/`.content_type`)로 원본 바이트를 얻어
+  `describe_figure()`에 보낸다 — PPTX Picture 도형과 동일한 개별 성능 저하 정책.
 
 ## Provenance: `bbox` / `extraction_method`
 

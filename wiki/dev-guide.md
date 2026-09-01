@@ -8,6 +8,23 @@
 uv sync
 ```
 
+포맷/커넥터별 선택적 의존성(extra)이 필요하면 명시적으로 추가한다:
+
+```bash
+uv sync --extra xlsx --extra pptx --extra hwpx --extra slack --extra google --extra notion --extra dev
+```
+
+| extra | 패키지 | 용도 |
+|---|---|---|
+| `xlsx` | `openpyxl` | XLSX 파싱 |
+| `pptx` | `python-pptx` | PPTX 파싱(표/차트/그림) |
+| `hwpx` | `python-hwpx` | HWPX 파싱 |
+| `slack` | `slack-sdk` | `SlackCollector` |
+| `google` | `google-api-python-client`, `google-auth` | `GmailCollector`/`GoogleDriveCollector` 공유 |
+| `notion` | `notion-client` | `NotionCollector` |
+| `korean` | `kss` | 한국어 문장 분리 품질 향상(선택, 첫 호출 시 모델 로딩이 느림) |
+| `dev` | `pytest`, `pytest-mock`, `reportlab` | 테스트/픽스처 생성 |
+
 ## Anthropic 자격 증명
 
 앱 자체에서 API 키를 별도로 관리하지 않는다 — Anthropic Python SDK가 아래 순서로 자동
@@ -74,8 +91,9 @@ uv run knowledge-forge db init
 
 ## 컨테이너로 실행하기
 
-`Dockerfile`(uv 기반 멀티스테이지, `xlsx`/`pptx` extra 포함) + `docker-compose.yml`(앱 +
-Postgres)이 저장소 루트에 있다.
+`Dockerfile`(uv 기반 멀티스테이지, `xlsx`/`pptx` extra 포함 — `hwpx`/`slack`/`google`/`notion`은
+아직 이미지에 포함되어 있지 않음, 필요하면 `Dockerfile`의 `uv sync --extra ...` 목록에 추가) +
+`docker-compose.yml`(앱 + Postgres)이 저장소 루트에 있다.
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -119,6 +137,28 @@ uv run pytest
 `VisionExtractor`를 주입해 Anthropic 자격 증명 없이도 파서를 검증할 수 있고(예:
 `tests/parsers/test_pdf_vlm_hybrid.py`), 표/이미지가 없는 문서는 애초에 자격 증명을
 건드리지 않는다.
+
+## SaaS 커넥터 사용하기 (CLI 연동 전)
+
+Slack/Gmail/Google Drive/Notion 커넥터(`src/knowledge_forge/collectors/saas/`)는 전부 실구현
+되어 있지만, `knowledge-forge` CLI에는 아직 연결되어 있지 않다 — `extract`/`schedule`은
+`LocalFileCollector`만 사용한다. 지금 SaaS 소스를 쓰려면 직접 스크립트를 작성해 인증된 SDK
+클라이언트를 만들고 커넥터에 주입해야 한다:
+
+```python
+from slack_sdk import WebClient
+from knowledge_forge.collectors.saas.slack import SlackCollector
+
+client = WebClient(token="xoxb-...")
+collector = SlackCollector(client=client, channels=["C0123456789"])
+for item in collector.initial_sync():
+    ...  # RawItem — 이후 pipeline.run_pipeline()에 다른 Collector처럼 넘기면 된다
+```
+
+각 커넥터가 정확히 어떤 API를 호출하는지는 클래스 docstring과
+[`saas-connectors.md`](saas-connectors.md)를 참고. 전부 모킹 테스트로만 검증되어 실제
+계정으로는 아직 라이브 검증되지 않았다 — 자세한 내용과 후속 계획(CLI 연동, 인증 관리)은
+[`roadmap.md`](roadmap.md) 참고.
 
 ## 새 SaaS Collector 추가하기
 
