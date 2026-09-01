@@ -42,6 +42,11 @@ Adaptive Chunker의 행 단위 테이블 분할([`adaptive-chunking.md`](adaptiv
 재시도 정책은 `retry.py`의 `anthropic_retry()`를 Knowledge Extraction(`ClaudeExtractor`)과
 공유한다(`RateLimitError`/`APIConnectionError`/`InternalServerError`에 지수 백오프).
 
+이 문서가 설명하는 VLM 호출은 모두 `vision/factory.py`의 `get_vision_extractor()`를 거쳐
+프로바이더 추상화 위에서 이뤄진다 — `KF_LLM_PROVIDER=openrouter`로 전환하면 여기 설명된
+`VisionExtractor` 대신 `OpenRouterVisionExtractor`가 같은 세 메서드로 호출된다(모델/API
+형식만 다름). 자세한 내용은 [`llm-providers.md`](llm-providers.md) 참고.
+
 ## PDF: 표/이미지 영역 크롭 → 렌더링 → VLM
 
 `parsers/pdf.py`가 각 페이지에서:

@@ -10,6 +10,7 @@ from knowledge_forge.models.document import Document, ImageElement
 from knowledge_forge.models.source import SourceRef
 from knowledge_forge.parsers.base import Parser
 from knowledge_forge.vision.extractor import VisionExtractor
+from knowledge_forge.vision.factory import get_vision_extractor
 
 _MEDIA_TYPES = {
     ".png": "image/png",
@@ -36,7 +37,7 @@ class ImageParser(Parser):
 
     def _vision_extractor(self) -> VisionExtractor:
         if self._vision is None:
-            self._vision = VisionExtractor()
+            self._vision = get_vision_extractor()
         return self._vision
 
     def parse(self, item: RawItem, source_ref: SourceRef) -> Document:

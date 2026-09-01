@@ -52,6 +52,11 @@ uv sync --extra xlsx --extra pptx --extra hwpx --extra slack --extra google --ex
 | `KF_MAX_TOKENS_PER_CHUNK` | `4000` | Adaptive Chunker의 청크당 최대 토큰 예산. `--max-tokens` CLI 옵션으로도 override 가능 |
 | `KF_DATABASE_URL` | (없음, 저장 비활성) | Source/Document/Chunk/KnowledgeObject를 저장할 PostgreSQL DSN. [`storage.md`](storage.md) 참고 |
 | `KF_DATA_DIR` | `./data` | 원본 바이트를 저장하는 디스크 blob 스토어 루트 |
+| `KF_LLM_PROVIDER` | `anthropic` | `anthropic` 또는 `openrouter` — Knowledge Extraction/Vision 추출 백엔드 선택. [`llm-providers.md`](llm-providers.md) 참고 |
+| `KF_OPENROUTER_EXTRACTION_MODEL` | `anthropic/claude-haiku-4.5` | `KF_LLM_PROVIDER=openrouter`일 때 Knowledge Extraction 모델 슬러그 |
+| `KF_OPENROUTER_VISION_MODEL` | `anthropic/claude-haiku-4.5` | `KF_LLM_PROVIDER=openrouter`일 때 Vision 추출 모델 슬러그 |
+| `KF_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API 엔드포인트 |
+| `OPENROUTER_API_KEY` | (없음) | OpenRouter API 키(`KF_` 접두사 아님, `ANTHROPIC_API_KEY`처럼 `Settings`에 중복 저장하지 않음) |
 
 ## CLI 실행
 

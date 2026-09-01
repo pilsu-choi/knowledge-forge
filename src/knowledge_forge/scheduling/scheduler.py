@@ -15,7 +15,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 
 from knowledge_forge.chunking import AdaptiveChunker
 from knowledge_forge.collectors.local_file import LocalFileCollector
-from knowledge_forge.extraction import ClaudeExtractor
+from knowledge_forge.extraction.factory import get_extractor
 from knowledge_forge.parsers.registry import default_registry
 from knowledge_forge.pipeline import run_pipeline
 
@@ -76,7 +76,7 @@ def run_scheduled_sync(
     root: Path | str,
     interval_seconds: int,
     max_tokens: int,
-    model: str,
+    model: str | None = None,
     store_factory: Optional[Callable[[], "PipelineStore"]] = None,
     state_path: Path | str | None = None,
 ) -> None:
@@ -87,7 +87,9 @@ def run_scheduled_sync(
     collector = LocalFileCollector(root=root, state_path=state_path)
     registry = default_registry()
     chunker = AdaptiveChunker(max_tokens_per_chunk=max_tokens)
-    extractor = ClaudeExtractor(model=model)
+    # model=None lets get_extractor() pick the active provider's own
+    # default model instead of always defaulting to an Anthropic model id.
+    extractor = get_extractor(model=model)
     tick = build_tick(collector, registry, chunker, extractor, store_factory=store_factory)
 
     scheduler = BlockingScheduler()
