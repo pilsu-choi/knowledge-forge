@@ -2,7 +2,9 @@
 --
 -- Every table's primary key is the model's deterministic stable_id (see
 -- knowledge_forge.ids), so re-running the pipeline on unchanged input
--- reproduces the same ids and every INSERT below is a safe upsert.
+-- reproduces the same ids and every INSERT below is a safe upsert. The one
+-- exception is `jobs` below: a job is a queue event, not content, so its id
+-- is a random uuid4 rather than a stable_id.
 
 CREATE TABLE IF NOT EXISTS sources (
     source_id     TEXT PRIMARY KEY,
@@ -82,3 +84,21 @@ CREATE TABLE IF NOT EXISTS relations (
 CREATE INDEX IF NOT EXISTS idx_relations_subject_id ON relations(subject_id);
 CREATE INDEX IF NOT EXISTS idx_relations_object_id ON relations(object_id);
 CREATE INDEX IF NOT EXISTS idx_relations_type ON relations(type);
+
+-- Ingest job queue (wiki/api.md): the FastAPI `/ingest` endpoint enqueues a
+-- row here and returns immediately; `knowledge-forge worker` polls it with
+-- `FOR UPDATE SKIP LOCKED` and runs the actual pipeline. `job_type`
+-- discriminates the payload shape so new source types (SaaS, once wired to
+-- CLI/auth) add a new job_type instead of a new table.
+CREATE TABLE IF NOT EXISTS jobs (
+    job_id       TEXT PRIMARY KEY,
+    job_type     TEXT NOT NULL,
+    payload      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    status       TEXT NOT NULL DEFAULT 'pending',
+    result       JSONB,
+    error        TEXT,
+    created_at   TIMESTAMPTZ NOT NULL,
+    started_at   TIMESTAMPTZ,
+    finished_at  TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at);

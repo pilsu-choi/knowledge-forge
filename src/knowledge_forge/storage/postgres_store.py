@@ -229,6 +229,124 @@ class PostgresStore:
             for row in rows
         ]
 
+    async def list_knowledge_objects(
+        self, source_id: str | None = None, type: str | None = None, limit: int = 50, offset: int = 0
+    ) -> list[KnowledgeObject]:
+        """General-purpose paginated listing for the read API (wiki/api.md),
+        as opposed to `list_knowledge_objects_by_source` above which exists
+        specifically for supersedes-matching. `type`/`source_id` are
+        optional filters (%s::text IS NULL trick short-circuits an unset
+        filter without a second SQL string)."""
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT ko.knowledge_object_id, ko.type, ko.document_id, ko.evidence, ko.summary,
+                       ko.content, ko.topics, ko.document_type, ko.extracted_at, ko.model_used,
+                       ko.version, ko.pipeline_version, ko.source_hash, ko.supersedes,
+                       s.source_id, s.source_type, s.uri
+                FROM knowledge_objects ko
+                JOIN sources s ON s.source_id = ko.source_id
+                WHERE (%s::text IS NULL OR ko.source_id = %s)
+                  AND (%s::text IS NULL OR ko.type = %s)
+                ORDER BY ko.extracted_at DESC
+                LIMIT %s OFFSET %s
+                """,
+                (source_id, source_id, type, type, limit, offset),
+            )
+            rows = await cur.fetchall()
+
+        return [
+            KnowledgeObject(
+                knowledge_object_id=row[0],
+                type=row[1],
+                source=SourceRef(source_id=row[14], source_type=row[15], uri=row[16]),
+                document=DocumentRef(document_id=row[2]),
+                evidence=[Evidence(**e) for e in row[3]],
+                summary=row[4],
+                content=row[5],
+                topics=row[6],
+                document_type=row[7],
+                extracted_at=row[8],
+                model_used=row[9],
+                version=row[10],
+                pipeline_version=row[11],
+                source_hash=row[12],
+                supersedes=row[13],
+            )
+            for row in rows
+        ]
+
+    async def get_knowledge_object(self, knowledge_object_id: str) -> KnowledgeObject | None:
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT ko.knowledge_object_id, ko.type, ko.document_id, ko.evidence, ko.summary,
+                       ko.content, ko.topics, ko.document_type, ko.extracted_at, ko.model_used,
+                       ko.version, ko.pipeline_version, ko.source_hash, ko.supersedes,
+                       s.source_id, s.source_type, s.uri
+                FROM knowledge_objects ko
+                JOIN sources s ON s.source_id = ko.source_id
+                WHERE ko.knowledge_object_id = %s
+                """,
+                (knowledge_object_id,),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return KnowledgeObject(
+            knowledge_object_id=row[0],
+            type=row[1],
+            source=SourceRef(source_id=row[14], source_type=row[15], uri=row[16]),
+            document=DocumentRef(document_id=row[2]),
+            evidence=[Evidence(**e) for e in row[3]],
+            summary=row[4],
+            content=row[5],
+            topics=row[6],
+            document_type=row[7],
+            extracted_at=row[8],
+            model_used=row[9],
+            version=row[10],
+            pipeline_version=row[11],
+            source_hash=row[12],
+            supersedes=row[13],
+        )
+
+    async def list_relations(
+        self,
+        subject_id: str | None = None,
+        object_id: str | None = None,
+        type: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Relation]:
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT relation_id, type, subject_id, object_id, label, confidence, evidence, created_at
+                FROM relations
+                WHERE (%s::text IS NULL OR subject_id = %s)
+                  AND (%s::text IS NULL OR object_id = %s)
+                  AND (%s::text IS NULL OR type = %s)
+                ORDER BY created_at DESC
+                LIMIT %s OFFSET %s
+                """,
+                (subject_id, subject_id, object_id, object_id, type, type, limit, offset),
+            )
+            rows = await cur.fetchall()
+        return [
+            Relation(
+                relation_id=row[0],
+                type=row[1],
+                subject_id=row[2],
+                object_id=row[3],
+                label=row[4],
+                confidence=row[5],
+                evidence=row[6],
+                created_at=row[7],
+            )
+            for row in rows
+        ]
+
     async def save_relations(self, relations: list[Relation]) -> None:
         rows: list[tuple[Any, ...]] = [
             (
