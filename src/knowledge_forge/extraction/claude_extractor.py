@@ -5,11 +5,11 @@ SDK's structured-output helper - `ExtractionResult` (extraction.schemas)
 doubles as the request schema and the validated response type, so there is
 no separate JSON schema to hand-maintain.
 
-One chunk produces an `ExtractionOutcome`: a list of typed KnowledgeObjects
-(one ENTITY object per extracted entity, one object per typed knowledge
-item) plus the Relations connecting them - see extraction/outcome.py for
-the (provider-agnostic) mapping and extraction/base.py for why this
-replaced the old 1-chunk-1-object mapping.
+One chunk bundle (see extraction/grouping.py) produces an `ExtractionOutcome`:
+a list of typed KnowledgeObjects (one ENTITY object per extracted entity,
+one object per typed knowledge item) plus the Relations connecting them -
+see extraction/outcome.py for the (provider-agnostic) mapping and
+extraction/base.py for why this replaced the old 1-chunk-1-object mapping.
 """
 
 import asyncio
@@ -51,27 +51,28 @@ class ClaudeExtractor(Extractor):
         self._max_tokens = max_tokens
         self._semaphore = asyncio.Semaphore(max_concurrency or settings.max_concurrent_llm_requests)
 
-    async def extract(self, chunk: Chunk, document: Document, source: Source) -> ExtractionOutcome:
-        result = await self._call_with_retry(chunk, document)
-        return build_extraction_outcome(result, chunk, document, source, model_used=self._model)
+    async def extract(self, chunks: list[Chunk], document: Document, source: Source) -> ExtractionOutcome:
+        result = await self._call_with_retry(chunks, document)
+        return build_extraction_outcome(result, chunks, document, source, model_used=self._model)
 
     @anthropic_retry()
-    async def _call_with_retry(self, chunk: Chunk, document: Document) -> ExtractionResult:
+    async def _call_with_retry(self, chunks: list[Chunk], document: Document) -> ExtractionResult:
+        chunk_ids = ",".join(c.chunk_id for c in chunks)
         async with self._semaphore:
             try:
                 response = await self._client.messages.parse(
                     model=self._model,
                     max_tokens=self._max_tokens,
                     system=SYSTEM_PROMPT,
-                    messages=[{"role": "user", "content": render_user_prompt(chunk, document)}],
+                    messages=[{"role": "user", "content": render_user_prompt(chunks, document)}],
                     output_format=ExtractionResult,
                 )
             except RETRYABLE_ANTHROPIC_ERRORS:
                 raise
             except anthropic.APIError as exc:
                 raise KnowledgeExtractionError(
-                    f"knowledge extraction failed for chunk {chunk.chunk_id}: {exc}",
-                    chunk_id=chunk.chunk_id,
+                    f"knowledge extraction failed for chunk(s) {chunk_ids}: {exc}",
+                    chunk_id=chunk_ids,
                 ) from exc
             except TypeError as exc:
                 # The SDK raises a bare TypeError (not an APIError subclass) from
@@ -80,8 +81,8 @@ class ClaudeExtractor(Extractor):
                 # CLI-level preflight check that normally catches this earlier.
                 if "Could not resolve authentication" in str(exc):
                     raise KnowledgeExtractionError(
-                        f"{CREDENTIAL_HINT_KO} (chunk {chunk.chunk_id})",
-                        chunk_id=chunk.chunk_id,
+                        f"{CREDENTIAL_HINT_KO} (chunk(s) {chunk_ids})",
+                        chunk_id=chunk_ids,
                     ) from exc
                 raise
         return response.parsed_output

@@ -113,7 +113,7 @@ async def test_extract_maps_extraction_result_into_typed_knowledge_objects_and_r
     client = _FakeClient([_chat_response(_sample_result_json())])
     extractor = OpenRouterExtractor(client=client, model="anthropic/claude-haiku-4.5")
 
-    outcome = await extractor.extract(_sample_chunk(), _sample_document(), _sample_source())
+    outcome = await extractor.extract([_sample_chunk()], _sample_document(), _sample_source())
 
     assert len(outcome.objects) == 4
     entities = [ko for ko in outcome.objects if ko.type == KnowledgeObjectType.ENTITY]
@@ -146,7 +146,7 @@ async def test_retries_once_on_rate_limit_then_succeeds():
     client = _FakeClient([_rate_limit_error(), _chat_response(_sample_result_json())])
     extractor = OpenRouterExtractor(client=client)
 
-    outcome = await extractor.extract(_sample_chunk(), _sample_document(), _sample_source())
+    outcome = await extractor.extract([_sample_chunk()], _sample_document(), _sample_source())
 
     assert len(outcome.objects) == 4
     assert client.chat.completions.calls == 2
@@ -157,6 +157,6 @@ async def test_bad_request_is_not_retried_and_raises_knowledge_extraction_error(
     extractor = OpenRouterExtractor(client=client)
 
     with pytest.raises(KnowledgeExtractionError):
-        await extractor.extract(_sample_chunk(), _sample_document(), _sample_source())
+        await extractor.extract([_sample_chunk()], _sample_document(), _sample_source())
 
     assert client.chat.completions.calls == 1

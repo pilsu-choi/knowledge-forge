@@ -100,12 +100,13 @@ class OpenRouterExtractor(Extractor):
         self._max_tokens = max_tokens
         self._semaphore = asyncio.Semaphore(max_concurrency or settings.max_concurrent_llm_requests)
 
-    async def extract(self, chunk: Chunk, document: Document, source: Source) -> ExtractionOutcome:
-        result = await self._call_with_retry(chunk, document)
-        return build_extraction_outcome(result, chunk, document, source, model_used=self._model)
+    async def extract(self, chunks: list[Chunk], document: Document, source: Source) -> ExtractionOutcome:
+        result = await self._call_with_retry(chunks, document)
+        return build_extraction_outcome(result, chunks, document, source, model_used=self._model)
 
     @openai_retry()
-    async def _call_with_retry(self, chunk: Chunk, document: Document) -> ExtractionResult:
+    async def _call_with_retry(self, chunks: list[Chunk], document: Document) -> ExtractionResult:
+        chunk_ids = ",".join(c.chunk_id for c in chunks)
         async with self._semaphore:
             try:
                 response = await self._client.chat.completions.create(
@@ -113,7 +114,7 @@ class OpenRouterExtractor(Extractor):
                     max_tokens=self._max_tokens,
                     messages=[
                         {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": render_user_prompt(chunk, document)},
+                        {"role": "user", "content": render_user_prompt(chunks, document)},
                     ],
                     response_format={
                         "type": "json_schema",
@@ -127,9 +128,9 @@ class OpenRouterExtractor(Extractor):
             except RETRYABLE_OPENAI_ERRORS:
                 raise
             except openai.APIError as exc:
-                message = f"knowledge extraction failed for chunk {chunk.chunk_id}: {exc}"
+                message = f"knowledge extraction failed for chunk(s) {chunk_ids}: {exc}"
                 if isinstance(exc, openai.AuthenticationError):
-                    message = f"{OPENROUTER_CREDENTIAL_HINT_KO} (chunk {chunk.chunk_id})"
-                raise KnowledgeExtractionError(message, chunk_id=chunk.chunk_id) from exc
+                    message = f"{OPENROUTER_CREDENTIAL_HINT_KO} (chunk(s) {chunk_ids})"
+                raise KnowledgeExtractionError(message, chunk_id=chunk_ids) from exc
         content = response.choices[0].message.content
         return ExtractionResult.model_validate_json(content)

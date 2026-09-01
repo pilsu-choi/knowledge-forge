@@ -10,15 +10,17 @@ from knowledge_forge.models.document import Document
 SYSTEM_PROMPT = """\
 You are a knowledge extraction engine for an enterprise document ingestion pipeline.
 
-Given one chunk of a larger document, extract only what is stated or directly \
-implied by the chunk's own text. Do not invent entities, facts, or relations that \
-are not present in the provided text, and do not use outside/world knowledge to \
-fill gaps. If the chunk is too short or fragmentary to support a field \
-confidently, still return a valid response with your best-supported answer - \
-never fabricate content just to fill a field.
+Given one or more consecutive chunks of a larger document, extract only what is \
+stated or directly implied by the chunks' own text. When more than one chunk is \
+given, treat them as one combined passage in sequence order - a claim (e.g. a \
+decision and the reason for it) may span across the chunk boundary. Do not invent \
+entities, facts, or relations that are not present in the provided text, and do \
+not use outside/world knowledge to fill gaps. If the text is too short or \
+fragmentary to support a field confidently, still return a valid response with \
+your best-supported answer - never fabricate content just to fill a field.
 
 Fields to produce:
-- summary: a concise summary of this chunk's content (not the whole document).
+- summary: a concise summary of this passage's content (not the whole document).
 - entities: named entities mentioned in the chunk (people, organizations, \
 products, locations, dates, amounts, etc.), each with a `type` and, when \
 useful, a short `description` grounded in the chunk text.
@@ -50,22 +52,22 @@ chunk gives no such link.
 this chunk and the document title/metadata provided.
 """
 
-_USER_TEMPLATE = """\
+_HEADER_TEMPLATE = """\
 Document title: {title}
-Hierarchy level of this chunk: {hierarchy_level}
-Chunk sequence index: {sequence_index}
+"""
 
-Chunk text:
+_CHUNK_TEMPLATE = """\
+Chunk (hierarchy level: {hierarchy_level}, sequence index: {sequence_index}):
 \"\"\"
 {text}
 \"\"\"
 """
 
 
-def render_user_prompt(chunk: Chunk, document: Document) -> str:
-    return _USER_TEMPLATE.format(
-        title=document.metadata.title or "(제목 없음 / untitled)",
-        hierarchy_level=chunk.hierarchy_level.value,
-        sequence_index=chunk.sequence_index,
-        text=chunk.text,
+def render_user_prompt(chunks: list[Chunk], document: Document) -> str:
+    header = _HEADER_TEMPLATE.format(title=document.metadata.title or "(제목 없음 / untitled)")
+    body = "\n".join(
+        _CHUNK_TEMPLATE.format(hierarchy_level=chunk.hierarchy_level.value, sequence_index=chunk.sequence_index, text=chunk.text)
+        for chunk in chunks
     )
+    return header + "\n" + body

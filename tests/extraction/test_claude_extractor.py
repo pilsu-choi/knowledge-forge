@@ -107,7 +107,7 @@ async def test_extract_maps_extraction_result_into_typed_knowledge_objects_and_r
     client = _FakeClient([_sample_result()])
     extractor = ClaudeExtractor(client=client, model="claude-opus-5")
 
-    outcome = await extractor.extract(_sample_chunk(), _sample_document(), _sample_source())
+    outcome = await extractor.extract([_sample_chunk()], _sample_document(), _sample_source())
 
     # 2 entities + 2 typed items = 4 objects, none of them the old flat shape.
     assert len(outcome.objects) == 4
@@ -148,12 +148,28 @@ async def test_extract_maps_extraction_result_into_typed_knowledge_objects_and_r
     assert client.messages.calls == 1
 
 
+async def test_extract_over_a_multi_chunk_bundle_grounds_evidence_in_every_chunk():
+    client = _FakeClient([_sample_result(), _sample_result()])
+    extractor = ClaudeExtractor(client=client, model="claude-opus-5")
+
+    second_chunk = _sample_chunk().model_copy(update={"chunk_id": "c2", "sequence_index": 1})
+    outcome = await extractor.extract([_sample_chunk(), second_chunk], _sample_document(), _sample_source())
+
+    assert len(outcome.objects) == 4
+    for ko in outcome.objects:
+        assert [e.chunk_id for e in ko.evidence] == ["c1", "c2"]
+    # bundling changes the id space (a KO from a [c1, c2] bundle isn't
+    # confusable with one from a solo [c1] call).
+    solo_ids = {ko.knowledge_object_id for ko in (await extractor.extract([_sample_chunk()], _sample_document(), _sample_source())).objects}
+    assert solo_ids.isdisjoint({ko.knowledge_object_id for ko in outcome.objects})
+
+
 async def test_chunk_with_no_entities_or_items_falls_back_to_one_fact_from_summary():
     empty_result = ExtractionResult(summary="Just connective prose.", document_type="note")
     client = _FakeClient([empty_result])
     extractor = ClaudeExtractor(client=client)
 
-    outcome = await extractor.extract(_sample_chunk(), _sample_document(), _sample_source())
+    outcome = await extractor.extract([_sample_chunk()], _sample_document(), _sample_source())
 
     assert len(outcome.objects) == 1
     assert outcome.objects[0].type == KnowledgeObjectType.FACT
@@ -165,7 +181,7 @@ async def test_retries_once_on_rate_limit_then_succeeds():
     client = _FakeClient([_rate_limit_error(), _sample_result()])
     extractor = ClaudeExtractor(client=client)
 
-    outcome = await extractor.extract(_sample_chunk(), _sample_document(), _sample_source())
+    outcome = await extractor.extract([_sample_chunk()], _sample_document(), _sample_source())
 
     assert len(outcome.objects) == 4
     assert client.messages.calls == 2
@@ -178,6 +194,6 @@ async def test_bad_request_is_not_retried_and_raises_knowledge_extraction_error(
     extractor = ClaudeExtractor(client=client)
 
     with pytest.raises(KnowledgeExtractionError):
-        await extractor.extract(_sample_chunk(), _sample_document(), _sample_source())
+        await extractor.extract([_sample_chunk()], _sample_document(), _sample_source())
 
     assert client.messages.calls == 1

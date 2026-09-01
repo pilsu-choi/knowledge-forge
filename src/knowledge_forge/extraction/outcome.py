@@ -32,7 +32,7 @@ def _valid_index(index: int, items: list[str], skip: int) -> bool:
 
 
 def build_extraction_outcome(
-    result: ExtractionResult, chunk: Chunk, document: Document, source: Source, model_used: str
+    result: ExtractionResult, chunks: list[Chunk], document: Document, source: Source, model_used: str
 ) -> ExtractionOutcome:
     source_ref = SourceRef.from_source(source)
     document_ref = DocumentRef(document_id=document.document_id, title=document.metadata.title)
@@ -43,12 +43,18 @@ def build_extraction_outcome(
             hierarchy_level=chunk.hierarchy_level,
             sequence_index=chunk.sequence_index,
         )
+        for chunk in chunks
     ]
+    # A stable per-call id prefix - joins every chunk id in the bundle so a
+    # different chunk grouping (or a single chunk moved into a different
+    # bundle) always produces different KnowledgeObject ids, same as before
+    # for the group_size=1 case (bundle_id == the one chunk's id).
+    bundle_id = stable_id(*(c.chunk_id for c in chunks))
     now = datetime.now(timezone.utc)
 
     def make_object(kind: str, kind_type: KnowledgeObjectType, index: int, summary: str, content: dict) -> KnowledgeObject:
         return KnowledgeObject(
-            knowledge_object_id=stable_id(chunk.chunk_id, kind, str(index)),
+            knowledge_object_id=stable_id(bundle_id, kind, str(index)),
             type=kind_type,
             source=source_ref,
             document=document_ref,
@@ -86,13 +92,13 @@ def build_extraction_outcome(
         confidence: float | None = None,
     ) -> Relation:
         return Relation(
-            relation_id=stable_id(chunk.chunk_id, "rel", subject_id, object_id, rel_type.value),
+            relation_id=stable_id(bundle_id, "rel", subject_id, object_id, rel_type.value),
             type=rel_type,
             subject_id=subject_id,
             object_id=object_id,
             label=label,
             confidence=confidence,
-            evidence=[chunk.chunk_id],
+            evidence=[c.chunk_id for c in chunks],
             created_at=now,
         )
 

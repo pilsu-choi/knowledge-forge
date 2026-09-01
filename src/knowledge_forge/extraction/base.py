@@ -19,9 +19,12 @@ class ExtractionOutcome:
 
 
 class Extractor(ABC):
-    """Runs Knowledge Extraction over a single Chunk, producing the
-    KnowledgeObjects and Relations grounded in that chunk's text."""
+    """Runs Knowledge Extraction over a bundle of one or more related Chunks
+    (see extraction/grouping.py), producing the KnowledgeObjects and
+    Relations grounded in that bundle's text. `chunks` is always
+    non-empty; a bundle of one chunk is the common case and behaves exactly
+    like the old one-chunk-per-call interface."""
 
     @abstractmethod
-    async def extract(self, chunk: Chunk, document: Document, source: Source) -> ExtractionOutcome:
+    async def extract(self, chunks: list[Chunk], document: Document, source: Source) -> ExtractionOutcome:
         ...
