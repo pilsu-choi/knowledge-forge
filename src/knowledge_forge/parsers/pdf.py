@@ -66,6 +66,16 @@ _PARAGRAPH_GAP_RATIO = 1.6
 # region's bbox.
 _COVERAGE_OVERLAP_THRESHOLD = 0.5
 _RENDER_RESOLUTION = 150
+# A line's x0 this many points to the right of the page's leftmost text is
+# treated as one indent level (PDFs have no structural indent markup to
+# read, only x-position - like the heading/paragraph-gap heuristics above,
+# this is a coarse layout signal, not semantic list-nesting detection).
+_INDENT_STEP_POINTS = 18.0
+
+
+def _indent_level(x0: float, page_left_x0: float) -> int | None:
+    level = round((x0 - page_left_x0) / _INDENT_STEP_POINTS)
+    return level if level >= 1 else None
 
 
 def _bbox_overlap_fraction(line_bbox: tuple[float, float, float, float], region_bbox: tuple[float, float, float, float]) -> float:
@@ -205,10 +215,13 @@ class PDFParser(Parser):
         page_median_size = statistics.median(s for s in sizes if s > 0) if any(sizes) else 0.0
         gaps = [b["top"] - a["bottom"] for a, b in zip(lines, lines[1:])]
         median_gap = statistics.median(gaps) if gaps else 0.0
+        page_left_x0 = min(line["x0"] for line in lines)
 
         paragraph_buffer: list[str] = []
+        paragraph_indent: int | None = None
 
         def flush_paragraph() -> None:
+            nonlocal paragraph_indent
             if paragraph_buffer:
                 elements.append(
                     TextBlock(
@@ -217,9 +230,11 @@ class PDFParser(Parser):
                         ),
                         page=page_number,
                         text=" ".join(paragraph_buffer),
+                        indent_level=paragraph_indent,
                     )
                 )
                 paragraph_buffer.clear()
+                paragraph_indent = None
 
         for i, line in enumerate(lines):
             text = line["text"].strip()
@@ -238,6 +253,7 @@ class PDFParser(Parser):
                         bbox=(line["x0"], line["top"], line["x1"], line["bottom"]),
                         level=1,
                         text=text,
+                        indent_level=_indent_level(line["x0"], page_left_x0),
                     )
                 )
                 continue
@@ -247,6 +263,8 @@ class PDFParser(Parser):
                 if gap > median_gap * _PARAGRAPH_GAP_RATIO:
                     flush_paragraph()
 
+            if not paragraph_buffer:
+                paragraph_indent = _indent_level(line["x0"], page_left_x0)
             paragraph_buffer.append(text)
 
         flush_paragraph()

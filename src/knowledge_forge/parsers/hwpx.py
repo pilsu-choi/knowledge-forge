@@ -21,6 +21,12 @@ logger = logging.getLogger(__name__)
 _OUTLINE_EN_RE = re.compile(r"^Outline\s+(\d+)$", re.IGNORECASE)
 _OUTLINE_KO_RE = re.compile(r"^개요\s*(\d+)$")
 
+# HWPX stores a paragraph's left margin in HWPUNIT (1/7200 inch). This
+# bucket size approximates one "increase indent" step (~3mm) - a coarse
+# layout heuristic, same spirit as DOCX's EMU indent step and PDF's
+# x-position one, not exact semantic list-nesting detection.
+_HWPUNIT_PER_INDENT_LEVEL = 850
+
 
 def _heading_level(style) -> int | None:
     for pattern, name in ((_OUTLINE_EN_RE, style.eng_name), (_OUTLINE_KO_RE, style.name)):
@@ -30,6 +36,20 @@ def _heading_level(style) -> int | None:
         if match:
             return max(1, min(int(match.group(1)), 6))
     return None
+
+
+def _indent_level(paragraph_property) -> int | None:
+    """`paragraph_property` is a `doc.styles.paragraph_property(...)` result
+    (or None). Some HWPX files wrap `margin` in a `hp:switch`/`hp:case` block
+    that python-hwpx doesn't currently surface here - this degrades to None
+    (no indent signal) rather than raising in that case.
+    """
+    margin = paragraph_property.margin if paragraph_property is not None else None
+    left = margin.left if margin is not None else None
+    if not left:
+        return None
+    level = round(left / _HWPUNIT_PER_INDENT_LEVEL)
+    return level if level >= 1 else None
 
 
 class HwpxParser(Parser):
@@ -78,12 +98,18 @@ class HwpxParser(Parser):
 
             style = doc.styles.get(paragraph.style_id_ref)
             level = _heading_level(style) if style is not None else None
+            try:
+                paragraph_property = doc.styles.paragraph_property(paragraph.para_pr_id_ref)
+            except KeyError:
+                paragraph_property = None
+            indent = _indent_level(paragraph_property)
             if level is not None:
                 elements.append(
                     Heading(
                         element_id=stable_id("element", uri, str(len(elements)), "heading"),
                         level=level,
                         text=text,
+                        indent_level=indent,
                     )
                 )
             else:
@@ -91,6 +117,7 @@ class HwpxParser(Parser):
                     TextBlock(
                         element_id=stable_id("element", uri, str(len(elements)), "text"),
                         text=text,
+                        indent_level=indent,
                     )
                 )
         return elements

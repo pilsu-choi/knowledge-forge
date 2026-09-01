@@ -69,7 +69,7 @@ class Node:
         return (min(self.pages), max(self.pages))
 
 
-def render_element_text(element: DocumentElement) -> str:
+def _render_element_body(element: DocumentElement) -> str:
     if isinstance(element, Heading):
         return f"{'#' * element.level} {element.text}"
     if isinstance(element, TextBlock):
@@ -88,6 +88,18 @@ def render_element_text(element: DocumentElement) -> str:
     if isinstance(element, ImageElement):
         return element.ocr_text or element.alt_text or ""
     raise TypeError(f"Unknown document element type: {type(element)!r}")
+
+
+def render_element_text(element: DocumentElement) -> str:
+    body = _render_element_body(element)
+    # Tables/images render tabular or free-form transcribed text where a
+    # per-line indent prefix would just be noise (or corrupt " | " column
+    # alignment) - only headings/paragraphs/lists carry the source
+    # document's own indentation.
+    if not body or not element.indent_level or isinstance(element, (TableElement, ImageElement)):
+        return body
+    prefix = "  " * element.indent_level
+    return "\n".join(prefix + line for line in body.splitlines())
 
 
 def _split_by_heading_level(

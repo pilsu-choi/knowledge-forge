@@ -13,6 +13,12 @@ class ElementBase(BaseModel):
     # parser can supply one (currently: PDF only). Lets a Knowledge Object
     # cite not just "which page" but "where on the page" it came from.
     bbox: tuple[float, float, float, float] | None = None
+    # 0-based nesting depth inferred from the source document's own
+    # indentation (DOCX paragraph left-indent, PDF line x-position, HWPX
+    # paragraph margin - see each parser). None when the parser found no
+    # indent signal (or predates this field) rather than "not indented" -
+    # callers should not treat None and 0 as the same thing.
+    indent_level: int | None = None
 
 
 class Heading(ElementBase):

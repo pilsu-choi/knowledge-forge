@@ -1,5 +1,9 @@
+import io
 from datetime import datetime, timezone
 from pathlib import Path
+
+from docx import Document as DocxDocument
+from docx.shared import Inches
 
 from knowledge_forge.collectors.base import RawItem
 from knowledge_forge.ids import content_hash
@@ -63,3 +67,42 @@ async def test_docx_parses_heading_paragraph_list_table_and_picture():
     assert vision.figure_calls == 1
 
     assert all(e.page is None for e in document.elements)
+
+
+async def test_docx_captures_paragraph_and_nested_list_indent_levels():
+    docx_document = DocxDocument()
+    docx_document.add_paragraph("top level")
+    indented = docx_document.add_paragraph("indented once")
+    indented.paragraph_format.left_indent = Inches(0.5)
+    docx_document.add_paragraph("top bullet", style="List Bullet")
+    nested_bullet = docx_document.add_paragraph("nested bullet", style="List Bullet 2")
+    nested_bullet.paragraph_format.left_indent = Inches(1.0)
+
+    buf = io.BytesIO()
+    docx_document.save(buf)
+    data = buf.getvalue()
+    item = RawItem(
+        uri="file://in-memory.docx",
+        content=data,
+        content_hash=content_hash(data),
+        modified_at=datetime.now(timezone.utc),
+    )
+    source_ref = SourceRef(source_id="s1", source_type=SourceType.LOCAL_FILE, uri=item.uri)
+
+    document = await DocxParser(vision_extractor=_FakeVisionExtractor()).parse(item, source_ref)
+
+    texts = [e for e in document.elements if isinstance(e, TextBlock)]
+    lists = [e for e in document.elements if isinstance(e, ListElement)]
+
+    assert texts[0].text == "top level"
+    assert texts[0].indent_level is None
+    assert texts[1].text == "indented once"
+    assert texts[1].indent_level == 1
+
+    # A change in nesting depth starts a new ListElement rather than
+    # collapsing the sub-item into the outer list's text.
+    assert len(lists) == 2
+    assert lists[0].items == ["top bullet"]
+    assert lists[0].indent_level is None
+    assert lists[1].items == ["nested bullet"]
+    assert lists[1].indent_level == 2

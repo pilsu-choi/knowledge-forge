@@ -5,7 +5,7 @@ from knowledge_forge.collectors.base import RawItem
 from knowledge_forge.ids import content_hash
 from knowledge_forge.models.document import Heading, ImageElement, TableElement, TextBlock
 from knowledge_forge.models.source import SourceRef, SourceType
-from knowledge_forge.parsers.hwpx import HwpxParser, _heading_level
+from knowledge_forge.parsers.hwpx import HwpxParser, _heading_level, _indent_level
 from knowledge_forge.vision.extractor import VisionExtractor
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "sample.hwpx"
@@ -17,6 +17,16 @@ class _FakeStyle:
     def __init__(self, eng_name: str | None, name: str | None):
         self.eng_name = eng_name
         self.name = name
+
+
+class _FakeMargin:
+    def __init__(self, left: int | None):
+        self.left = left
+
+
+class _FakeParagraphProperty:
+    def __init__(self, left: int | None):
+        self.margin = _FakeMargin(left)
 
 
 class _FakeVisionExtractor(VisionExtractor):
@@ -34,6 +44,14 @@ def test_heading_level_detects_english_and_korean_outline_styles():
     assert _heading_level(_FakeStyle(None, "개요 2")) == 2
     assert _heading_level(_FakeStyle("Normal", "바탕글")) is None
     assert _heading_level(_FakeStyle("Outline 9", "개요 9")) == 6  # clamped to 6
+
+
+def test_indent_level_buckets_hwpunit_margin_into_discrete_levels():
+    assert _indent_level(None) is None
+    assert _indent_level(_FakeParagraphProperty(left=None)) is None
+    assert _indent_level(_FakeParagraphProperty(left=0)) is None
+    assert _indent_level(_FakeParagraphProperty(left=850)) == 1
+    assert _indent_level(_FakeParagraphProperty(left=1700)) == 2
 
 
 async def test_hwpx_parses_heading_paragraph_table_and_image():

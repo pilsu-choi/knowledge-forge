@@ -44,6 +44,21 @@ def test_every_emitted_chunk_respects_the_token_budget():
         assert count_tokens(c.text) <= budget
 
 
+def test_indent_level_is_preserved_as_a_prefix_in_the_emitted_chunk_text():
+    doc = Document(
+        document_id="doc4",
+        source=make_source_ref(),
+        elements=[
+            TextBlock(element_id="t1", text="top level"),
+            TextBlock(element_id="t2", text="nested level", indent_level=1),
+        ],
+    )
+    chunks = AdaptiveChunker(max_tokens_per_chunk=4000).chunk(doc)
+    assert len(chunks) == 1
+    assert "top level" in chunks[0].text
+    assert "  nested level" in chunks[0].text
+
+
 def test_provenance_fields_are_set_and_sequential():
     doc = Document(
         document_id="doc3",

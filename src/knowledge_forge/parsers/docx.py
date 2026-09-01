@@ -24,7 +24,24 @@ from knowledge_forge.vision.factory import get_vision_extractor
 
 logger = logging.getLogger(__name__)
 
-_LIST_STYLES = {"List Bullet", "List Number"}
+# Word's "Increase Indent" button steps left_indent by 0.5in (457200 EMU) -
+# used to bucket a paragraph's direct left-indent into a discrete nesting
+# level rather than reasoning in raw EMU.
+_INDENT_STEP_EMU = 457200
+
+
+def _is_list_style(style_name: str) -> bool:
+    # Matches nested list styles too ("List Bullet 2", "List Number 3", ...),
+    # not just the top-level "List Bullet"/"List Number".
+    return style_name.startswith("List Bullet") or style_name.startswith("List Number")
+
+
+def _indent_level(paragraph) -> int | None:
+    left_indent = paragraph.paragraph_format.left_indent
+    if not left_indent:
+        return None
+    level = round(left_indent / _INDENT_STEP_EMU)
+    return level if level >= 1 else None
 
 
 class DocxParser(Parser):
@@ -65,27 +82,38 @@ class DocxParser(Parser):
         elements: list[DocumentElement] = []
         pending_list_items: list[str] = []
         pending_list_ordered = False
+        pending_list_indent: int | None = None
 
         def flush_list() -> None:
-            nonlocal pending_list_items, pending_list_ordered
+            nonlocal pending_list_items, pending_list_ordered, pending_list_indent
             if pending_list_items:
                 elements.append(
                     ListElement(
                         element_id=stable_id("element", uri, str(len(elements)), "list"),
                         items=pending_list_items,
                         ordered=pending_list_ordered,
+                        indent_level=pending_list_indent,
                     )
                 )
                 pending_list_items = []
+                pending_list_indent = None
 
         for paragraph in docx_document.paragraphs:
             style_name = paragraph.style.name if paragraph.style else "Normal"
             text = paragraph.text.strip()
 
-            if style_name in _LIST_STYLES:
+            if _is_list_style(style_name):
                 if not text:
                     continue
-                pending_list_ordered = style_name == "List Number"
+                ordered = style_name.startswith("List Number")
+                indent = _indent_level(paragraph)
+                # A change in list type or nesting depth starts a new
+                # ListElement so each one carries a single indent_level,
+                # rather than collapsing sub-items into their parent's text.
+                if pending_list_items and (ordered != pending_list_ordered or indent != pending_list_indent):
+                    flush_list()
+                pending_list_ordered = ordered
+                pending_list_indent = indent
                 pending_list_items.append(text)
                 continue
 
@@ -102,6 +130,7 @@ class DocxParser(Parser):
                         element_id=stable_id("element", uri, str(len(elements)), "heading"),
                         level=max(1, min(level, 6)),
                         text=text,
+                        indent_level=_indent_level(paragraph),
                     )
                 )
             else:
@@ -109,6 +138,7 @@ class DocxParser(Parser):
                     TextBlock(
                         element_id=stable_id("element", uri, str(len(elements)), "text"),
                         text=text,
+                        indent_level=_indent_level(paragraph),
                     )
                 )
 

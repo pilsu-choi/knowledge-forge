@@ -84,6 +84,30 @@ def chunk_unit(unit, max_tokens, level):
 사용한다. 정규식 폴백은 한국어의 종결어미(예: "~습니다", "~함") 패턴을 완벽히 인식하지 못할 수
 있어 품질 리스크로 남아있다.
 
+## 들여쓰기 인식
+
+각 `DocumentElement`(`ElementBase`)는 `indent_level: int | None` 필드를 가진다. 원본
+문서에서 들여쓰기 신호를 읽어낼 수 있는 파서(DOCX/PDF/HWPX)가 채워 넣고, 신호가 없으면
+`None`(= "0단계"가 아니라 "정보 없음")으로 둔다.
+
+- **DOCX**: `paragraph_format.left_indent`(EMU)를 Word의 "들여쓰기 늘림" 버튼 한 단계인
+  0.5인치(457200 EMU) 단위로 버킷화. 중첩 리스트 스타일(`List Bullet 2`, `List Number 3`
+  등)도 리스트로 인식하도록 확장했고, 들여쓰기 단계가 바뀌면 새 `ListElement`로 분리해
+  하위 항목이 상위 리스트의 `items`에 뭉개져 들어가지 않게 한다.
+- **PDF**: 구조적 들여쓰기 마크업이 없으므로 줄의 `x0` 좌표를 페이지 최좌측 `x0` 대비
+  18pt 단위로 버킷화하는 레이아웃 휴리스틱(제목 폰트 크기 비율, 단락 간격 비율과 같은 성격).
+- **HWPX**: 문단 속성(`paragraph_property.margin.left`, HWPUNIT)을 850 HWPUNIT(~3mm)
+  단위로 버킷화. 일부 HWPX 문서는 margin이 `hp:switch`/`hp:case`로 감싸져 있어
+  `python-hwpx`가 이를 노출하지 않는 경우가 있는데, 이때는 예외를 던지지 않고 그냥
+  `indent_level = None`으로 저하(degrade)한다.
+
+`chunking.hierarchy.render_element_text()`가 `Heading`/`TextBlock`/`ListElement`
+렌더링 시 `indent_level`만큼 앞에 공백(2칸/단계)을 붙인다 — Table/Image는 값이 있어도
+무시한다(표 렌더링의 `" | "` 정렬이 깨지거나, VLM이 생성한 자유 텍스트에 접두어를 붙이는
+것이 의미가 없기 때문). 청크 경계 자체를 들여쓰기로 결정하지는 않는다 — 각 `DocumentElement`는
+이미 자신만의 Paragraph 노드이므로, 들여쓰기는 청크가 어디서 잘리는지가 아니라 청크 안
+텍스트가 원본의 계층 구조를 얼마나 보존하는지에 반영된다.
+
 ## 왜 슬라이딩 윈도우 오버랩이 없는가
 
 일반적인 고정 토큰 청킹에서는 문맥 손실을 막기 위해 청크 간 오버랩을 두는 경우가 많다.
