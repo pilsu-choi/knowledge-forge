@@ -11,6 +11,7 @@ from knowledge_forge.collectors.local_file import LocalFileCollector
 from knowledge_forge.config import settings
 from knowledge_forge.extraction.auth import credential_hint_ko, has_resolvable_credentials
 from knowledge_forge.extraction.factory import get_extractor
+from knowledge_forge.okf import OKFWriter
 from knowledge_forge.parsers.registry import default_registry
 from knowledge_forge.pipeline import run_pipeline
 from knowledge_forge.storage import PipelineStore
@@ -60,6 +61,11 @@ def extract(
     store: bool = typer.Option(
         True, "--store/--no-store", help="Persist Source/Document/Chunk/KnowledgeObject to Postgres + raw bytes to disk."
     ),
+    okf_dir: Optional[Path] = typer.Option(
+        None,
+        "--okf-dir",
+        help="Also write a file-based OKF Knowledge Base tree (manifest.yaml + resources/objects/relations) to this directory.",
+    ),
 ) -> None:
     """Run a local file/directory through the full pipeline and emit Knowledge Objects."""
     _ensure_authenticated()
@@ -68,15 +74,31 @@ def extract(
     chunker = AdaptiveChunker(max_tokens_per_chunk=max_tokens)
     extractor = get_extractor(model=model)
     pipeline_store = _open_store() if store else None
+    okf_writer = OKFWriter(okf_dir) if okf_dir else None
 
     async def _run():
         if pipeline_store is not None:
             async with pipeline_store:
                 await pipeline_store.init_schema()  # idempotent (CREATE TABLE IF NOT EXISTS)
-                return [ko async for ko in run_pipeline(collector, registry, chunker, extractor, store=pipeline_store)]
-        return [ko async for ko in run_pipeline(collector, registry, chunker, extractor, store=None)]
+                return [
+                    outcome
+                    async for outcome in run_pipeline(
+                        collector, registry, chunker, extractor, store=pipeline_store, okf_writer=okf_writer
+                    )
+                ]
+        return [
+            outcome
+            async for outcome in run_pipeline(
+                collector, registry, chunker, extractor, store=None, okf_writer=okf_writer
+            )
+        ]
 
-    knowledge_objects = asyncio.run(_run())
+    outcomes = asyncio.run(_run())
+    if okf_writer is not None:
+        okf_writer.write_manifest()
+
+    knowledge_objects = [ko for outcome in outcomes for ko in outcome.objects]
+    relations = [rel for outcome in outcomes for rel in outcome.relations]
 
     out = output.open("w", encoding="utf-8") if output else sys.stdout
     try:
@@ -92,7 +114,11 @@ def extract(
         if output:
             out.close()
 
-    typer.echo(f"{len(knowledge_objects)}개의 Knowledge Object 생성 완료", err=True)
+    typer.echo(
+        f"{len(knowledge_objects)}개의 Knowledge Object, {len(relations)}개의 Relation 생성 완료"
+        + (f" (OKF: {okf_dir})" if okf_dir else ""),
+        err=True,
+    )
 
 
 @app.command()
@@ -140,7 +166,7 @@ def schedule(
 
 @db_app.command("init")
 def db_init() -> None:
-    """Create the PostgreSQL schema (sources/documents/chunks/knowledge_objects)."""
+    """Create the PostgreSQL schema (sources/documents/chunks/knowledge_objects/relations)."""
     if not settings.database_url:
         typer.echo("KF_DATABASE_URL이 설정되지 않았습니다.", err=True)
         raise typer.Exit(1)

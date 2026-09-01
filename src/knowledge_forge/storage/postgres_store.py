@@ -14,6 +14,7 @@ from psycopg.types.json import Jsonb
 from knowledge_forge.models.chunk import Chunk
 from knowledge_forge.models.document import Document
 from knowledge_forge.models.knowledge_object import KnowledgeObject
+from knowledge_forge.models.relation import Relation
 from knowledge_forge.models.source import Source
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
@@ -134,38 +135,86 @@ class PostgresStore:
                 rows,
             )
 
-    async def save_knowledge_object(self, ko: KnowledgeObject) -> None:
-        await self.conn.execute(
-            """
-            INSERT INTO knowledge_objects (knowledge_object_id, source_id, document_id, chunk_id,
-                                            summary, facts, entities, relations, topics,
-                                            document_type, extracted_at, model_used)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (knowledge_object_id) DO UPDATE SET
-                source_id = EXCLUDED.source_id,
-                document_id = EXCLUDED.document_id,
-                chunk_id = EXCLUDED.chunk_id,
-                summary = EXCLUDED.summary,
-                facts = EXCLUDED.facts,
-                entities = EXCLUDED.entities,
-                relations = EXCLUDED.relations,
-                topics = EXCLUDED.topics,
-                document_type = EXCLUDED.document_type,
-                extracted_at = EXCLUDED.extracted_at,
-                model_used = EXCLUDED.model_used
-            """,
+    async def save_knowledge_objects(self, objects: list[KnowledgeObject]) -> None:
+        rows: list[tuple[Any, ...]] = [
             (
                 ko.knowledge_object_id,
+                ko.type.value,
                 ko.source.source_id,
                 ko.document.document_id,
-                ko.chunk.chunk_id,
+                Jsonb([e.model_dump(mode="json") for e in ko.evidence]),
                 ko.summary,
-                Jsonb(ko.facts),
-                Jsonb([e.model_dump(mode="json") for e in ko.entities]),
-                Jsonb([r.model_dump(mode="json") for r in ko.relations]),
+                Jsonb(ko.content),
                 Jsonb(ko.topics),
                 ko.document_type,
                 ko.extracted_at,
                 ko.model_used,
-            ),
-        )
+                ko.version,
+                ko.pipeline_version,
+                ko.source_hash,
+                ko.supersedes,
+            )
+            for ko in objects
+        ]
+        if not rows:
+            return
+        async with self.conn.cursor() as cur:
+            await cur.executemany(
+                """
+                INSERT INTO knowledge_objects (knowledge_object_id, type, source_id, document_id,
+                                                evidence, summary, content, topics, document_type,
+                                                extracted_at, model_used, version, pipeline_version,
+                                                source_hash, supersedes)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (knowledge_object_id) DO UPDATE SET
+                    type = EXCLUDED.type,
+                    source_id = EXCLUDED.source_id,
+                    document_id = EXCLUDED.document_id,
+                    evidence = EXCLUDED.evidence,
+                    summary = EXCLUDED.summary,
+                    content = EXCLUDED.content,
+                    topics = EXCLUDED.topics,
+                    document_type = EXCLUDED.document_type,
+                    extracted_at = EXCLUDED.extracted_at,
+                    model_used = EXCLUDED.model_used,
+                    version = EXCLUDED.version,
+                    pipeline_version = EXCLUDED.pipeline_version,
+                    source_hash = EXCLUDED.source_hash,
+                    supersedes = EXCLUDED.supersedes
+                """,
+                rows,
+            )
+
+    async def save_relations(self, relations: list[Relation]) -> None:
+        rows: list[tuple[Any, ...]] = [
+            (
+                rel.relation_id,
+                rel.type.value,
+                rel.subject_id,
+                rel.object_id,
+                rel.label,
+                rel.confidence,
+                Jsonb(rel.evidence),
+                rel.created_at,
+            )
+            for rel in relations
+        ]
+        if not rows:
+            return
+        async with self.conn.cursor() as cur:
+            await cur.executemany(
+                """
+                INSERT INTO relations (relation_id, type, subject_id, object_id, label,
+                                        confidence, evidence, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (relation_id) DO UPDATE SET
+                    type = EXCLUDED.type,
+                    subject_id = EXCLUDED.subject_id,
+                    object_id = EXCLUDED.object_id,
+                    label = EXCLUDED.label,
+                    confidence = EXCLUDED.confidence,
+                    evidence = EXCLUDED.evidence,
+                    created_at = EXCLUDED.created_at
+                """,
+                rows,
+            )

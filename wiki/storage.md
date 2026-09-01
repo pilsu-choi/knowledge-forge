@@ -28,8 +28,9 @@
 
 `psycopg`(v3) 기반. `init_schema()`가 `schema.sql`을 실행한다(모두 `CREATE TABLE/INDEX IF
 NOT EXISTS` — 여러 번 실행해도 안전). `save_source`/`save_document`/`save_chunks`/
-`save_knowledge_object` 네 메서드가 각각 `INSERT ... ON CONFLICT (id) DO UPDATE`로
-upsert한다.
+`save_knowledge_objects`/`save_relations` 다섯 메서드가 각각 `INSERT ... ON CONFLICT (id) DO
+UPDATE`로 upsert한다(`save_knowledge_objects`/`save_relations`는 리스트를 받아
+`executemany`로 배치 upsert한다 — 한 청크가 여러 `KnowledgeObject`/`Relation`을 낳으므로).
 
 **멱등성(idempotency)**: 모든 테이블의 기본키는 각 모델의 결정론적 `stable_id`
 (`src/knowledge_forge/ids.py`)다. 즉 같은 입력으로 파이프라인을 다시 돌리면 같은 id가
@@ -44,7 +45,13 @@ Postgres 컨테이너(`docker run postgres:16-alpine`)로 스키마 생성·저�
 | `sources` | `source_id` | `source_type`, `uri`, `content_hash`, `raw_path`(디스크 경로), `metadata`(JSONB) | - |
 | `documents` | `document_id` | `elements`(JSONB, 요소 전체 직렬화), `metadata`(JSONB) | → `sources` |
 | `chunks` | `chunk_id` | `hierarchy_level`, `sequence_index`, `text`, `token_count`, `element_ids`(JSONB), `page_start`/`page_end` | → `documents`, `sources` |
-| `knowledge_objects` | `knowledge_object_id` | `summary`, `facts`/`entities`/`relations`/`topics`(JSONB), `document_type`, `model_used` | → `sources`, `documents`, `chunks` |
+| `knowledge_objects` | `knowledge_object_id` | `type`, `evidence`(JSONB, 이 객체를 뒷받침하는 청크 목록), `summary`, `content`(JSONB, 타입별 payload), `topics`(JSONB), `document_type`, `model_used`, `version`/`pipeline_version`/`source_hash`/`supersedes`(재처리 이력) | → `sources`, `documents` |
+| `relations` | `relation_id` | `type`, `subject_id`/`object_id`(둘 다 `knowledge_object_id`를 가리키는 typed edge), `label`, `confidence`, `evidence`(JSONB, chunk_id 목록) | → `knowledge_objects`(양쪽) |
+
+`knowledge_objects`는 예전처럼 `chunk_id` 단일 FK를 갖지 않는다 — 하나의 `KnowledgeObject`가
+여러 청크에 걸쳐 근거를 가질 수 있어(`evidence`가 리스트) 단일 FK로는 표현이 안 되기
+때문이다(`wiki/architecture.md`의 "Chunk와 KnowledgeObject는 1:1이 아니다" 참고). 대신 관계형
+질의가 필요하면 `evidence @> '[{"chunk_id": "..."}]'` 같은 JSONB 연산자를 쓴다.
 
 중첩 구조(리스트, 딕셔너리)는 전부 JSONB로 저장한다 — psycopg3가 JSONB ↔ Python
 dict/list를 자동 변환해줘서 애플리케이션 코드에서 별도 직렬화가 필요 없다.
@@ -53,8 +60,9 @@ dict/list를 자동 변환해줘서 애플리케이션 코드에서 별도 직�
 
 `RawBlobStore` + `PostgresStore`를 하나로 묶은 파사드. `pipeline.py`는 이 객체 하나만 알면
 된다: `record_source(source, item)`(내부적으로 raw 저장 후 경로를 Postgres에 기록),
-`record_document`, `record_chunks`, `record_knowledge_object`. 컨텍스트 매니저라 `with
-PipelineStore(...) as store:`로 커넥션 수명을 관리한다.
+`record_document`, `record_chunks`, `record_knowledge_objects(objects)`,
+`record_relations(relations)`. 컨텍스트 매니저라 `with PipelineStore(...) as store:`로
+커넥션 수명을 관리한다.
 
 ## 켜고 끄기
 

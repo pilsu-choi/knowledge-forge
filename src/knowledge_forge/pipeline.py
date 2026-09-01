@@ -15,13 +15,13 @@ from knowledge_forge.collectors.base import Collector, RawItem
 from knowledge_forge.context.base import ContextReconstructor
 from knowledge_forge.context.registry import default_reconstructor_for
 from knowledge_forge.exceptions import KnowledgeExtractionError
-from knowledge_forge.extraction.base import Extractor
+from knowledge_forge.extraction.base import ExtractionOutcome, Extractor
 from knowledge_forge.ids import stable_id
-from knowledge_forge.models.knowledge_object import KnowledgeObject
 from knowledge_forge.models.source import Source, SourceRef
 from knowledge_forge.parsers.registry import ParserRegistry
 
 if TYPE_CHECKING:
+    from knowledge_forge.okf import OKFWriter
     from knowledge_forge.storage.store import PipelineStore
 
 logger = logging.getLogger(__name__)
@@ -47,8 +47,14 @@ async def run_pipeline(
     cursor=None,
     store: "PipelineStore | None" = None,
     context_reconstructor: ContextReconstructor | None = None,
-) -> AsyncIterator[KnowledgeObject]:
+    okf_writer: "OKFWriter | None" = None,
+) -> AsyncIterator[ExtractionOutcome]:
     """Run the full pipeline over everything a Collector yields.
+
+    Yields one `ExtractionOutcome` (its KnowledgeObjects + the Relations
+    connecting them) per chunk - not a single KnowledgeObject per chunk, since
+    a chunk can extract into zero, one, or several typed objects (see
+    extraction/base.py and models/knowledge_object.py).
 
     Items a Parser doesn't support (UnsupportedFormatError/NotImplementedError)
     or that fail extraction (KnowledgeExtractionError) are logged and skipped
@@ -57,8 +63,16 @@ async def run_pipeline(
 
     When `store` is given, each stage's artifact is persisted as it is
     produced (raw bytes + Source to disk/Postgres, then Document, then
-    Chunks, then each KnowledgeObject) - `store=None` (the default) runs
-    exactly as before, print-only, with no persistence side effects.
+    Chunks, then each chunk's KnowledgeObjects/Relations) - `store=None`
+    (the default) runs exactly as before, print-only, with no persistence
+    side effects.
+
+    When `okf_writer` is given, the same artifacts are additionally written
+    into a file-based OKF Knowledge Base tree (see knowledge_forge.okf) -
+    independent of `store`, since OKF is a portable file-tree view of the
+    same data, not a replacement for the queryable Postgres store. The
+    caller is responsible for calling `okf_writer.write_manifest()` once
+    after this generator is exhausted.
 
     Before parsing, `context_reconstructor` re-groups the Collector's raw
     item stream into semantically complete units (see knowledge_forge.context)
@@ -88,6 +102,8 @@ async def run_pipeline(
             continue
         if store is not None:
             await store.record_document(document)
+        if okf_writer is not None:
+            okf_writer.write_resource(source, document)
 
         chunks = chunker.chunk(document)
         if store is not None:
@@ -106,11 +122,15 @@ async def run_pipeline(
         # they're still yielded/stored before the exception is re-raised.
         results = await asyncio.gather(*(_extract(c) for c in chunks), return_exceptions=True)
         unexpected = next((r for r in results if isinstance(r, BaseException)), None)
-        for ko in results:
-            if ko is None or isinstance(ko, BaseException):
+        for outcome in results:
+            if outcome is None or isinstance(outcome, BaseException):
                 continue
             if store is not None:
-                await store.record_knowledge_object(ko)
-            yield ko
+                await store.record_knowledge_objects(outcome.objects)
+                await store.record_relations(outcome.relations)
+            if okf_writer is not None:
+                okf_writer.write_objects(outcome.objects)
+                okf_writer.write_relations(outcome.relations)
+            yield outcome
         if unexpected is not None:
             raise unexpected

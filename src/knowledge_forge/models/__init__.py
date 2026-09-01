@@ -11,12 +11,13 @@ from knowledge_forge.models.document import (
 )
 from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.knowledge_object import (
-    ChunkRef,
     DocumentRef,
     Entity,
+    Evidence,
     KnowledgeObject,
-    Relation,
+    KnowledgeObjectType,
 )
+from knowledge_forge.models.relation import Relation, RelationType
 
 __all__ = [
     "Source",
@@ -32,9 +33,11 @@ __all__ = [
     "TextBlock",
     "Chunk",
     "HierarchyLevel",
-    "ChunkRef",
     "DocumentRef",
     "Entity",
+    "Evidence",
     "KnowledgeObject",
+    "KnowledgeObjectType",
     "Relation",
+    "RelationType",
 ]

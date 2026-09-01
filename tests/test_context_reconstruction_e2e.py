@@ -11,7 +11,7 @@ from typing import Iterator
 from knowledge_forge.chunking import AdaptiveChunker
 from knowledge_forge.collectors.base import Collector, Cursor, RawItem
 from knowledge_forge.extraction.claude_extractor import ClaudeExtractor
-from knowledge_forge.extraction.schemas import ExtractionResult
+from knowledge_forge.extraction.schemas import ExtractionItem, ExtractionResult
 from knowledge_forge.models.source import SourceType
 from knowledge_forge.parsers.registry import default_registry
 from knowledge_forge.pipeline import run_pipeline
@@ -56,9 +56,9 @@ class _FakeMessages:
         return SimpleNamespace(
             parsed_output=ExtractionResult(
                 summary="stub summary",
-                facts=["stub fact"],
                 entities=[],
                 relations=[],
+                items=[ExtractionItem(type="fact", statement="stub fact")],
                 topics=["stub topic"],
                 document_type="slack conversation",
             )
@@ -76,11 +76,12 @@ async def test_slack_messages_are_merged_into_fewer_knowledge_objects_by_convers
     chunker = AdaptiveChunker(max_tokens_per_chunk=4000)
     extractor = ClaudeExtractor(client=_FakeClient())
 
-    knowledge_objects = [ko async for ko in run_pipeline(collector, registry, chunker, extractor)]
+    outcomes = [outcome async for outcome in run_pipeline(collector, registry, chunker, extractor)]
+    knowledge_objects = [ko for outcome in outcomes for ko in outcome.objects]
 
     # 4 raw messages, but only 2 semantic episodes (a 3-message conversation
     # + 1 unrelated later message split off by the time-gap threshold) -> 2
-    # Knowledge Objects, not 4.
+    # Knowledge Objects (one stub "fact" item per episode chunk), not 4.
     assert len(knowledge_objects) == 2
     for ko in knowledge_objects:
         assert ko.document_type == "slack conversation"

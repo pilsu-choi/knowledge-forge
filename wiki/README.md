@@ -6,8 +6,8 @@
 
 | 문서 | 내용 |
 |---|---|
-| [`architecture.md`](architecture.md) | 파이프라인 전체 구조(Collector→Context Reconstruction→Parser→Chunker→Extraction), 컴포넌트별 책임, 확장 포인트, provenance 설계 결정 |
-| [`knowledge-object-schema.md`](knowledge-object-schema.md) | `KnowledgeObject`/`Source`/`Document`/`Chunk` 필드별 스펙과 예시 JSON |
+| [`architecture.md`](architecture.md) | 파이프라인 전체 구조(Collector→Context Reconstruction→Parser→Chunker→Extraction), 컴포넌트별 책임, 확장 포인트, provenance/타입드 오브젝트/hierarchy 설계 결정 |
+| [`knowledge-object-schema.md`](knowledge-object-schema.md) | `KnowledgeObject`/`Relation`/`Source`/`Document`/`Chunk` 필드별 스펙과 예시 JSON |
 | [`roadmap.md`](roadmap.md) | 완료된 범위, PRD 제외 범위가 왜 설계를 막지 않는지, 단계별 후속 계획 |
 
 ## 수집 (Collector · Context Reconstruction)
@@ -31,5 +31,6 @@
 | 문서 | 내용 |
 |---|---|
 | [`storage.md`](storage.md) | `PipelineStore`(디스크 원본 + PostgreSQL 구조화 레코드) 스키마와 opt-in 동작 |
+| [`okf.md`](okf.md) | `OKFWriter` — manifest.yaml + resources/objects/relations 파일 트리로 된 Knowledge Base, Postgres와 독립적인 opt-in 출력 |
 | [`scheduling.md`](scheduling.md) | `knowledge-forge schedule`의 tick/interval 모델, 실패 격리 |
 | [`dev-guide.md`](dev-guide.md) | 셋업(`uv sync`), 환경변수 전체 목록, CLI 사용법, 컨테이너 실행, 새 Parser/Collector 추가 방법 |

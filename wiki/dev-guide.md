@@ -65,7 +65,7 @@ uv sync --extra xlsx --extra pptx --extra hwpx --extra slack --extra google --ex
 
 ```bash
 uv run knowledge-forge extract <path> [--max-tokens 4000] [--model claude-opus-5] \
-  [--output out.jsonl] [--pretty] [--store/--no-store]
+  [--output out.jsonl] [--pretty] [--store/--no-store] [--okf-dir ./okf]
 ```
 
 - `<path>`: 단일 파일 또는 디렉토리(디렉토리면 재귀적으로 순회).
@@ -73,6 +73,8 @@ uv run knowledge-forge extract <path> [--max-tokens 4000] [--model claude-opus-5
 - `--pretty`: 들여쓴 JSON 배열로 출력(사람이 읽기용, 대량 처리에는 비권장).
 - `--store`(기본값): `KF_DATABASE_URL`이 설정되어 있으면 Postgres+디스크에 저장([`storage.md`](storage.md)).
   없으면 경고만 출력하고 출력 전용으로 계속 진행한다.
+- `--okf-dir`: 지정하면 `--store`와 별개로, manifest.yaml + resources/objects/relations로
+  된 파일 기반 Knowledge Base도 그 디렉터리에 기록한다([`okf.md`](okf.md)).
 
 예시:
 

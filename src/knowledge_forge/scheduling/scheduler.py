@@ -59,16 +59,19 @@ def build_tick(
             if store_factory is not None:
                 async with store_factory() as store:
                     await store.init_schema()  # idempotent (CREATE TABLE IF NOT EXISTS)
-                    knowledge_objects = [
-                        ko
-                        async for ko in run_pipeline(collector, registry, chunker, extractor, cursor=cursor, store=store)
+                    outcomes = [
+                        outcome
+                        async for outcome in run_pipeline(
+                            collector, registry, chunker, extractor, cursor=cursor, store=store
+                        )
                     ]
             else:
-                knowledge_objects = [
-                    ko
-                    async for ko in run_pipeline(collector, registry, chunker, extractor, cursor=cursor, store=None)
+                outcomes = [
+                    outcome
+                    async for outcome in run_pipeline(collector, registry, chunker, extractor, cursor=cursor, store=None)
                 ]
-            logger.info("scheduled sync tick produced %d Knowledge Object(s)", len(knowledge_objects))
+            object_count = sum(len(outcome.objects) for outcome in outcomes)
+            logger.info("scheduled sync tick produced %d Knowledge Object(s)", object_count)
         except Exception:  # noqa: BLE001 - one failed tick must not kill the scheduler
             logger.exception("scheduled sync tick failed")
 

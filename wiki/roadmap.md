@@ -45,6 +45,23 @@
   스크립트로 진행, 프로젝트 코드에는 포함 안 됨). 이 방식은 호출당 최소 $0.01~0.07의 하네스
   오버헤드가 있어 운영 백엔드로는 부적합 — 운영은 여전히 `ANTHROPIC_API_KEY`(또는
   `OPENROUTER_API_KEY`) 기준.
+- **Knowledge Object 모델을 typed envelope + graph relation으로 재설계 (Phase 5)**: 외부
+  아키텍처 리뷰에서 지적된 "Chunk와 KnowledgeObject는 1:1이 아니다"/"Hierarchy를 유일한 조직
+  원리로 삼지 않는다"는 원칙을 반영했다.
+  - `Extractor.extract()`가 `KnowledgeObject` 하나가 아니라 `ExtractionOutcome`
+    (`objects: list[KnowledgeObject]`, `relations: list[Relation]`)을 반환하도록 변경 —
+    청크 하나가 여러 타입드 객체(Entity/Fact/Event/Decision/ActionItem/Requirement/Policy/
+    Issue/Concept)로 펼쳐진다.
+  - `KnowledgeObject.chunk: ChunkRef` 단일 필드를 `evidence: list[Evidence]`로 바꿔
+    Chunk↔KnowledgeObject 카디널리티를 다대다로 표현(실제로 여러 청크를 하나의 LLM 호출로
+    묶는 로직은 아직 없음 — 아래 5단계 참고).
+  - 관계를 `KnowledgeObject` 내장 텍스트 triple이 아니라 두 `knowledge_object_id`를 잇는
+    별도의 `Relation` 레코드(`models/relation.py`)로 분리.
+  - `version`/`pipeline_version`/`source_hash`/`supersedes` versioning 필드 추가.
+  - `OKFWriter`(`src/knowledge_forge/okf/`)로 manifest.yaml + resources/objects/relations
+    파일 트리 — Postgres 없이도 존재하는 file-based Knowledge Base ([`okf.md`](okf.md)).
+  - 자세한 설계 근거는 [`architecture.md`](architecture.md), 필드 스펙은
+    [`knowledge-object-schema.md`](knowledge-object-schema.md) 참고.
 
 ## 제외 범위와 "왜 막지 않는가"
 
@@ -54,8 +71,8 @@ Dashboard / Chat UI다. 이들을 지금 만들지 않는 이유는 스코프 �
 
 | 제외 항목 | 현재 설계가 막지 않는 이유 |
 |---|---|
-| Vector DB | `KnowledgeObject.summary`/`facts`/`entities`/`topics`는 이미 임베딩하기 좋은 평탄한 텍스트 필드로 분리되어 있다. 벡터 스토어에 넣을 때 `KnowledgeObject`를 그대로 소스 레코드로 사용하면 된다. |
-| Graph DB | `entities`/`relations`는 이미 subject-predicate-object 형태로 추출되어 있어 그래프의 노드/엣지로 직접 매핑 가능하다. `SourceRef`/`DocumentRef`/`ChunkRef`의 id 체인은 그래프가 필요로 하는 "출처로 돌아가는 엣지" 그 자체다. |
+| Vector DB | `KnowledgeObject.summary`/`content`/`topics`는 이미 임베딩하기 좋은 평탄한 텍스트 필드로 분리되어 있다. 벡터 스토어에 넣을 때 `KnowledgeObject`를 그대로 소스 레코드로 사용하면 된다. |
+| Graph DB | `KnowledgeObject`(노드)와 `Relation`(subject_id/object_id로 노드를 잇는 typed edge)이 이미 그래프 모델 그 자체다 — Phase 5에서 subject-predicate-object 텍스트 triple 대신 id 기반 edge로 바꿨다([`architecture.md`](architecture.md)). `relations` 테이블(PostgreSQL, [`storage.md`](storage.md)) 또는 OKF `relations/`([`okf.md`](okf.md))를 그대로 그래프 DB에 bulk-import하면 된다. |
 | Ontology/OWL | `Entity.type`/`document_type`이 자유 문자열이라, 추후 온톨로지 클래스 체계로 매핑하는 정규화 레이어를 얹기만 하면 된다. 지금 스키마를 바꿀 필요가 없다. |
 | Search/RAG | Knowledge Object 자체가 검색 인덱싱의 입력 단위로 설계되어 있다(청크 단위 + 요약 + 메타데이터). RAG 파이프라인은 이 위에 검색/재순위 레이어만 추가하면 된다. |
 | Agent | Knowledge Extraction은 순수 함수형 파이프라인 단계(청크 → LLM 호출 → 구조화 출력)로, 에이전트형 도구 호출 루프가 필요 없다. 나중에 에이전트가 필요해지면 이 파이프라인을 도구(tool)로 감싸기만 하면 된다. |
@@ -163,6 +180,26 @@ Knowledge가 나온다.
    파일 소스는 최초 1회 + 변경 감지 재처리로 충분하다는 게 이미 맞게 설계되어 있음 — 다만
    Slack/Gmail의 짧은 polling 주기가 필요해질 경우 API rate limit 대응(3단계에서 이미 언급)이
    더 중요해진다.
+
+### 5단계 — Typed Knowledge Graph 고도화
+
+Phase 5(위 "완료된 범위" 참고)가 데이터 모델은 바꿨지만, 다음은 아직 미구현이다:
+
+1. **다중 청크 근거(multi-chunk evidence)** — `KnowledgeObject.evidence`는 이미
+   `list[Evidence]`라 여러 청크를 가리킬 수 있지만, `Extractor.extract()`는 여전히 청크
+   하나를 입력받는다. 하나의 Decision이 두 개의 인접 청크에 걸쳐 있으면 지금은 각 청크에서
+   따로 추출되어 별개의 `KnowledgeObject`가 된다 — 진짜로 여러 청크를 하나의 LLM 컨텍스트로
+   묶어 근거를 채우려면 Extractor 인터페이스 자체를 "청크 하나" 대신 "관련 청크 묶음"을 받게
+   바꿔야 한다.
+2. **KnowledgeObject 간 유사도 기반 중복 제거/병합** — 같은 Decision이 서로 다른 청크·심지어
+   서로 다른 소스(Slack 대화 + 그걸 정리한 회의록 문서)에서 중복 추출될 수 있다. 지금은
+   완전히 별개의 `KnowledgeObject`로 남는다.
+3. **추가 Organization View** — 지금은 `OKFWriter`가 타입별(`objects/{type}/`) view 하나만
+   구현한다. Topic/Project/Timeline 같은 다른 view는 `manifest.yaml` 카탈로그 위에 별도
+   인덱스를 얹으면 되지만, 아직 만들지 않았다([`okf.md`](okf.md) "후속 작업" 참고).
+4. **`supersedes`를 실제로 채우는 재처리 흐름** — `KnowledgeObject.supersedes` 필드는
+   존재하지만, 재추출 시 이전 버전을 찾아 `supersedes`를 자동으로 채워주는 로직은 없다 —
+   지금은 호출자가 수동으로 채워야 한다.
 
 **한 줄 정의(향후 아키텍처 문서화 시 재사용)**: "Multi-source SaaS 및 File 데이터를 수집하고,
 source별 semantic context를 복원한 뒤 adaptive chunking과 knowledge extraction을 수행하여

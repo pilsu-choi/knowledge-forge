@@ -6,9 +6,11 @@ import httpx2
 import pytest
 
 from knowledge_forge.extraction.claude_extractor import ClaudeExtractor
-from knowledge_forge.extraction.schemas import ExtractionEntity, ExtractionRelation, ExtractionResult
+from knowledge_forge.extraction.schemas import ExtractionEntity, ExtractionItem, ExtractionRelation, ExtractionResult
 from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.document import Document, DocumentMetadata, TextBlock
+from knowledge_forge.models.knowledge_object import KnowledgeObjectType
+from knowledge_forge.models.relation import RelationType
 from knowledge_forge.models.source import Source, SourceRef, SourceType
 
 _REQUEST = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
@@ -31,9 +33,21 @@ def _bad_request_error() -> anthropic.BadRequestError:
 def _sample_result() -> ExtractionResult:
     return ExtractionResult(
         summary="A short summary.",
-        facts=["Fact one."],
-        entities=[ExtractionEntity(name="Acme Corp", type="ORG")],
-        relations=[ExtractionRelation(subject="Acme Corp", predicate="signed", object="the agreement")],
+        entities=[ExtractionEntity(name="Acme Corp", type="ORG"), ExtractionEntity(name="the Board", type="ORG")],
+        relations=[ExtractionRelation(subject="Acme Corp", predicate="reports to", object="the Board")],
+        items=[
+            ExtractionItem(
+                type="issue",
+                statement="Regulatory approval is still pending.",
+                related_entities=["Acme Corp"],
+            ),
+            ExtractionItem(
+                type="decision",
+                statement="The Board approved the merger.",
+                related_entities=["the Board"],
+                caused_by_index=0,
+            ),
+        ],
         topics=["contracts"],
         document_type="contract",
     )
@@ -89,32 +103,71 @@ class _FakeClient:
         self.messages = _FakeMessages(side_effects)
 
 
-async def test_extract_maps_extraction_result_into_knowledge_object():
+async def test_extract_maps_extraction_result_into_typed_knowledge_objects_and_relations():
     client = _FakeClient([_sample_result()])
     extractor = ClaudeExtractor(client=client, model="claude-opus-5")
 
-    ko = await extractor.extract(_sample_chunk(), _sample_document(), _sample_source())
+    outcome = await extractor.extract(_sample_chunk(), _sample_document(), _sample_source())
 
-    assert ko.summary == "A short summary."
-    assert ko.facts == ["Fact one."]
-    assert ko.entities[0].name == "Acme Corp"
-    assert ko.relations[0].predicate == "signed"
-    assert ko.topics == ["contracts"]
-    assert ko.document_type == "contract"
-    assert ko.model_used == "claude-opus-5"
-    assert ko.source.source_id == "s1"
-    assert ko.document.document_id == "d1"
-    assert ko.chunk.chunk_id == "c1"
+    # 2 entities + 2 typed items = 4 objects, none of them the old flat shape.
+    assert len(outcome.objects) == 4
+    entities = [ko for ko in outcome.objects if ko.type == KnowledgeObjectType.ENTITY]
+    assert {e.content["name"] for e in entities} == {"Acme Corp", "the Board"}
+
+    issue = next(ko for ko in outcome.objects if ko.type == KnowledgeObjectType.ISSUE)
+    decision = next(ko for ko in outcome.objects if ko.type == KnowledgeObjectType.DECISION)
+    assert issue.content["statement"] == "Regulatory approval is still pending."
+    assert decision.content["statement"] == "The Board approved the merger."
+    for ko in outcome.objects:
+        assert ko.topics == ["contracts"]
+        assert ko.document_type == "contract"
+        assert ko.model_used == "claude-opus-5"
+        assert ko.source.source_id == "s1"
+        assert ko.document.document_id == "d1"
+        assert ko.evidence[0].chunk_id == "c1"
+        assert ko.pipeline_version
+        assert ko.source_hash == "deadbeef"
+
+    # entity-entity relation resolved to the two ENTITY object ids.
+    acme_id = next(ko.knowledge_object_id for ko in entities if ko.content["name"] == "Acme Corp")
+    board_id = next(ko.knowledge_object_id for ko in entities if ko.content["name"] == "the Board")
+    related_to = [r for r in outcome.relations if r.type == RelationType.RELATED_TO and r.subject_id == acme_id]
+    assert related_to and related_to[0].object_id == board_id and related_to[0].label == "reports to"
+
+    # item -> entity MENTIONS relations.
+    mentions = {(r.subject_id, r.object_id) for r in outcome.relations if r.type == RelationType.MENTIONS}
+    assert (issue.knowledge_object_id, acme_id) in mentions
+    assert (decision.knowledge_object_id, board_id) in mentions
+
+    # decision caused_by issue.
+    caused_by = [r for r in outcome.relations if r.type == RelationType.CAUSED_BY]
+    assert caused_by == [
+        r for r in caused_by if r.subject_id == decision.knowledge_object_id and r.object_id == issue.knowledge_object_id
+    ]
+    assert len(caused_by) == 1
     assert client.messages.calls == 1
+
+
+async def test_chunk_with_no_entities_or_items_falls_back_to_one_fact_from_summary():
+    empty_result = ExtractionResult(summary="Just connective prose.", document_type="note")
+    client = _FakeClient([empty_result])
+    extractor = ClaudeExtractor(client=client)
+
+    outcome = await extractor.extract(_sample_chunk(), _sample_document(), _sample_source())
+
+    assert len(outcome.objects) == 1
+    assert outcome.objects[0].type == KnowledgeObjectType.FACT
+    assert outcome.objects[0].content["statement"] == "Just connective prose."
+    assert outcome.relations == []
 
 
 async def test_retries_once_on_rate_limit_then_succeeds():
     client = _FakeClient([_rate_limit_error(), _sample_result()])
     extractor = ClaudeExtractor(client=client)
 
-    ko = await extractor.extract(_sample_chunk(), _sample_document(), _sample_source())
+    outcome = await extractor.extract(_sample_chunk(), _sample_document(), _sample_source())
 
-    assert ko.summary == "A short summary."
+    assert len(outcome.objects) == 4
     assert client.messages.calls == 2
 
 

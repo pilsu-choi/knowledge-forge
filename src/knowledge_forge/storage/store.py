@@ -10,6 +10,7 @@ from knowledge_forge.collectors.base import RawItem
 from knowledge_forge.models.chunk import Chunk
 from knowledge_forge.models.document import Document
 from knowledge_forge.models.knowledge_object import KnowledgeObject
+from knowledge_forge.models.relation import Relation
 from knowledge_forge.models.source import Source
 from knowledge_forge.storage.postgres_store import PostgresStore
 from knowledge_forge.storage.raw_store import RawBlobStore
@@ -40,5 +41,8 @@ class PipelineStore:
     async def record_chunks(self, chunks: list[Chunk]) -> None:
         await self._db.save_chunks(chunks)
 
-    async def record_knowledge_object(self, ko: KnowledgeObject) -> None:
-        await self._db.save_knowledge_object(ko)
+    async def record_knowledge_objects(self, objects: list[KnowledgeObject]) -> None:
+        await self._db.save_knowledge_objects(objects)
+
+    async def record_relations(self, relations: list[Relation]) -> None:
+        await self._db.save_relations(relations)

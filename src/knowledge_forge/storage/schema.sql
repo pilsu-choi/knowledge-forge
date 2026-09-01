@@ -39,20 +39,46 @@ CREATE TABLE IF NOT EXISTS chunks (
 CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_source_id ON chunks(source_id);
 
+-- `evidence` replaces the old single `chunk_id` column: a KnowledgeObject
+-- can be grounded in more than one Chunk (see models/knowledge_object.py),
+-- so provenance to chunks is a JSONB list of {chunk_id, ...} rather than a
+-- single foreign key. `type`/`content` replace the old fixed
+-- facts/entities/relations columns with the generic typed-envelope shape.
 CREATE TABLE IF NOT EXISTS knowledge_objects (
     knowledge_object_id TEXT PRIMARY KEY,
+    type                TEXT NOT NULL,
     source_id           TEXT NOT NULL REFERENCES sources(source_id),
     document_id         TEXT NOT NULL REFERENCES documents(document_id),
-    chunk_id            TEXT NOT NULL REFERENCES chunks(chunk_id),
+    evidence            JSONB NOT NULL DEFAULT '[]'::jsonb,
     summary              TEXT NOT NULL,
-    facts                 JSONB NOT NULL DEFAULT '[]'::jsonb,
-    entities               JSONB NOT NULL DEFAULT '[]'::jsonb,
-    relations               JSONB NOT NULL DEFAULT '[]'::jsonb,
-    topics                  JSONB NOT NULL DEFAULT '[]'::jsonb,
-    document_type           TEXT NOT NULL,
-    extracted_at             TIMESTAMPTZ NOT NULL,
-    model_used               TEXT NOT NULL
+    content              JSONB NOT NULL DEFAULT '{}'::jsonb,
+    topics               JSONB NOT NULL DEFAULT '[]'::jsonb,
+    document_type        TEXT NOT NULL,
+    extracted_at          TIMESTAMPTZ NOT NULL,
+    model_used            TEXT NOT NULL,
+    version               INT NOT NULL DEFAULT 1,
+    pipeline_version      TEXT NOT NULL,
+    source_hash           TEXT NOT NULL,
+    supersedes            TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_ko_type ON knowledge_objects(type);
 CREATE INDEX IF NOT EXISTS idx_ko_source_id ON knowledge_objects(source_id);
 CREATE INDEX IF NOT EXISTS idx_ko_document_id ON knowledge_objects(document_id);
-CREATE INDEX IF NOT EXISTS idx_ko_chunk_id ON knowledge_objects(chunk_id);
+
+-- Relation: a typed edge between two KnowledgeObjects (models/relation.py).
+-- Graph-DB-shaped on purpose (see wiki/architecture.md "Layer 4") - a
+-- future Graph DB/search index materializes off this table without a
+-- pipeline redesign.
+CREATE TABLE IF NOT EXISTS relations (
+    relation_id  TEXT PRIMARY KEY,
+    type         TEXT NOT NULL,
+    subject_id   TEXT NOT NULL REFERENCES knowledge_objects(knowledge_object_id),
+    object_id    TEXT NOT NULL REFERENCES knowledge_objects(knowledge_object_id),
+    label        TEXT,
+    confidence   DOUBLE PRECISION,
+    evidence     JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at   TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_relations_subject_id ON relations(subject_id);
+CREATE INDEX IF NOT EXISTS idx_relations_object_id ON relations(object_id);
+CREATE INDEX IF NOT EXISTS idx_relations_type ON relations(type);

@@ -16,25 +16,34 @@ flowchart TD
     C -->|RawItem| CR["Context Reconstruction\n(Slack: 대화 세그멘테이션,\nGmail: 스레드 병합,\nFile/Notion/GDrive: 항등)"]
     CR -->|RawItem| P["Parser\n(registry가 확장자/URI 스킴별로 디스패치,\nPDF/Image/PPTX는 VLM 하이브리드)"]
     P -->|Document| CH["Adaptive Chunker\n(Document→Chapter→Section→...)"]
-    CH -->|Chunk| E["Knowledge Extraction\n(ClaudeExtractor)"]
-    E -->|KnowledgeObject| KO[(Knowledge Object JSON)]
+    CH -->|Chunk| E["Knowledge Extraction\n(ClaudeExtractor / OpenRouterExtractor)"]
+    E -->|ExtractionOutcome| KO[(typed KnowledgeObjects)]
+    E -->|ExtractionOutcome| REL[(Relations - KO 간 typed edge)]
 
     C -. "knowledge-forge schedule" 사용 시\n일정 간격으로 반복 호출 .-> C
     C -.->|record_source| ST[(PipelineStore\nPostgres + 디스크)]
     P -.->|record_document| ST
     CH -.->|record_chunks| ST
-    E -.->|record_knowledge_object| ST
+    E -.->|record_knowledge_objects / record_relations| ST
+    P -.->|write_resource| OKF[(OKF 파일 트리\nmanifest.yaml)]
+    E -.->|write_objects / write_relations| OKF
 
     style KO fill:#2b6,stroke:#164,color:#fff
+    style REL fill:#2b6,stroke:#164,color:#fff
     style ST fill:#458,stroke:#124,color:#fff
+    style OKF fill:#458,stroke:#124,color:#fff
 ```
 
-각 화살표 라벨이 단계 간에 오가는 자료형이다. `RawItem → Document → Chunk → KnowledgeObject`
+각 화살표 라벨이 단계 간에 오가는 자료형이다. `RawItem → Document → Chunk → ExtractionOutcome`
 순으로 갈수록 더 구조화되고, 동시에 원본으로 되돌아갈 수 있는 참조(provenance)를 계속 유지한다.
+`Chunk`는 한 개의 `KnowledgeObject`로 고정 대응되지 않는다 — 아래 "설계 결정: Chunk와
+KnowledgeObject는 1:1이 아니다" 참고.
 
 점선은 옵션 경로다: `PipelineStore`(저장, [`storage.md`](storage.md) 참고)는 `--store`/
 `KF_DATABASE_URL`이 설정된 경우에만 각 단계 산출물을 Postgres+디스크에 기록하며, 없어도 파이프라인은
-동일하게 동작한다(출력만 생성). `knowledge-forge schedule`([`scheduling.md`](scheduling.md) 참고)은
+동일하게 동작한다(출력만 생성). `OKFWriter`(`--okf-dir`, [`okf.md`](okf.md) 참고)는 같은 산출물을
+파일 기반 Knowledge Base 트리로도 기록할 수 있는 별도의 옵션 경로다 — `store`와 동시에 켜도 되고,
+독립적으로도 켤 수 있다. `knowledge-forge schedule`([`scheduling.md`](scheduling.md) 참고)은
 `extract`와 동일한 파이프라인을 한 프로세스 안에서 반복 실행하는 대안적 진입점이다.
 
 ## 컴포넌트별 책임
@@ -95,9 +104,15 @@ flowchart TD
 
 ### Knowledge Extraction (`src/knowledge_forge/extraction/`)
 
-- `Extractor` ABC의 `async def extract(chunk, document, source) -> KnowledgeObject`. 기본 구현
-  `ClaudeExtractor`가 Claude LLM을 호출해 Entity/Relation/Summary/Key Facts/Topic/Document
-  Type을 추출한다.
+- `Extractor` ABC의 `async def extract(chunk, document, source) -> ExtractionOutcome`.
+  `ExtractionOutcome`은 `objects: list[KnowledgeObject]`와 `relations: list[Relation]` 두
+  필드다 — 하나의 `Chunk`가 하나의 `KnowledgeObject`로 고정 대응되지 않는다(아래 설계 결정 참고).
+- 기본 구현 `ClaudeExtractor`가 Claude LLM을 호출해 `ExtractionResult`(entities/relations/typed
+  items/topics/document_type)를 얻고, 프로바이더 공용 로직인
+  `extraction/outcome.py::build_extraction_outcome()`이 이를 `ExtractionOutcome`으로 변환한다 —
+  엔티티마다 하나씩 `ENTITY` 타입 `KnowledgeObject`를, 각 타입 항목(item)마다 하나씩
+  Fact/Event/Decision/ActionItem/... 타입 `KnowledgeObject`를 만들고, 엔티티-엔티티 관계·
+  item-엔티티 mentions·item 간 caused_by/relates_to를 각각 `Relation`으로 만든다.
 - 스키마와 프롬프트 설계는 [`knowledge-object-schema.md`](knowledge-object-schema.md) 참고.
 - **동시 실행**: `pipeline.run_pipeline`은 한 문서의 청크들을 `asyncio.gather`로 동시에
   추출한다. `ClaudeExtractor`/`OpenRouterExtractor`(그리고 두 Vision 구현) 각각이 자체
@@ -118,10 +133,19 @@ flowchart TD
 ### Storage (`src/knowledge_forge/storage/`) — 선택적
 
 - `PipelineStore`가 파이프라인의 각 단계 산출물을 저장하는 파사드다: 원본 바이트는 디스크에
-  (`RawBlobStore`), `Source`/`Document`/`Chunk`/`KnowledgeObject`는 PostgreSQL에
+  (`RawBlobStore`), `Source`/`Document`/`Chunk`/`KnowledgeObject`/`Relation`은 PostgreSQL에
   (`PostgresStore`). `pipeline.run_pipeline(..., store=...)`가 `None`이면(기본값) Phase 1과
   동일하게 저장 없이 동작한다.
 - 상세 스키마와 사용법은 [`storage.md`](storage.md) 참고.
+
+### OKF — 파일 기반 Knowledge Base (`src/knowledge_forge/okf/`) — 선택적
+
+- `OKFWriter`가 `PipelineStore`와는 독립적인 두 번째 옵션 출력 경로다: 같은 `Source`/`Document`/
+  `KnowledgeObject`/`Relation`을 `manifest.yaml` + `resources/`/`objects/{type}/`/`relations/`
+  디렉터리 트리로 기록한다 — 데이터베이스 없이도 사람이 읽고 git으로 diff할 수 있는 Knowledge
+  Base 형태다. `manifest.yaml`은 knowledge 자체를 담지 않는 카탈로그(각 레코드의 id/type/경로
+  목록)로, 트리를 스캔해 재생성되므로 여러 번의 파이프라인 실행(증분 동기화 등)에 걸쳐 안전하게
+  누적된다. 자세한 설계는 [`okf.md`](okf.md) 참고.
 
 ### Scheduling (`src/knowledge_forge/scheduling/`) — 선택적
 
@@ -145,15 +169,58 @@ flowchart TD
 이 ABC + 레지스트리 패턴 덕분에 PRD가 요구하는 4개 SaaS + 8개 파일 포맷 전체를, 이번 MVP처럼
 일부만 실제 구현하고 나머지는 인터페이스만 정의해 두는 점진적 확장이 자연스럽게 가능하다.
 
+## 설계 결정: Chunk와 KnowledgeObject는 1:1이 아니다
+
+초기 구현은 `extract(chunk, ...) -> KnowledgeObject` 하나로, 청크 하나가 항상 정확히 하나의
+`KnowledgeObject`(고정된 summary/facts/entities/relations 필드를 가진 단일 bag)를 낳는다고
+가정했다. 이 가정은 두 방향 모두에서 깨진다:
+
+- 청크 하나가 여러 개의 독립적인 knowledge를 담을 수 있다. 예: Slack 대화 한 덩어리가
+  `{type: Issue, "QA 미완료"}`, `{type: Decision, "배포를 월요일로 연기"}`,
+  `{type: ActionItem, "월요일 10시 배포"}` 세 개의 독립적으로 참조 가능한 객체를 포함한다.
+- 반대로 하나의 knowledge(예: 하나의 Decision)가 여러 청크에 걸쳐 근거를 가질 수 있다.
+
+그래서 `Extractor.extract()`는 `KnowledgeObject` 하나가 아니라 `ExtractionOutcome`
+(`objects: list[KnowledgeObject]`, `relations: list[Relation]`)을 반환한다. `KnowledgeObject`는
+`type`(`KnowledgeObjectType`: Entity/Fact/Event/Decision/ActionItem/Requirement/Policy/Issue/
+Concept)으로 구분되는 typed envelope이고, 서로 다른 `KnowledgeObject`를 연결하는 관계
+(Decision이 어떤 Issue 때문인지, 어떤 Entity를 언급하는지 등)는 `KnowledgeObject`에 내장된
+텍스트 triple이 아니라 별도의 `Relation` 레코드(id로 두 `KnowledgeObject`를 잇는 typed edge)로
+표현한다. `models/knowledge_object.py`/`models/relation.py`/`extraction/outcome.py`의 설계
+노트에 더 자세한 근거가 있다.
+
+파이프라인이 현재 청크 단위로 LLM을 호출하는 구조는 그대로이므로(Extractor는 여전히 청크
+하나를 입력받는다), "여러 청크에 걸친 근거"는 데이터 모델(`KnowledgeObject.evidence`가 이미
+`list[Evidence]`로 다중 청크를 표현할 수 있음)만 준비되어 있고 실제로 여러 청크를 하나의
+LLM 호출로 묶어 근거를 채우는 로직은 아직 없다 — 후속 작업으로 남아 있다
+([`roadmap.md`](roadmap.md) 참고).
+
 ## 설계 결정: Provenance는 참조(ref)로, 전체 객체 임베드 아님
 
-`KnowledgeObject.source`/`document`/`chunk`는 `Source`/`Document`/`Chunk` 전체를 담지 않고
-`SourceRef`/`DocumentRef`/`ChunkRef`라는 가벼운 참조(id + 식별에 필요한 최소 필드)만 담는다.
+`KnowledgeObject.source`/`document`는 `Source`/`Document` 전체를 담지 않고 `SourceRef`/
+`DocumentRef`라는 가벼운 참조(id + 식별에 필요한 최소 필드)만 담는다. 어느 `Chunk`(들)가 이
+`KnowledgeObject`를 뒷받침하는지는 `evidence: list[Evidence]`가 각 청크의 id + 위치 정보만
+담아 표현한다(위 "Chunk와 KnowledgeObject는 1:1이 아니다" 참고).
 
-**이유**: 한 `Document`는 보통 여러 `Chunk`로 쪼개지고, 각 `Chunk`는 각자의 `KnowledgeObject`를
-만든다. 만약 매 `KnowledgeObject`가 원본 `Document` 전체(모든 elements 포함)를 껴안고 있다면,
+**이유**: 한 `Document`는 보통 여러 `Chunk`로 쪼개지고, 각 `Chunk`는 여러 `KnowledgeObject`를
+만들 수 있다. 만약 매 `KnowledgeObject`가 원본 `Document` 전체(모든 elements 포함)를 껴안고 있다면,
 문서 하나가 100개 청크로 쪼개졌을 때 동일한 문서 데이터가 100번 중복 저장된다. 참조 방식을
 쓰면 `Source`/`Document`/`Chunk` 레코드는 파이프라인 실행 결과물 안에서 id로 한 번만 저장되고,
-`KnowledgeObject`는 그 id 체인(`source_id → document_id → chunk_id → knowledge_object_id`)만
-유지하면 된다. PRD가 요구하는 "모든 Knowledge Object는 Provenance를 유지한다"는 조건은 이
-id 체인으로 충분히 만족된다.
+`KnowledgeObject`는 그 id 체인(`source_id → document_id → evidence[].chunk_id →
+knowledge_object_id`)만 유지하면 된다. PRD가 요구하는 "모든 Knowledge Object는 Provenance를
+유지한다"는 조건은 이 id 체인으로 충분히 만족된다.
+
+## 설계 결정: Hierarchy는 Knowledge Base의 유일한 조직 원리가 아니다
+
+Document 파싱/청킹 단계(`Document → Chapter → Section → Paragraph → ...`)는 여전히 계층
+구조를 적극 활용한다 — 문서에서는 그 계층 자체가 의미 있는 메타데이터이기 때문이다. 하지만
+그 계층은 **파일 소스의 내부 구조를 다루는 방식**이지, Knowledge Base 전체를 조직하는 유일한
+원리로 취급하지 않는다:
+
+- Slack/Gmail은 Document의 Chapter/Section이 아니라 Context Reconstruction이 만든
+  Episode/Thread 단위로 처리된다([`context-reconstruction.md`](context-reconstruction.md)).
+- `KnowledgeObject`끼리는 `Relation`이라는 그래프 구조로 연결된다 — 계층이 아니라 typed edge다.
+- `OKFWriter`가 만드는 파일 트리(`objects/{type}/...`)는 여러 조회 관점(view) 중 파일시스템에
+  자연스럽게 얹을 수 있는 "타입별" 하나만 구현한 것이지, 유일한 organization view라는 뜻은
+  아니다 — Topic/Project/Timeline 같은 다른 view는 `manifest.yaml`의 카탈로그(id + type +
+  path) 위에 별도 인덱스를 얹으면 되고, 지금 스키마를 바꿀 필요가 없다([`okf.md`](okf.md) 참고).

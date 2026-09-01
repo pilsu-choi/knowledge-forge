@@ -10,6 +10,8 @@ from knowledge_forge.extraction.openrouter_extractor import OpenRouterExtractor
 from knowledge_forge.extraction.schemas import ExtractionResult
 from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.document import Document, DocumentMetadata, TextBlock
+from knowledge_forge.models.knowledge_object import KnowledgeObjectType
+from knowledge_forge.models.relation import RelationType
 from knowledge_forge.models.source import Source, SourceRef, SourceType
 
 _REQUEST = httpx2.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
@@ -28,9 +30,17 @@ def _bad_request_error() -> openai.BadRequestError:
 def _sample_result_json() -> str:
     return ExtractionResult(
         summary="A short summary.",
-        facts=["Fact one."],
-        entities=[{"name": "Acme Corp", "type": "ORG"}],
-        relations=[{"subject": "Acme Corp", "predicate": "signed", "object": "the agreement"}],
+        entities=[{"name": "Acme Corp", "type": "ORG"}, {"name": "the Board", "type": "ORG"}],
+        relations=[{"subject": "Acme Corp", "predicate": "reports to", "object": "the Board"}],
+        items=[
+            {"type": "issue", "statement": "Regulatory approval is still pending.", "related_entities": ["Acme Corp"]},
+            {
+                "type": "decision",
+                "statement": "The Board approved the merger.",
+                "related_entities": ["the Board"],
+                "caused_by_index": 0,
+            },
+        ],
         topics=["contracts"],
         document_type="contract",
     ).model_dump_json()
@@ -99,22 +109,32 @@ class _FakeClient:
         self.chat = _FakeChat(side_effects)
 
 
-async def test_extract_maps_extraction_result_into_knowledge_object():
+async def test_extract_maps_extraction_result_into_typed_knowledge_objects_and_relations():
     client = _FakeClient([_chat_response(_sample_result_json())])
     extractor = OpenRouterExtractor(client=client, model="anthropic/claude-haiku-4.5")
 
-    ko = await extractor.extract(_sample_chunk(), _sample_document(), _sample_source())
+    outcome = await extractor.extract(_sample_chunk(), _sample_document(), _sample_source())
 
-    assert ko.summary == "A short summary."
-    assert ko.facts == ["Fact one."]
-    assert ko.entities[0].name == "Acme Corp"
-    assert ko.relations[0].predicate == "signed"
-    assert ko.topics == ["contracts"]
-    assert ko.document_type == "contract"
-    assert ko.model_used == "anthropic/claude-haiku-4.5"
-    assert ko.source.source_id == "s1"
-    assert ko.document.document_id == "d1"
-    assert ko.chunk.chunk_id == "c1"
+    assert len(outcome.objects) == 4
+    entities = [ko for ko in outcome.objects if ko.type == KnowledgeObjectType.ENTITY]
+    assert {e.content["name"] for e in entities} == {"Acme Corp", "the Board"}
+    issue = next(ko for ko in outcome.objects if ko.type == KnowledgeObjectType.ISSUE)
+    decision = next(ko for ko in outcome.objects if ko.type == KnowledgeObjectType.DECISION)
+    assert issue.content["statement"] == "Regulatory approval is still pending."
+    assert decision.content["statement"] == "The Board approved the merger."
+    for ko in outcome.objects:
+        assert ko.topics == ["contracts"]
+        assert ko.document_type == "contract"
+        assert ko.model_used == "anthropic/claude-haiku-4.5"
+        assert ko.source.source_id == "s1"
+        assert ko.document.document_id == "d1"
+        assert ko.evidence[0].chunk_id == "c1"
+
+    caused_by = [r for r in outcome.relations if r.type == RelationType.CAUSED_BY]
+    assert len(caused_by) == 1
+    assert caused_by[0].subject_id == decision.knowledge_object_id
+    assert caused_by[0].object_id == issue.knowledge_object_id
+
     assert client.chat.completions.calls == 1
     # response_format is present and carries the ExtractionResult schema
     fmt = client.chat.completions.last_kwargs["response_format"]
@@ -126,9 +146,9 @@ async def test_retries_once_on_rate_limit_then_succeeds():
     client = _FakeClient([_rate_limit_error(), _chat_response(_sample_result_json())])
     extractor = OpenRouterExtractor(client=client)
 
-    ko = await extractor.extract(_sample_chunk(), _sample_document(), _sample_source())
+    outcome = await extractor.extract(_sample_chunk(), _sample_document(), _sample_source())
 
-    assert ko.summary == "A short summary."
+    assert len(outcome.objects) == 4
     assert client.chat.completions.calls == 2
 
 

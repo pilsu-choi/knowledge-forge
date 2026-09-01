@@ -15,7 +15,8 @@ import pytest_asyncio
 
 from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.document import Document, DocumentMetadata, TextBlock
-from knowledge_forge.models.knowledge_object import ChunkRef, DocumentRef, Entity, KnowledgeObject, Relation
+from knowledge_forge.models.knowledge_object import DocumentRef, Evidence, KnowledgeObject, KnowledgeObjectType
+from knowledge_forge.models.relation import Relation, RelationType
 from knowledge_forge.models.source import Source, SourceRef, SourceType
 from knowledge_forge.storage.postgres_store import PostgresStore
 
@@ -49,21 +50,47 @@ def _sample_records():
         element_ids=["e1"],
         page_range=(1, 2),
     )
-    ko = KnowledgeObject(
+    entity_ko = KnowledgeObject(
         knowledge_object_id="test-ko1",
+        type=KnowledgeObjectType.ENTITY,
         source=SourceRef.from_source(src),
         document=DocumentRef(document_id="test-d1", title="T"),
-        chunk=ChunkRef(chunk_id="test-c1", hierarchy_level=HierarchyLevel.PARAGRAPH, sequence_index=0),
-        summary="s",
-        facts=["f"],
-        entities=[Entity(name="Acme", type="ORG")],
-        relations=[Relation(subject="Acme", predicate="owns", object="X")],
+        evidence=[Evidence(chunk_id="test-c1", document_id="test-d1", hierarchy_level=HierarchyLevel.PARAGRAPH, sequence_index=0)],
+        summary="Acme",
+        content={"name": "Acme", "entity_type": "ORG", "description": None},
         topics=["t"],
         document_type="report",
         extracted_at=datetime.now(timezone.utc),
         model_used="claude-opus-5",
+        pipeline_version="0.1.0",
+        source_hash="h1",
     )
-    return src, doc, chunk, ko
+    fact_ko = KnowledgeObject(
+        knowledge_object_id="test-ko2",
+        type=KnowledgeObjectType.FACT,
+        source=SourceRef.from_source(src),
+        document=DocumentRef(document_id="test-d1", title="T"),
+        evidence=[Evidence(chunk_id="test-c1", document_id="test-d1", hierarchy_level=HierarchyLevel.PARAGRAPH, sequence_index=0)],
+        summary="Acme owns X",
+        content={"statement": "Acme owns X"},
+        topics=["t"],
+        document_type="report",
+        extracted_at=datetime.now(timezone.utc),
+        model_used="claude-opus-5",
+        pipeline_version="0.1.0",
+        source_hash="h1",
+    )
+    relation = Relation(
+        relation_id="test-rel1",
+        type=RelationType.MENTIONS,
+        subject_id="test-ko2",
+        object_id="test-ko1",
+        label="owns",
+        confidence=0.8,
+        evidence=["test-c1"],
+        created_at=datetime.now(timezone.utc),
+    )
+    return src, doc, chunk, [entity_ko, fact_ko], relation
 
 
 @pytest_asyncio.fixture
@@ -71,6 +98,7 @@ async def store():
     async with PostgresStore(DSN) as db:
         await db.init_schema()
         yield db
+        await db.conn.execute("DELETE FROM relations WHERE relation_id LIKE 'test-%'")
         await db.conn.execute("DELETE FROM knowledge_objects WHERE knowledge_object_id LIKE 'test-%'")
         await db.conn.execute("DELETE FROM chunks WHERE chunk_id LIKE 'test-%'")
         await db.conn.execute("DELETE FROM documents WHERE document_id LIKE 'test-%'")
@@ -78,35 +106,47 @@ async def store():
 
 
 async def test_save_and_upsert_all_tables_is_idempotent(store):
-    src, doc, chunk, ko = _sample_records()
+    src, doc, chunk, objects, relation = _sample_records()
 
     for _ in range(2):  # second pass exercises the ON CONFLICT upsert path
         await store.save_source(src, raw_path="/data/raw/aa/h1")
         await store.save_document(doc)
         await store.save_chunks([chunk])
-        await store.save_knowledge_object(ko)
+        await store.save_knowledge_objects(objects)
+        await store.save_relations([relation])
 
     count_row = await (await store.conn.execute(
         "SELECT count(*) FROM sources WHERE source_id = %s", (src.source_id,)
     )).fetchone()
     assert count_row[0] == 1
     count_row = await (await store.conn.execute(
-        "SELECT count(*) FROM knowledge_objects WHERE knowledge_object_id = %s", (ko.knowledge_object_id,)
+        "SELECT count(*) FROM knowledge_objects WHERE knowledge_object_id = %s", (objects[0].knowledge_object_id,)
+    )).fetchone()
+    assert count_row[0] == 1
+    count_row = await (await store.conn.execute(
+        "SELECT count(*) FROM relations WHERE relation_id = %s", (relation.relation_id,)
     )).fetchone()
     assert count_row[0] == 1
 
     row = await (await store.conn.execute(
-        "SELECT summary, entities, topics, document_type FROM knowledge_objects WHERE knowledge_object_id = %s",
-        (ko.knowledge_object_id,),
+        "SELECT type, summary, content, topics, document_type FROM knowledge_objects WHERE knowledge_object_id = %s",
+        (objects[0].knowledge_object_id,),
     )).fetchone()
-    assert row[0] == "s"
-    assert row[1] == [{"name": "Acme", "type": "ORG", "description": None}]
-    assert row[2] == ["t"]
-    assert row[3] == "report"
+    assert row[0] == "entity"
+    assert row[1] == "Acme"
+    assert row[2] == {"name": "Acme", "entity_type": "ORG", "description": None}
+    assert row[3] == ["t"]
+    assert row[4] == "report"
+
+    rel_row = await (await store.conn.execute(
+        "SELECT type, subject_id, object_id, label FROM relations WHERE relation_id = %s",
+        (relation.relation_id,),
+    )).fetchone()
+    assert rel_row == ("mentions", "test-ko2", "test-ko1", "owns")
 
 
 async def test_save_chunks_persists_page_range(store):
-    src, doc, chunk, _ = _sample_records()
+    src, doc, chunk, _, _ = _sample_records()
     await store.save_source(src, raw_path=None)
     await store.save_document(doc)
     await store.save_chunks([chunk])
