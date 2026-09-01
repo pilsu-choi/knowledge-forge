@@ -17,12 +17,15 @@ class RawBlobStore:
     def __init__(self, data_dir: Path | str):
         self._root = Path(data_dir) / "raw"
 
-    def save(self, item: RawItem) -> Path:
-        """Write `item.content` under a hash-derived path, deduplicating by
-        content hash. Returns the path even if the blob already existed.
+    def save(self, item: RawItem, project_id: str = "default") -> Path:
+        """Write `item.content` under `{project_id}/{hash fan-out}`, deduplicating
+        by content hash within that project. Returns the path even if the blob
+        already existed. Blobs are scoped per project_id (not shared across
+        projects) so a project's raw data can be located, backed up, or deleted
+        as a unit.
         """
         fan_out = item.content_hash[:2]
-        directory = self._root / fan_out
+        directory = self._root / project_id / fan_out
         path = directory / item.content_hash
         if not path.exists():
             directory.mkdir(parents=True, exist_ok=True)

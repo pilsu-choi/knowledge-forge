@@ -76,8 +76,9 @@ def test_writer_produces_manifest_indexing_resources_objects_and_relations(tmp_p
     assert manifest["pipeline_version"]
     assert manifest["generated_at"]
 
-    # Files on disk are readable, self-contained records (not just index entries).
-    fact_payload = yaml.safe_load((tmp_path / "objects/fact/ko1.yaml").read_text(encoding="utf-8"))
+    # Files on disk are readable, self-contained records (not just index entries),
+    # written under the default project_id's subfolder.
+    fact_payload = yaml.safe_load((tmp_path / "default" / "objects/fact/ko1.yaml").read_text(encoding="utf-8"))
     assert fact_payload["knowledge_object_id"] == "ko1"
     assert fact_payload["content"]["statement"] == "s"
 
@@ -96,15 +97,15 @@ def test_write_views_indexes_objects_by_topic_document_and_timeline(tmp_path):
     paths = writer.write_views()
     assert {p.name for p in paths} == {"by_topic.yaml", "by_document.yaml", "timeline.yaml"}
 
-    by_topic = yaml.safe_load((tmp_path / "views/by_topic.yaml").read_text(encoding="utf-8"))
+    by_topic = yaml.safe_load((tmp_path / "default" / "views/by_topic.yaml").read_text(encoding="utf-8"))
     assert {e["id"] for e in by_topic["alpha"]} == {"ko1", "ko2"}
     assert {e["id"] for e in by_topic["beta"]} == {"ko1"}
 
-    by_document = yaml.safe_load((tmp_path / "views/by_document.yaml").read_text(encoding="utf-8"))
+    by_document = yaml.safe_load((tmp_path / "default" / "views/by_document.yaml").read_text(encoding="utf-8"))
     assert by_document["d1"]["title"] == "T"
     assert {e["id"] for e in by_document["d1"]["objects"]} == {"ko1", "ko2"}
 
-    timeline = yaml.safe_load((tmp_path / "views/timeline.yaml").read_text(encoding="utf-8"))["timeline"]
+    timeline = yaml.safe_load((tmp_path / "default" / "views/timeline.yaml").read_text(encoding="utf-8"))["timeline"]
     assert [e["id"] for e in timeline] == ["ko2", "ko1"]  # chronological (ko2 extracted first)
 
 

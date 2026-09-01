@@ -11,7 +11,7 @@ table in wiki/roadmap.md).
 
 Layout:
 
-    <root>/
+    <root>/{project_id}/
       manifest.yaml
       resources/{source_id}.yaml           # Source + Document (the source-native unit)
       objects/{type}/{knowledge_object_id}.yaml
@@ -19,6 +19,12 @@ Layout:
       views/by_topic.yaml                  # topic -> [{id, type, path}]
       views/by_document.yaml               # document_id -> {title, objects: [...]}
       views/timeline.yaml                  # [{id, type, path, extracted_at}], chronological
+
+Every writer is scoped to one project_id's subtree (`<root>/{project_id}/`)
+so each project's OKF tree can be located, git-diffed, or copied out on its
+own - the manifest/views a `write_manifest()`/`write_views()` call rebuilds
+are that project's alone, not a mix of every project ever written under
+`<root>`.
 
 The manifest is a catalog, not a knowledge store in itself: for every
 resource/object/relation it holds just id + type + the relative path to
@@ -58,8 +64,8 @@ _VIEWS_DIR = "views"
 
 
 class OKFWriter:
-    def __init__(self, root: Path | str):
-        self._root = Path(root)
+    def __init__(self, root: Path | str, project_id: str = "default"):
+        self._root = Path(root) / project_id
         for sub in (_RESOURCES_DIR, _OBJECTS_DIR, _RELATIONS_DIR, _VIEWS_DIR):
             (self._root / sub).mkdir(parents=True, exist_ok=True)
 

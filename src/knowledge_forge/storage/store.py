@@ -32,7 +32,7 @@ class PipelineStore:
         await self._db.init_schema()
 
     async def record_source(self, source: Source, item: RawItem) -> None:
-        raw_path = self._raw.save(item)
+        raw_path = self._raw.save(item, source.project_id)
         await self._db.save_source(source, str(raw_path))
 
     async def record_document(self, document: Document) -> None:
