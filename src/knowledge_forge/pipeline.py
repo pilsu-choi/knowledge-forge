@@ -12,10 +12,14 @@ from typing import TYPE_CHECKING, AsyncIterator
 
 from knowledge_forge.chunking.base import Chunker
 from knowledge_forge.collectors.base import Collector, RawItem
+from knowledge_forge.config import settings
 from knowledge_forge.context.base import ContextReconstructor
 from knowledge_forge.context.registry import default_reconstructor_for
+from knowledge_forge.dedup import merge_duplicates
 from knowledge_forge.exceptions import KnowledgeExtractionError
 from knowledge_forge.extraction.base import ExtractionOutcome, Extractor
+from knowledge_forge.extraction.grouping import group_chunks
+from knowledge_forge.extraction.versioning import resolve_supersedes
 from knowledge_forge.ids import stable_id
 from knowledge_forge.models.source import Source, SourceRef
 from knowledge_forge.parsers.registry import ParserRegistry
@@ -52,9 +56,11 @@ async def run_pipeline(
     """Run the full pipeline over everything a Collector yields.
 
     Yields one `ExtractionOutcome` (its KnowledgeObjects + the Relations
-    connecting them) per chunk - not a single KnowledgeObject per chunk, since
-    a chunk can extract into zero, one, or several typed objects (see
-    extraction/base.py and models/knowledge_object.py).
+    connecting them) per document - not a single KnowledgeObject per chunk,
+    since a chunk can extract into zero, one, or several typed objects (see
+    extraction/base.py and models/knowledge_object.py), and a document's
+    chunk groups are merged into one outcome before yielding (see the dedup/
+    supersedes paragraph below).
 
     Items a Parser doesn't support (UnsupportedFormatError/NotImplementedError)
     or that fail extraction (KnowledgeExtractionError) are logged and skipped
@@ -63,9 +69,9 @@ async def run_pipeline(
 
     When `store` is given, each stage's artifact is persisted as it is
     produced (raw bytes + Source to disk/Postgres, then Document, then
-    Chunks, then each chunk's KnowledgeObjects/Relations) - `store=None`
-    (the default) runs exactly as before, print-only, with no persistence
-    side effects.
+    Chunks, then each document's merged KnowledgeObjects/Relations) -
+    `store=None` (the default) runs exactly as before, print-only, with no
+    persistence side effects.
 
     When `okf_writer` is given, the same artifacts are additionally written
     into a file-based OKF Knowledge Base tree (see knowledge_forge.okf) -
@@ -79,6 +85,15 @@ async def run_pipeline(
     - a Slack message or Gmail email in isolation is often incomplete.
     Defaults to `default_reconstructor_for(collector.source_type)`, which is
     a no-op for File/Notion/Google Drive sources.
+
+    Within one document: chunks are bundled into groups of
+    `settings.extraction_chunk_group_size` before extraction (see
+    extraction/grouping.py), each group's near-duplicate objects are merged
+    (extraction/versioning.py counterpart, dedup.py) at
+    `settings.dedup_similarity_threshold`, and - when `store` is given, so
+    there is something to compare against - new objects are matched to the
+    same source's prior objects to auto-fill `supersedes`/`version`
+    (extraction/versioning.py) at `settings.supersedes_similarity_threshold`.
     """
     reconstructor = context_reconstructor or default_reconstructor_for(collector.source_type)
     for item in reconstructor.reconstruct(collector.sync(cursor)):
@@ -109,28 +124,51 @@ async def run_pipeline(
         if store is not None:
             await store.record_chunks(chunks)
 
-        async def _extract(chunk):
+        chunk_groups = group_chunks(chunks, settings.extraction_chunk_group_size)
+
+        async def _extract(group):
             try:
-                return await extractor.extract(chunk, document, source)
+                return await extractor.extract(group, document, source)
             except KnowledgeExtractionError as exc:
-                logger.error("extraction failed for chunk %s, skipping: %s", chunk.chunk_id, exc)
+                group_ids = ",".join(c.chunk_id for c in group)
+                logger.error("extraction failed for chunk(s) %s, skipping: %s", group_ids, exc)
                 return None
 
-        # Chunks within one document are extracted concurrently (bounded by
-        # the Extractor's own semaphore); `return_exceptions=True` so one
-        # chunk's unexpected failure doesn't strand its siblings' results -
-        # they're still yielded/stored before the exception is re-raised.
-        results = await asyncio.gather(*(_extract(c) for c in chunks), return_exceptions=True)
+        # Chunk groups within one document are extracted concurrently
+        # (bounded by the Extractor's own semaphore); `return_exceptions=True`
+        # so one group's unexpected failure doesn't strand its siblings'
+        # results - they still feed into the merge/yield below before the
+        # exception is re-raised.
+        results = await asyncio.gather(*(_extract(g) for g in chunk_groups), return_exceptions=True)
         unexpected = next((r for r in results if isinstance(r, BaseException)), None)
-        for outcome in results:
-            if outcome is None or isinstance(outcome, BaseException):
-                continue
+        valid_outcomes = [r for r in results if r is not None and not isinstance(r, BaseException)]
+
+        if valid_outcomes:
+            # Dedup/supersedes both need to see every object this document
+            # produced at once (a duplicate can straddle two chunk groups;
+            # a re-extraction's prior version is unknown group-by-group) -
+            # so groups are merged into one ExtractionOutcome per document
+            # rather than yielded/stored per group as before.
+            objects = [ko for outcome in valid_outcomes for ko in outcome.objects]
+            relations = [rel for outcome in valid_outcomes for rel in outcome.relations]
+            deduped = merge_duplicates(objects, relations, threshold=settings.dedup_similarity_threshold)
+
+            supersede_relations: list = []
             if store is not None:
-                await store.record_knowledge_objects(outcome.objects)
-                await store.record_relations(outcome.relations)
+                prior_objects = await store.list_prior_knowledge_objects(source.source_id)
+                supersede_relations = resolve_supersedes(
+                    deduped.objects, prior_objects, threshold=settings.supersedes_similarity_threshold
+                )
+
+            merged_outcome = ExtractionOutcome(
+                objects=deduped.objects, relations=deduped.relations + supersede_relations
+            )
+            if store is not None:
+                await store.record_knowledge_objects(merged_outcome.objects)
+                await store.record_relations(merged_outcome.relations)
             if okf_writer is not None:
-                okf_writer.write_objects(outcome.objects)
-                okf_writer.write_relations(outcome.relations)
-            yield outcome
+                okf_writer.write_objects(merged_outcome.objects)
+                okf_writer.write_relations(merged_outcome.relations)
+            yield merged_outcome
         if unexpected is not None:
             raise unexpected

@@ -18,6 +18,24 @@ class Settings(BaseSettings):
     # Caps in-flight Anthropic API calls (extraction + vision) so a large
     # batch doesn't fan out unbounded concurrent requests.
     max_concurrent_llm_requests: int = 5
+    # How many consecutive chunks (see extraction/grouping.py) are bundled
+    # into one Extractor.extract() call. 1 (default) reproduces the exact
+    # prior one-chunk-per-call behavior; >1 lets a KnowledgeObject whose
+    # evidence spans an adjacent chunk boundary (see roadmap.md 5단계 item
+    # 1) actually be grounded in more than one chunk, at the cost of a
+    # larger prompt per call.
+    extraction_chunk_group_size: int = 1
+    # Same-document, same-run near-duplicate merging (roadmap.md 5단계 item
+    # 2, dedup.py) - two chunks/chunk bundles that both extract "the same"
+    # object get merged into one. 1.0 (or any value > 1.0) effectively
+    # disables merging, since text_similarity() never reaches it for
+    # non-identical text.
+    dedup_similarity_threshold: float = 0.9
+    # Matches a re-extraction's new objects against the prior run's objects
+    # for the same source (roadmap.md 5단계 item 4, extraction/versioning.py)
+    # to auto-fill `supersedes`/`version`. Only takes effect when a `store`
+    # is configured, since there is nothing to compare against otherwise.
+    supersedes_similarity_threshold: float = 0.8
     # PostgreSQL DSN for Source/Document/Chunk/KnowledgeObject persistence.
     # None disables storage - the pipeline runs print-only, as before.
     database_url: str | None = None
