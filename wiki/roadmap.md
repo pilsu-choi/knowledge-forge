@@ -8,6 +8,10 @@
   Adaptive Chunker → Claude 기반 Knowledge Extraction → Knowledge Object. PDF/Image/PPTX/HWPX/
   DOCX의 이미지, PDF의 표는 VLM 하이브리드로, PPTX 네이티브 차트는 결정론적 데이터 추출로
   처리한다([`vision-extraction.md`](vision-extraction.md), [`parsers.md`](parsers.md)).
+- **HTML 파서 추가**: PRD가 명시한 8개 포맷에는 없었지만, `lxml.html` 기반으로 `.html`/`.htm`을
+  규칙 기반으로 파싱하도록 추가했다. `<img>`는 다른 포맷과 달리 원본 바이트를 파일에서 바로 얻을
+  수 없어(URL/경로 참조일 뿐) VLM을 적용하지 않고 `src`/`alt`만 기록한다 —
+  [`parsers.md`](parsers.md)의 "HTML" 절 참고.
 - **4개 SaaS 커넥터 전부 실구현**: Slack/Gmail/Google Drive/Notion — 인증된 클라이언트를
   주입받아 초기/증분 동기화 수행([`saas-connectors.md`](saas-connectors.md)). 모킹 테스트만
   검증됨, CLI 연동은 아직 없음(아래 참고).

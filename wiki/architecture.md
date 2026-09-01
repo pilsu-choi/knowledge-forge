@@ -86,8 +86,9 @@ KnowledgeObject는 1:1이 아니다" 참고.
   판별 유니온(discriminated union)이며, 각 요소는 `element_id`, `page`(가능한 경우), `bbox`(페이지 내
   위치, 현재는 PDF만)를 갖는다. `TableElement`/`ImageElement`는 추가로 `extraction_method`
   (`"rule_based"` | `"vlm"` | `None`)를 가져 어느 경로로 만들어졌는지 추적할 수 있다.
-- PDF/DOCX/Markdown/TXT/XLSX/PPTX/Image/HWPX 전부 실제 동작한다(HWPX는 `python-hwpx` 기반,
-  실제 한컴 생성 파일로는 미검증 — [`parsers.md`](parsers.md) 참고).
+- PDF/DOCX/Markdown/TXT/XLSX/PPTX/Image/HWPX/HTML 전부 실제 동작한다(HWPX는 `python-hwpx`
+  기반, 실제 한컴 생성 파일로는 미검증; HTML은 PRD의 8개 포맷에는 없던 추가 포맷 —
+  [`parsers.md`](parsers.md) 참고).
 - **PDF/DOCX/PPTX/HWPX/Image는 순수 규칙 기반이 아니라 VLM 하이브리드다**: 일반 텍스트/네이티브
   표(DOCX/PPTX/HWPX)·PPTX 네이티브 차트는 여전히 결정론적으로 추출하지만, PDF의 표/이미지와
   모든 포맷의 임베드 이미지·독립 이미지 파일은 항상 Vision Provider(기본 Claude vision, 아래

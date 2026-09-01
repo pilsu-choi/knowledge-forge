@@ -15,6 +15,7 @@
 | PPTX | `.pptx` | ✅ 실제 동작 | 규칙 기반(`python-pptx`) | 표·차트는 규칙 기반, **그림(Picture)은 VLM** | 네이티브 차트는 결정론적 데이터 추출, 아래 참고 |
 | Image | `.png`/`.jpg`/`.jpeg` | ✅ 실제 동작 | - | **VLM 전용** | OCR(`pytesseract`) 대체 — 시스템 `tesseract-ocr` 의존성 완전히 제거됨 |
 | HWPX | `.hwpx` | ✅ 실제 동작 | 규칙 기반(`python-hwpx`) | 표는 규칙 기반, **이미지는 VLM** | `python-hwpx` 라이브러리 기반, 아래 "HWPX" 참고 |
+| HTML | `.html`/`.htm` | ✅ 실제 동작 | 규칙 기반(`lxml.html`) | 표는 규칙 기반, 이미지는 `src`/`alt`만 기록(VLM 미적용) | PRD의 8개 포맷에는 없던 추가 포맷, 아래 "HTML" 참고 |
 
 **"VLM 하이브리드"/"VLM 전용" 표시된 항목은 표/이미지/차트/다이어그램을 결정론적 파서가 아니라
 항상 Claude vision 호출로 추출한다** — 실패 시에만 VLM을 쓰는 폴백 정책이 아니라, 사용자가
@@ -83,3 +84,29 @@ LibreOffice headless 같은 슬라이드 래스터화 백엔드가 없어 이미
 `add_picture`), 검증은 "같은 라이브러리로 왕복(round-trip)"이지 독립적인 실파일 검증이
 아니다. 실제 한컴 파일과의 호환성은 `python-hwpx` 업스트림의 자체 테스트 주장에 의존한다 —
 라이브 검증은 실제 hancom 생성 파일을 구해서 별도로 진행해야 한다.
+
+## HTML
+
+`HtmlParser`(`src/knowledge_forge/parsers/html.py`)는 `lxml.html`로 DOM을 파싱해 문서
+순서대로 트리를 순회한다. `lxml`은 원래 `python-docx`(핵심 의존성)의 전이 의존성으로만
+설치돼 있었는데, 이번에 `pyproject.toml`에 직접 의존성(`lxml>=5.0`)으로 명시했다 — 전이
+의존성에 암묵적으로 기대는 대신, 실제로 import하는 패키지는 항상 직접 선언한다.
+
+- `h1`~`h6` → `Heading`, `p`/`blockquote` → `TextBlock`(모두 `text_content()`로 하위 인라인
+  태그까지 평문으로 합침), `ul`/`ol`의 직계 `li` → `ListElement`, `table`(중첩 `thead`/`tbody`
+  포함, `tr`을 `iter()`로 전부 수집) → `TableElement`(`extraction_method="rule_based"`),
+  `img` → `ImageElement`(`src`를 `uri`, `alt`를 `alt_text`로 그대로 기록 — 다른 이미지 경로와
+  달리 **VLM을 호출하지 않는다**, 아래 참고).
+- `div`/`section`/`article`/`span`/`body`/`html` 등 나머지 태그는 "투명 컨테이너"로 취급한다 —
+  자기 자신은 아무 요소도 만들지 않고 자식으로 재귀만 한다. `script`/`style`/`noscript`/`head`는
+  텍스트도 재귀도 없이 통째로 버린다.
+- `lxml.html.fromstring`은 브라우저와 같은 관용적(recovering) 파서라 태그가 닫히지 않거나
+  구조가 깨진 HTML도 예외 없이 파싱된다 — 다른 포맷 파서들과 달리 "입력이 스펙을 따른다"고
+  가정할 수 없는 포맷이라는 점을 반영한 선택이다.
+
+**이미지에 VLM을 적용하지 않는 이유**: PDF/DOCX/PPTX/HWPX의 이미지는 원본 바이트를 파일에서
+직접 얻을 수 있어 `VisionExtractor.describe_figure()`로 바로 넘길 수 있지만, HTML의 `<img
+src="...">`는 이미지 자체가 아니라 URL/상대 경로 참조일 뿐이다. 이를 실제로 설명하려면
+별도의 fetch 단계(신뢰할 수 없는 외부 URL 요청, 상대 경로 resolve, 네트워크 실패 처리)가
+필요해 이번 구현 범위 밖에 뒀다 — `uri`/`alt_text`만 기록하고 `extraction_method`는 `None`으로
+남는다. 이미지 fetch까지 포함한 VLM 하이브리드화는 향후 과제([`roadmap.md`](roadmap.md) 참고).

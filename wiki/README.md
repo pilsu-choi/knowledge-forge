@@ -21,7 +21,7 @@
 
 | 문서 | 내용 |
 |---|---|
-| [`parsers.md`](parsers.md) | 포맷별(PDF/DOCX/XLSX/PPTX/HWPX/Image/Markdown/TXT) 지원 현황, 라이브러리, 라이선스 근거 |
+| [`parsers.md`](parsers.md) | 포맷별(PDF/DOCX/XLSX/PPTX/HWPX/HTML/Image/Markdown/TXT) 지원 현황, 라이브러리, 라이선스 근거 |
 | [`vision-extraction.md`](vision-extraction.md) | 표/이미지/차트를 VLM으로 처리하는 하이브리드 파싱 설계 — 왜 "항상 VLM"인지, bbox 중복 제거, 실패 시 성능 저하 |
 | [`adaptive-chunking.md`](adaptive-chunking.md) | Document→Chapter→Section→...→Line 구조 기반 청킹 알고리즘, "최대 semantic unit 유지" 원칙 |
 | [`llm-providers.md`](llm-providers.md) | Knowledge Extraction/Vision의 LLM Provider 추상화 — Anthropic(기본) ↔ OpenRouter(대체) 전환 |
