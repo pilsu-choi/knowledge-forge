@@ -168,6 +168,17 @@ KnowledgeObject는 1:1이 아니다" 참고.
   `APScheduler`(`AsyncIOScheduler`)로 일정 간격마다 asyncio 이벤트 루프 위의 백그라운드 job으로
   반복 실행하는 장기 실행 프로세스다. 상세 동작은 [`scheduling.md`](scheduling.md) 참고.
 
+### API 서버 + Job Queue/Worker (`src/knowledge_forge/api/`, `worker.py`) — 선택적
+
+- 위 두 실행 모드(`extract`/`schedule`)는 모두 호출 프로세스 안에서 파이프라인이 끝까지
+  블로킹 실행된다. `knowledge-forge serve`(FastAPI)는 이 프로젝트 최초의 HTTP 경계로,
+  `POST /ingest`가 요청을 `jobs` 테이블(Postgres, `FOR UPDATE SKIP LOCKED` 폴링 큐)에 넣고
+  즉시 `202`+job_id를 응답한다 — 실제 파이프라인 실행은 별도 프로세스인 `knowledge-forge
+  worker`가 큐를 폴링해 넘겨받는다("Ingest와 Process 분리", `roadmap.md` 4단계).
+- `jobs.job_type`이 payload 모양을 구분하는 확장점이다 — v1은 이미 동작하는
+  `LocalFileCollector` 경로를 쓰는 `local_file_ingest` 하나뿐이고, SaaS 소스는 CLI/인증 연동
+  (로드맵 1단계) 이후 새 job_type으로 추가된다. 자세한 내용은 [`api.md`](api.md) 참고.
+
 ## 확장 포인트
 
 새로운 SaaS 커넥터를 추가하려면:

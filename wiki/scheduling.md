@@ -60,6 +60,16 @@ DB 연결이 끊겨도 다음 tick이 스스로 복구한다.
 쓴다 — 두 명령 사이에 설정을 옮길 때 헷갈리지 않도록 의도적으로 맞췄다. `--interval-seconds`
 만 `schedule` 고유 옵션이다.
 
+## `schedule` vs. `serve`/`worker` — 언제 뭘 쓰나
+
+`schedule`은 하나의 장기 실행 프로세스가 스스로 반복 호출하는 **폴링** 모델이다 - 정적 파일
+소스처럼 "주기적으로 같은 경로를 증분 동기화"하면 되는 경우에 맞다. 반면 [`api.md`](api.md)의
+`serve`/`worker`는 **요청이 오면 즉시 응답하고 처리는 큐 뒤 워커가 넘겨받는** 모델이다 -
+사용자가 소스를 그때그때 연결/업로드하는 온디맨드 ingest, 그리고 향후 SaaS 웹훅/event-driven
+ingest가 붙을 자리(`roadmap.md` 4단계)에 맞다. 이 문서가 다루는 `schedule`은 file source
+전용으로 유지되고, `serve`/`worker`가 SaaS 소스까지 포함하는 general-purpose ingest 경로로
+확장된다 - 서로 대체 관계가 아니라 다른 트리거 성격(주기 vs. 요청)에 맞는 별도 실행 모드다.
+
 ## 테스트
 
 `run_scheduled_sync`는 이벤트 루프 위에서 영원히 대기하므로 스케줄 루프 자체를 단위

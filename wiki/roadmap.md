@@ -19,6 +19,11 @@
   PostgreSQL — opt-in, `--store`/`KF_DATABASE_URL`([`storage.md`](storage.md)).
 - **스케줄링**: `knowledge-forge schedule`로 프로세스 내 주기 실행
   ([`scheduling.md`](scheduling.md)).
+- **API 서버 + Postgres 기반 Job Queue/Worker**: `knowledge-forge serve`(FastAPI)의 `POST
+  /ingest`가 즉시 `202`+job_id를 응답하고, 별도 프로세스인 `knowledge-forge worker`가 `jobs`
+  테이블을 `FOR UPDATE SKIP LOCKED`로 폴링해 실제 파이프라인을 실행한다 — 4단계 "Ingest와
+  Process 분리"의 큐/워커 인프라 자체는 완료([`api.md`](api.md)). 단 v1은 `local_file_ingest`
+  job type 하나뿐이고 SaaS ingest는 1단계(아래) 완료 후 새 job_type으로 추가된다.
 - **컨테이너화**: `Dockerfile` + `docker-compose.yml`(앱 + Postgres) — [`dev-guide.md`](dev-guide.md).
 - **인증**: 활성 LLM Provider에 맞는 자격 증명(Anthropic: `ANTHROPIC_API_KEY`/`ant auth login`
   OAuth, OpenRouter: `OPENROUTER_API_KEY`) 사전 점검 + 친절한 에러 메시지.
@@ -195,13 +200,13 @@ Knowledge가 나온다.
    첨부파일이 발견되면 기존 File Collector→Parser 경로로 넘긴다(별도 재구현 없이 기존
    파이프라인 재사용). 현재 4개 SaaS 커넥터는 아직 첨부파일 감지/추출 자체를 하지 않음
    ([`saas-connectors.md`](saas-connectors.md)) — 이것도 1단계에서 함께 다뤄야 한다.
-4. **Ingest와 Process 분리** — 사용자가 소스를 연결/업로드하면 "수집 완료"를 즉시 응답하고,
-   무거운 Parsing/Chunking/Knowledge Extraction은 백그라운드 워커로 넘긴다. `run_pipeline`
-   자체는 이제 `asyncio` 기반이고 `schedule` 명령도 `AsyncIOScheduler`로 백그라운드 tick을
-   돈다(완료 — [`scheduling.md`](scheduling.md) 참고). 하지만 이건 "한 프로세스 안에서 LLM
-   호출을 동시 실행"하는 것이지, "요청을 받는 즉시 응답하고 처리는 별도 워커/프로세스가
-   넘겨받는" 것과는 다른 문제다 — SaaS 커넥터가 CLI에 붙는 시점(1단계)에 별도 큐/워커
-   아키텍처(예: 요청 큐에 넣고 즉시 202 응답, 워커 프로세스가 소비)를 여전히 설계해야 한다.
+4. ~~**Ingest와 Process 분리**~~ — 큐/워커 인프라는 완료:
+   `knowledge-forge serve`(FastAPI)의 `POST /ingest`가 `jobs` 테이블(Postgres)에 enqueue하고
+   즉시 `202`+job_id를 응답, 별도 프로세스 `knowledge-forge worker`가 `FOR UPDATE SKIP LOCKED`
+   폴링으로 job을 집어 `run_pipeline`을 실행한다 — [`api.md`](api.md) 참고. **다만 v1 job
+   type은 `local_file_ingest` 하나뿐이다** — SaaS 소스가 이 큐를 타려면 여전히 1단계(SaaS
+   CLI/인증 연동)가 먼저 끝나야 새 job_type(예: `slack_ingest`)을 추가할 수 있다. 즉 4번
+   항목의 "설계"는 끝났지만 SaaS에 실제로 연결되는 건 1단계에 달려 있다는 점은 그대로다.
 5. **스케줄링 성격 구분** — Slack/Gmail처럼 계속 생성되는 데이터는 polling(현재
    `knowledge-forge schedule`이 이 모델) 또는 향후 webhook/event-driven ingest가 맞고, 정적
    파일 소스는 최초 1회 + 변경 감지 재처리로 충분하다는 게 이미 맞게 설계되어 있음 — 다만

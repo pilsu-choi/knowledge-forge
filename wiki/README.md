@@ -33,4 +33,5 @@
 | [`storage.md`](storage.md) | `PipelineStore`(디스크 원본 + PostgreSQL 구조화 레코드) 스키마와 opt-in 동작 |
 | [`okf.md`](okf.md) | `OKFWriter` — manifest.yaml + resources/objects/relations 파일 트리로 된 Knowledge Base, Postgres와 독립적인 opt-in 출력 |
 | [`scheduling.md`](scheduling.md) | `knowledge-forge schedule`의 tick/interval 모델, 실패 격리 |
+| [`api.md`](api.md) | `knowledge-forge serve`(FastAPI) + `worker` — Ingest/Process 분리, Postgres job queue, 엔드포인트 목록 |
 | [`dev-guide.md`](dev-guide.md) | 셋업(`uv sync`), 환경변수 전체 목록, CLI 사용법, 컨테이너 실행, 새 Parser/Collector 추가 방법 |

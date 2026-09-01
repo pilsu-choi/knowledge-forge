@@ -229,6 +229,17 @@ uv run knowledge-forge schedule <path> --interval-seconds 3600
 uv run knowledge-forge db init
 ```
 
+### API 서버 + Job Queue/Worker (Ingest/Process 분리)
+
+```bash
+uv run knowledge-forge serve [--host 0.0.0.0] [--port 8000]   # POST /ingest → 즉시 202+job_id
+uv run knowledge-forge worker [--poll-interval-seconds 2.0]   # jobs 테이블을 폴링해 실제 파이프라인 실행
+```
+
+`serve`는 LLM을 호출하지 않아 Anthropic 자격증명이 필요 없고(`--store` 없이도 `KF_DATABASE_URL`은
+필수), `worker`는 `extract`/`schedule`과 동일하게 필요하다. 자세한 내용, 엔드포인트 목록,
+job 상태 전이는 [`wiki/api.md`](wiki/api.md) 참고.
+
 ## Docker로 실행하기
 
 ```bash
@@ -237,6 +248,9 @@ docker compose up -d postgres     # 로컬 Postgres (호스트 15432 포트)
 docker compose run --rm app db init
 docker compose run --rm app extract /app/input/sample.md --pretty
 docker compose run --rm app schedule /app/input --interval-seconds 3600
+
+# API 서버 + 워커 (wiki/api.md) - 별도 service로 떠 있음
+docker compose up -d api worker
 ```
 
 수집할 파일은 `./input`에 두면 컨테이너의 `/app/input`에 읽기 전용으로 마운트되고, 원본 blob 스토어는 `./data`에 영속화된다. 자세한 내용은 [`wiki/dev-guide.md`](wiki/dev-guide.md), [`wiki/storage.md`](wiki/storage.md) 참고.
@@ -245,9 +259,12 @@ docker compose run --rm app schedule /app/input --interval-seconds 3600
 
 ```text
 src/knowledge_forge/
-├── cli.py               # Typer 기반 CLI (extract / schedule / db init)
+├── cli.py               # Typer 기반 CLI (extract / schedule / serve / worker / db init)
 ├── config.py             # KF_* 환경변수 (Settings)
 ├── pipeline.py           # run_pipeline() — 전 단계 오케스트레이션
+├── ingest.py              # run_local_ingest() — worker가 쓰는 파이프라인 호출 헬퍼
+├── worker.py              # Job queue worker (jobs 테이블 폴링, wiki/api.md)
+├── api/                   # FastAPI 서버 — POST /ingest, GET /jobs, GET /knowledge-objects 등
 ├── collectors/           # Collector ABC + LocalFileCollector + saas/ (Slack/Gmail/GDrive/Notion)
 ├── context/              # ContextReconstructor ABC (Slack 세그멘테이션, Gmail 스레드 병합)
 ├── parsers/               # Parser ABC + 포맷별 구현 + ParserRegistry
@@ -255,7 +272,7 @@ src/knowledge_forge/
 ├── extraction/            # Extractor ABC + ClaudeExtractor/OpenRouterExtractor + outcome.py
 ├── vision/                # VisionExtractor — 표/이미지 VLM 추출 (Anthropic/OpenRouter)
 ├── models/                # Pydantic 모델: Source/Document/Chunk/KnowledgeObject/Relation
-├── storage/               # PipelineStore (Postgres + 디스크, opt-in)
+├── storage/               # PipelineStore (Postgres + 디스크, opt-in) + JobStore (jobs 큐)
 ├── okf/                   # OKFWriter — 파일 기반 Knowledge Base (opt-in)
 └── scheduling/             # APScheduler 기반 주기 실행
 
