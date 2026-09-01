@@ -29,6 +29,7 @@ class RelationType(str, Enum):
     DEPENDS_ON = "depends_on"
     REFERENCES = "references"  # cites another object/document
     SUPERSEDES = "supersedes"  # a re-extraction replacing a prior object
+    DUPLICATE_OF = "duplicate_of"  # a near-duplicate merged into a canonical object
 
 
 class Relation(BaseModel):
