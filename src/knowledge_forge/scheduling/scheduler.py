@@ -7,7 +7,10 @@ external cron/systemd timer around the one-shot CLI command.
 """
 
 import asyncio
+import contextlib
 import logging
+import os
+import signal
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
@@ -21,9 +24,24 @@ from knowledge_forge.parsers.registry import default_registry
 from knowledge_forge.pipeline import run_pipeline
 
 if TYPE_CHECKING:
+    from fastapi import FastAPI
+
     from knowledge_forge.storage.store import PipelineStore
 
 logger = logging.getLogger(__name__)
+
+# Default incremental-sync interval when the caller (CLI's `schedule`
+# command) doesn't override it - 10 minutes.
+DEFAULT_INTERVAL_SECONDS = 600
+
+# Fixed id for the (single) recurring sync job so trigger_now() can look it
+# up via AsyncIOScheduler.modify_job() instead of tracking the Job object.
+SYNC_JOB_ID = "sync_tick"
+
+# Bound to localhost by default - the trigger endpoint has no auth, so it's
+# opt-in to expose beyond the local machine (via --trigger-host on the CLI).
+DEFAULT_TRIGGER_API_HOST = "127.0.0.1"
+DEFAULT_TRIGGER_API_PORT = 8765
 
 
 def build_tick(
@@ -32,6 +50,7 @@ def build_tick(
     chunker,
     extractor,
     store_factory: Optional[Callable[[], "PipelineStore"]] = None,
+    project_id: str = "default",
 ) -> Callable[[], "asyncio.Future[None]"]:
     """Returns a zero-arg async tick function that runs one incremental sync pass.
 
@@ -62,13 +81,15 @@ def build_tick(
                     outcomes = [
                         outcome
                         async for outcome in run_pipeline(
-                            collector, registry, chunker, extractor, cursor=cursor, store=store
+                            collector, registry, chunker, extractor, cursor=cursor, store=store, project_id=project_id
                         )
                     ]
             else:
                 outcomes = [
                     outcome
-                    async for outcome in run_pipeline(collector, registry, chunker, extractor, cursor=cursor, store=None)
+                    async for outcome in run_pipeline(
+                        collector, registry, chunker, extractor, cursor=cursor, store=None, project_id=project_id
+                    )
                 ]
             object_count = sum(len(outcome.objects) for outcome in outcomes)
             logger.info("scheduled sync tick produced %d Knowledge Object(s)", object_count)
@@ -78,18 +99,97 @@ def build_tick(
     return _tick
 
 
+def trigger_now(scheduler: AsyncIOScheduler) -> None:
+    """Runs the recurring sync job immediately instead of waiting for its
+    next interval-based fire time, by re-pointing its `next_run_time` at
+    now. Reschedules the *existing* job (rather than firing the tick
+    function directly) so APScheduler's own executor still serializes it
+    against a tick that's already in flight - no risk of two ticks running
+    concurrently just because a manual trigger landed mid-interval.
+
+    The job's subsequent fire times are computed from the interval
+    trigger's original start date, so a manual trigger doesn't shift the
+    regular cadence going forward - it just runs one extra time now.
+    """
+    scheduler.modify_job(SYNC_JOB_ID, next_run_time=datetime.now())
+    logger.info("manual sync trigger requested - running now")
+
+
+def _job_status(scheduler: AsyncIOScheduler) -> dict:
+    job = scheduler.get_job(SYNC_JOB_ID)
+    return {"next_run_time": job.next_run_time.isoformat() if job and job.next_run_time else None}
+
+
+def build_trigger_app(scheduler: AsyncIOScheduler) -> "FastAPI":
+    """A tiny standalone FastAPI app (not knowledge_forge.api.app's - that one
+    belongs to the separate, request-driven `serve`/`worker` job queue, see
+    wiki/scheduling.md "schedule vs. serve/worker") giving the `schedule`
+    process an HTTP counterpart to the SIGUSR1 manual trigger: `POST
+    /trigger` calls trigger_now(scheduler) exactly like the signal handler
+    does, for operators who'd rather curl a local port than send a signal
+    (e.g. from a container healthcheck-style sidecar).
+    """
+    from fastapi import FastAPI
+
+    app = FastAPI(title="Knowledge Forge Scheduler Trigger")
+
+    @app.post("/trigger")
+    async def trigger() -> dict:
+        trigger_now(scheduler)
+        return {"status": "triggered", **_job_status(scheduler)}
+
+    @app.get("/health")
+    async def health() -> dict:
+        return {"status": "ok", **_job_status(scheduler)}
+
+    return app
+
+
+async def _serve_trigger_api(scheduler: AsyncIOScheduler, host: str, port: int) -> None:
+    import uvicorn
+
+    config = uvicorn.Config(build_trigger_app(scheduler), host=host, port=port, log_level="warning")
+    server = uvicorn.Server(config)
+    await server.serve()
+
+
+def _install_manual_trigger_handler(scheduler: AsyncIOScheduler) -> bool:
+    """Wires SIGUSR1 to trigger_now(scheduler) so an operator can force an
+    immediate sync (`kill -USR1 <pid>`) without waiting for the interval,
+    without needing a control API for what is otherwise a plain foreground
+    polling loop. Returns whether the handler was installed - SIGUSR1 (and
+    asyncio's loop.add_signal_handler) isn't available on Windows, so
+    run_scheduled_sync degrades gracefully there (interval-only, no manual
+    trigger) rather than failing to start.
+    """
+    if not hasattr(signal, "SIGUSR1"):
+        return False
+    try:
+        asyncio.get_running_loop().add_signal_handler(signal.SIGUSR1, lambda: trigger_now(scheduler))
+    except NotImplementedError:
+        return False
+    return True
+
+
 async def run_scheduled_sync(
     root: Path | str,
-    interval_seconds: int,
-    max_tokens: int,
+    interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
+    max_tokens: int = 4000,
     model: str | None = None,
     store_factory: Optional[Callable[[], "PipelineStore"]] = None,
     state_path: Path | str | None = None,
+    project_id: str = "default",
+    trigger_api_host: str | None = DEFAULT_TRIGGER_API_HOST,
+    trigger_api_port: int | None = DEFAULT_TRIGGER_API_PORT,
 ) -> None:
     """Runs forever as a background job on the current event loop,
     incrementally syncing `root` every `interval_seconds` (firing once
     immediately at startup, then on the interval) until interrupted
-    (Ctrl-C / SIGINT).
+    (Ctrl-C / SIGINT). An operator can also force an out-of-cycle sync at
+    any time via `kill -USR1 <pid>`, or by POSTing to `/trigger` on the
+    trigger API (bound to `trigger_api_host:trigger_api_port`, disabled by
+    passing `trigger_api_port=None`) - see trigger_now()/build_trigger_app()
+    and wiki/scheduling.md.
     """
     collector = LocalFileCollector(root=root, state_path=state_path)
     registry = default_registry()
@@ -97,15 +197,31 @@ async def run_scheduled_sync(
     # model=None lets get_extractor() pick the active provider's own
     # default model instead of always defaulting to an Anthropic model id.
     extractor = get_extractor(model=model)
-    tick = build_tick(collector, registry, chunker, extractor, store_factory=store_factory)
+    tick = build_tick(collector, registry, chunker, extractor, store_factory=store_factory, project_id=project_id)
 
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(tick, "interval", seconds=interval_seconds, next_run_time=datetime.now())
+    scheduler.add_job(tick, "interval", seconds=interval_seconds, next_run_time=datetime.now(), id=SYNC_JOB_ID)
     scheduler.start()
+    if _install_manual_trigger_handler(scheduler):
+        logger.info("manual sync trigger enabled - run `kill -USR1 %d` to sync immediately", os.getpid())
+
+    api_task: Optional[asyncio.Task] = None
+    if trigger_api_port is not None:
+        api_task = asyncio.create_task(_serve_trigger_api(scheduler, trigger_api_host, trigger_api_port))
+        logger.info(
+            "manual sync trigger API enabled - POST http://%s:%d/trigger to sync immediately",
+            trigger_api_host,
+            trigger_api_port,
+        )
+
     try:
         await asyncio.Event().wait()
     except (KeyboardInterrupt, SystemExit):
         pass
     finally:
         scheduler.shutdown()
+        if api_task is not None:
+            api_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await api_task
         logger.info("scheduler stopped")

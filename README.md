@@ -220,7 +220,7 @@ uv run knowledge-forge extract <path> [--max-tokens 4000] [--model claude-opus-5
 ### 주기 실행
 
 ```bash
-uv run knowledge-forge schedule <path> --interval-seconds 3600
+uv run knowledge-forge schedule <path> --interval-seconds 600
 ```
 
 ### DB 스키마 초기화
@@ -247,7 +247,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 docker compose up -d postgres     # 로컬 Postgres (호스트 15432 포트)
 docker compose run --rm app db init
 docker compose run --rm app extract /app/input/sample.md --pretty
-docker compose run --rm app schedule /app/input --interval-seconds 3600
+docker compose run --rm app schedule /app/input --interval-seconds 600
 
 # API 서버 + 워커 (wiki/api.md) - 별도 service로 떠 있음
 docker compose up -d api worker

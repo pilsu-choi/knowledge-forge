@@ -6,17 +6,24 @@ so the (async) tick body can be exercised directly.
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from knowledge_forge.chunking import AdaptiveChunker
 from knowledge_forge.collectors.local_file import LocalFileCollector
 from knowledge_forge.extraction.claude_extractor import ClaudeExtractor
 from knowledge_forge.extraction.schemas import ExtractionResult
 from knowledge_forge.parsers.registry import default_registry
-from knowledge_forge.scheduling.scheduler import build_tick
+from knowledge_forge.scheduling.scheduler import (
+    DEFAULT_INTERVAL_SECONDS,
+    SYNC_JOB_ID,
+    build_tick,
+    build_trigger_app,
+    trigger_now,
+)
 
 LOGGER_NAME = "knowledge_forge.scheduling.scheduler"
 
@@ -124,6 +131,50 @@ async def test_tick_swallows_exceptions_and_logs_instead_of_raising(tmp_path, ca
         await tick()  # must not raise
 
     assert any("scheduled sync tick failed" in r.getMessage() for r in caplog.records if r.name == LOGGER_NAME)
+
+
+def test_default_interval_is_ten_minutes():
+    assert DEFAULT_INTERVAL_SECONDS == 600
+
+
+async def test_trigger_now_reschedules_job_to_run_immediately():
+    scheduler = AsyncIOScheduler()
+    far_future = datetime.now() + timedelta(hours=1)
+    scheduler.add_job(lambda: None, "interval", seconds=3600, next_run_time=far_future, id=SYNC_JOB_ID)
+    scheduler.start(paused=True)
+    try:
+        trigger_now(scheduler)
+        next_run_time = scheduler.get_job(SYNC_JOB_ID).next_run_time
+        assert next_run_time < far_future.astimezone(next_run_time.tzinfo)
+        assert (datetime.now(next_run_time.tzinfo) - next_run_time) < timedelta(seconds=5)
+    finally:
+        scheduler.shutdown(wait=False)
+
+
+async def test_trigger_app_post_trigger_reschedules_job_to_run_immediately():
+    from fastapi.testclient import TestClient
+
+    scheduler = AsyncIOScheduler()
+    far_future = datetime.now() + timedelta(hours=1)
+    scheduler.add_job(lambda: None, "interval", seconds=3600, next_run_time=far_future, id=SYNC_JOB_ID)
+    scheduler.start(paused=True)
+    try:
+        client = TestClient(build_trigger_app(scheduler))
+
+        health = client.get("/health")
+        assert health.status_code == 200
+        assert health.json()["status"] == "ok"
+
+        response = client.post("/trigger")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "triggered"
+
+        next_run_time = scheduler.get_job(SYNC_JOB_ID).next_run_time
+        assert next_run_time < far_future.astimezone(next_run_time.tzinfo)
+        assert next_run_time.isoformat() == body["next_run_time"]
+    finally:
+        scheduler.shutdown(wait=False)
 
 
 DSN = os.environ.get("KF_TEST_DATABASE_URL")

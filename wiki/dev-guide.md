@@ -85,11 +85,14 @@ uv run knowledge-forge extract tests/fixtures/sample.md --pretty
 ### 주기 실행 (스케줄링)
 
 ```bash
-uv run knowledge-forge schedule <path> --interval-seconds 3600
+uv run knowledge-forge schedule <path> --interval-seconds 600
 ```
 
-`extract`와 같은 파이프라인을 하나의 프로세스 안에서 반복 실행한다(Ctrl-C로 종료). 자세한
-내용은 [`scheduling.md`](scheduling.md).
+`extract`와 같은 파이프라인을 하나의 프로세스 안에서 반복 실행한다(Ctrl-C로 종료).
+`--interval-seconds`의 기본값은 600초(10분)이고, 인터벌을 기다리지 않고 즉시 한 번 더
+동기화하도록 `kill -USR1 <pid>` 또는 `curl -X POST http://127.0.0.1:8765/trigger`로 수동
+트리거할 수 있다(HTTP 트리거는 기본 활성화, `--no-trigger-api`로 끌 수 있음). 자세한 내용은
+[`scheduling.md`](scheduling.md).
 
 ### DB 스키마 초기화
 
@@ -108,7 +111,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 docker compose up -d postgres              # Postgres만 먼저 (호스트 15432 포트로 노출)
 docker compose run --rm app db init
 docker compose run --rm app extract /app/input/sample.md --pretty
-docker compose run --rm app schedule /app/input --interval-seconds 3600
+docker compose run --rm app schedule /app/input --interval-seconds 600
 ```
 
 - 수집할 파일은 `./input`에 두면 컨테이너 안 `/app/input`에 읽기 전용으로 마운트된다.

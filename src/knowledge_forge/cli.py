@@ -14,6 +14,11 @@ from knowledge_forge.extraction.factory import get_extractor
 from knowledge_forge.okf import OKFWriter
 from knowledge_forge.parsers.registry import default_registry
 from knowledge_forge.pipeline import run_pipeline
+from knowledge_forge.scheduling.scheduler import (
+    DEFAULT_INTERVAL_SECONDS,
+    DEFAULT_TRIGGER_API_HOST,
+    DEFAULT_TRIGGER_API_PORT,
+)
 from knowledge_forge.storage import PipelineStore
 
 app = typer.Typer(help="Knowledge Forge: Collector -> Parser -> Adaptive Chunker -> Knowledge Extraction.")
@@ -125,7 +130,9 @@ def extract(
 @app.command()
 def schedule(
     path: Path = typer.Argument(..., help="A local file or directory to ingest."),
-    interval_seconds: int = typer.Option(3600, "--interval-seconds", help="Seconds between incremental sync runs."),
+    interval_seconds: int = typer.Option(
+        DEFAULT_INTERVAL_SECONDS, "--interval-seconds", help="Seconds between incremental sync runs (default: 10 minutes)."
+    ),
     max_tokens: int = typer.Option(4000, "--max-tokens", help="Max tokens per chunk before splitting further."),
     model: Optional[str] = typer.Option(
         None, "--model", help="Extraction model. Defaults to the active provider's (KF_LLM_PROVIDER) own default model."
@@ -133,9 +140,22 @@ def schedule(
     store: bool = typer.Option(
         True, "--store/--no-store", help="Persist Source/Document/Chunk/KnowledgeObject to Postgres + raw bytes to disk."
     ),
+    trigger_api: bool = typer.Option(
+        True,
+        "--trigger-api/--no-trigger-api",
+        help="Serve POST /trigger (and GET /health) for HTTP-based manual sync triggering, alongside SIGUSR1.",
+    ),
+    trigger_host: str = typer.Option(
+        DEFAULT_TRIGGER_API_HOST, "--trigger-host", help="Bind address for the manual-trigger HTTP API."
+    ),
+    trigger_port: int = typer.Option(
+        DEFAULT_TRIGGER_API_PORT, "--trigger-port", help="Bind port for the manual-trigger HTTP API."
+    ),
 ) -> None:
     """Run the pipeline on a repeating interval inside one long-lived
-    process, incrementally re-syncing `path` each time (Ctrl-C to stop)."""
+    process, incrementally re-syncing `path` each time (Ctrl-C to stop).
+    An operator can force an out-of-cycle sync at any time, either via
+    `kill -USR1 <pid>` or `POST http://<trigger-host>:<trigger-port>/trigger`."""
     _ensure_authenticated()
 
     store_factory = None
@@ -148,8 +168,12 @@ def schedule(
                 err=True,
             )
 
+    trigger_msg = (
+        f", POST http://{trigger_host}:{trigger_port}/trigger로 즉시 동기화 가능" if trigger_api else ""
+    )
     typer.echo(
-        f"스케줄러 시작: {path} 를 {interval_seconds}초 간격으로 증분 동기화합니다 (중단하려면 Ctrl-C).",
+        f"스케줄러 시작: {path} 를 {interval_seconds}초 간격으로 증분 동기화합니다 "
+        f"(중단하려면 Ctrl-C, 즉시 동기화하려면 다른 터미널에서 kill -USR1 <pid>{trigger_msg}).",
         err=True,
     )
     from knowledge_forge.scheduling.scheduler import run_scheduled_sync
@@ -161,6 +185,8 @@ def schedule(
             max_tokens=max_tokens,
             model=model,
             store_factory=store_factory,
+            trigger_api_host=trigger_host if trigger_api else None,
+            trigger_api_port=trigger_port if trigger_api else None,
         )
     )
 
