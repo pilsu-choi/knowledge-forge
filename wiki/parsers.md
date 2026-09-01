@@ -11,7 +11,7 @@
 | DOCX | `.docx` | ✅ 실제 동작 | 규칙 기반(`python-docx`) | 표는 규칙 기반, **이미지는 VLM** | 스타일명(`Heading N`) 기반 헤딩 감지, `inline_shapes`의 Picture만 대상 |
 | Markdown | `.md` | ✅ 실제 동작 | 규칙 기반(`markdown-it-py`) | 규칙 기반 | GFM 테이블 포함 |
 | TXT | `.txt` | ✅ 실제 동작 | 규칙 기반(표준 라이브러리) | - | 빈 줄 기준 단락 분리, 헤딩 감지 없음 |
-| XLSX | `.xlsx` | ✅ 실제 동작 | - | 규칙 기반(`openpyxl`) | 시트별 `TableElement`, 셀 값이 이미 텍스트라 VLM 불필요 |
+| XLSX | `.xlsx` | ✅ 실제 동작 | - | 표는 규칙 기반, **앵커된 이미지는 VLM** | 시트별 `TableElement`(셀 값이 이미 텍스트라 VLM 불필요), `worksheet._images`의 앵커 이미지는 `describe_figure()` |
 | PPTX | `.pptx` | ✅ 실제 동작 | 규칙 기반(`python-pptx`) | 표·차트는 규칙 기반, **그림(Picture)은 VLM** | 네이티브 차트는 결정론적 데이터 추출, 아래 참고 |
 | Image | `.png`/`.jpg`/`.jpeg` | ✅ 실제 동작 | - | **VLM 전용** | OCR(`pytesseract`) 대체 — 시스템 `tesseract-ocr` 의존성 완전히 제거됨 |
 | HWPX | `.hwpx` | ✅ 실제 동작 | 규칙 기반(`python-hwpx`) | 표는 규칙 기반, **이미지는 VLM** | `python-hwpx` 라이브러리 기반, 아래 "HWPX" 참고 |

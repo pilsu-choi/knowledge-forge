@@ -3,7 +3,7 @@
 PDF/Image/PPTX/HWPX/DOCX 파서는 시각적 이미지 콘텐츠를 규칙 기반 API만으로 처리하지 않고,
 `VisionExtractor`(`src/knowledge_forge/vision/extractor.py`)를 통해 Claude vision 호출로
 추출한다(단, 이미 정확한 구조화 데이터가 존재하는 표·네이티브 차트는 규칙 기반을 유지 — 아래
-"독립 이미지 파일, PPTX, HWPX, DOCX" 참고). 이 문서는 그 설계 배경과 동작을 다룬다.
+"독립 이미지 파일, PPTX, HWPX, DOCX, XLSX" 참고). 이 문서는 그 설계 배경과 동작을 다룬다.
 
 ## 왜 "실패 시 폴백"이 아니라 "항상 VLM"인가
 
@@ -84,7 +84,7 @@ VLM 호출이 재시도까지 다 소진하고 실패하면:
 어느 경우든 한 표/이미지의 실패가 나머지 페이지·문서 파싱을 막지 않는다 — 로그에
 경고만 남기고 계속 진행한다.
 
-## 독립 이미지 파일, PPTX, HWPX, DOCX
+## 독립 이미지 파일, PPTX, HWPX, DOCX, XLSX
 
 - **`parsers/image.py`**: `.png`/`.jpg`/`.jpeg` 전체를 `transcribe_image()`에 통째로 보낸다.
   VLM이 재시도까지 실패하면 이건 문서 전체(=이미지 하나)의 파싱 실패이므로 `ParsingError`를
@@ -107,6 +107,14 @@ VLM 호출이 재시도까지 다 소진하고 실패하면:
   (`shape._inline.graphic.graphicData.pic.blipFill.blip.embed` →
   `document.part.related_parts[rId].blob`/`.content_type`)로 원본 바이트를 얻어
   `describe_figure()`에 보낸다 — PPTX Picture 도형과 동일한 개별 성능 저하 정책.
+- **`parsers/xlsx.py`**: 표는 `openpyxl`이 셀 값을 정확히 알고 있으므로 규칙 기반. 워크시트에
+  앵커된(떠 있는) 이미지는 `worksheet._images`(`openpyxl.drawing.image.Image`)에서 원본
+  바이트(`image._data()`)와 포맷(`image.format` → `image/{format}`)을 얻어
+  `describe_figure()`에 보낸다 — PPTX/HWPX/DOCX와 동일한 개별 성능 저하 정책. XLSX는 이미지가
+  항상 anchor(one/two-cell anchor) 기반으로 셀 위에 떠 있는 구조라 "셀 안"과 "셀 밖" 이미지가
+  파일 포맷 레벨에서 따로 구분되지 않는다 — `_images`가 시트의 모든 앵커 이미지를 잡는다.
+  단, Excel 365의 "Place in Cell"(이미지를 진짜 셀 값으로 넣는 rich-value 기능)은 별도의 XML
+  구조로 저장되어 `openpyxl`이 현재 읽지 못하며, 이런 이미지는 감지되지 않는다.
 
 ## Provenance: `bbox` / `extraction_method`
 
