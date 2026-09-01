@@ -1,6 +1,6 @@
 # 로드맵
 
-## 완료된 범위 (Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5)
+## 완료된 범위 (Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5 + Phase 6)
 
 - **전체 아키텍처 스캐폴딩**: Collector/Parser/Adaptive Chunker/Knowledge Extraction/Knowledge
   Object 전 구간의 인터페이스와 모델을 PRD가 명시한 4개 SaaS + 8개 파일 포맷을 아우르도록 설계.
@@ -62,6 +62,33 @@
     파일 트리 — Postgres 없이도 존재하는 file-based Knowledge Base ([`okf.md`](okf.md)).
   - 자세한 설계 근거는 [`architecture.md`](architecture.md), 필드 스펙은
     [`knowledge-object-schema.md`](knowledge-object-schema.md) 참고.
+- **Typed Knowledge Graph 고도화 (Phase 6, 옛 로드맵 5단계 4개 항목 모두 완료)**:
+  - **다중 청크 근거**: `Extractor.extract()`가 청크 하나가 아니라 청크 묶음(`chunks:
+    list[Chunk]`)을 받도록 바뀌었다 — `extraction/grouping.py::group_chunks()`가 한 문서의
+    청크들을 `KF_EXTRACTION_CHUNK_GROUP_SIZE`개씩(기본 1, 기존과 동일한 청크당 호출 1회)
+    순서대로 묶는다. 2 이상으로 올리면 인접한 여러 청크가 한 LLM 호출로 묶여
+    `KnowledgeObject.evidence`가 실제로 여러 청크를 가리키게 된다.
+  - **KnowledgeObject 간 유사도 기반 중복 제거/병합**: `dedup.py::merge_duplicates()`가 한
+    문서 안에서(청크 그룹들에 걸쳐) 타입이 같고 텍스트가 유사한(기본
+    `KF_DEDUP_SIMILARITY_THRESHOLD=0.9`, `difflib` 기반, `similarity.py`) 객체를 하나로
+    합치고 `DUPLICATE_OF` `Relation`으로 감사 기록을 남긴다. **같은 문서 안 중복까지만
+    자동으로 처리한다** — 서로 다른 문서/소스에 걸친 중복(예: Slack 대화 + 그걸 정리한 회의록
+    문서)은 이 함수 자체는 재사용 가능하지만, 파이프라인에 자동으로 연결되어 있지는 않다(아래
+    "후속 작업" 참고).
+  - **추가 Organization View**: `OKFWriter.write_views()`가 `views/by_topic.yaml`/
+    `by_document.yaml`(Project의 대용)/`timeline.yaml` 세 파생 인덱스를 `manifest.yaml`과
+    같은 방식(트리 스캔 후 재생성)으로 만든다 — [`okf.md`](okf.md) 참고.
+  - **`supersedes` 자동 채우기**: `extraction/versioning.py::resolve_supersedes()`가
+    `store`가 설정된 경우(재추출 상황) 같은 `source_id`의 이전 실행 객체들과 타입+텍스트
+    유사도(기본 `KF_SUPERSEDES_SIMILARITY_THRESHOLD=0.8`)를 비교해 새 객체의
+    `supersedes`/`version`을 자동으로 채우고 `SUPERSEDES` `Relation`을 추가한다.
+    `PostgresStore.list_knowledge_objects_by_source()`로 이전 객체를 조회한다(OKF 전용
+    실행에는 아직 연결 안 됨 — 아래 참고).
+  - 위 두 유사도 매칭 모두 `pipeline.run_pipeline`이 한 문서의 모든 청크 그룹을 모은 직후,
+    저장/yield 전에 실행된다 — 그래서 `run_pipeline`은 이제 청크(그룹)당 하나가 아니라
+    문서당 병합된 `ExtractionOutcome` 하나를 yield한다. 설계 근거는
+    [`architecture.md`](architecture.md)의 "설계 결정: 중복 제거와 재추출 버전 관리는 같은
+    유사도 원리를 공유한다" 참고.
 
 ## 제외 범위와 "왜 막지 않는가"
 
@@ -181,25 +208,29 @@ Knowledge가 나온다.
    Slack/Gmail의 짧은 polling 주기가 필요해질 경우 API rate limit 대응(3단계에서 이미 언급)이
    더 중요해진다.
 
-### 5단계 — Typed Knowledge Graph 고도화
+### 5단계 — Typed Knowledge Graph 고도화 (Phase 6에서 완료, 위 "완료된 범위" 참고)
 
-Phase 5(위 "완료된 범위" 참고)가 데이터 모델은 바꿨지만, 다음은 아직 미구현이다:
+옛 5단계의 4개 항목(다중 청크 근거/유사도 기반 중복 제거·병합/추가 Organization View/
+`supersedes` 자동 채우기) 모두 구현했다. 다만 완료 과정에서 스코프를 의도적으로 좁힌 지점이
+있어, 그 나머지는 별도 후속 과제로 남는다:
 
-1. **다중 청크 근거(multi-chunk evidence)** — `KnowledgeObject.evidence`는 이미
-   `list[Evidence]`라 여러 청크를 가리킬 수 있지만, `Extractor.extract()`는 여전히 청크
-   하나를 입력받는다. 하나의 Decision이 두 개의 인접 청크에 걸쳐 있으면 지금은 각 청크에서
-   따로 추출되어 별개의 `KnowledgeObject`가 된다 — 진짜로 여러 청크를 하나의 LLM 컨텍스트로
-   묶어 근거를 채우려면 Extractor 인터페이스 자체를 "청크 하나" 대신 "관련 청크 묶음"을 받게
-   바꿔야 한다.
-2. **KnowledgeObject 간 유사도 기반 중복 제거/병합** — 같은 Decision이 서로 다른 청크·심지어
-   서로 다른 소스(Slack 대화 + 그걸 정리한 회의록 문서)에서 중복 추출될 수 있다. 지금은
-   완전히 별개의 `KnowledgeObject`로 남는다.
-3. **추가 Organization View** — 지금은 `OKFWriter`가 타입별(`objects/{type}/`) view 하나만
-   구현한다. Topic/Project/Timeline 같은 다른 view는 `manifest.yaml` 카탈로그 위에 별도
-   인덱스를 얹으면 되지만, 아직 만들지 않았다([`okf.md`](okf.md) "후속 작업" 참고).
-4. **`supersedes`를 실제로 채우는 재처리 흐름** — `KnowledgeObject.supersedes` 필드는
-   존재하지만, 재추출 시 이전 버전을 찾아 `supersedes`를 자동으로 채워주는 로직은 없다 —
-   지금은 호출자가 수동으로 채워야 한다.
+- **중복 제거는 같은 문서 안까지만 자동** — `dedup.py::merge_duplicates()`는
+  `pipeline.run_pipeline`이 한 문서의 청크 그룹들을 모은 직후 그 안에서만 실행된다. 서로 다른
+  문서·소스에 걸친 중복(예: Slack 대화 + 그걸 정리한 회의록 문서, 로드맵 원래 예시)은 함수
+  자체는 재사용 가능하지만 자동 연결은 안 되어 있다 — 이건 한 번의 파이프라인 실행 스트림
+  바깥의 문제라, "지금까지 쌓인 Knowledge Base 전체를 훑어 병합"하는 별도의 크로스-소스
+  재조정(reconciliation) 잡 설계가 필요하다(스코프 성격이 1단계/4단계-4와 비슷 - 백그라운드
+  워커/큐 설계가 선행되어야 자연스럽다).
+- **`supersedes` 자동 채우기는 `PostgresStore` 전용** — `resolve_supersedes()`가 이전 객체를
+  `PipelineStore.list_prior_knowledge_objects()`(→ `PostgresStore.list_knowledge_objects_by_source()`)
+  로 조회한다. `--okf-dir`만 쓰고 `--no-store`인 실행에는 이전 버전을 조회할 방법이 없어
+  연결되어 있지 않다 - OKF 전용으로 쓰려면 `OKFWriter` 쪽에도 "이 source_id의 기존
+  객체를 읽어오는" 조회 경로가 필요하다.
+- **묶음(grouping)/병합(dedup)/유사도(supersedes) 임계값은 모두 설정 가능하지만 라이브
+  검증은 못함** — `KF_EXTRACTION_CHUNK_GROUP_SIZE`/`KF_DEDUP_SIMILARITY_THRESHOLD`/
+  `KF_SUPERSEDES_SIMILARITY_THRESHOLD` 모두 유닛 테스트(mock 기반)로만 검증됨. 특히
+  `group_size > 1`일 때 실제 LLM이 여러 청크를 하나의 응답으로 잘 요약/추출하는지, 임계값
+  0.9/0.8이 실전 텍스트에 적절한지는 실제 API 키로 확인이 필요하다.
 
 **한 줄 정의(향후 아키텍처 문서화 시 재사용)**: "Multi-source SaaS 및 File 데이터를 수집하고,
 source별 semantic context를 복원한 뒤 adaptive chunking과 knowledge extraction을 수행하여

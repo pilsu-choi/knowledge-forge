@@ -23,6 +23,9 @@ Graph DB나 검색 인덱스를 나중에 붙일 때 그 인덱스를 만들어�
   resources/{source_id}.yaml
   objects/{type}/{knowledge_object_id}.yaml
   relations/{relation_id}.yaml
+  views/by_topic.yaml
+  views/by_document.yaml
+  views/timeline.yaml
 ```
 
 - **`resources/`**: `Source` 하나당 파일 하나. `Source` 레코드 전체 + 해당 `Document`의
@@ -34,6 +37,11 @@ Graph DB나 검색 인덱스를 나중에 붙일 때 그 인덱스를 만들어�
 - **`relations/`**: `Relation` 전체를 하나씩 저장한다. `subject_id`/`object_id`가 다른
   `KnowledgeObject`의 파일명(확장자 제외)과 일치하므로, 그래프를 따라가려면 id로 파일을
   열면 된다.
+- **`views/`**: 타입별 view 말고 다른 조회 관점 — `by_topic.yaml`(topic → 객체 목록),
+  `by_document.yaml`(document_id → `{title, objects}`, Project의 대용 — 스키마에 별도 Project
+  개념은 없다), `timeline.yaml`(`extracted_at` 기준 시간순 목록). 세 파일 모두 각 객체 레코드의
+  `topics`/`document`/`extracted_at` 필드를 읽어 만든 **파생 인덱스**다 — `manifest.yaml`처럼
+  레코드 자체는 건드리지 않고 `objects/`를 다시 스캔해서 매번 재생성된다.
 
 ## `manifest.yaml`은 카탈로그이지 Knowledge 저장소가 아니다
 
@@ -64,16 +72,17 @@ relations:
 ```python
 writer = OKFWriter(root)
 writer.write_resource(source, document)   # Source당 1회
-writer.write_objects(outcome.objects)     # 청크마다
-writer.write_relations(outcome.relations) # 청크마다
+writer.write_objects(outcome.objects)     # 문서당 (병합된 ExtractionOutcome 1개)
+writer.write_relations(outcome.relations) # 문서당
 writer.write_manifest()                   # 실행 끝에 1회 — 트리 스캔 후 재생성
+writer.write_views()                      # 실행 끝에 1회 — 트리 스캔 후 재생성
 ```
 
 `pipeline.run_pipeline(..., okf_writer=writer)`를 넘기면 위 `write_resource`/`write_objects`/
-`write_relations` 호출을 파이프라인이 알아서 각 단계에서 수행한다 — `write_manifest()`만
-호출자(CLI)가 파이프라인 실행이 끝난 뒤 한 번 호출하면 된다. `PostgresStore`와 마찬가지로
-완전히 opt-in이며(`store`와 독립적으로 켜고 끌 수 있음), 켜지 않으면 아무 파일도 만들지
-않는다.
+`write_relations` 호출을 파이프라인이 알아서 각 단계에서 수행한다 — `write_manifest()`/
+`write_views()`만 호출자(CLI)가 파이프라인 실행이 끝난 뒤 한 번씩 호출하면 된다(`cli.py`의
+`extract` 명령이 이렇게 한다). `PostgresStore`와 마찬가지로 완전히 opt-in이며(`store`와
+독립적으로 켜고 끌 수 있음), 켜지 않으면 아무 파일도 만들지 않는다.
 
 ## 사용법
 
@@ -85,8 +94,8 @@ uv run knowledge-forge extract tests/fixtures/sample.md --okf-dir ./okf --no-sto
 
 ## 후속 작업
 
-- 지금은 `objects/{type}/`이라는 타입별 view 하나만 있다. Topic/Project/Timeline 같은 다른
-  view는 `manifest.yaml`의 카탈로그(또는 별도 인덱스 파일) 위에 얹으면 되고, 레코드 파일
-  포맷 자체를 바꿀 필요는 없다.
-- 대용량 Knowledge Base에서 `manifest.yaml`을 매번 전체 스캔으로 재생성하는 비용이 문제가
-  되면, 증분(변경분만) 갱신으로 바꿀 수 있다 — 지금은 정확성을 단순성보다 우선했다.
+- 대용량 Knowledge Base에서 `manifest.yaml`/`views/*.yaml`을 매번 전체 스캔으로 재생성하는
+  비용이 문제가 되면, 증분(변경분만) 갱신으로 바꿀 수 있다 — 지금은 정확성을 단순성보다
+  우선했다.
+- `views/by_document.yaml`은 Project의 대용이다 — 스키마에 별도 Project 개념이 생기면
+  `by_document`와 별개로 `by_project.yaml`을 추가하면 된다(레코드 포맷 변경 불필요).

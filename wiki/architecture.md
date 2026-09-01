@@ -104,9 +104,12 @@ KnowledgeObject는 1:1이 아니다" 참고.
 
 ### Knowledge Extraction (`src/knowledge_forge/extraction/`)
 
-- `Extractor` ABC의 `async def extract(chunk, document, source) -> ExtractionOutcome`.
-  `ExtractionOutcome`은 `objects: list[KnowledgeObject]`와 `relations: list[Relation]` 두
-  필드다 — 하나의 `Chunk`가 하나의 `KnowledgeObject`로 고정 대응되지 않는다(아래 설계 결정 참고).
+- `Extractor` ABC의 `async def extract(chunks: list[Chunk], document, source) -> ExtractionOutcome`.
+  `chunks`는 항상 비어 있지 않은 리스트다 — `extraction/grouping.py::group_chunks()`가 한
+  문서의 청크들을 `KF_EXTRACTION_CHUNK_GROUP_SIZE`(기본 1, 즉 기존과 동일하게 청크 하나당 호출
+  한 번)개씩 묶어 넘긴다. `ExtractionOutcome`은 `objects: list[KnowledgeObject]`와
+  `relations: list[Relation]` 두 필드다 — 하나의 `Chunk`가 하나의 `KnowledgeObject`로 고정
+  대응되지 않는다(아래 설계 결정 참고).
 - 기본 구현 `ClaudeExtractor`가 Claude LLM을 호출해 `ExtractionResult`(entities/relations/typed
   items/topics/document_type)를 얻고, 프로바이더 공용 로직인
   `extraction/outcome.py::build_extraction_outcome()`이 이를 `ExtractionOutcome`으로 변환한다 —
@@ -114,11 +117,21 @@ KnowledgeObject는 1:1이 아니다" 참고.
   Fact/Event/Decision/ActionItem/... 타입 `KnowledgeObject`를 만들고, 엔티티-엔티티 관계·
   item-엔티티 mentions·item 간 caused_by/relates_to를 각각 `Relation`으로 만든다.
 - 스키마와 프롬프트 설계는 [`knowledge-object-schema.md`](knowledge-object-schema.md) 참고.
-- **동시 실행**: `pipeline.run_pipeline`은 한 문서의 청크들을 `asyncio.gather`로 동시에
+- **동시 실행**: `pipeline.run_pipeline`은 한 문서의 청크 그룹들을 `asyncio.gather`로 동시에
   추출한다. `ClaudeExtractor`/`OpenRouterExtractor`(그리고 두 Vision 구현) 각각이 자체
   `asyncio.Semaphore`로 실제 동시 API 요청 수를 제한하므로(기본 5,
   `KF_MAX_CONCURRENT_LLM_REQUESTS`), 파이프라인 쪽은 동시성 상한을 따로 관리할 필요가 없다.
-  청크 하나가 `KnowledgeExtractionError`로 실패해도 나머지 형제 청크는 그대로 처리·저장된다.
+  청크 그룹 하나가 `KnowledgeExtractionError`로 실패해도 나머지 형제 그룹은 그대로 처리·
+  저장된다.
+- **같은 문서 안 중복 제거 + 재추출 버전 관리**: 한 문서의 모든 청크 그룹이 추출을 마치면,
+  `dedup.py::merge_duplicates()`가 타입이 같고 `summary`가 유사한(기본 임계값
+  `KF_DEDUP_SIMILARITY_THRESHOLD=0.9`) 객체들을 하나(가장 먼저 추출된 것)로 합치고
+  `DUPLICATE_OF` `Relation`으로 감사 기록을 남긴다. `store`가 주어진 경우(재추출 상황) 이어서
+  `extraction/versioning.py::resolve_supersedes()`가 같은 `source_id`의 이전 실행 객체들과
+  타입+텍스트 유사도(기본 `KF_SUPERSEDES_SIMILARITY_THRESHOLD=0.8`)를 비교해 일치하는 새
+  객체의 `supersedes`/`version`을 자동으로 채우고 `SUPERSEDES` `Relation`을 추가한다. 두
+  단계 모두 문서 하나의 청크 그룹 전체를 한 번에 봐야 하므로, `run_pipeline`은 문서당 병합된
+  `ExtractionOutcome` 하나를 yield한다(이전처럼 청크(그룹)당 하나가 아니다).
 - **LLM Provider 추상화**: `extraction/factory.py`의 `get_extractor()`와
   `vision/factory.py`의 `get_vision_extractor()`가 `KF_LLM_PROVIDER`(`anthropic`(기본)|
   `openrouter`)에 따라 `ClaudeExtractor`/`VisionExtractor` 또는 `OpenRouterExtractor`/
@@ -145,7 +158,9 @@ KnowledgeObject는 1:1이 아니다" 참고.
   디렉터리 트리로 기록한다 — 데이터베이스 없이도 사람이 읽고 git으로 diff할 수 있는 Knowledge
   Base 형태다. `manifest.yaml`은 knowledge 자체를 담지 않는 카탈로그(각 레코드의 id/type/경로
   목록)로, 트리를 스캔해 재생성되므로 여러 번의 파이프라인 실행(증분 동기화 등)에 걸쳐 안전하게
-  누적된다. 자세한 설계는 [`okf.md`](okf.md) 참고.
+  누적된다. `write_views()`가 같은 스캔 방식으로 `views/by_topic.yaml`/`by_document.yaml`/
+  `timeline.yaml`(타입별 view 외의 Topic/Document/Timeline 조회 관점, 레코드 파일 자체는
+  건드리지 않는 인덱스)을 만든다. 자세한 설계는 [`okf.md`](okf.md) 참고.
 
 ### Scheduling (`src/knowledge_forge/scheduling/`) — 선택적
 
@@ -189,11 +204,14 @@ Concept)으로 구분되는 typed envelope이고, 서로 다른 `KnowledgeObject
 표현한다. `models/knowledge_object.py`/`models/relation.py`/`extraction/outcome.py`의 설계
 노트에 더 자세한 근거가 있다.
 
-파이프라인이 현재 청크 단위로 LLM을 호출하는 구조는 그대로이므로(Extractor는 여전히 청크
-하나를 입력받는다), "여러 청크에 걸친 근거"는 데이터 모델(`KnowledgeObject.evidence`가 이미
-`list[Evidence]`로 다중 청크를 표현할 수 있음)만 준비되어 있고 실제로 여러 청크를 하나의
-LLM 호출로 묶어 근거를 채우는 로직은 아직 없다 — 후속 작업으로 남아 있다
-([`roadmap.md`](roadmap.md) 참고).
+`Extractor.extract()`는 이제 청크 하나가 아니라 청크 묶음(`chunks: list[Chunk]`)을 받는다 —
+`extraction/grouping.py::group_chunks()`가 한 문서의 청크들을 `KF_EXTRACTION_CHUNK_GROUP_SIZE`
+개씩(기본 1) 순서대로 묶어 파이프라인이 넘긴다. 기본값 1은 기존과 정확히 같은 동작(청크당 호출
+한 번)을 유지하기 위한 안전한 기본값이고, 이 값을 2 이상으로 올리면 인접한 여러 청크가 한
+LLM 호출로 묶여 `KnowledgeObject.evidence`가 실제로 여러 청크를 가리키게 된다(`extraction/
+outcome.py::build_extraction_outcome()`이 묶음의 모든 청크로 `evidence`를 채운다). 묶음
+전략은 지금은 순서 기반 윈도잉일 뿐 의미 기반(유사도 등)은 아니다 — 인접성이 "같은 claim에
+속할 가능성이 높다"는 값싼 근사치라는 전제.
 
 ## 설계 결정: Provenance는 참조(ref)로, 전체 객체 임베드 아님
 
@@ -221,6 +239,40 @@ Document 파싱/청킹 단계(`Document → Chapter → Section → Paragraph �
   Episode/Thread 단위로 처리된다([`context-reconstruction.md`](context-reconstruction.md)).
 - `KnowledgeObject`끼리는 `Relation`이라는 그래프 구조로 연결된다 — 계층이 아니라 typed edge다.
 - `OKFWriter`가 만드는 파일 트리(`objects/{type}/...`)는 여러 조회 관점(view) 중 파일시스템에
-  자연스럽게 얹을 수 있는 "타입별" 하나만 구현한 것이지, 유일한 organization view라는 뜻은
-  아니다 — Topic/Project/Timeline 같은 다른 view는 `manifest.yaml`의 카탈로그(id + type +
-  path) 위에 별도 인덱스를 얹으면 되고, 지금 스키마를 바꿀 필요가 없다([`okf.md`](okf.md) 참고).
+  자연스럽게 얹을 수 있는 "타입별" 하나일 뿐, 유일한 organization view는 아니다 —
+  `write_views()`가 `manifest.yaml`의 카탈로그(id + type + path) 위에 Topic/Document(Project의
+  대용 — 스키마에 별도 Project 개념은 없다)/Timeline 세 view를 별도 인덱스 파일로 추가한다
+  ([`okf.md`](okf.md) 참고). 레코드 파일 포맷 자체는 바뀌지 않는다 — view는 항상 기존
+  `objects/`를 다시 읽어 만드는 파생 인덱스다.
+
+## 설계 결정: 중복 제거와 재추출 버전 관리는 같은 유사도 원리를 공유한다
+
+두 문제가 형태는 비슷하지만 축이 다르다 — "이 새 객체가 이미 있는 다른 객체와 같은
+claim인가"라는 질문을 (a) **같은 실행 안에서** 물으면 중복 제거(`dedup.py`), (b) **이전 실행
+결과와** 물으면 재추출 버전 관리(`extraction/versioning.py`)다. 둘 다 `similarity.py`의
+`text_similarity()`(embedding이나 Vector DB 없이 `difflib.SequenceMatcher`로 충분히 짧은
+문장 단위 텍스트를 비교 — Vector DB가 제외 범위인 이유와 같은 스코프 판단)를 같은 방식으로
+쓴다:
+
+- **`dedup.py::merge_duplicates()`**: 타입이 같고 `summary`가 유사한 객체들을 하나(가장 먼저
+  추출된 것)로 합친다. id는 KnowledgeObject의 내용에서 결정론적으로 파생되므로(`ids.py`),
+  같은 chunk bundle에서 나온 객체는 애초에 같은 id를 가져 자연 upsert되지만, 서로 다른 청크
+  (묶음)에서 독립적으로 추출된 "같은" claim은 다른 id를 가지므로 텍스트 유사도로만 잡아낼 수
+  있다. `Relation`을 하드 삭제하지 않고 병합에 참여한 모든 관계를 canonical id로 재작성한
+  뒤, 병합됐다는 사실 자체는 `DUPLICATE_OF` `Relation`으로 남긴다 — Postgres FK
+  참조 무결성을 깨지 않으면서(관계가 가리키는 객체는 항상 결과 집합 안에 존재) 감사 추적을
+  잃지 않기 위해서다.
+- **`extraction/versioning.py::resolve_supersedes()`**: `document_id`는
+  `stable_id("document", uri, content_hash)`라 소스 내용이 바뀌면(재추출) 항상 새 id가
+  나온다 — 즉 재추출은 이전 실행의 id를 절대 재사용하지 않으므로 자연 upsert로는 버전 연결이
+  안 된다. 대신 내용 변경에도 안정적인 `source_id`(uri만으로 결정)를 축으로, 같은 소스의
+  이전 객체들 중 타입+텍스트가 유사한 것을 찾아 새 객체의 `supersedes`/`version`을 채우고
+  `SUPERSEDES` `Relation`을 추가한다 — 이전 버전 객체는 지우지 않고(`PostgresStore`에 그대로
+  남아 다음 `list_knowledge_objects_by_source()` 조회의 후보 풀이 된다) 새 버전이 그것을
+  가리키는 방식이라 두 버전 모두 id로 계속 조회 가능하다.
+
+두 패스 모두 `pipeline.run_pipeline`이 한 문서의 모든 청크 그룹을 `asyncio.gather`로 모은
+직후, 저장/OKF 기록/yield 전에 실행된다 — 문서 하나를 통째로 봐야만 "그룹 A의 객체가 그룹
+B의 객체와 중복인가"/"이 새 객체가 이전 실행의 무엇을 대체하는가"를 정확히 판단할 수 있기
+때문이다(부분 집합만 보면 놓친다). 이 때문에 `run_pipeline`은 이제 청크(그룹)당 하나가 아니라
+문서당 병합된 `ExtractionOutcome` 하나를 yield한다.
