@@ -1,6 +1,6 @@
 # 로드맵
 
-## 완료된 범위 (Phase 1 + Phase 2 + Phase 3 + Phase 4)
+## 완료된 범위 (Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5)
 
 - **전체 아키텍처 스캐폴딩**: Collector/Parser/Adaptive Chunker/Knowledge Extraction/Knowledge
   Object 전 구간의 인터페이스와 모델을 PRD가 명시한 4개 SaaS + 8개 파일 포맷을 아우르도록 설계.
@@ -26,6 +26,19 @@
   Anthropic(기본, 운영 경로) ↔ OpenRouter(대체, 다양한 라우팅 모델 실험용)를 전환 가능 —
   [`llm-providers.md`](llm-providers.md). OpenRouter 경로는 모킹 테스트만 존재, 이 환경에
   `OPENROUTER_API_KEY`가 없어 라이브 검증은 못함.
+- **비동기 전환(Phase 5)**: LLM을 호출하는 모든 경로(`ClaudeExtractor`/`OpenRouterExtractor`,
+  `VisionExtractor`/`OpenRouterVisionExtractor`, `pipeline.run_pipeline`, VLM을 쓰는 5개 파서,
+  `PostgresStore`/`PipelineStore`, `scheduling/scheduler.py`, `cli.py`)를 `asyncio` 기반으로
+  전환했다. 한 문서 안의 청크 추출과 표/이미지 VLM 호출이 `asyncio.gather`로 동시 실행되고
+  (요소 순서는 그대로 유지), 각 Extractor/VisionExtractor 인스턴스가 자체
+  `asyncio.Semaphore`로 실제 동시 API 요청 수를 제한한다(기본 5,
+  `KF_MAX_CONCURRENT_LLM_REQUESTS`). `schedule` 명령은 `BlockingScheduler`에서
+  `AsyncIOScheduler`로 바뀌어 tick이 이벤트 루프 위 백그라운드 job으로 실행된다 —
+  [`architecture.md`](architecture.md)의 Knowledge Extraction/Scheduling 절,
+  [`scheduling.md`](scheduling.md) 참고. 의도적으로 그대로 둔 것: 로컬 파일 Collector/SaaS
+  Collector/`RawBlobStore`/Chunker(병목이 아닌 CPU·로컬 디스크 작업)와, 여러 파일(문서)을
+  동시에 처리하는 것(파이프라인의 바깥 루프는 여전히 파일 단위 순차) — 후자는 4단계의
+  "Ingest와 Process 분리" 항목과 겹치는 별도 과제.
 - **라이브 검증(부분)**: 이 환경에 정식 `ANTHROPIC_API_KEY`는 없지만, 이미 로그인된 Claude Code
   세션(claude.ai OAuth)을 `claude-agent-sdk`로 재사용해 Markdown 추출 경로와 PDF VLM 하이브리드
   경로(표+이미지) 둘 다 실제 Claude Haiku 호출로 end-to-end 검증함(총 $0.04, 일회성 검증
@@ -76,10 +89,13 @@ Dashboard / Chat UI다. 이들을 지금 만들지 않는 이유는 스코프 �
 
 ### 3단계 — 운영 최적화
 
-- **Batches API**: 현재는 청크당(그리고 표/이미지 하나당) 1회 동기 LLM 호출이라, 대량
-  문서·표·이미지가 많은 문서 처리 시 비용/지연이 커진다. Anthropic Message Batches
-  API(비동기, 표준 대비 50% 비용)로 전환하면 대량 배치 처리에 유리하다 — Knowledge
-  Extraction과 Vision 추출 양쪽 다 후보.
+- **Batches API**: 파이프라인은 이제 청크당(그리고 표/이미지 하나당) 1회 LLM 호출을
+  `asyncio`로 동시 실행한다(`KF_MAX_CONCURRENT_LLM_REQUESTS`로 동시성 제한, 완료 —
+  [`architecture.md`](architecture.md) 참고). 이건 지연(latency)을 줄이는 것이지 호출
+  횟수(=비용)는 그대로다. Anthropic Message Batches API(24시간 내 비동기 처리, 표준 대비 50%
+  비용)로 전환하면 지연이 문제되지 않는 대량 배치 처리에서 비용 자체를 줄일 수 있다 — 실시간
+  동시성과는 다른 축의 최적화라 별도 후속 과제로 남겨둔다. Knowledge Extraction과 Vision 추출
+  양쪽 다 후보.
 - **모델/프로바이더 비용 레버**: `--model`/`KF_EXTRACTION_MODEL`로 Anthropic 모델 등급을
   낮추거나(Opus→Sonnet→Haiku), `KF_LLM_PROVIDER=openrouter`로 전환해 다른 모델을 시도하는
   것도 비용 최적화 옵션 — [`llm-providers.md`](llm-providers.md) 참고. 단 OpenRouter는 라이브
@@ -136,10 +152,12 @@ Knowledge가 나온다.
    파이프라인 재사용). 현재 4개 SaaS 커넥터는 아직 첨부파일 감지/추출 자체를 하지 않음
    ([`saas-connectors.md`](saas-connectors.md)) — 이것도 1단계에서 함께 다뤄야 한다.
 4. **Ingest와 Process 분리** — 사용자가 소스를 연결/업로드하면 "수집 완료"를 즉시 응답하고,
-   무거운 Parsing/Chunking/Knowledge Extraction은 백그라운드 워커로 넘긴다. 현재
-   `knowledge-forge extract`는 동기 실행이라 이 분리가 없다 — SaaS 커넥터가 CLI에 붙는
-   시점(1단계)에 큐/워커 아키텍처(또는 최소한 `schedule` 명령의 비동기화)를 함께 설계해야
-   한다.
+   무거운 Parsing/Chunking/Knowledge Extraction은 백그라운드 워커로 넘긴다. `run_pipeline`
+   자체는 이제 `asyncio` 기반이고 `schedule` 명령도 `AsyncIOScheduler`로 백그라운드 tick을
+   돈다(완료 — [`scheduling.md`](scheduling.md) 참고). 하지만 이건 "한 프로세스 안에서 LLM
+   호출을 동시 실행"하는 것이지, "요청을 받는 즉시 응답하고 처리는 별도 워커/프로세스가
+   넘겨받는" 것과는 다른 문제다 — SaaS 커넥터가 CLI에 붙는 시점(1단계)에 별도 큐/워커
+   아키텍처(예: 요청 큐에 넣고 즉시 202 응답, 워커 프로세스가 소비)를 여전히 설계해야 한다.
 5. **스케줄링 성격 구분** — Slack/Gmail처럼 계속 생성되는 데이터는 polling(현재
    `knowledge-forge schedule`이 이 모델) 또는 향후 webhook/event-driven ingest가 맞고, 정적
    파일 소스는 최초 1회 + 변경 감지 재처리로 충분하다는 게 이미 맞게 설계되어 있음 — 다만

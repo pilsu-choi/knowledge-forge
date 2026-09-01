@@ -70,9 +70,9 @@ flowchart TD
 
 ### Parser (`src/knowledge_forge/parsers/`)
 
-- `Parser` ABC의 `parse(item, source_ref) -> Document` 하나로 모든 포맷을 공통 `Document` 구조로
-  변환한다. `ParserRegistry`가 파일 확장자(또는 Context Reconstruction이 만든 아이템의 URI
-  스킴)를 보고 알맞은 Parser를 찾아 디스패치한다.
+- `Parser` ABC의 `async def parse(item, source_ref) -> Document` 하나로 모든 포맷을 공통
+  `Document` 구조로 변환한다. `ParserRegistry`가 파일 확장자(또는 Context Reconstruction이
+  만든 아이템의 URI 스킴)를 보고 알맞은 Parser를 찾아 디스패치한다.
 - `Document.elements`는 `Heading` / `TextBlock` / `TableElement` / `ListElement` / `ImageElement`의
   판별 유니온(discriminated union)이며, 각 요소는 `element_id`, `page`(가능한 경우), `bbox`(페이지 내
   위치, 현재는 PDF만)를 갖는다. `TableElement`/`ImageElement`는 추가로 `extraction_method`
@@ -82,7 +82,9 @@ flowchart TD
 - **PDF/DOCX/PPTX/HWPX/Image는 순수 규칙 기반이 아니라 VLM 하이브리드다**: 일반 텍스트/네이티브
   표(DOCX/PPTX/HWPX)·PPTX 네이티브 차트는 여전히 결정론적으로 추출하지만, PDF의 표/이미지와
   모든 포맷의 임베드 이미지·독립 이미지 파일은 항상 Vision Provider(기본 Claude vision, 아래
-  참고)로 보낸다. 설계 근거와 상세 동작은 [`vision-extraction.md`](vision-extraction.md) 참고.
+  참고)로 보낸다. 한 문서 안의 표/이미지 여러 개는 `asyncio.gather`로 동시에 처리되며(요소
+  순서/`element_id`는 그대로 유지), 동시 요청 수는 `KF_MAX_CONCURRENT_LLM_REQUESTS`로 제한된다.
+  설계 근거와 상세 동작은 [`vision-extraction.md`](vision-extraction.md) 참고.
 - 포맷별 라이브러리와 라이선스 근거는 [`parsers.md`](parsers.md) 참고.
 
 ### Adaptive Chunker (`src/knowledge_forge/chunking/`)
@@ -93,10 +95,15 @@ flowchart TD
 
 ### Knowledge Extraction (`src/knowledge_forge/extraction/`)
 
-- `Extractor` ABC의 `extract(chunk, document, source) -> KnowledgeObject`. 기본 구현
+- `Extractor` ABC의 `async def extract(chunk, document, source) -> KnowledgeObject`. 기본 구현
   `ClaudeExtractor`가 Claude LLM을 호출해 Entity/Relation/Summary/Key Facts/Topic/Document
   Type을 추출한다.
 - 스키마와 프롬프트 설계는 [`knowledge-object-schema.md`](knowledge-object-schema.md) 참고.
+- **동시 실행**: `pipeline.run_pipeline`은 한 문서의 청크들을 `asyncio.gather`로 동시에
+  추출한다. `ClaudeExtractor`/`OpenRouterExtractor`(그리고 두 Vision 구현) 각각이 자체
+  `asyncio.Semaphore`로 실제 동시 API 요청 수를 제한하므로(기본 5,
+  `KF_MAX_CONCURRENT_LLM_REQUESTS`), 파이프라인 쪽은 동시성 상한을 따로 관리할 필요가 없다.
+  청크 하나가 `KnowledgeExtractionError`로 실패해도 나머지 형제 청크는 그대로 처리·저장된다.
 - **LLM Provider 추상화**: `extraction/factory.py`의 `get_extractor()`와
   `vision/factory.py`의 `get_vision_extractor()`가 `KF_LLM_PROVIDER`(`anthropic`(기본)|
   `openrouter`)에 따라 `ClaudeExtractor`/`VisionExtractor` 또는 `OpenRouterExtractor`/
@@ -119,8 +126,8 @@ flowchart TD
 ### Scheduling (`src/knowledge_forge/scheduling/`) — 선택적
 
 - `knowledge-forge extract`는 1회성 실행이고, `knowledge-forge schedule`은 동일한 파이프라인을
-  `APScheduler`로 일정 간격마다 반복 실행하는 장기 실행 프로세스다. 상세 동작은
-  [`scheduling.md`](scheduling.md) 참고.
+  `APScheduler`(`AsyncIOScheduler`)로 일정 간격마다 asyncio 이벤트 루프 위의 백그라운드 job으로
+  반복 실행하는 장기 실행 프로세스다. 상세 동작은 [`scheduling.md`](scheduling.md) 참고.
 
 ## 확장 포인트
 

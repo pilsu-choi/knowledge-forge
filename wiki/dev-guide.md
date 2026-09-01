@@ -23,7 +23,7 @@ uv sync --extra xlsx --extra pptx --extra hwpx --extra slack --extra google --ex
 | `google` | `google-api-python-client`, `google-auth` | `GmailCollector`/`GoogleDriveCollector` 공유 |
 | `notion` | `notion-client` | `NotionCollector` |
 | `korean` | `kss` | 한국어 문장 분리 품질 향상(선택, 첫 호출 시 모델 로딩이 느림) |
-| `dev` | `pytest`, `pytest-mock`, `reportlab` | 테스트/픽스처 생성 |
+| `dev` | `pytest`, `pytest-asyncio`, `pytest-mock`, `reportlab` | 테스트/픽스처 생성 |
 
 ## Anthropic 자격 증명
 
@@ -35,7 +35,7 @@ uv sync --extra xlsx --extra pptx --extra hwpx --extra slack --extra google --ex
 3. `ant auth login`으로 저장된 OAuth 프로필
 
 `ant auth status`로 현재 활성 자격 증명을 확인할 수 있다. `ClaudeExtractor`/`VisionExtractor`
-모두 `anthropic.Anthropic()`을 인자 없이 생성하므로, 위 자격 증명 중 하나만 설정되어 있으면
+모두 `anthropic.AsyncAnthropic()`을 인자 없이 생성하므로, 위 자격 증명 중 하나만 설정되어 있으면
 별도 코드 수정 없이 동작한다 — Knowledge Extraction과 Vision 추출(PDF/Image/PPTX의
 표·이미지 처리, [`vision-extraction.md`](vision-extraction.md))이 자격 증명을 공유한다.
 자격 증명이 전혀 없으면 `extract`/`schedule` 실행 시 파이프라인을 시작하기 전에
@@ -50,6 +50,7 @@ uv sync --extra xlsx --extra pptx --extra hwpx --extra slack --extra google --ex
 |---|---|---|
 | `KF_EXTRACTION_MODEL` | `claude-opus-5` | Knowledge Extraction에 사용할 모델. `--model` CLI 옵션으로도 override 가능 |
 | `KF_MAX_TOKENS_PER_CHUNK` | `4000` | Adaptive Chunker의 청크당 최대 토큰 예산. `--max-tokens` CLI 옵션으로도 override 가능 |
+| `KF_MAX_CONCURRENT_LLM_REQUESTS` | `5` | Extractor/VisionExtractor 인스턴스마다 동시에 진행 가능한 LLM 요청 수 상한(`asyncio.Semaphore`). 한 문서의 여러 청크·표·이미지는 이 한도 안에서 동시 처리된다 |
 | `KF_DATABASE_URL` | (없음, 저장 비활성) | Source/Document/Chunk/KnowledgeObject를 저장할 PostgreSQL DSN. [`storage.md`](storage.md) 참고 |
 | `KF_DATA_DIR` | `./data` | 원본 바이트를 저장하는 디스크 blob 스토어 루트 |
 | `KF_LLM_PROVIDER` | `anthropic` | `anthropic` 또는 `openrouter` — Knowledge Extraction/Vision 추출 백엔드 선택. [`llm-providers.md`](llm-providers.md) 참고 |
@@ -122,8 +123,10 @@ uv run pytest
 ```
 
 - 모델/청커/파서/컬렉터 테스트는 네트워크나 API 키 없이 동작한다.
-- Extraction 테스트는 `anthropic.Anthropic` 클라이언트를 모킹하므로 `ANTHROPIC_API_KEY` 없이도
-  통과한다.
+- Extraction 테스트는 `anthropic.AsyncAnthropic` 모양의(메서드가 코루틴인) 가짜 클라이언트를
+  모킹하므로 `ANTHROPIC_API_KEY` 없이도 통과한다. 파이프라인/파서/스케줄러 전체가 async라
+  대부분의 테스트 함수도 `async def`다 — `pyproject.toml`의 `asyncio_mode = "auto"` 덕분에
+  `@pytest.mark.asyncio` 데코레이터 없이 바로 동작한다.
 - `tests/test_pipeline_e2e.py`는 LLM을 모킹한 상태로 전체 파이프라인(Collector→Parser→
   Chunker→Extraction)을 실행해 provenance 체인까지 검증하는 스모크 테스트다.
 
@@ -131,8 +134,9 @@ uv run pytest
 
 1. `src/knowledge_forge/parsers/`에 `Parser`를 상속한 클래스를 만든다.
 2. `supported_extensions: ClassVar[set[str]]`에 담당할 확장자를 지정한다.
-3. `parse(self, item: RawItem, source_ref: SourceRef) -> Document`를 구현해 공통 `Document`
-   구조(Heading/TextBlock/TableElement/ListElement/ImageElement)로 변환한다.
+3. `async def parse(self, item: RawItem, source_ref: SourceRef) -> Document`를 구현해 공통
+   `Document` 구조(Heading/TextBlock/TableElement/ListElement/ImageElement)로 변환한다 — VLM
+   호출이 없는 파서도 인터페이스 통일을 위해 `async def`로 선언한다(내부에 `await`가 없어도 됨).
 4. `src/knowledge_forge/parsers/registry.py`의 `default_registry()`에 인스턴스를 등록한다.
 5. `tests/parsers/`에 fixture 파일과 함께 테스트를 추가한다.
 

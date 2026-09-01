@@ -122,7 +122,9 @@ VLM 호출이 재시도까지 다 소진하고 실패하면:
 표/이미지 하나당 Claude API 호출이 1회씩 추가된다 — Knowledge Extraction이 청크당 1회
 호출하는 것과 별개로, 표/이미지가 많은 문서(재무 보고서, 슬라이드 덱)는 Phase 1의 순수 규칙
 기반 파싱보다 훨씬 많은 API 호출을 만든다. 이는 사용자가 "정확도를 위해 항상 VLM"을 명시적으로
-선택한 결과다. `VisionExtractor(model=...)`로 Knowledge Extraction과 마찬가지로 모델을
+선택한 결과다 — 호출 횟수(비용)는 그대로지만, 이 호출들이 `asyncio.gather`로 동시에 나가므로
+(`KF_MAX_CONCURRENT_LLM_REQUESTS`로 상한) 지연은 순차 호출 때보다 크게 줄어든다.
+`VisionExtractor(model=...)`로 Knowledge Extraction과 마찬가지로 모델을
 바꿀 수 있다(`claude-opus-5` 기본값, 대량 처리 시 `claude-sonnet-5`/`claude-haiku-4-5`로
 비용을 낮추는 것도 선택지 — [`dev-guide.md`](dev-guide.md)의 비용 레버 설명 참고). 후속
 최적화로 Batches API 전환은 [`roadmap.md`](roadmap.md)에 남겨둔다.

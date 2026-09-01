@@ -98,3 +98,9 @@ Anthropic 직접 호출과 마찬가지로 청크당(그리고 표/이미지 하
 프로바이더를 쓰든 이 구조는 동일하다([`vision-extraction.md`](vision-extraction.md)의
 "비용과 지연" 절 참고). OpenRouter로 전환하는 주된 동기는 비용 절감이 아니라 **모델 선택의
 유연성**(다양한 벤더의 모델을 하나의 API로 시도해볼 수 있음)이다.
+
+두 프로바이더 모두 `AsyncAnthropic`/`AsyncOpenAI`로 구현되어 있고, 각 Extractor/
+VisionExtractor 인스턴스가 자체 `asyncio.Semaphore`로 동시 요청 수를 제한한다(기본 5,
+`KF_MAX_CONCURRENT_LLM_REQUESTS`) — 한 문서의 여러 청크·표·이미지에 대한 호출이 순차가
+아니라 이 한도 안에서 동시에 나가므로, 어느 프로바이더를 쓰든 지연(wall-clock latency)은
+호출 횟수의 합이 아니라 `ceil(호출 횟수 / 동시성 상한)` 수준으로 줄어든다.

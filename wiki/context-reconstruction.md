@@ -100,9 +100,11 @@ Chapter/Section 단위 분할 로직이 그대로 적용된다. 즉 Context Reco
 - **첨부파일의 File Pipeline 라우팅** — Slack/Gmail 등 SaaS 커넥터가 아직 첨부파일 자체를
   감지/추출하지 않는다([`saas-connectors.md`](saas-connectors.md)). Context Reconstruction은
   텍스트 본문만 다룬다.
-- **Ingest/Process 분리(큐/워커)** — 현재 `run_pipeline`은 동기 실행이다. 재구성 단계는 스트림을
-  전량 버퍼링(Gmail은 전체, Slack은 채널 단위)하므로 대량 히스토리 초기 동기화 시 메모리 사용량이
-  늘어난다 — 별도 인프라 결정이 필요해 이번 범위에서 다루지 않는다.
+- **Ingest/Process 분리(큐/워커)** — `run_pipeline`은 이제 asyncio 기반으로 청크/이미지 단위
+  LLM 호출을 동시 실행하지만([`architecture.md`](architecture.md) 참고), 이건 한 프로세스
+  안에서의 동시성일 뿐 "요청을 받는 즉시 응답하고 처리는 별도 워커가 넘겨받는" 구조는 아니다.
+  재구성 단계는 스트림을 전량 버퍼링(Gmail은 전체, Slack은 채널 단위)하므로 대량 히스토리 초기
+  동기화 시 메모리 사용량이 늘어난다 — 별도 인프라 결정이 필요해 이번 범위에서 다루지 않는다.
 - **SaaS 커넥터 CLI/OAuth 연동** — `knowledge-forge` CLI에는 여전히 Slack/Gmail을 실행할 명령이
   없다. 실제로 이 재구성 단계가 실행되려면 1단계(CLI/인증 연동)가 먼저 필요하다.
 

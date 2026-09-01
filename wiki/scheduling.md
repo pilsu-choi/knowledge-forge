@@ -2,26 +2,33 @@
 
 `knowledge-forge extract`는 1회성 실행이다. 주기적으로 같은 경로를 계속 증분 동기화하고
 싶다면 `knowledge-forge schedule`을 쓴다 — 별도 OS cron/systemd timer 없이, 하나의
-장기 실행 프로세스 안에서 `APScheduler`(`BlockingScheduler`)로 반복한다.
+장기 실행 프로세스 안에서 `APScheduler`(`AsyncIOScheduler`)가 asyncio 이벤트 루프 위의
+백그라운드 job으로 반복한다.
 
 ```bash
 uv run knowledge-forge schedule <path> \
   [--interval-seconds 3600] [--max-tokens 4000] [--model claude-opus-5] [--store/--no-store]
 ```
 
-포그라운드에서 블로킹 실행되며, Ctrl-C로 정상 종료한다.
+포그라운드 프로세스로 실행되며(내부적으로 `asyncio.run(run_scheduled_sync(...))`), Ctrl-C로
+정상 종료한다.
 
 ## 동작 방식 (`src/knowledge_forge/scheduling/scheduler.py`)
 
 `run_scheduled_sync(root, interval_seconds, max_tokens, model, store_factory=None,
-state_path=None)`가:
+state_path=None)`(async 함수)가:
 
-1. `LocalFileCollector`/`ParserRegistry`/`AdaptiveChunker`/`ClaudeExtractor`를 **한 번만**
-   생성해 재사용한다(매 tick마다 다시 만들지 않음).
-2. `build_tick(...)`으로 매 tick마다 실행할 함수를 만든다.
-3. `BlockingScheduler.add_job(tick, "interval", seconds=interval_seconds,
+1. `LocalFileCollector`/`ParserRegistry`/`AdaptiveChunker`/`get_extractor()`(활성
+   `KF_LLM_PROVIDER`에 맞는 Extractor, [`llm-providers.md`](llm-providers.md) 참고)를
+   **한 번만** 생성해 재사용한다(매 tick마다 다시 만들지 않음).
+2. `build_tick(...)`으로 매 tick마다 실행할 **async** 함수를 만든다 — 한 tick 안에서 한 문서의
+   여러 청크/표/이미지에 대한 LLM 호출은 `run_pipeline`이 동시 실행한다
+   ([`architecture.md`](architecture.md)의 Knowledge Extraction 절 참고).
+3. `AsyncIOScheduler.add_job(tick, "interval", seconds=interval_seconds,
    next_run_time=datetime.now())`로 등록 — `next_run_time=datetime.now()`가 시작 즉시 1회
-   실행 후 이후 `interval_seconds`마다 반복되게 한다.
+   실행 후 이후 `interval_seconds`마다 반복되게 한다. `scheduler.start()`는 즉시 반환하고,
+   `run_scheduled_sync`는 `await asyncio.Event().wait()`로 이벤트 루프를 계속 돌려 tick들이
+   백그라운드에서 실행되게 한다(Ctrl-C가 `KeyboardInterrupt`로 이 대기를 깨운다).
 
 ## 커서 연속성 — 왜 첫 tick을 특별 취급하지 않는가
 
@@ -55,8 +62,8 @@ DB 연결이 끊겨도 다음 tick이 스스로 복구한다.
 
 ## 테스트
 
-`BlockingScheduler.start()`는 영원히 블로킹되므로 스케줄 루프 자체를 단위 테스트하지 않는다.
-대신 `build_tick(...)`이 반환하는 tick 함수를 직접 호출해서(스케줄러 없이) 검증한다 —
-`tests/scheduling/test_scheduler.py`가 `tmp_path`에 파일을 만들어 첫 호출(초기 동기화)과
-파일 추가 후 두 번째 호출(증분 동기화)의 결과, 그리고 예외가 나도 tick 함수가 예외를
-전파하지 않는지를 확인한다.
+`run_scheduled_sync`는 이벤트 루프 위에서 영원히 대기하므로 스케줄 루프 자체를 단위
+테스트하지 않는다. 대신 `build_tick(...)`이 반환하는 (async) tick 함수를 직접
+`await`해서(스케줄러 없이) 검증한다 — `tests/scheduling/test_scheduler.py`가 `tmp_path`에
+파일을 만들어 첫 호출(초기 동기화)과 파일 추가 후 두 번째 호출(증분 동기화)의 결과, 그리고
+예외가 나도 tick 함수가 예외를 전파하지 않는지를 확인한다.
