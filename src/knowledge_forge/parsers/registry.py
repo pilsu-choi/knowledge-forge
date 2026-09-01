@@ -5,6 +5,7 @@ from knowledge_forge.exceptions import UnsupportedFormatError
 from knowledge_forge.parsers.base import Parser
 from knowledge_forge.parsers.conversation import ConversationParser
 from knowledge_forge.parsers.docx import DocxParser
+from knowledge_forge.parsers.html import HtmlParser
 from knowledge_forge.parsers.hwpx import HwpxParser
 from knowledge_forge.parsers.image import ImageParser
 from knowledge_forge.parsers.markdown import MarkdownParser
@@ -58,6 +59,7 @@ def default_registry() -> ParserRegistry:
     for parser in (
         PDFParser(),
         DocxParser(),
+        HtmlParser(),
         MarkdownParser(),
         TxtParser(),
         XlsxParser(),
