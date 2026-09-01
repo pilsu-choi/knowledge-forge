@@ -7,7 +7,7 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI
 
-from knowledge_forge.api.routes import health, ingest, jobs, knowledge
+from knowledge_forge.api.routes import health, ingest, jobs, knowledge, sources
 from knowledge_forge.config import settings
 from knowledge_forge.storage.job_store import JobStore
 
@@ -27,6 +27,8 @@ _TAGS_METADATA = [
     {"name": "Health", "description": "liveness 체크. DB 의존 없음(컨테이너 healthcheck용)."},
     {"name": "Ingest", "description": "로컬 파일을 job으로 enqueue한다 (`local_file_ingest`)."},
     {"name": "Jobs", "description": "enqueue된 job의 상태/결과 조회."},
+    {"name": "Sources", "description": "수집된 원본(Source) 조회."},
+    {"name": "Documents", "description": "파싱된 Document(elements 포함) 조회."},
     {"name": "Knowledge Objects", "description": "추출된 KnowledgeObject 조회."},
     {"name": "Relations", "description": "KnowledgeObject 간 Relation 조회."},
 ]
@@ -43,5 +45,6 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(ingest.router)
     app.include_router(jobs.router)
+    app.include_router(sources.router)
     app.include_router(knowledge.router)
     return app

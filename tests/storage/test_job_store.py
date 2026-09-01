@@ -73,6 +73,22 @@ async def test_list_filters_by_status():
             await _cleanup(store, job.job_id)
 
 
+async def test_enqueue_defaults_project_id_and_list_filters_by_it():
+    async with JobStore(DSN) as store:
+        await store.init_schema()
+        job_default = await store.enqueue("local_file_ingest", {"path": "/tmp/d.md"})
+        job_a = await store.enqueue("local_file_ingest", {"path": "/tmp/a.md"}, project_id="proj-a")
+        try:
+            assert job_default.project_id == "default"
+            assert job_a.project_id == "proj-a"
+
+            proj_a_jobs = await store.list(project_id="proj-a", limit=200)
+            assert {j.job_id for j in proj_a_jobs} == {job_a.job_id}
+        finally:
+            await _cleanup(store, job_default.job_id)
+            await _cleanup(store, job_a.job_id)
+
+
 async def test_claim_next_marks_running_and_skips_already_claimed():
     async with JobStore(DSN) as store:
         await store.init_schema()

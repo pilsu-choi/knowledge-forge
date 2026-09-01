@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _make_source(collector: Collector, item: RawItem) -> Source:
+def _make_source(collector: Collector, item: RawItem, project_id: str) -> Source:
     return Source(
         source_id=stable_id(collector.source_type.value, item.uri),
         source_type=collector.source_type,
@@ -40,6 +40,7 @@ def _make_source(collector: Collector, item: RawItem) -> Source:
         collected_at=datetime.now(timezone.utc),
         modified_at=item.modified_at,
         metadata=item.metadata,
+        project_id=project_id,
     )
 
 
@@ -52,6 +53,7 @@ async def run_pipeline(
     store: "PipelineStore | None" = None,
     context_reconstructor: ContextReconstructor | None = None,
     okf_writer: "OKFWriter | None" = None,
+    project_id: str = "default",
 ) -> AsyncIterator[ExtractionOutcome]:
     """Run the full pipeline over everything a Collector yields.
 
@@ -86,6 +88,10 @@ async def run_pipeline(
     Defaults to `default_reconstructor_for(collector.source_type)`, which is
     a no-op for File/Notion/Google Drive sources.
 
+    `project_id` (default "default") tags every Source this run collects -
+    the tenancy key `sources`/`documents` are filtered by in the read API
+    (wiki/api.md) and job queue (`jobs.project_id`).
+
     Within one document: chunks are bundled into groups of
     `settings.extraction_chunk_group_size` before extraction (see
     extraction/grouping.py), each group's near-duplicate objects are merged
@@ -101,7 +107,7 @@ async def run_pipeline(
             logger.info("skipping deleted item: %s", item.uri)
             continue
 
-        source = _make_source(collector, item)
+        source = _make_source(collector, item, project_id)
         source_ref = SourceRef.from_source(source)
         if store is not None:
             await store.record_source(source, item)

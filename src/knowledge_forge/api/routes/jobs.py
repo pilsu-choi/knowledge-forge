@@ -28,9 +28,10 @@ async def get_job(job_id: str, job_store: JobStore = Depends(get_job_store)) -> 
 @router.get("/jobs", response_model=Page[JobResponse], summary="List jobs")
 async def list_jobs(
     status: Optional[JobStatus] = None,
+    project_id: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
     job_store: JobStore = Depends(get_job_store),
 ) -> Page[JobResponse]:
-    jobs = await job_store.list(status=status, limit=limit, offset=offset)
+    jobs = await job_store.list(status=status, project_id=project_id, limit=limit, offset=offset)
     return Page(items=[_to_response(j) for j in jobs], limit=limit, offset=offset)

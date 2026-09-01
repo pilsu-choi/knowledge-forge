@@ -60,18 +60,47 @@ curl localhost:8000/knowledge-objects
 ## 엔드포인트
 
 FastAPI가 자동 생성하는 대화형 문서도 있다: `GET /docs`(Swagger UI), `GET /redoc`, `GET
-/openapi.json`. 라우터별로 태그(Health/Ingest/Jobs/Knowledge Objects/Relations)가 붙어 있어
-Swagger UI에서 리소스별로 묶여 보인다.
+/openapi.json`. 라우터별로 태그(Health/Ingest/Jobs/Sources/Documents/Knowledge
+Objects/Relations)가 붙어 있어 Swagger UI에서 리소스별로 묶여 보인다.
 
 | 메서드/경로 | 설명 |
 |---|---|
 | `GET /health` | liveness, DB 의존 없음(컨테이너 healthcheck용) |
-| `POST /ingest` | `{"path": "<로컬 경로>"}` → 경로 존재 확인 후 `local_file_ingest` job enqueue, `202` + `{job_id, status}` |
+| `POST /ingest` | `{"path": "<로컬 경로>", "project_id": "<선택, 기본 "default">"}` → 경로 존재 확인 후 `local_file_ingest` job enqueue, `202` + `{job_id, status}` |
 | `GET /jobs/{job_id}` | job 상태/결과 조회, 없으면 `404` |
-| `GET /jobs?status=` | job 목록(페이지네이션 `limit`/`offset`) |
+| `GET /jobs?status=&project_id=` | job 목록(페이지네이션 `limit`/`offset`) |
+| `GET /sources?project_id=&limit=&offset=` | 저장된 Source 조회 |
+| `GET /sources/{source_id}` | 단건 조회, 없으면 `404` |
+| `GET /documents?project_id=&source_id=&limit=&offset=` | 저장된 Document 조회 |
+| `GET /documents/{document_id}` | 단건 조회(전체 `elements` 포함), 없으면 `404` |
 | `GET /knowledge-objects?source_id=&type=&limit=&offset=` | 저장된 KnowledgeObject 조회 |
 | `GET /knowledge-objects/{id}` | 단건 조회, 없으면 `404` |
 | `GET /relations?subject_id=&object_id=&type=` | Relation 조회 |
+
+## 멀티테넌시(`project_id`)
+
+`sources`/`documents`/`jobs` 세 테이블 모두 `project_id TEXT NOT NULL DEFAULT 'default'` 컬럼을
+가진다(`storage/schema.sql`). 한 프로젝트가 수집한 데이터가 다른 프로젝트에 섞이지 않도록 하는
+테넌시 키로, `Source`가 만들어지는 시점(`pipeline._make_source`)에 한 번 태그되면
+`SourceRef.project_id`를 통해 `Document`/`KnowledgeObject`까지 그대로 전파된다(`documents.project_id`는
+연결된 `sources.project_id`에서 파생되어 저장된다 - `Document` 모델 자체에는 별도 필드가 없다).
+
+**진입점별로 `project_id`를 지정하는 방법**:
+
+| 진입점 | 지정 방법 |
+|---|---|
+| `POST /ingest` | body에 `"project_id": "..."` (생략 시 `"default"`) |
+| `knowledge-forge extract` | `--project-id` |
+| `knowledge-forge schedule` | `--project-id` |
+| `GET /sources`, `/documents`, `/jobs` | 쿼리 파라미터 `?project_id=...`로 해당 프로젝트만 필터링 (생략 시 전체) |
+
+**알려진 한계 - `project_id`는 필터이지, 접근 제어가 아니다**: 이 API에는 인증/인가 계층이
+전혀 없다(`api/deps.py`는 DB 연결 여부만 확인한다). 즉 어떤 클라이언트든 임의의 `project_id`로
+`/ingest`를 호출하거나 다른 프로젝트의 `project_id`로 `/sources`·`/documents`·`/jobs`를 조회할
+수 있다 - 지금 단계에서는 "UI가 프로젝트별로 나눠서 보여줄 수 있는 키"이지 "다른 프로젝트가
+서로의 데이터를 못 보게 막는 보안 경계"가 아니다. 실제 멀티테넌트 격리(요청자를 프로젝트에
+매핑하는 API 키/JWT 인증, 각 요청을 그 프로젝트로 강제 스코핑)는 아직 구현되어 있지 않은
+후속 과제다.
 
 ## Job 상태 전이
 

@@ -36,9 +36,10 @@ class Job(BaseModel):
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    project_id: str = "default"
 
 
-_COLUMNS = "job_id, job_type, payload, status, result, error, created_at, started_at, finished_at"
+_COLUMNS = "job_id, job_type, payload, status, result, error, created_at, started_at, finished_at, project_id"
 
 
 def _row_to_job(row: tuple) -> Job:
@@ -52,6 +53,7 @@ def _row_to_job(row: tuple) -> Job:
         created_at=row[6],
         started_at=row[7],
         finished_at=row[8],
+        project_id=row[9],
     )
 
 
@@ -87,17 +89,17 @@ class JobStore:
         # "owns" schema creation.
         await self.conn.execute(_SCHEMA_PATH.read_text(encoding="utf-8"))
 
-    async def enqueue(self, job_type: str, payload: dict) -> Job:
+    async def enqueue(self, job_type: str, payload: dict, project_id: str = "default") -> Job:
         job_id = uuid.uuid4().hex
         created_at = datetime.now(timezone.utc)
         async with self.conn.cursor() as cur:
             await cur.execute(
                 f"""
-                INSERT INTO jobs (job_id, job_type, payload, status, created_at)
-                VALUES (%s, %s, %s, 'pending', %s)
+                INSERT INTO jobs (job_id, job_type, payload, status, created_at, project_id)
+                VALUES (%s, %s, %s, 'pending', %s, %s)
                 RETURNING {_COLUMNS}
                 """,
-                (job_id, job_type, Jsonb(payload), created_at),
+                (job_id, job_type, Jsonb(payload), created_at, project_id),
             )
             row = await cur.fetchone()
         return _row_to_job(row)
@@ -108,16 +110,30 @@ class JobStore:
             row = await cur.fetchone()
         return _row_to_job(row) if row is not None else None
 
-    async def list(self, status: JobStatus | None = None, limit: int = 50, offset: int = 0) -> list[Job]:
+    async def list(
+        self,
+        status: JobStatus | None = None,
+        project_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Job]:
         async with self.conn.cursor() as cur:
             await cur.execute(
                 f"""
                 SELECT {_COLUMNS} FROM jobs
-                WHERE %s::text IS NULL OR status = %s
+                WHERE (%s::text IS NULL OR status = %s)
+                  AND (%s::text IS NULL OR project_id = %s)
                 ORDER BY created_at DESC
                 LIMIT %s OFFSET %s
                 """,
-                (status.value if status else None, status.value if status else None, limit, offset),
+                (
+                    status.value if status else None,
+                    status.value if status else None,
+                    project_id,
+                    project_id,
+                    limit,
+                    offset,
+                ),
             )
             rows = await cur.fetchall()
         return [_row_to_job(row) for row in rows]

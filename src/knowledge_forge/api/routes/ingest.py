@@ -31,5 +31,6 @@ async def ingest(request: IngestRequest, job_store: JobStore = Depends(get_job_s
     job = await job_store.enqueue(
         "local_file_ingest",
         {"path": request.path, "max_tokens": settings.max_tokens_per_chunk, "model": None},
+        project_id=request.project_id,
     )
     return IngestResponse(job_id=job.job_id, status=job.status)

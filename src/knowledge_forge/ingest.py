@@ -17,7 +17,13 @@ from knowledge_forge.pipeline import run_pipeline
 from knowledge_forge.storage.store import PipelineStore
 
 
-async def run_local_ingest(path: Path | str, max_tokens: int, model: str | None, store: PipelineStore | None) -> dict:
+async def run_local_ingest(
+    path: Path | str,
+    max_tokens: int,
+    model: str | None,
+    store: PipelineStore | None,
+    project_id: str = "default",
+) -> dict:
     """Runs the full pipeline over `path` against `store`, returning a
     JSON-safe summary usable directly as a job's `result`."""
     collector = LocalFileCollector(root=path)
@@ -27,7 +33,7 @@ async def run_local_ingest(path: Path | str, max_tokens: int, model: str | None,
 
     object_count = 0
     relation_count = 0
-    async for outcome in run_pipeline(collector, registry, chunker, extractor, store=store):
+    async for outcome in run_pipeline(collector, registry, chunker, extractor, store=store, project_id=project_id):
         object_count += len(outcome.objects)
         relation_count += len(outcome.relations)
 

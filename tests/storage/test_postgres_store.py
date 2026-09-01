@@ -179,3 +179,62 @@ async def test_save_chunks_persists_page_range(store):
         "SELECT page_start, page_end FROM chunks WHERE chunk_id = %s", (chunk.chunk_id,)
     )).fetchone()
     assert row == (1, 2)
+
+
+async def test_save_source_defaults_project_id(store):
+    src, doc, _, _, _ = _sample_records()
+    await store.save_source(src, raw_path=None)
+
+    fetched = await store.get_source(src.source_id)
+    assert fetched.project_id == "default"
+
+
+async def test_list_sources_filters_by_project_id(store):
+    src, doc, _, _, _ = _sample_records()
+    src2 = src.model_copy(update={"source_id": "test-s2", "project_id": "proj-a"})
+    await store.save_source(src, raw_path=None)
+    await store.save_source(src2, raw_path=None)
+
+    proj_a = await store.list_sources(project_id="proj-a", limit=200)
+    assert {s.source_id for s in proj_a} == {"test-s2"}
+
+    default_project = await store.list_sources(project_id="default", limit=200)
+    assert src.source_id in {s.source_id for s in default_project}
+    assert "test-s2" not in {s.source_id for s in default_project}
+
+
+async def test_get_source_returns_none_for_unknown_id(store):
+    assert await store.get_source("no-such-source") is None
+
+
+async def test_save_document_inherits_project_id_from_source(store):
+    src, doc, _, _, _ = _sample_records()
+    src = src.model_copy(update={"project_id": "proj-a"})
+    doc = doc.model_copy(update={"source": SourceRef.from_source(src)})
+    await store.save_source(src, raw_path=None)
+    await store.save_document(doc)
+
+    fetched = await store.get_document(doc.document_id)
+    assert fetched.source.project_id == "proj-a"
+
+    listed = await store.list_documents(project_id="proj-a", limit=200)
+    assert {d.document_id for d in listed} == {doc.document_id}
+
+    listed_other = await store.list_documents(project_id="default", limit=200)
+    assert doc.document_id not in {d.document_id for d in listed_other}
+
+
+async def test_list_documents_filters_by_source_id(store):
+    src, doc, _, _, _ = _sample_records()
+    await store.save_source(src, raw_path=None)
+    await store.save_document(doc)
+
+    listed = await store.list_documents(source_id=src.source_id, limit=200)
+    assert {d.document_id for d in listed} == {doc.document_id}
+
+    listed_other = await store.list_documents(source_id="no-such-source", limit=200)
+    assert listed_other == []
+
+
+async def test_get_document_returns_none_for_unknown_id(store):
+    assert await store.get_document("no-such-document") is None

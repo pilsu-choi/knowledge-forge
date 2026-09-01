@@ -53,8 +53,8 @@ class PostgresStore:
         await self.conn.execute(
             """
             INSERT INTO sources (source_id, source_type, uri, content_hash, raw_path,
-                                  collected_at, modified_at, metadata)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                  collected_at, modified_at, metadata, project_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (source_id) DO UPDATE SET
                 source_type = EXCLUDED.source_type,
                 uri = EXCLUDED.uri,
@@ -62,7 +62,8 @@ class PostgresStore:
                 raw_path = EXCLUDED.raw_path,
                 collected_at = EXCLUDED.collected_at,
                 modified_at = EXCLUDED.modified_at,
-                metadata = EXCLUDED.metadata
+                metadata = EXCLUDED.metadata,
+                project_id = EXCLUDED.project_id
             """,
             (
                 source.source_id,
@@ -73,25 +74,137 @@ class PostgresStore:
                 source.collected_at,
                 source.modified_at,
                 Jsonb(source.metadata),
+                source.project_id,
             ),
         )
 
     async def save_document(self, document: Document) -> None:
         await self.conn.execute(
             """
-            INSERT INTO documents (document_id, source_id, elements, metadata)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO documents (document_id, source_id, elements, metadata, project_id)
+            VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (document_id) DO UPDATE SET
                 source_id = EXCLUDED.source_id,
                 elements = EXCLUDED.elements,
-                metadata = EXCLUDED.metadata
+                metadata = EXCLUDED.metadata,
+                project_id = EXCLUDED.project_id
             """,
             (
                 document.document_id,
                 document.source.source_id,
                 Jsonb([e.model_dump(mode="json") for e in document.elements]),
                 Jsonb(document.metadata.model_dump(mode="json")),
+                document.source.project_id,
             ),
+        )
+
+    async def list_sources(
+        self, project_id: str | None = None, limit: int = 50, offset: int = 0
+    ) -> list[Source]:
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT source_id, source_type, uri, content_hash, collected_at, modified_at,
+                       metadata, project_id
+                FROM sources
+                WHERE (%s::text IS NULL OR project_id = %s)
+                ORDER BY collected_at DESC
+                LIMIT %s OFFSET %s
+                """,
+                (project_id, project_id, limit, offset),
+            )
+            rows = await cur.fetchall()
+        return [
+            Source(
+                source_id=row[0],
+                source_type=row[1],
+                uri=row[2],
+                content_hash=row[3],
+                collected_at=row[4],
+                modified_at=row[5],
+                metadata=row[6],
+                project_id=row[7],
+            )
+            for row in rows
+        ]
+
+    async def get_source(self, source_id: str) -> Source | None:
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT source_id, source_type, uri, content_hash, collected_at, modified_at,
+                       metadata, project_id
+                FROM sources
+                WHERE source_id = %s
+                """,
+                (source_id,),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return Source(
+            source_id=row[0],
+            source_type=row[1],
+            uri=row[2],
+            content_hash=row[3],
+            collected_at=row[4],
+            modified_at=row[5],
+            metadata=row[6],
+            project_id=row[7],
+        )
+
+    async def list_documents(
+        self,
+        project_id: str | None = None,
+        source_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Document]:
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT d.document_id, d.elements, d.metadata,
+                       s.source_id, s.source_type, s.uri, s.project_id
+                FROM documents d
+                JOIN sources s ON s.source_id = d.source_id
+                WHERE (%s::text IS NULL OR d.project_id = %s)
+                  AND (%s::text IS NULL OR d.source_id = %s)
+                ORDER BY d.document_id
+                LIMIT %s OFFSET %s
+                """,
+                (project_id, project_id, source_id, source_id, limit, offset),
+            )
+            rows = await cur.fetchall()
+        return [
+            Document(
+                document_id=row[0],
+                elements=row[1],
+                metadata=row[2],
+                source=SourceRef(source_id=row[3], source_type=row[4], uri=row[5], project_id=row[6]),
+            )
+            for row in rows
+        ]
+
+    async def get_document(self, document_id: str) -> Document | None:
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT d.document_id, d.elements, d.metadata,
+                       s.source_id, s.source_type, s.uri, s.project_id
+                FROM documents d
+                JOIN sources s ON s.source_id = d.source_id
+                WHERE d.document_id = %s
+                """,
+                (document_id,),
+            )
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return Document(
+            document_id=row[0],
+            elements=row[1],
+            metadata=row[2],
+            source=SourceRef(source_id=row[3], source_type=row[4], uri=row[5], project_id=row[6]),
         )
 
     async def save_chunks(self, chunks: list[Chunk]) -> None:
@@ -199,7 +312,7 @@ class PostgresStore:
                 SELECT ko.knowledge_object_id, ko.type, ko.document_id, ko.evidence, ko.summary,
                        ko.content, ko.topics, ko.document_type, ko.extracted_at, ko.model_used,
                        ko.version, ko.pipeline_version, ko.source_hash, ko.supersedes,
-                       s.source_type, s.uri
+                       s.source_type, s.uri, s.project_id
                 FROM knowledge_objects ko
                 JOIN sources s ON s.source_id = ko.source_id
                 WHERE ko.source_id = %s
@@ -212,7 +325,7 @@ class PostgresStore:
             KnowledgeObject(
                 knowledge_object_id=row[0],
                 type=row[1],
-                source=SourceRef(source_id=source_id, source_type=row[14], uri=row[15]),
+                source=SourceRef(source_id=source_id, source_type=row[14], uri=row[15], project_id=row[16]),
                 document=DocumentRef(document_id=row[2]),
                 evidence=[Evidence(**e) for e in row[3]],
                 summary=row[4],
@@ -243,7 +356,7 @@ class PostgresStore:
                 SELECT ko.knowledge_object_id, ko.type, ko.document_id, ko.evidence, ko.summary,
                        ko.content, ko.topics, ko.document_type, ko.extracted_at, ko.model_used,
                        ko.version, ko.pipeline_version, ko.source_hash, ko.supersedes,
-                       s.source_id, s.source_type, s.uri
+                       s.source_id, s.source_type, s.uri, s.project_id
                 FROM knowledge_objects ko
                 JOIN sources s ON s.source_id = ko.source_id
                 WHERE (%s::text IS NULL OR ko.source_id = %s)
@@ -259,7 +372,7 @@ class PostgresStore:
             KnowledgeObject(
                 knowledge_object_id=row[0],
                 type=row[1],
-                source=SourceRef(source_id=row[14], source_type=row[15], uri=row[16]),
+                source=SourceRef(source_id=row[14], source_type=row[15], uri=row[16], project_id=row[17]),
                 document=DocumentRef(document_id=row[2]),
                 evidence=[Evidence(**e) for e in row[3]],
                 summary=row[4],
@@ -283,7 +396,7 @@ class PostgresStore:
                 SELECT ko.knowledge_object_id, ko.type, ko.document_id, ko.evidence, ko.summary,
                        ko.content, ko.topics, ko.document_type, ko.extracted_at, ko.model_used,
                        ko.version, ko.pipeline_version, ko.source_hash, ko.supersedes,
-                       s.source_id, s.source_type, s.uri
+                       s.source_id, s.source_type, s.uri, s.project_id
                 FROM knowledge_objects ko
                 JOIN sources s ON s.source_id = ko.source_id
                 WHERE ko.knowledge_object_id = %s
@@ -296,7 +409,7 @@ class PostgresStore:
         return KnowledgeObject(
             knowledge_object_id=row[0],
             type=row[1],
-            source=SourceRef(source_id=row[14], source_type=row[15], uri=row[16]),
+            source=SourceRef(source_id=row[14], source_type=row[15], uri=row[16], project_id=row[17]),
             document=DocumentRef(document_id=row[2]),
             evidence=[Evidence(**e) for e in row[3]],
             summary=row[4],

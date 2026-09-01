@@ -28,7 +28,7 @@ async def _dispatch(job: Job, database_url: str, data_dir: str) -> dict:
         model = job.payload.get("model")
         async with PipelineStore(database_url, data_dir) as store:
             await store.init_schema()  # idempotent (CREATE TABLE IF NOT EXISTS)
-            return await run_local_ingest(Path(path), max_tokens, model, store)
+            return await run_local_ingest(Path(path), max_tokens, model, store, project_id=job.project_id)
     raise ValueError(f"unknown job_type: {job.job_type}")
 
 

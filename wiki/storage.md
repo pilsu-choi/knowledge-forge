@@ -20,9 +20,10 @@
 
 ### `RawBlobStore` (`raw_store.py`)
 
-`RawBlobStore(data_dir).save(item: RawItem) -> Path`. `content_hash`로 콘텐츠 주소화된
-경로(`<data_dir>/raw/<hash[:2]>/<hash>`)에 저장한다 — 같은 내용의 파일이 여러 번 수집돼도
-한 번만 저장된다(dedup). `<data_dir>`는 `KF_DATA_DIR`(기본 `./data`).
+`RawBlobStore(data_dir).save(item: RawItem, project_id: str = "default") -> Path`.
+`content_hash`로 콘텐츠 주소화된 경로(`<data_dir>/raw/<project_id>/<hash[:2]>/<hash>`)에
+저장한다 — 같은 프로젝트 안에서 같은 내용의 파일이 여러 번 수집돼도 한 번만 저장된다(dedup은
+`project_id` 단위로 스코프된다). `<data_dir>`는 `KF_DATA_DIR`(기본 `./data`).
 
 ### `PostgresStore` (`postgres_store.py`)
 
@@ -31,6 +32,11 @@ NOT EXISTS` — 여러 번 실행해도 안전). `save_source`/`save_document`/`
 `save_knowledge_objects`/`save_relations` 다섯 메서드가 각각 `INSERT ... ON CONFLICT (id) DO
 UPDATE`로 upsert한다(`save_knowledge_objects`/`save_relations`는 리스트를 받아
 `executemany`로 배치 upsert한다 — 한 청크가 여러 `KnowledgeObject`/`Relation`을 낳으므로).
+
+읽기 쪽은 `list_sources`/`get_source`/`list_documents`/`get_document`(둘 다 `project_id`로
+필터 가능, `list_documents`는 `source_id`로도 필터 가능) + 기존 `list_knowledge_objects`/
+`get_knowledge_object`/`list_relations` — 읽기 API(`api/routes/`)는 이 `PostgresStore`를
+직접 의존한다(`PipelineStore`는 쓰기 경로 전용 파사드, `api/deps.py`의 `get_read_store` 참고).
 
 **멱등성(idempotency)**: 모든 테이블의 기본키는 각 모델의 결정론적 `stable_id`
 (`src/knowledge_forge/ids.py`)다. 즉 같은 입력으로 파이프라인을 다시 돌리면 같은 id가
@@ -42,8 +48,8 @@ Postgres 컨테이너(`docker run postgres:16-alpine`)로 스키마 생성·저�
 
 | 테이블 | 기본키 | 주요 컬럼 | FK |
 |---|---|---|---|
-| `sources` | `source_id` | `source_type`, `uri`, `content_hash`, `raw_path`(디스크 경로), `metadata`(JSONB) | - |
-| `documents` | `document_id` | `elements`(JSONB, 요소 전체 직렬화), `metadata`(JSONB) | → `sources` |
+| `sources` | `source_id` | `source_type`, `uri`, `content_hash`, `raw_path`(디스크 경로), `metadata`(JSONB), `project_id`(테넌시 키, 기본 `'default'`) | - |
+| `documents` | `document_id` | `elements`(JSONB, 요소 전체 직렬화), `metadata`(JSONB), `project_id`(연결된 `sources.project_id`에서 파생) | → `sources` |
 | `chunks` | `chunk_id` | `hierarchy_level`, `sequence_index`, `text`, `token_count`, `element_ids`(JSONB), `page_start`/`page_end` | → `documents`, `sources` |
 | `knowledge_objects` | `knowledge_object_id` | `type`, `evidence`(JSONB, 이 객체를 뒷받침하는 청크 목록), `summary`, `content`(JSONB, 타입별 payload), `topics`(JSONB), `document_type`, `model_used`, `version`/`pipeline_version`/`source_hash`/`supersedes`(재처리 이력) | → `sources`, `documents` |
 | `relations` | `relation_id` | `type`, `subject_id`/`object_id`(둘 다 `knowledge_object_id`를 가리키는 typed edge), `label`, `confidence`, `evidence`(JSONB, chunk_id 목록) | → `knowledge_objects`(양쪽) |
@@ -55,6 +61,14 @@ Postgres 컨테이너(`docker run postgres:16-alpine`)로 스키마 생성·저�
 
 중첩 구조(리스트, 딕셔너리)는 전부 JSONB로 저장한다 — psycopg3가 JSONB ↔ Python
 dict/list를 자동 변환해줘서 애플리케이션 코드에서 별도 직렬화가 필요 없다.
+
+**`project_id`(멀티테넌시 키)**: `sources`/`documents`는 각각 `project_id TEXT NOT NULL
+DEFAULT 'default'` 컬럼을 갖는다. `Source`가 만들어질 때(`pipeline._make_source`) 한 번
+지정되면 `SourceRef.project_id`를 통해 `Document`까지 그대로 전파되므로, `Document` 모델
+자체에는 별도 `project_id` 필드가 없다 — `document.source.project_id`가 곧 그 값이고,
+`save_document`는 이를 읽어 `documents.project_id`로 저장한다. 읽기 API(`GET /sources`,
+`GET /documents`)는 이 컬럼으로 프로젝트별 목록을 필터링한다 — 자세한 사용법과 접근 제어
+관련 한계는 [`api.md`](api.md)의 "멀티테넌시" 절 참고.
 
 ### `PipelineStore` (`store.py`)
 

@@ -11,25 +11,27 @@ from fastapi.testclient import TestClient
 
 from knowledge_forge.api.app import create_app
 from knowledge_forge.api.deps import get_job_store, get_read_store
+from knowledge_forge.models.document import Document, DocumentMetadata, TextBlock
 from knowledge_forge.models.knowledge_object import DocumentRef, KnowledgeObject, KnowledgeObjectType
 from knowledge_forge.models.relation import Relation, RelationType
-from knowledge_forge.models.source import SourceRef, SourceType
+from knowledge_forge.models.source import Source, SourceRef, SourceType
 from knowledge_forge.storage.job_store import Job, JobStatus
 
 
 class _FakeJobStore:
     def __init__(self):
         self.jobs: dict[str, Job] = {}
-        self.enqueued: list[tuple[str, dict]] = []
+        self.enqueued: list[tuple[str, dict, str]] = []
 
-    async def enqueue(self, job_type: str, payload: dict) -> Job:
-        self.enqueued.append((job_type, payload))
+    async def enqueue(self, job_type: str, payload: dict, project_id: str = "default") -> Job:
+        self.enqueued.append((job_type, payload, project_id))
         job = Job(
             job_id="job-1",
             job_type=job_type,
             payload=payload,
             status=JobStatus.PENDING,
             created_at=datetime.now(timezone.utc),
+            project_id=project_id,
         )
         self.jobs[job.job_id] = job
         return job
@@ -37,10 +39,12 @@ class _FakeJobStore:
     async def get(self, job_id: str) -> Job | None:
         return self.jobs.get(job_id)
 
-    async def list(self, status=None, limit=50, offset=0) -> list[Job]:
+    async def list(self, status=None, project_id=None, limit=50, offset=0) -> list[Job]:
         jobs = list(self.jobs.values())
         if status is not None:
             jobs = [j for j in jobs if j.status == status]
+        if project_id is not None:
+            jobs = [j for j in jobs if j.project_id == project_id]
         return jobs[offset : offset + limit]
 
 
@@ -71,9 +75,31 @@ def _sample_relation() -> Relation:
     )
 
 
+def _sample_source() -> Source:
+    return Source(
+        source_id="src-1",
+        source_type=SourceType.LOCAL_FILE,
+        uri="file:///a.md",
+        content_hash="h1",
+        collected_at=datetime.now(timezone.utc),
+        project_id="proj-a",
+    )
+
+
+def _sample_document() -> Document:
+    return Document(
+        document_id="doc-1",
+        source=SourceRef.from_source(_sample_source()),
+        elements=[TextBlock(element_id="e1", text="hello")],
+        metadata=DocumentMetadata(title="T"),
+    )
+
+
 class _FakeReadStore:
     def __init__(self):
         self.list_kwargs = None
+        self.list_sources_kwargs = None
+        self.list_documents_kwargs = None
 
     async def list_knowledge_objects(self, source_id=None, type=None, limit=50, offset=0):
         self.list_kwargs = {"source_id": source_id, "type": type, "limit": limit, "offset": offset}
@@ -84,6 +110,20 @@ class _FakeReadStore:
 
     async def list_relations(self, subject_id=None, object_id=None, type=None, limit=50, offset=0):
         return [_sample_relation()]
+
+    async def list_sources(self, project_id=None, limit=50, offset=0):
+        self.list_sources_kwargs = {"project_id": project_id, "limit": limit, "offset": offset}
+        return [_sample_source()]
+
+    async def get_source(self, source_id: str):
+        return _sample_source() if source_id == "src-1" else None
+
+    async def list_documents(self, project_id=None, source_id=None, limit=50, offset=0):
+        self.list_documents_kwargs = {"project_id": project_id, "source_id": source_id, "limit": limit, "offset": offset}
+        return [_sample_document()]
+
+    async def get_document(self, document_id: str):
+        return _sample_document() if document_id == "doc-1" else None
 
 
 def _make_client(job_store: _FakeJobStore, read_store: _FakeReadStore) -> TestClient:
@@ -117,6 +157,28 @@ def test_ingest_existing_path_returns_202_with_job_id(tmp_path):
     body = resp.json()
     assert body["job_id"] == "job-1"
     assert body["status"] == "pending"
+
+
+def test_ingest_forwards_project_id_to_job_payload(tmp_path):
+    (tmp_path / "a.md").write_text("hello")
+    job_store = _FakeJobStore()
+    client = _make_client(job_store, _FakeReadStore())
+
+    resp = client.post("/ingest", json={"path": str(tmp_path / "a.md"), "project_id": "proj-a"})
+
+    assert resp.status_code == 202
+    assert resp.json()["job_id"] == "job-1"
+    assert job_store.enqueued[0][2] == "proj-a"
+
+
+def test_ingest_defaults_project_id(tmp_path):
+    (tmp_path / "a.md").write_text("hello")
+    job_store = _FakeJobStore()
+    client = _make_client(job_store, _FakeReadStore())
+
+    client.post("/ingest", json={"path": str(tmp_path / "a.md")})
+
+    assert job_store.enqueued[0][2] == "default"
 
 
 def test_ingest_missing_path_returns_400():
@@ -165,3 +227,46 @@ def test_list_relations():
     resp = client.get("/relations", params={"subject_id": "ko-1"})
     assert resp.status_code == 200
     assert resp.json()["items"][0]["relation_id"] == "rel-1"
+
+
+def test_list_sources_forwards_project_id_filter():
+    read_store = _FakeReadStore()
+    client = _make_client(_FakeJobStore(), read_store)
+
+    resp = client.get("/sources", params={"project_id": "proj-a", "limit": 10, "offset": 5})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["items"][0]["source_id"] == "src-1"
+    assert body["items"][0]["project_id"] == "proj-a"
+    assert read_store.list_sources_kwargs == {"project_id": "proj-a", "limit": 10, "offset": 5}
+
+
+def test_get_source_404():
+    client = _make_client(_FakeJobStore(), _FakeReadStore())
+    resp = client.get("/sources/nope")
+    assert resp.status_code == 404
+
+
+def test_list_documents_forwards_filters():
+    read_store = _FakeReadStore()
+    client = _make_client(_FakeJobStore(), read_store)
+
+    resp = client.get("/documents", params={"project_id": "proj-a", "source_id": "src-1"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["items"][0]["document_id"] == "doc-1"
+    assert body["items"][0]["project_id"] == "proj-a"
+    assert read_store.list_documents_kwargs == {
+        "project_id": "proj-a",
+        "source_id": "src-1",
+        "limit": 50,
+        "offset": 0,
+    }
+
+
+def test_get_document_404():
+    client = _make_client(_FakeJobStore(), _FakeReadStore())
+    resp = client.get("/documents/nope")
+    assert resp.status_code == 404

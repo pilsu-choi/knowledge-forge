@@ -19,6 +19,9 @@ T = TypeVar("T")
 
 class IngestRequest(BaseModel):
     path: str
+    # Tenancy key this ingest run's Source/Document/Job rows are tagged
+    # with. Defaults to "default" for single-tenant callers.
+    project_id: str = "default"
 
 
 class IngestResponse(BaseModel):
@@ -36,6 +39,26 @@ class JobResponse(BaseModel):
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    project_id: str
+
+
+class SourceResponse(BaseModel):
+    source_id: str
+    source_type: str
+    uri: str
+    content_hash: str
+    collected_at: datetime
+    modified_at: datetime | None = None
+    metadata: dict[str, Any]
+    project_id: str
+
+
+class DocumentResponse(BaseModel):
+    document_id: str
+    source_id: str
+    project_id: str
+    metadata: dict[str, Any]
+    elements: list[dict[str, Any]]
 
 
 class KnowledgeObjectResponse(BaseModel):

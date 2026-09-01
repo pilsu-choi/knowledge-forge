@@ -14,16 +14,24 @@ CREATE TABLE IF NOT EXISTS sources (
     raw_path      TEXT,
     collected_at  TIMESTAMPTZ NOT NULL,
     modified_at   TIMESTAMPTZ,
-    metadata      JSONB NOT NULL DEFAULT '{}'::jsonb
+    metadata      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    project_id    TEXT NOT NULL DEFAULT 'default'
 );
+-- ALTER ... IF NOT EXISTS covers databases created before project_id existed;
+-- CREATE TABLE IF NOT EXISTS above is a no-op against them.
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT 'default';
+CREATE INDEX IF NOT EXISTS idx_sources_project_id ON sources(project_id);
 
 CREATE TABLE IF NOT EXISTS documents (
     document_id   TEXT PRIMARY KEY,
     source_id     TEXT NOT NULL REFERENCES sources(source_id),
     elements      JSONB NOT NULL,
-    metadata      JSONB NOT NULL DEFAULT '{}'::jsonb
+    metadata      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    project_id    TEXT NOT NULL DEFAULT 'default'
 );
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT 'default';
 CREATE INDEX IF NOT EXISTS idx_documents_source_id ON documents(source_id);
+CREATE INDEX IF NOT EXISTS idx_documents_project_id ON documents(project_id);
 
 CREATE TABLE IF NOT EXISTS chunks (
     chunk_id        TEXT PRIMARY KEY,
@@ -99,6 +107,9 @@ CREATE TABLE IF NOT EXISTS jobs (
     error        TEXT,
     created_at   TIMESTAMPTZ NOT NULL,
     started_at   TIMESTAMPTZ,
-    finished_at  TIMESTAMPTZ
+    finished_at  TIMESTAMPTZ,
+    project_id   TEXT NOT NULL DEFAULT 'default'
 );
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT 'default';
 CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_project_id ON jobs(project_id);
