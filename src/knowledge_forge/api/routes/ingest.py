@@ -13,10 +13,17 @@ from knowledge_forge.api.schemas import IngestRequest, IngestResponse
 from knowledge_forge.config import settings
 from knowledge_forge.storage.job_store import JobStore
 
-router = APIRouter()
+router = APIRouter(tags=["Ingest"])
 
 
-@router.post("/ingest", response_model=IngestResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/ingest",
+    response_model=IngestResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Enqueue a local file ingest job",
+    description="로컬 경로를 확인한 뒤 `local_file_ingest` job을 enqueue하고 즉시 202를 반환한다. "
+    "실제 처리는 별도 worker가 수행한다.",
+)
 async def ingest(request: IngestRequest, job_store: JobStore = Depends(get_job_store)) -> IngestResponse:
     if not Path(request.path).exists():
         raise HTTPException(status_code=400, detail=f"path not found: {request.path}")

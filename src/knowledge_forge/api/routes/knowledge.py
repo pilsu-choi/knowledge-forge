@@ -37,7 +37,12 @@ def _rel_to_response(rel) -> RelationResponse:
     )
 
 
-@router.get("/knowledge-objects", response_model=Page[KnowledgeObjectResponse])
+@router.get(
+    "/knowledge-objects",
+    response_model=Page[KnowledgeObjectResponse],
+    tags=["Knowledge Objects"],
+    summary="List knowledge objects",
+)
 async def list_knowledge_objects(
     source_id: Optional[str] = None,
     type: Optional[str] = None,
@@ -49,7 +54,13 @@ async def list_knowledge_objects(
     return Page(items=[_ko_to_response(o) for o in objects], limit=limit, offset=offset)
 
 
-@router.get("/knowledge-objects/{knowledge_object_id}", response_model=KnowledgeObjectResponse)
+@router.get(
+    "/knowledge-objects/{knowledge_object_id}",
+    response_model=KnowledgeObjectResponse,
+    tags=["Knowledge Objects"],
+    summary="Get a knowledge object by id",
+    responses={404: {"description": "knowledge object not found"}},
+)
 async def get_knowledge_object(
     knowledge_object_id: str, store: PostgresStore = Depends(get_read_store)
 ) -> KnowledgeObjectResponse:
@@ -59,7 +70,12 @@ async def get_knowledge_object(
     return _ko_to_response(ko)
 
 
-@router.get("/relations", response_model=Page[RelationResponse])
+@router.get(
+    "/relations",
+    response_model=Page[RelationResponse],
+    tags=["Relations"],
+    summary="List relations",
+)
 async def list_relations(
     subject_id: Optional[str] = None,
     object_id: Optional[str] = None,

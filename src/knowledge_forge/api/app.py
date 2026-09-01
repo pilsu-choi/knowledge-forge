@@ -23,8 +23,23 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
+_TAGS_METADATA = [
+    {"name": "Health", "description": "liveness 체크. DB 의존 없음(컨테이너 healthcheck용)."},
+    {"name": "Ingest", "description": "로컬 파일을 job으로 enqueue한다 (`local_file_ingest`)."},
+    {"name": "Jobs", "description": "enqueue된 job의 상태/결과 조회."},
+    {"name": "Knowledge Objects", "description": "추출된 KnowledgeObject 조회."},
+    {"name": "Relations", "description": "KnowledgeObject 간 Relation 조회."},
+]
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="Knowledge Forge API", lifespan=_lifespan)
+    app = FastAPI(
+        title="Knowledge Forge API",
+        description="Ingest/Process 분리 구조의 job queue API. 자세한 내용은 wiki/api.md 참고.",
+        version="0.1.0",
+        openapi_tags=_TAGS_METADATA,
+        lifespan=_lifespan,
+    )
     app.include_router(health.router)
     app.include_router(ingest.router)
     app.include_router(jobs.router)

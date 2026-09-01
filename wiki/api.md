@@ -59,6 +59,10 @@ curl localhost:8000/knowledge-objects
 
 ## 엔드포인트
 
+FastAPI가 자동 생성하는 대화형 문서도 있다: `GET /docs`(Swagger UI), `GET /redoc`, `GET
+/openapi.json`. 라우터별로 태그(Health/Ingest/Jobs/Knowledge Objects/Relations)가 붙어 있어
+Swagger UI에서 리소스별로 묶여 보인다.
+
 | 메서드/경로 | 설명 |
 |---|---|
 | `GET /health` | liveness, DB 의존 없음(컨테이너 healthcheck용) |

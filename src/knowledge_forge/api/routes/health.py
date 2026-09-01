@@ -3,9 +3,9 @@ container healthcheck even if Postgres is briefly unreachable."""
 
 from fastapi import APIRouter
 
-router = APIRouter()
+router = APIRouter(tags=["Health"])
 
 
-@router.get("/health")
+@router.get("/health", summary="Liveness check")
 async def health() -> dict:
     return {"status": "ok"}
