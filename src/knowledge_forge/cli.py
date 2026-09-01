@@ -69,7 +69,10 @@ def extract(
     okf_dir: Optional[Path] = typer.Option(
         None,
         "--okf-dir",
-        help="Also write a file-based OKF Knowledge Base tree (manifest.yaml + resources/objects/relations) to this directory.",
+        help="Also write a file-based OKF Knowledge Base tree (manifest.yaml + resources/objects/relations) to this directory, under a {project-id}/ subfolder.",
+    ),
+    project_id: str = typer.Option(
+        "default", "--project-id", help="Tenancy key tagged on every Source/Document this run persists."
     ),
 ) -> None:
     """Run a local file/directory through the full pipeline and emit Knowledge Objects."""
@@ -79,7 +82,7 @@ def extract(
     chunker = AdaptiveChunker(max_tokens_per_chunk=max_tokens)
     extractor = get_extractor(model=model)
     pipeline_store = _open_store() if store else None
-    okf_writer = OKFWriter(okf_dir) if okf_dir else None
+    okf_writer = OKFWriter(okf_dir, project_id=project_id) if okf_dir else None
 
     async def _run():
         if pipeline_store is not None:
@@ -88,13 +91,19 @@ def extract(
                 return [
                     outcome
                     async for outcome in run_pipeline(
-                        collector, registry, chunker, extractor, store=pipeline_store, okf_writer=okf_writer
+                        collector,
+                        registry,
+                        chunker,
+                        extractor,
+                        store=pipeline_store,
+                        okf_writer=okf_writer,
+                        project_id=project_id,
                     )
                 ]
         return [
             outcome
             async for outcome in run_pipeline(
-                collector, registry, chunker, extractor, store=None, okf_writer=okf_writer
+                collector, registry, chunker, extractor, store=None, okf_writer=okf_writer, project_id=project_id
             )
         ]
 
@@ -139,6 +148,9 @@ def schedule(
     ),
     store: bool = typer.Option(
         True, "--store/--no-store", help="Persist Source/Document/Chunk/KnowledgeObject to Postgres + raw bytes to disk."
+    ),
+    project_id: str = typer.Option(
+        "default", "--project-id", help="Tenancy key tagged on every Source/Document this run persists."
     ),
     trigger_api: bool = typer.Option(
         True,
@@ -185,6 +197,7 @@ def schedule(
             max_tokens=max_tokens,
             model=model,
             store_factory=store_factory,
+            project_id=project_id,
             trigger_api_host=trigger_host if trigger_api else None,
             trigger_api_port=trigger_port if trigger_api else None,
         )
