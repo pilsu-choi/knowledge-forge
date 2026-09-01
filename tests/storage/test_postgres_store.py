@@ -145,6 +145,30 @@ async def test_save_and_upsert_all_tables_is_idempotent(store):
     assert rel_row == ("mentions", "test-ko2", "test-ko1", "owns")
 
 
+async def test_list_knowledge_objects_by_source_reconstructs_full_records(store):
+    src, doc, chunk, objects, relation = _sample_records()
+    await store.save_source(src, raw_path=None)
+    await store.save_document(doc)
+    await store.save_chunks([chunk])
+    await store.save_knowledge_objects(objects)
+    await store.save_relations([relation])
+
+    fetched = await store.list_knowledge_objects_by_source(src.source_id)
+
+    assert {ko.knowledge_object_id for ko in fetched} == {"test-ko1", "test-ko2"}
+    entity = next(ko for ko in fetched if ko.knowledge_object_id == "test-ko1")
+    assert entity.source.source_id == src.source_id
+    assert entity.source.uri == src.uri
+    assert entity.document.document_id == "test-d1"
+    assert entity.evidence[0].chunk_id == "test-c1"
+    assert entity.summary == "Acme"
+    assert entity.content == {"name": "Acme", "entity_type": "ORG", "description": None}
+
+
+async def test_list_knowledge_objects_by_source_returns_empty_for_unknown_source(store):
+    assert await store.list_knowledge_objects_by_source("no-such-source") == []
+
+
 async def test_save_chunks_persists_page_range(store):
     src, doc, chunk, _, _ = _sample_records()
     await store.save_source(src, raw_path=None)

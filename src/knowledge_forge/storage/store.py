@@ -46,3 +46,6 @@ class PipelineStore:
 
     async def record_relations(self, relations: list[Relation]) -> None:
         await self._db.save_relations(relations)
+
+    async def list_prior_knowledge_objects(self, source_id: str) -> list[KnowledgeObject]:
+        return await self._db.list_knowledge_objects_by_source(source_id)

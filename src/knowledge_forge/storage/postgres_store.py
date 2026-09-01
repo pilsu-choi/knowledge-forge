@@ -13,9 +13,9 @@ from psycopg.types.json import Jsonb
 
 from knowledge_forge.models.chunk import Chunk
 from knowledge_forge.models.document import Document
-from knowledge_forge.models.knowledge_object import KnowledgeObject
+from knowledge_forge.models.knowledge_object import DocumentRef, Evidence, KnowledgeObject
 from knowledge_forge.models.relation import Relation
-from knowledge_forge.models.source import Source
+from knowledge_forge.models.source import Source, SourceRef
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
@@ -184,6 +184,50 @@ class PostgresStore:
                 """,
                 rows,
             )
+
+    async def list_knowledge_objects_by_source(self, source_id: str) -> list[KnowledgeObject]:
+        """Every KnowledgeObject previously extracted from this `source_id`
+        (across every prior document_id/content revision) - the candidate
+        pool extraction/versioning.py matches a re-extraction's new objects
+        against to auto-fill `supersedes`. Joins `sources` for
+        `source_type`/`uri` since `knowledge_objects` only stores the id
+        (see models/knowledge_object.py's DocumentRef/SourceRef note on why
+        those stay lightweight refs)."""
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT ko.knowledge_object_id, ko.type, ko.document_id, ko.evidence, ko.summary,
+                       ko.content, ko.topics, ko.document_type, ko.extracted_at, ko.model_used,
+                       ko.version, ko.pipeline_version, ko.source_hash, ko.supersedes,
+                       s.source_type, s.uri
+                FROM knowledge_objects ko
+                JOIN sources s ON s.source_id = ko.source_id
+                WHERE ko.source_id = %s
+                """,
+                (source_id,),
+            )
+            rows = await cur.fetchall()
+
+        return [
+            KnowledgeObject(
+                knowledge_object_id=row[0],
+                type=row[1],
+                source=SourceRef(source_id=source_id, source_type=row[14], uri=row[15]),
+                document=DocumentRef(document_id=row[2]),
+                evidence=[Evidence(**e) for e in row[3]],
+                summary=row[4],
+                content=row[5],
+                topics=row[6],
+                document_type=row[7],
+                extracted_at=row[8],
+                model_used=row[9],
+                version=row[10],
+                pipeline_version=row[11],
+                source_hash=row[12],
+                supersedes=row[13],
+            )
+            for row in rows
+        ]
 
     async def save_relations(self, relations: list[Relation]) -> None:
         rows: list[tuple[Any, ...]] = [
