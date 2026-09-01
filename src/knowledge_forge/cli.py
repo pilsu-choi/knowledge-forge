@@ -96,6 +96,7 @@ def extract(
     outcomes = asyncio.run(_run())
     if okf_writer is not None:
         okf_writer.write_manifest()
+        okf_writer.write_views()
 
     knowledge_objects = [ko for outcome in outcomes for ko in outcome.objects]
     relations = [rel for outcome in outcomes for rel in outcome.relations]

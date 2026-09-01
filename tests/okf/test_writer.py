@@ -82,6 +82,32 @@ def test_writer_produces_manifest_indexing_resources_objects_and_relations(tmp_p
     assert fact_payload["content"]["statement"] == "s"
 
 
+def test_write_views_indexes_objects_by_topic_document_and_timeline(tmp_path):
+    writer = OKFWriter(tmp_path)
+    src, doc = _sample_source_and_document()
+    writer.write_resource(src, doc)
+
+    fact = _sample_object("ko1", KnowledgeObjectType.FACT)
+    fact = fact.model_copy(update={"topics": ["alpha", "beta"], "extracted_at": datetime(2026, 1, 2, tzinfo=timezone.utc)})
+    entity = _sample_object("ko2", KnowledgeObjectType.ENTITY)
+    entity = entity.model_copy(update={"topics": ["alpha"], "extracted_at": datetime(2026, 1, 1, tzinfo=timezone.utc)})
+    writer.write_objects([fact, entity])
+
+    paths = writer.write_views()
+    assert {p.name for p in paths} == {"by_topic.yaml", "by_document.yaml", "timeline.yaml"}
+
+    by_topic = yaml.safe_load((tmp_path / "views/by_topic.yaml").read_text(encoding="utf-8"))
+    assert {e["id"] for e in by_topic["alpha"]} == {"ko1", "ko2"}
+    assert {e["id"] for e in by_topic["beta"]} == {"ko1"}
+
+    by_document = yaml.safe_load((tmp_path / "views/by_document.yaml").read_text(encoding="utf-8"))
+    assert by_document["d1"]["title"] == "T"
+    assert {e["id"] for e in by_document["d1"]["objects"]} == {"ko1", "ko2"}
+
+    timeline = yaml.safe_load((tmp_path / "views/timeline.yaml").read_text(encoding="utf-8"))["timeline"]
+    assert [e["id"] for e in timeline] == ["ko2", "ko1"]  # chronological (ko2 extracted first)
+
+
 def test_manifest_reflects_objects_written_across_multiple_writer_instances(tmp_path):
     """Simulates an incremental sync: a second pipeline run reuses the same
     root dir with a fresh OKFWriter - the manifest must include both runs'
