@@ -8,6 +8,8 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import Scope
 
 from knowledge_forge.api.routes import health, ingest, jobs, knowledge, okf, sources
 from knowledge_forge.config import settings
@@ -56,6 +58,21 @@ _TAGS_METADATA = [
 _FRONTEND_DIST = Path(__file__).parent.parent.parent.parent / "frontend" / "dist"
 
 
+class _SPAStaticFiles(StaticFiles):
+    """Client-side routing (react-router) means most `/ui/<project>/...`
+    URLs don't correspond to a real file on disk - only `index.html` and the
+    hashed `assets/*` bundle do. Falls back to `index.html` for anything else
+    instead of 404ing, so a browser refresh or a pasted deep link works."""
+
+    async def get_response(self, path: str, scope: Scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code == 404:
+                return await super().get_response("index.html", scope)
+            raise
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Knowledge Forge API",
@@ -74,5 +91,5 @@ def create_app() -> FastAPI:
     # would otherwise take down the whole app (including /health) on a fresh
     # clone that hasn't run the frontend build yet - skip the mount instead.
     if _FRONTEND_DIST.is_dir():
-        app.mount("/ui", StaticFiles(directory=_FRONTEND_DIST, html=True), name="ui")
+        app.mount("/ui", _SPAStaticFiles(directory=_FRONTEND_DIST, html=True), name="ui")
     return app
