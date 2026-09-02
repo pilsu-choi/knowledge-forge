@@ -258,6 +258,26 @@ uv run --extra flower celery -A knowledge_forge.celery_app flower   # 모니터�
 `redis://localhost:6379/0`)로 Celery 브로커를 가리킨다. 자세한 내용, 엔드포인트 목록,
 job 상태 전이는 [`wiki/api.md`](wiki/api.md) 참고.
 
+### 브라우저에서 OKF 트리 보기 (`/ui`)
+
+`serve`가 뜬 상태에서 `KF_OKF_DIR`만 지정하면 Postgres/Redis 없이도 `/ui`에서 OKF 파일
+트리를 훑어볼 수 있다 — 프로젝트 선택 → 타입별 카드/검색 → 파일 상세(frontmatter +
+렌더링된 body) → 그래프, ⌘K로 프로젝트 전역 검색까지. Tailwind+shadcn/ui 기반의
+Obsidian풍 다크 우선 UI([`wiki/ui.md`](wiki/ui.md))로, `frontend/`의 React+Vite 앱을
+한 번 빌드해 둬야 한다:
+
+```bash
+npm --prefix frontend install
+npm --prefix frontend run build       # frontend/dist 생성 (1회, 이후 코드 바뀔 때만 재실행)
+
+KF_OKF_DIR=./okf uv run knowledge-forge serve --port 8000
+# http://localhost:8000/ui/ 접속
+```
+
+프론트엔드 자체를 고칠 때는 핫리로드가 붙는 `npm --prefix frontend run dev`(`:5173`, `/okf/*`를
+8000번 포트로 프록시)를 쓴다. 자세한 내용은 [`wiki/okf.md`](wiki/okf.md#브라우저로-확인하기-get-ui),
+아키텍처/디자인 근거는 [`wiki/ui.md`](wiki/ui.md) 참고.
+
 ## Docker로 실행하기
 
 ```bash
