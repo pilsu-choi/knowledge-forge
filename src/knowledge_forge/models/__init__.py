@@ -18,6 +18,7 @@ from knowledge_forge.models.knowledge_object import (
     KnowledgeObjectType,
 )
 from knowledge_forge.models.relation import Relation, RelationType
+from knowledge_forge.models.link import Link, LinkEndpoint, LinkType
 
 __all__ = [
     "Source",
@@ -40,4 +41,7 @@ __all__ = [
     "KnowledgeObjectType",
     "Relation",
     "RelationType",
+    "Link",
+    "LinkEndpoint",
+    "LinkType",
 ]

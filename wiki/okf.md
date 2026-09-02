@@ -117,6 +117,78 @@ curl -X POST localhost:8000/ingest -H 'Content-Type: application/json' \
 
 `--store`(기본값)와 동시에 켜서 Postgres + OKF 파일 트리를 둘 다 만들 수도 있다.
 
+## 그래프 뷰어 대비: 문서 간 링크 설계 결정 (부분 구현)
+
+나중에 Obsidian처럼 OKF 문서 간 관계를 그래프로 시각화하는 UI를 붙일 계획이 있다. 이를 위해
+필요한 "문서/리소스 레벨 링크"가 지금 스키마에는 없다는 걸 먼저 확인해야 한다:
+
+- `relations/`는 이미 그래프 엣지 파일이지만 **`KnowledgeObject` 사이(subject_id/object_id)로만
+  한정**되고, 그마저도 `extraction/outcome.py`가 한 문서(한 번의 LLM 추출 호출) 범위 안에서만
+  만든다 — 다른 Slack 스레드, 다른 채널, 다른 소스 문서를 잇는 엣지는 파이프라인 어디에도 없다.
+- `Source`/`Document` 모델에는 `thread_id`/`channel_id`/`parent_id`/`related_ids` 같은 링크
+  필드가 전혀 없다. Slack 스레드 부모-답글 관계는 `context/slack.py`의
+  `SlackConversationReconstructor`가 **텍스트를 하나의 episode로 병합**하는 방식으로만
+  "보존"되고(별도 레코드 간 링크가 아님), `channel`/`thread_ts`는 `Source.metadata`라는 비정형
+  dict 안에만 존재해 `views/*.yaml`도 읽지 않는다.
+
+**Obsidian 사전 조사 결과**: Obsidian은 DB 없이 완전히 파일 기반이다. 각 노트 파일 본문에
+`[[WikiLink]]`가 인라인으로 박혀 있고, `MetadataCache`가 vault 전체를 한 번 파싱해
+`resolvedLinks`(소스 파일 → 대상 파일 인덱스)라는 인메모리 캐시를 만들면 그래프 뷰가 그 캐시를
+읽는 방식이다 — 즉 "파일만 파싱하면 그래프가 나온다"는 목표 자체는 우리 방향과 일치하지만,
+링크를 **소스 파일 본문에 인라인으로 심는 방식**이라는 점이 다르다.
+
+**결정: B안(별도 엣지 레코드 디렉터리) 채택, A안(인라인 필드) 대신.**
+
+| | A안 (Obsidian 스타일, 인라인) | B안 (채택) |
+|---|---|---|
+| 방식 | `resources/{id}.yaml`/`objects/{id}.yaml`에 `links: [id, ...]` 필드 추가, 뷰어가 전체 파일을 스캔해 역으로 엣지 조립 | `relations/`와 같은 패턴으로 `links/{link_id}.yaml` 신설 — `source_ref`/`target_ref`/`type`/`created_at`을 담는 독립 레코드 |
+| 근거 | Obsidian과 동일한 메커니즘 | 이미 존재하는 `relations/` 패턴과 구조적으로 일관됨. 엣지 자체에 타입/신뢰도 등 메타데이터를 붙이기 쉬움. 레코드 하나 = 파일 하나라는 OKF 전체 원칙(위 "왜 필요한가" 절)과도 맞음 |
+
+구현된 레이아웃:
+
+```
+<okf-dir>/{project_id}/
+  links/{link_id}.yaml   # Source/Document 레벨 크로스 링크
+```
+
+`links/{link_id}.yaml` 형태 (`models/link.py`):
+
+```yaml
+link_id: lnk_...
+type: thread_reply | same_channel_sequence | thread_sequence | cross_source_reference | duplicate_of
+source_ref: {source_id: src_a, document_id: doc_a}
+target_ref: {source_id: src_b, document_id: doc_b}
+created_at: ...
+```
+
+`OKFWriter.write_links()`가 `relations/`와 같은 패턴으로 파일을 쓰고, `manifest.yaml`에도
+`links` 카탈로그가 추가된다. `views/graph.yaml`(뷰어용 nodes+edges 통합 뷰)은 아직 없음 —
+지금은 뷰어가 `resources/`+`objects/`+`relations/`+`links/`를 직접 조립해야 한다.
+
+**실제로 Link를 생성하는 곳 (파이프라인 배선)**: `ContextReconstructor`가 `RawItem.metadata
+["links"]`에 `{"type": ..., "target_uri": <이전에 이미 yield된 아이템의 uri>}` 형태로
+힌트를 남기면, `pipeline.run_pipeline`의 `_resolve_links()`가 그 대상의 이미 만들어진
+`(source_id, document_id)`를 조회해 실제 `Link` 레코드로 만들고 `okf_writer.write_links()`로
+쓴다 — `source_id`/`document_id`가 각각 `stable_id(...)`로 결정론적으로 계산되는 순수
+함수라서 가능하다(`ids.py`). 이 컨벤션은 소스 타입에 무관한 일반 배선이고, 실제로 이 메타데이터를
+채워 넣는 건 소스별 reconstructor다:
+
+- **Slack** (`context/slack.py`, `SAME_CHANNEL_SEQUENCE`): 같은 채널의 시간순 타임라인
+  에피소드끼리만 연속으로 연결한다. 스레드 에피소드(`thread_ts` 있는 것)는 의도적으로 이 체인에
+  안 엮는다 — 스레드 yield 순서와 타임라인 순서를 하나로 합치는 문제는 별도 후속 과제로 남김.
+- **Gmail** (`context/gmail.py`, `THREAD_SEQUENCE`): Gmail은 Slack의 "채널" 같은 하위
+  그룹핑이 없어서, 한 번의 reconstruction이 본 모든 스레드를 각 스레드의 마지막 메시지
+  시각 기준으로 전부 하나의 체인으로 잇는다.
+- **File/Notion/GDrive**(`NoopReconstructor`), **스레드 답글**(Slack, 이미 텍스트 병합으로
+  처리), **크로스 소스 참조**(`CROSS_SOURCE_REFERENCE`), **리소스 레벨 중복**
+  (`DUPLICATE_OF`) — 전부 스키마(`LinkType`)만 있고 생성 로직 없음. `dedup.py::merge_duplicates()`
+  는 이것과 다른 레이어(같은 문서 안 `KnowledgeObject` 중복 제거)라 혼동 주의.
+
+**롤백 시 참고**: 이 결정이 틀렸다고 판단되면 A안(인라인 `links` 필드)으로 되돌리는 게
+대안이다 — 그때는 `links/` 디렉터리와 `pipeline.py`의 `_resolve_links()`/`link_endpoints_by_uri`
+캐시를 걷어내고, `resources/`/`objects/` 레코드에 필드만 추가하고 각 `ContextReconstructor`가
+그 필드를 직접 채우도록 바꾸면 된다(되돌리는 비용은 낮음).
+
 ## 후속 작업
 
 - 대용량 Knowledge Base에서 `manifest.yaml`/`views/*.yaml`을 매번 전체 스캔으로 재생성하는

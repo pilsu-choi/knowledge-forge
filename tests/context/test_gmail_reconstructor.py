@@ -40,6 +40,34 @@ def test_groups_by_thread_and_sorts_chronologically():
     assert thread1.modified_at == datetime(2026, 9, 1, 10, 5, tzinfo=timezone.utc)
 
 
+def test_threads_are_linked_in_chronological_order_by_latest_message():
+    items = [
+        _message("m2", "t1", "second reply", minute=5, from_="b@example.com"),
+        _message("m1", "t1", "first message", minute=0, from_="a@example.com"),
+        _message("m3", "t2", "unrelated thread", minute=1, from_="c@example.com"),
+    ]
+
+    merged = list(GmailThreadReconstructor().reconstruct(iter(items)))
+
+    # t2's latest (only) message is at minute=1, earlier than t1's latest
+    # message (minute=5) - so t2 is yielded first and carries no link, and
+    # t1 links back to t2.
+    thread2 = next(m for m in merged if m.metadata["thread_id"] == "t2")
+    thread1 = next(m for m in merged if m.metadata["thread_id"] == "t1")
+    assert "links" not in thread2.metadata
+    assert thread1.metadata["links"] == [
+        {"type": "thread_sequence", "target_uri": thread2.uri}
+    ]
+
+
+def test_single_thread_has_no_links():
+    items = [_message("m1", "t1", "only message", minute=0)]
+
+    merged = list(GmailThreadReconstructor().reconstruct(iter(items)))
+
+    assert "links" not in merged[0].metadata
+
+
 def test_deleted_items_pass_through_unmerged():
     deleted = RawItem(
         uri="gmail://m9",

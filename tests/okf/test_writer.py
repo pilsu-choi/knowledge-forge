@@ -5,6 +5,7 @@ import yaml
 from knowledge_forge.models.chunk import HierarchyLevel
 from knowledge_forge.models.document import Document, DocumentMetadata, TextBlock
 from knowledge_forge.models.knowledge_object import DocumentRef, Evidence, KnowledgeObject, KnowledgeObjectType
+from knowledge_forge.models.link import Link, LinkEndpoint, LinkType
 from knowledge_forge.models.relation import Relation, RelationType
 from knowledge_forge.models.source import Source, SourceRef, SourceType
 from knowledge_forge.okf import OKFWriter
@@ -64,6 +65,15 @@ def test_writer_produces_manifest_indexing_resources_objects_and_relations(tmp_p
     )
     writer.write_relations([relation])
 
+    link = Link(
+        link_id="lnk1",
+        type=LinkType.THREAD_REPLY,
+        source_ref=LinkEndpoint(source_id="s1", document_id="d1"),
+        target_ref=LinkEndpoint(source_id="s1", document_id="d1"),
+        created_at=datetime.now(timezone.utc),
+    )
+    writer.write_links([link])
+
     manifest_path = writer.write_manifest()["default"]
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
 
@@ -73,6 +83,7 @@ def test_writer_produces_manifest_indexing_resources_objects_and_relations(tmp_p
     assert fact_entry["type"] == "fact"
     assert fact_entry["path"] == "objects/fact/ko1.yaml"
     assert manifest["relations"] == [{"id": "rel1", "type": "mentions", "path": "relations/rel1.yaml"}]
+    assert manifest["links"] == [{"id": "lnk1", "type": "thread_reply", "path": "links/lnk1.yaml"}]
     assert manifest["pipeline_version"]
     assert manifest["generated_at"]
 
@@ -198,3 +209,18 @@ def test_write_relations_routes_by_explicit_project_id_argument(tmp_path):
 
     assert (tmp_path / "PRJ-A" / "relations" / "rel-a.yaml").exists()
     assert not (tmp_path / "default" / "relations" / "rel-a.yaml").exists()
+
+
+def test_write_links_routes_by_explicit_project_id_argument(tmp_path):
+    writer = OKFWriter(tmp_path)
+    link = Link(
+        link_id="lnk-a",
+        type=LinkType.SAME_CHANNEL_SEQUENCE,
+        source_ref=LinkEndpoint(source_id="sa", document_id="da"),
+        target_ref=LinkEndpoint(source_id="sa2", document_id="da2"),
+        created_at=datetime.now(timezone.utc),
+    )
+    writer.write_links([link], "PRJ-A")
+
+    assert (tmp_path / "PRJ-A" / "links" / "lnk-a.yaml").exists()
+    assert not (tmp_path / "default" / "links" / "lnk-a.yaml").exists()
