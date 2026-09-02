@@ -8,6 +8,7 @@ natural next step if this ever becomes a throughput bottleneck - not needed
 for the request volumes this server is built for today.
 """
 
+from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import HTTPException
@@ -17,6 +18,7 @@ from knowledge_forge.storage.job_store import JobStore
 from knowledge_forge.storage.postgres_store import PostgresStore
 
 _NO_DB_DETAIL = "KF_DATABASE_URL이 설정되지 않았습니다 - 이 API는 Postgres 없이는 동작하지 않습니다."
+_NO_OKF_DIR_DETAIL = "KF_OKF_DIR이 설정되지 않았습니다 - OKF 파일 트리 경로가 필요합니다."
 
 
 def _require_database_url() -> str:
@@ -38,3 +40,9 @@ async def get_read_store() -> AsyncIterator[PostgresStore]:
     dsn = _require_database_url()
     async with PostgresStore(dsn) as store:
         yield store
+
+
+def get_okf_root() -> Path:
+    if not settings.okf_dir:
+        raise HTTPException(status_code=503, detail=_NO_OKF_DIR_DETAIL)
+    return Path(settings.okf_dir)

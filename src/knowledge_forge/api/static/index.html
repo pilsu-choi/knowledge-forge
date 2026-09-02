@@ -1,0 +1,598 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OKF 뷰어</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape-expand-collapse@4.1.1/cytoscape-expand-collapse.min.js"></script>
+<style>
+  /*
+    wiki/examples/graph-viewer-cytoscape-demo.html과 같은 팔레트/타이포그래피
+    (Fraunces + IBM Plex, 라이트/다크 prefers-color-scheme) - 이 프로젝트의
+    "예시 데이터" 데모와 이 파일("실제 OKF 트리를 읽는 데모")이 같은 톤을 쓴다.
+  */
+  :root{
+    --bg:#f6f3ec; --surface:#ffffff; --surface-2:#efeae0; --border:#ddd6c7;
+    --ink:#211d17; --muted:#726b5c; --muted-2:#8f8877;
+    --focus:#2c6e63;
+    --t-entity:#4a5570; --t-fact:#3f7f96; --t-concept:#6a4f8f; --t-decision:#2c6e63;
+    --t-event:#b98a2e; --t-issue:#b5652e; --t-action_item:#6e7c3f;
+    --t-policy:#8e4a7a; --t-requirement:#3f8f6a;
+    --doc-slack:#3e5c76; --doc-gmail:#8a5a3b; --doc-other:#726b5c;
+    --edge:#a39b87;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#17140f; --surface:#211d17; --surface-2:#2a2419; --border:#3a3327;
+      --ink:#f1ece1; --muted:#b4ab97; --muted-2:#8f8877;
+      --focus:#5fbfa9;
+      --t-entity:#8b9bc7; --t-fact:#8fd0e6; --t-concept:#b39ad1; --t-decision:#5fbfa9;
+      --t-event:#e0c16a; --t-issue:#e0925a; --t-action_item:#a3b56b;
+      --t-policy:#d18ec0; --t-requirement:#7fd1ab;
+      --doc-slack:#7a9bc0; --doc-gmail:#d19a6e; --doc-other:#b4ab97;
+      --edge:#5a5344;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#17140f; --surface:#211d17; --surface-2:#2a2419; --border:#3a3327;
+    --ink:#f1ece1; --muted:#b4ab97; --muted-2:#8f8877;
+    --focus:#5fbfa9;
+    --t-entity:#8b9bc7; --t-fact:#8fd0e6; --t-concept:#b39ad1; --t-decision:#5fbfa9;
+    --t-event:#e0c16a; --t-issue:#e0925a; --t-action_item:#a3b56b;
+    --t-policy:#d18ec0; --t-requirement:#7fd1ab;
+    --doc-slack:#7a9bc0; --doc-gmail:#d19a6e; --doc-other:#b4ab97;
+    --edge:#5a5344;
+  }
+
+  *{box-sizing:border-box;}
+  html,body{ height:100%; margin:0; }
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:"IBM Plex Sans", system-ui, sans-serif;
+    height:100vh; overflow:hidden;
+    display:flex; flex-direction:column;
+  }
+  a{ color:inherit; }
+
+  .topbar{
+    flex:0 0 auto; display:flex; align-items:baseline; gap:14px;
+    padding:16px 22px 12px; border-bottom:1px solid var(--border);
+    background:var(--surface);
+  }
+  .topbar h1{
+    font-family:"Fraunces", Georgia, serif; font-weight:600; font-size:1.5rem;
+    letter-spacing:-0.01em; margin:0;
+  }
+  .topbar select{
+    font-family:"IBM Plex Mono", monospace; font-size:0.8rem;
+    background:var(--surface-2); border:1px solid var(--border); color:var(--ink);
+    border-radius:6px; padding:5px 8px;
+  }
+  .topbar .crumb{ font-family:"IBM Plex Mono", monospace; font-size:0.76rem; color:var(--muted); }
+
+  .layout{ flex:1 1 auto; display:flex; min-height:0; }
+
+  .rail{
+    flex:0 0 250px; border-right:1px solid var(--border); background:var(--surface);
+    padding:18px 16px; overflow-y:auto;
+    display:flex; flex-direction:column; gap:20px;
+  }
+  .rail h2{
+    font-size:0.68rem; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--muted); margin:0 0 10px; font-weight:600;
+  }
+  .stat-row{ display:flex; gap:8px; flex-wrap:wrap; }
+  .stat{
+    flex:1 1 60px; background:var(--surface-2); border:1px solid var(--border);
+    border-radius:8px; padding:8px 9px;
+  }
+  .stat .n{ font-family:"IBM Plex Mono",monospace; font-size:1.05rem; }
+  .stat .l{ font-size:0.65rem; color:var(--muted); margin-top:1px; }
+
+  .nav-list{ display:flex; flex-direction:column; gap:2px; }
+  .nav-item{
+    display:flex; align-items:center; gap:8px; font-size:0.84rem;
+    padding:6px 8px; border-radius:6px; cursor:pointer; text-decoration:none; color:var(--ink);
+  }
+  .nav-item:hover{ background:var(--surface-2); }
+  .nav-item.active{ background:var(--surface-2); font-weight:600; }
+  .nav-item .dot{ width:9px; height:9px; border-radius:50%; flex:0 0 auto; }
+  .nav-item .cnt{ margin-left:auto; color:var(--muted); font-family:"IBM Plex Mono",monospace; font-size:0.72rem; }
+
+  .main{ flex:1 1 auto; overflow-y:auto; padding:20px 26px; min-width:0; }
+
+  .filter-row{ margin-bottom:16px; }
+  .filter-row input{
+    width:100%; max-width:340px; font-family:"IBM Plex Sans"; font-size:0.86rem;
+    background:var(--surface); border:1px solid var(--border); color:var(--ink);
+    border-radius:7px; padding:8px 10px;
+  }
+
+  .grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(260px,1fr)); gap:12px; }
+  .card{
+    background:var(--surface); border:1px solid var(--border); border-radius:10px;
+    padding:13px 14px; cursor:pointer; display:flex; flex-direction:column; gap:7px;
+  }
+  .card:hover{ border-color:var(--focus); }
+  .card .title{ font-weight:600; font-size:0.92rem; line-height:1.35; }
+  .card .desc{ font-size:0.8rem; color:var(--muted); line-height:1.45; }
+  .badge{
+    display:inline-block; font-size:0.66rem; letter-spacing:.04em; text-transform:uppercase;
+    border-radius:999px; padding:2px 9px; color:#fff; width:fit-content; font-weight:600;
+  }
+  .chips{ display:flex; flex-wrap:wrap; gap:5px; }
+  .chip{
+    font-size:0.7rem; background:var(--surface-2); border:1px solid var(--border);
+    border-radius:999px; padding:2px 8px; color:var(--muted);
+  }
+
+  .empty{ color:var(--muted); font-size:0.88rem; padding:20px 0; }
+
+  .back-link{
+    display:inline-block; margin-bottom:14px; font-size:0.82rem; color:var(--muted);
+    cursor:pointer; text-decoration:underline;
+  }
+  .detail-head{ display:flex; align-items:flex-start; gap:12px; margin-bottom:16px; }
+  .detail-head h2{
+    font-family:"Fraunces", Georgia, serif; font-weight:600; font-size:1.3rem; margin:0;
+  }
+  .fm-box{
+    background:var(--surface); border:1px solid var(--border); border-radius:10px;
+    padding:14px 16px; margin-bottom:18px; display:flex; flex-direction:column; gap:8px;
+    max-width:640px;
+  }
+  .fm-row{ display:flex; gap:10px; font-size:0.82rem; align-items:flex-start; }
+  .fm-row .k{ flex:0 0 130px; color:var(--muted); font-family:"IBM Plex Mono",monospace; font-size:0.72rem; padding-top:2px; }
+  .fm-row .v{ flex:1; word-break:break-word; }
+  .fm-row pre{ margin:0; font-size:0.72rem; white-space:pre-wrap; }
+
+  .body-html{ max-width:720px; line-height:1.7; font-size:0.92rem; }
+  .body-html h2{ font-size:1rem; border-top:1px solid var(--border); padding-top:14px; margin-top:24px; }
+  .body-html a{ color:var(--focus); }
+  .body-html ul{ padding-left:20px; }
+
+  .graph-toolbar{ display:flex; align-items:center; gap:16px; margin-bottom:12px; flex-wrap:wrap; }
+  .graph-toolbar .btn{
+    font-family:"IBM Plex Sans"; font-size:0.78rem; font-weight:500;
+    background:var(--surface); border:1px solid var(--border); color:var(--ink);
+    border-radius:7px; padding:6px 10px; cursor:pointer;
+  }
+  .graph-toolbar .btn:hover{ border-color:var(--focus); }
+  .graph-legend{ display:flex; gap:12px; flex-wrap:wrap; font-size:0.76rem; color:var(--muted); }
+  .graph-legend span.dot{ display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:4px; vertical-align:middle; }
+  .graph-wrap{ position:relative; height:min(70vh,640px); border:1px solid var(--border); border-radius:10px; overflow:hidden; background:var(--surface); }
+  #cy{ width:100%; height:100%; }
+  .g-drawer{
+    position:absolute; top:0; right:0; bottom:0; width:300px;
+    background:var(--surface); border-left:1px solid var(--border);
+    transform:translateX(100%); transition:transform .2s ease;
+    display:flex; flex-direction:column; box-shadow:-8px 0 20px -10px rgba(0,0,0,.25);
+  }
+  .g-drawer.open{ transform:translateX(0); }
+  .g-drawer-head{ padding:14px 16px 10px; border-bottom:1px solid var(--border); display:flex; gap:8px; align-items:flex-start; }
+  .g-drawer-head h4{ font-family:"Fraunces", Georgia, serif; font-size:0.98rem; margin:0; line-height:1.35; }
+  .g-drawer-close{ margin-left:auto; background:none; border:none; color:var(--muted); font-size:1rem; cursor:pointer; }
+  .g-drawer-body{ padding:12px 16px; overflow-y:auto; flex:1; font-size:0.82rem; }
+  .g-drawer-body a.detail-link{ display:inline-block; margin-top:10px; color:var(--focus); text-decoration:underline; cursor:pointer; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>OKF 뷰어</h1>
+  <select id="project-select"></select>
+  <span class="crumb" id="crumb"></span>
+</div>
+
+<div class="layout">
+  <aside class="rail" id="rail"></aside>
+  <main class="main" id="main"></main>
+</div>
+
+<script>
+(function(){
+
+const API = "/okf";
+const TYPE_COLOR = t => `var(--t-${t}, var(--muted))`;
+
+let state = { project: null, manifest: null };
+
+async function fetchJSON(url){
+  const res = await fetch(url);
+  if(!res.ok){
+    const body = await res.json().catch(()=>({}));
+    throw new Error(body.detail || `${res.status} ${res.statusText}`);
+  }
+  return res.json();
+}
+
+function typeCounts(manifest){
+  const counts = {};
+  for(const o of (manifest.objects || [])) counts[o.type] = (counts[o.type]||0) + 1;
+  return counts;
+}
+
+function renderRail(route){
+  const rail = document.getElementById("rail");
+  if(!state.manifest){ rail.innerHTML = ""; return; }
+  const counts = typeCounts(state.manifest);
+  const resCount = (state.manifest.resources || []).length;
+  const orphanCount = (state.manifest.relations || []).length + (state.manifest.links || []).length;
+
+  let html = `<div>
+    <h2>구성</h2>
+    <div class="stat-row">
+      <div class="stat"><div class="n">${resCount}</div><div class="l">resources</div></div>
+      <div class="stat"><div class="n">${(state.manifest.objects||[]).length}</div><div class="l">objects</div></div>
+      <div class="stat"><div class="n">${orphanCount}</div><div class="l">orphan edges</div></div>
+    </div>
+  </div>`;
+
+  html += `<div><h2>Objects</h2><div class="nav-list">`;
+  for(const type of Object.keys(counts).sort()){
+    const active = route.kind === "type" && route.type === type;
+    html += `<a class="nav-item ${active?"active":""}" data-nav="type:${type}">
+      <span class="dot" style="background:${TYPE_COLOR(type)}"></span>${type}
+      <span class="cnt">${counts[type]}</span></a>`;
+  }
+  html += `</div></div>`;
+
+  html += `<div><h2>기타</h2><div class="nav-list">
+    <a class="nav-item ${route.kind==="graph"?"active":""}" data-nav="graph">그래프</a>
+    <a class="nav-item ${route.kind==="resources"?"active":""}" data-nav="resources">resources<span class="cnt">${resCount}</span></a>
+    <a class="nav-item ${route.kind==="file" && route.relPath==="views/by-topic.md" ? "active":""}" data-nav="file:views/by-topic.md">주제별 보기</a>
+    <a class="nav-item ${route.kind==="file" && route.relPath==="log.md" ? "active":""}" data-nav="file:log.md">변경 이력 (log)</a>
+    <a class="nav-item ${route.kind==="file" && route.relPath==="index.md" ? "active":""}" data-nav="file:index.md">index.md</a>
+  </div></div>`;
+
+  rail.innerHTML = html;
+  rail.querySelectorAll("[data-nav]").forEach(el => {
+    el.addEventListener("click", () => {
+      const [kind, arg] = el.getAttribute("data-nav").split(":");
+      if(kind === "type") navigate(state.project, "type", arg);
+      else if(kind === "resources") navigate(state.project, "resources");
+      else if(kind === "file") navigate(state.project, "file", arg);
+      else if(kind === "graph") navigate(state.project, "graph");
+    });
+  });
+}
+
+function fmValue(v){
+  if(v === null || v === undefined || v === "") return `<span style="color:var(--muted-2)">-</span>`;
+  if(Array.isArray(v)){
+    if(v.every(x => typeof x === "string")) return `<div class="chips">${v.map(x=>`<span class="chip">${escapeHtml(x)}</span>`).join("")}</div>`;
+    return `<pre>${escapeHtml(JSON.stringify(v, null, 2))}</pre>`;
+  }
+  if(typeof v === "object") return `<pre>${escapeHtml(JSON.stringify(v, null, 2))}</pre>`;
+  return escapeHtml(String(v));
+}
+function escapeHtml(s){
+  return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function renderCards(cards, emptyMsg){
+  if(!cards.length) return `<div class="empty">${emptyMsg}</div>`;
+  return `<div class="grid">` + cards.map((c,i) => `
+    <div class="card" data-idx="${i}">
+      ${c.badge ? `<span class="badge" style="background:${c.badgeColor}">${c.badge}</span>` : ""}
+      <div class="title">${escapeHtml(c.title || c.path)}</div>
+      ${c.desc ? `<div class="desc">${escapeHtml(c.desc)}</div>` : ""}
+      ${c.tags && c.tags.length ? `<div class="chips">${c.tags.slice(0,6).map(t=>`<span class="chip">${escapeHtml(t)}</span>`).join("")}</div>` : ""}
+    </div>`).join("") + `</div>`;
+}
+
+async function renderTypeView(type){
+  const main = document.getElementById("main");
+  main.innerHTML = `<div class="empty">불러오는 중…</div>`;
+  const cards = await fetchJSON(`${API}/projects/${encodeURIComponent(state.project)}/objects/${encodeURIComponent(type)}`);
+  const items = cards.map(c => ({
+    title: c.title, desc: c.description, tags: c.tags,
+    badge: c.status, badgeColor: TYPE_COLOR(type), path: c.path,
+  }));
+  main.innerHTML = `
+    <div class="filter-row"><input id="filter-input" placeholder="제목/설명/태그 검색…"></div>
+    <div id="card-slot">${renderCards(items, "이 타입의 오브젝트가 없습니다.")}</div>`;
+  document.getElementById("filter-input").addEventListener("input", (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    const filtered = !q ? items : items.filter(it =>
+      (it.title||"").toLowerCase().includes(q) ||
+      (it.desc||"").toLowerCase().includes(q) ||
+      (it.tags||[]).some(t => t.toLowerCase().includes(q)));
+    document.getElementById("card-slot").innerHTML = renderCards(filtered, "일치하는 항목이 없습니다.");
+    bindCardClicks(filtered);
+  });
+  bindCardClicks(items);
+}
+
+function bindCardClicks(items){
+  document.querySelectorAll(".card").forEach(el => {
+    el.addEventListener("click", () => {
+      const item = items[Number(el.getAttribute("data-idx"))];
+      navigate(state.project, "file", item.path);
+    });
+  });
+}
+
+async function renderResourcesView(){
+  const main = document.getElementById("main");
+  const items = (state.manifest.resources || []).map(r => ({
+    title: r.path.split("/").pop().replace(/\.md$/, ""), desc: r.type, badge: r.type,
+    badgeColor: "var(--muted)", path: r.path,
+  }));
+  main.innerHTML = `<div id="card-slot">${renderCards(items, "리소스가 없습니다.")}</div>`;
+  bindCardClicks(items);
+}
+
+async function renderFileView(relPath){
+  const main = document.getElementById("main");
+  main.innerHTML = `<div class="empty">불러오는 중…</div>`;
+  const data = await fetchJSON(`${API}/projects/${encodeURIComponent(state.project)}/file/${encodeURIComponent(relPath)}`);
+  const fm = data.frontmatter || {};
+  const title = fm.title || fm.type || relPath;
+  const fmRows = Object.entries(fm).map(([k,v]) => `<div class="fm-row"><div class="k">${escapeHtml(k)}</div><div class="v">${fmValue(v)}</div></div>`).join("");
+  main.innerHTML = `
+    <a class="back-link" id="back-btn">← 뒤로</a>
+    <div class="detail-head"><h2>${escapeHtml(title)}</h2></div>
+    <div class="fm-box">${fmRows}</div>
+    <div class="body-html">${data.body_html}</div>`;
+  document.getElementById("back-btn").addEventListener("click", () => history.back());
+  main.querySelectorAll(".body-html a").forEach(a => {
+    const rawHref = a.getAttribute("href") || "";
+    if(/^[a-z]+:\/\//i.test(rawHref) || rawHref.startsWith("#")) return;
+    if(!rawHref.endsWith(".md")) return;
+    a.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      navigate(state.project, "file", decodeURIComponent(rawHref));
+    });
+  });
+}
+
+async function renderOverview(){
+  const main = document.getElementById("main");
+  const counts = typeCounts(state.manifest);
+  const items = Object.keys(counts).sort().map(type => ({
+    title: type, desc: `${counts[type]}개`, badge: type, badgeColor: TYPE_COLOR(type),
+    path: null, isType: true,
+  }));
+  main.innerHTML = `<div id="card-slot">${renderCards(items, "오브젝트가 없습니다.")}</div>`;
+  document.querySelectorAll(".card").forEach((el,i) => {
+    el.addEventListener("click", () => navigate(state.project, "type", items[i].title));
+  });
+}
+
+// ---------------------------------------------------------------------
+// Graph view - Cytoscape renders to canvas, so it can't read CSS var(),
+// unlike the rest of this page: this palette mirrors the hex values
+// already defined as CSS custom properties above (kept in sync by hand).
+// ---------------------------------------------------------------------
+
+const GRAPH_LIGHT = {
+  ink:"#211d17", muted:"#726b5c", surface:"#ffffff", bg:"#f6f3ec", edge:"#a39b87", focus:"#2c6e63",
+  types:{ entity:"#4a5570", fact:"#3f7f96", concept:"#6a4f8f", decision:"#2c6e63", event:"#b98a2e",
+    issue:"#b5652e", action_item:"#6e7c3f", policy:"#8e4a7a", requirement:"#3f8f6a" },
+  docs:{ slack:"#3e5c76", gmail:"#8a5a3b", other:"#726b5c" },
+};
+const GRAPH_DARK = {
+  ink:"#f1ece1", muted:"#b4ab97", surface:"#211d17", bg:"#17140f", edge:"#5a5344", focus:"#5fbfa9",
+  types:{ entity:"#8b9bc7", fact:"#8fd0e6", concept:"#b39ad1", decision:"#5fbfa9", event:"#e0c16a",
+    issue:"#e0925a", action_item:"#a3b56b", policy:"#d18ec0", requirement:"#7fd1ab" },
+  docs:{ slack:"#7a9bc0", gmail:"#d19a6e", other:"#b4ab97" },
+};
+function graphPalette(){
+  const explicit = document.documentElement.getAttribute("data-theme");
+  if(explicit === "dark") return GRAPH_DARK;
+  if(explicit === "light") return GRAPH_LIGHT;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? GRAPH_DARK : GRAPH_LIGHT;
+}
+function graphNodeColor(p, type){ return p.types[type] || p.muted; }
+function graphDocColor(p, sourceType){ return p.docs[sourceType] || p.docs.other; }
+
+function graphStyle(p){
+  return [
+    { selector:"node.doc", style:{
+        "shape":"round-rectangle", "background-opacity":0.14,
+        "background-color": ele => graphDocColor(p, ele.data("source_type")),
+        "border-width":2, "border-color": ele => graphDocColor(p, ele.data("source_type")),
+        "label":"data(label)", "text-valign":"top", "text-halign":"center", "text-margin-y":-10,
+        "text-wrap":"wrap", "text-max-width":"100px",
+        "font-family":'"IBM Plex Sans", sans-serif', "font-size":10, "font-weight":600,
+        "color":p.ink, "padding":22, "compound-sizing-wrt-labels":"include",
+    }},
+    { selector:"node.obj", style:{
+        "shape":"ellipse", "width":22, "height":22,
+        "background-color": ele => graphNodeColor(p, ele.data("type")),
+        "border-width":2, "border-color":p.surface,
+        "label":"data(label)", "text-valign":"bottom", "text-halign":"center", "text-margin-y":5,
+        "font-family":'"IBM Plex Sans", sans-serif', "font-size":8.5, "color":p.ink,
+        "text-wrap":"wrap", "text-max-width":"64px",
+    }},
+    { selector:"edge", style:{
+        "width":1.4, "line-color":p.edge, "curve-style":"bezier",
+        "target-arrow-shape":"triangle", "target-arrow-color":p.edge, "arrow-scale":0.7,
+        "label":"data(type)", "font-family":'"IBM Plex Mono", monospace', "font-size":7.5,
+        "color":p.muted, "text-background-color":p.bg, "text-background-opacity":0.85, "text-background-padding":"2px",
+    }},
+    { selector:".dim", style:{ "opacity":0.12 } },
+    { selector:"node.selected", style:{ "border-width":3, "border-color":p.focus } },
+    { selector:"node.cy-expand-collapse-collapsed-node", style:{ "background-opacity":0.28 } },
+  ];
+}
+
+let cy = null;
+let expandCollapseApi = null;
+let expandCollapseRegistered = false;
+
+function destroyGraph(){
+  if(cy){ cy.destroy(); cy = null; expandCollapseApi = null; }
+}
+
+async function renderGraphView(){
+  const main = document.getElementById("main");
+  main.innerHTML = `<div class="empty">불러오는 중…</div>`;
+  const data = await fetchJSON(`${API}/projects/${encodeURIComponent(state.project)}/graph`);
+
+  const docLabel = d => (d.title || d.id).length > 20 ? (d.title||d.id).slice(0,19)+"…" : (d.title||d.id);
+  const objLabel = o => o.title.length > 22 ? o.title.slice(0,21)+"…" : o.title;
+  const objById = Object.fromEntries(data.objects.map(o => [o.id, o]));
+  const docById = Object.fromEntries(data.documents.map(d => [d.id, d]));
+
+  const elements = [
+    ...data.documents.map(d => ({ data:{ id:d.id, label:docLabel(d), source_type:d.source_type }, classes:"doc" })),
+    ...data.objects.map(o => ({
+      data:{ id:o.id, label:objLabel(o), type:o.type, ...(o.parent && docById[o.parent] ? {parent:o.parent} : {}) }, classes:"obj",
+    })),
+    ...data.edges
+      .filter(e => (objById[e.source] || docById[e.source]) && (objById[e.target] || docById[e.target]))
+      .map(e => ({ data:{ id:e.id, source:e.source, target:e.target, type:e.type }, classes:"relation" })),
+  ];
+
+  const typesPresent = [...new Set(data.objects.map(o => o.type))].sort();
+  main.innerHTML = `
+    <div class="graph-toolbar">
+      <button class="btn" id="g-collapse">모두 접기</button>
+      <button class="btn" id="g-expand">모두 펼치기</button>
+      <div class="graph-legend">${typesPresent.map(t =>
+        `<span><span class="dot" style="background:${TYPE_COLOR(t)}"></span>${t}</span>`).join("")}</div>
+    </div>
+    <div class="graph-wrap">
+      <div id="cy"></div>
+      <div class="g-drawer" id="g-drawer">
+        <div class="g-drawer-head"><h4 id="g-title"></h4><button class="g-drawer-close" id="g-close">✕</button></div>
+        <div class="g-drawer-body" id="g-body"></div>
+      </div>
+    </div>`;
+
+  if(!expandCollapseRegistered){ cytoscape.use(cytoscapeExpandCollapse); expandCollapseRegistered = true; }
+  destroyGraph();
+
+  cy = cytoscape({
+    container: document.getElementById("cy"),
+    elements,
+    style: graphStyle(graphPalette()),
+    layout:{ name:"cose", padding:36, nodeDimensionsIncludeLabels:true, animate:false, gravity:200, idealEdgeLength:80 },
+    wheelSensitivity:0.25, minZoom:0.2, maxZoom:3,
+  });
+  // `layoutBy` is what actually re-lays-out the graph on every collapseAll()/
+  // expandAll()/per-node toggle - idealEdgeLength has to be tuned for the
+  // *collapsed* document boxes (large), not the small object circles inside
+  // them, or collapsed docs end up stacked on top of each other.
+  expandCollapseApi = cy.expandCollapse({
+    layoutBy:{ name:"cose", padding:36, nodeDimensionsIncludeLabels:true, animate:false,
+      gravity:80, idealEdgeLength:260, nodeOverlap:40, nodeRepulsion:600000, numIter:2000 },
+    fisheye:true, animate:true, undoable:false, cueEnabled:true,
+  });
+  expandCollapseApi.collapseAll();
+
+  const applyTheme = () => cy && cy.style(graphStyle(graphPalette()));
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
+
+  function neighborhoodOf(node){
+    let scope = node.closedNeighborhood();
+    if(node.isParent()){ const kids = node.descendants(); scope = scope.union(kids).union(kids.connectedEdges()); }
+    return scope;
+  }
+  cy.on("mouseover", "node", evt => {
+    cy.elements().difference(neighborhoodOf(evt.target)).addClass("dim");
+  });
+  cy.on("mouseout", "node", () => cy.elements().removeClass("dim"));
+
+  const drawer = document.getElementById("g-drawer");
+  cy.on("tap", "node", evt => {
+    const node = evt.target;
+    if(node.hasClass("cy-expand-collapse-collapsed-node")) return;
+    cy.nodes().removeClass("selected");
+    node.addClass("selected");
+    const isDoc = node.hasClass("doc");
+    const record = isDoc ? docById[node.id()] : objById[node.id()];
+    document.getElementById("g-title").textContent = record.title;
+    document.getElementById("g-body").innerHTML = isDoc
+      ? `<div>${escapeHtml(record.source_type||"")}</div><div style="color:var(--muted);margin-top:6px;">${escapeHtml(record.description||"")}</div>
+         <a class="detail-link" data-path="${escapeHtml(node.id())}">상세 보기 →</a>`
+      : `<div>${escapeHtml(record.type)}</div>
+         <a class="detail-link" data-path="${escapeHtml(node.id())}">상세 보기 →</a>`;
+    document.querySelector("#g-body .detail-link").addEventListener("click", () => navigate(state.project, "file", node.id()));
+    drawer.classList.add("open");
+  });
+  cy.on("tap", evt => {
+    if(evt.target === cy){ cy.nodes().removeClass("selected"); cy.elements().removeClass("dim"); drawer.classList.remove("open"); }
+  });
+
+  document.getElementById("g-collapse").addEventListener("click", () => expandCollapseApi.collapseAll());
+  document.getElementById("g-expand").addEventListener("click", () => expandCollapseApi.expandAll());
+  document.getElementById("g-close").addEventListener("click", () => drawer.classList.remove("open"));
+}
+
+function navigate(project, kind, arg){
+  if(kind === "type") location.hash = `#/${encodeURIComponent(project)}/type/${encodeURIComponent(arg)}`;
+  else if(kind === "resources") location.hash = `#/${encodeURIComponent(project)}/resources`;
+  else if(kind === "file") location.hash = `#/${encodeURIComponent(project)}/f/${encodeURIComponent(arg)}`;
+  else if(kind === "graph") location.hash = `#/${encodeURIComponent(project)}/graph`;
+  else location.hash = `#/${encodeURIComponent(project)}`;
+}
+
+function parseHash(){
+  const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
+  if(parts.length === 0) return null;
+  const project = decodeURIComponent(parts[0]);
+  if(parts.length === 1) return { project, kind: "overview" };
+  if(parts[1] === "type") return { project, kind: "type", type: decodeURIComponent(parts[2] || "") };
+  if(parts[1] === "resources") return { project, kind: "resources" };
+  if(parts[1] === "graph") return { project, kind: "graph" };
+  if(parts[1] === "f") return { project, kind: "file", relPath: decodeURIComponent(parts.slice(2).join("/")) };
+  return { project, kind: "overview" };
+}
+
+async function loadProject(project){
+  state.project = project;
+  state.manifest = await fetchJSON(`${API}/projects/${encodeURIComponent(project)}/manifest`);
+}
+
+async function route(){
+  const parsed = parseHash();
+  const select = document.getElementById("project-select");
+  if(!parsed){
+    if(select.value) location.hash = `#/${encodeURIComponent(select.value)}`;
+    return;
+  }
+  if(select.value !== parsed.project) select.value = parsed.project;
+  if(!state.project || state.project !== parsed.project){
+    await loadProject(parsed.project);
+  }
+  document.getElementById("crumb").textContent =
+    parsed.kind === "type" ? `objects/${parsed.type}` :
+    parsed.kind === "resources" ? "resources" :
+    parsed.kind === "graph" ? "graph" :
+    parsed.kind === "file" ? parsed.relPath : "";
+  renderRail(parsed);
+  if(parsed.kind !== "graph") destroyGraph();
+  try{
+    if(parsed.kind === "overview") await renderOverview();
+    else if(parsed.kind === "type") await renderTypeView(parsed.type);
+    else if(parsed.kind === "resources") await renderResourcesView();
+    else if(parsed.kind === "graph") await renderGraphView();
+    else if(parsed.kind === "file") await renderFileView(parsed.relPath);
+  }catch(err){
+    document.getElementById("main").innerHTML = `<div class="empty">불러오기 실패: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function init(){
+  const projects = await fetchJSON(`${API}/projects`);
+  const select = document.getElementById("project-select");
+  select.innerHTML = projects.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join("");
+  select.addEventListener("change", () => { location.hash = `#/${encodeURIComponent(select.value)}`; });
+  window.addEventListener("hashchange", route);
+  if(!location.hash && projects.length) location.hash = `#/${encodeURIComponent(projects[0])}`;
+  else await route();
+}
+
+init().catch(err => {
+  document.getElementById("main").innerHTML = `<div class="empty">초기화 실패: ${escapeHtml(err.message)} (KF_OKF_DIR 설정을 확인하세요)</div>`;
+});
+
+})();
+</script>
+</body>
+</html>

@@ -3,11 +3,13 @@ uvicorn; see wiki/api.md for the endpoint list and job lifecycle.
 """
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
-from knowledge_forge.api.routes import health, ingest, jobs, knowledge, sources
+from knowledge_forge.api.routes import health, ingest, jobs, knowledge, okf, sources
 from knowledge_forge.config import settings
 from knowledge_forge.scheduling.auto_enqueue import parse_scheduled_sources, start_auto_enqueue_scheduler
 from knowledge_forge.storage.job_store import JobStore
@@ -45,7 +47,10 @@ _TAGS_METADATA = [
     {"name": "Documents", "description": "파싱된 Document(elements 포함) 조회."},
     {"name": "Knowledge Objects", "description": "추출된 KnowledgeObject 조회."},
     {"name": "Relations", "description": "KnowledgeObject 간 Relation 조회."},
+    {"name": "OKF", "description": "OKF 파일 트리(KF_OKF_DIR) 조회. Postgres 불필요 - /ui가 이 API로 뜬다."},
 ]
+
+_STATIC_DIR = Path(__file__).parent / "static"
 
 
 def create_app() -> FastAPI:
@@ -61,4 +66,6 @@ def create_app() -> FastAPI:
     app.include_router(jobs.router)
     app.include_router(sources.router)
     app.include_router(knowledge.router)
+    app.include_router(okf.router)
+    app.mount("/ui", StaticFiles(directory=_STATIC_DIR, html=True), name="ui")
     return app

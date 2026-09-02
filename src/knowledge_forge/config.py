@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     # Root directory for the content-addressed raw blob store (RawBlobStore).
     data_dir: str = "./data"
 
+    # Root directory an OKF file tree lives under (same meaning as
+    # extract/schedule's --okf-dir, api/routes/okf.py's `GET /okf/*` reads
+    # it directly off disk - no Postgres involved). None disables those
+    # routes (api/deps.py::get_okf_root), same convention as database_url.
+    okf_dir: str | None = None
+
     # Celery broker + result backend (celery_app.py) - unlike database_url,
     # this has a real default rather than None: the Celery app object needs
     # a concrete broker URL to construct, and `POST /ingest` can't dispatch

@@ -155,3 +155,20 @@ uv run knowledge-forge db export-okf --okf-dir ./okf
 ```
 
 `--store`(기본값)와 동시에 켜서 Postgres + OKF 파일 트리를 둘 다 만들 수도 있다.
+
+## 브라우저로 확인하기 (`GET /ui`)
+
+쌓인 트리를 파일탐색기 대신 브라우저로 훑어보려면 `KF_OKF_DIR`을 그 디렉터리로 지정해
+`serve`를 띄운다 - Postgres/Celery/Redis 설정 없이도 뜬다(`GET /okf/*`, [`api.md`](api.md)는
+파일시스템만 읽는다):
+
+```bash
+KF_OKF_DIR=./okf uv run knowledge-forge serve --port 8000
+# http://localhost:8000/ui/ 접속 - 프로젝트 선택 → 타입별 카드 목록 → 클릭해 frontmatter +
+# 렌더링된 body(Relations 링크는 클릭으로 peer 오브젝트 이동) 확인
+```
+
+좌측 레일의 "그래프" 탭은 같은 트리를 Cytoscape.js로 그린다 - 문서(`resources/`)를 compound
+parent로, 그 안에서 추출된 KnowledgeObject를 자식 노드로, `relations:` 인라인 필드를 엣지로
+그린다(`GET /okf/projects/{id}/graph`). 프로젝트가 커도(오브젝트 수백 개) 첫 화면은 문서 단위로
+접힌 채 시작하고, 문서별 +/-나 "모두 펼치기"로 드릴다운한다.

@@ -110,6 +110,21 @@ Objects/Relations)가 붙어 있어 Swagger UI에서 리소스별로 묶여 보�
 | `GET /knowledge-objects/{id}` | 단건 조회, 없으면 `404` |
 | `GET /relations?subject_id=&object_id=&type=` | Relation 조회 |
 
+위 표의 라우트는 전부 `KF_DATABASE_URL`(Postgres) 없이는 `503`이다(`/health` 제외,
+`api/deps.py`). `GET /okf/*`(태그 "OKF")는 그 반대로 Postgres/Celery/Redis 없이 `KF_OKF_DIR`
+하나만으로 동작한다 - `serve`가 파일시스템에서 직접 읽는다(`okf/reader.py`):
+
+| 메서드/경로 | 설명 |
+|---|---|
+| `GET /okf/projects` | `KF_OKF_DIR` 아래 OKF 프로젝트(=`manifest.yaml`이 있는 하위 디렉터리) 목록 |
+| `GET /okf/projects/{project_id}/manifest` | 그 프로젝트의 `manifest.yaml`(id/type/path 카탈로그) |
+| `GET /okf/projects/{project_id}/objects/{type}` | 그 타입의 KnowledgeObject 목록(제목/설명/태그/상태 요약) |
+| `GET /okf/projects/{project_id}/graph` | frontmatter의 `relations:` 인라인 필드로 조립한 관계 그래프(documents/objects/edges, Cytoscape 노드/엣지 형태) - `/ui`의 "그래프" 탭이 이걸로 뜬다 |
+| `GET /okf/projects/{project_id}/file/{rel_path}` | 프로젝트 루트 기준 상대경로 하나(오브젝트/리소스/`log.md`/`views/by-topic.md`/`index.md` 전부)를 읽어 frontmatter + 렌더링된 body HTML로 반환 |
+
+`KF_OKF_DIR=./okf --okf-dir`로 쌓아 둔 트리를 가리키면 `http://<host>/ui/`에서 브라우저로 훑어볼
+수 있다([`okf.md`](okf.md) "사용법" 절).
+
 ## 멀티테넌시(`project_id`)
 
 `sources`/`documents`/`jobs` 세 테이블 모두 `project_id TEXT NOT NULL DEFAULT 'default'` 컬럼을
