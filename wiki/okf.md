@@ -1,11 +1,11 @@
 # OKF — 파일 기반 Knowledge Base
 
-`knowledge-forge extract --okf-dir <dir>` 또는 `knowledge-forge schedule --okf-dir <dir>`을
+`knowledge-forge extract --okf-dir <dir>`, `knowledge-forge schedule --okf-dir <dir>`,
+또는 `POST /ingest`의 `okf_dir` 필드(`serve`/`worker` job queue 경로, [`api.md`](api.md))
 켜면, `PostgresStore`(선택)와는 독립적으로 같은 파이프라인 산출물을 파일 트리로도 기록한다.
 Postgres 없이도(또는 Postgres와 나란히) 사람이 읽고 git으로 diff할 수 있는 Knowledge Base가
 필요하다는 문제의식에서 나왔다 — 자세한 배경은 [`architecture.md`](architecture.md)의
-"Hierarchy는 Knowledge Base의 유일한 조직 원리가 아니다" 절 참고. `serve`/`worker` job queue
-경로에는 아직 연결되어 있지 않다 — [`api.md`](api.md) 참고.
+"Hierarchy는 Knowledge Base의 유일한 조직 원리가 아니다" 절 참고.
 
 ## 왜 필요한가
 
@@ -82,13 +82,13 @@ writer.write_views()                                 # 프로젝트별로 트리
 `pipeline.run_pipeline(..., okf_writer=writer)`를 넘기면 위 `write_resource`/`write_objects`/
 `write_relations` 호출을 파이프라인이 알아서 각 단계에서 수행한다 — `write_manifest()`/
 `write_views()`는 호출자가 직접 부른다. 언제 부르느냐는 실행 모델에 따라 다르다: `cli.py`의
-`extract`(1회성)는 전체 실행이 끝난 뒤 딱 한 번(`cli.py:148-150`), `schedule`(장기 실행,
-반복 tick)은 **매 tick이 끝날 때마다**(`scheduling/scheduler.py`의 `build_tick`) 다시
-부른다 — 트리 스캔 기반 재생성이라 반복 호출해도 안전하고(위 "카탈로그" 절), 그래야 스케줄러가
-증분 동기화로 새로 수집한 것들이 다음 tick을 기다리지 않고 그 tick이 끝나는 즉시 매니페스트/뷰에
-반영된다. `PostgresStore`와 마찬가지로 완전히 opt-in이며(`store`와 독립적으로 켜고 끌 수 있음),
-켜지 않으면 아무 파일도 만들지 않는다. `serve`/`worker` job queue 경로는 아직 `okf_writer`를
-전혀 연결하지 않는다.
+`extract`(1회성)와 `serve`/`worker` job(마찬가지로 1회성 — `ingest.py`의 `_run_collector`)은
+전체 실행이 끝난 뒤 딱 한 번, `schedule`(장기 실행, 반복 tick)은 **매 tick이 끝날 때마다**
+(`scheduling/scheduler.py`의 `build_tick`) 다시 부른다 — 트리 스캔 기반 재생성이라 반복
+호출해도 안전하고(위 "카탈로그" 절), 그래야 스케줄러가 증분 동기화로 새로 수집한 것들이 다음
+tick을 기다리지 않고 그 tick이 끝나는 즉시 매니페스트/뷰에 반영된다. `PostgresStore`와
+마찬가지로 완전히 opt-in이며(`store`와 독립적으로 켜고 끌 수 있음), 켜지 않으면 아무 파일도
+만들지 않는다.
 
 **다중 프로젝트 라우팅**: `OKFWriter(root, project_id="default")`의 `project_id`는 더 이상
 전체 인스턴스를 하나의 프로젝트에 고정하지 않는다 — `write_resource`/`write_objects`는 넘겨받은
@@ -109,6 +109,10 @@ writer.write_views()                                 # 프로젝트별로 트리
 ```bash
 uv run knowledge-forge extract tests/fixtures/sample.md --okf-dir ./okf --no-store
 uv run knowledge-forge schedule tests/fixtures --okf-dir ./okf --no-store --interval-seconds 600
+
+# serve/worker job queue - POST /ingest에 okf_dir을 주면 그 job도 같은 트리에 쓴다
+curl -X POST localhost:8000/ingest -H 'Content-Type: application/json' \
+  -d '{"path": "/app/input/sample.md", "okf_dir": "/app/okf"}'
 ```
 
 `--store`(기본값)와 동시에 켜서 Postgres + OKF 파일 트리를 둘 다 만들 수도 있다.

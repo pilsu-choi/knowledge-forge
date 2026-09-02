@@ -39,7 +39,7 @@ async def ingest(request: IngestRequest, job_store: JobStore = Depends(get_job_s
 
         job = await job_store.enqueue(
             "local_file_ingest",
-            {"path": request.path, "max_tokens": max_tokens, "model": request.model},
+            {"path": request.path, "max_tokens": max_tokens, "model": request.model, "okf_dir": request.okf_dir},
             project_id=request.project_id,
         )
         return IngestResponse(job_id=job.job_id, status=job.status)
@@ -52,7 +52,7 @@ async def ingest(request: IngestRequest, job_store: JobStore = Depends(get_job_s
 
     job = await job_store.enqueue(
         f"{request.source}_ingest",
-        {"max_tokens": max_tokens, "model": request.model},
+        {"max_tokens": max_tokens, "model": request.model, "okf_dir": request.okf_dir},
         project_id=request.project_id,
     )
     return IngestResponse(job_id=job.job_id, status=job.status)

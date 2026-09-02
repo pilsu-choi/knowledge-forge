@@ -1,14 +1,18 @@
 """Shared pipeline-invocation helper for the ingest job worker.
 
 `cli.py`'s `extract` command has its own inline pipeline invocation because
-it also owns JSONL/OKF output - concerns the worker doesn't have (a job's
-caller reads results back through the read API, not stdout). This module is
-the minimal piece actually shared: build the standard Collector/Parser/
-Chunker/Extractor stack for a local path or a SaaS source and run it
-against a `store`.
+it also owns JSONL output - a concern the worker doesn't have (a job's
+caller reads results back through the read API, not stdout). OKF output
+*is* shared here (see `okf_writer` below) - a job is a one-shot run just
+like `extract`, so the same "write manifest/views once, at the end" timing
+applies (unlike `schedule`'s per-tick refresh, see scheduling/scheduler.py).
+This module is the minimal piece actually shared: build the standard
+Collector/Parser/Chunker/Extractor stack for a local path or a SaaS source
+and run it against a `store`.
 """
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from knowledge_forge.chunking import AdaptiveChunker
 from knowledge_forge.collectors.base import Collector
@@ -19,6 +23,9 @@ from knowledge_forge.parsers.registry import default_registry
 from knowledge_forge.pipeline import run_pipeline
 from knowledge_forge.storage.store import PipelineStore
 
+if TYPE_CHECKING:
+    from knowledge_forge.okf import OKFWriter
+
 
 async def _run_collector(
     collector: Collector,
@@ -26,6 +33,7 @@ async def _run_collector(
     model: str | None,
     store: PipelineStore | None,
     project_id: str,
+    okf_writer: "OKFWriter | None" = None,
 ) -> dict:
     registry = default_registry()
     chunker = AdaptiveChunker(max_tokens_per_chunk=max_tokens)
@@ -33,9 +41,15 @@ async def _run_collector(
 
     object_count = 0
     relation_count = 0
-    async for outcome in run_pipeline(collector, registry, chunker, extractor, store=store, project_id=project_id):
+    async for outcome in run_pipeline(
+        collector, registry, chunker, extractor, store=store, okf_writer=okf_writer, project_id=project_id
+    ):
         object_count += len(outcome.objects)
         relation_count += len(outcome.relations)
+
+    if okf_writer is not None:
+        okf_writer.write_manifest()
+        okf_writer.write_views()
 
     return {"object_count": object_count, "relation_count": relation_count}
 
@@ -46,10 +60,11 @@ async def run_local_ingest(
     model: str | None,
     store: PipelineStore | None,
     project_id: str = "default",
+    okf_writer: "OKFWriter | None" = None,
 ) -> dict:
     """Runs the full pipeline over `path` against `store`, returning a
     JSON-safe summary usable directly as a job's `result`."""
-    return await _run_collector(LocalFileCollector(root=path), max_tokens, model, store, project_id)
+    return await _run_collector(LocalFileCollector(root=path), max_tokens, model, store, project_id, okf_writer)
 
 
 async def run_saas_ingest(
@@ -58,6 +73,7 @@ async def run_saas_ingest(
     model: str | None,
     store: PipelineStore | None,
     project_id: str = "default",
+    okf_writer: "OKFWriter | None" = None,
 ) -> dict:
     """Same as run_local_ingest, but `source` (e.g. "slack") picks a SaaS
     collector built from KF_* env config (collectors/saas/factory.py) instead
@@ -67,4 +83,4 @@ async def run_saas_ingest(
     RuntimeError the matching build_*_collector() raises for missing KF_*
     config."""
     collector = SAAS_COLLECTOR_BUILDERS[source]()
-    return await _run_collector(collector, max_tokens, model, store, project_id)
+    return await _run_collector(collector, max_tokens, model, store, project_id, okf_writer)

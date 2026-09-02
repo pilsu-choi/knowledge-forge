@@ -16,6 +16,7 @@ from pathlib import Path
 
 from knowledge_forge.collectors.saas.factory import SAAS_COLLECTOR_BUILDERS
 from knowledge_forge.ingest import run_local_ingest, run_saas_ingest
+from knowledge_forge.okf import OKFWriter
 from knowledge_forge.storage.job_store import Job, JobStore
 from knowledge_forge.storage.store import PipelineStore
 
@@ -33,18 +34,28 @@ _SAAS_JOB_TYPES = {f"{source}_ingest": source for source in SAAS_COLLECTOR_BUILD
 async def _dispatch(job: Job, database_url: str, data_dir: str) -> dict:
     max_tokens = job.payload.get("max_tokens", 4000)
     model = job.payload.get("model")
+    # Opt-in, like extract/schedule's --okf-dir: only set when the /ingest
+    # request included one. A job is a one-shot run (like extract, not
+    # schedule's repeating tick), so run_local_ingest/run_saas_ingest write
+    # the manifest/views once, at the end - see ingest.py's module docstring.
+    okf_dir = job.payload.get("okf_dir")
+    okf_writer = OKFWriter(okf_dir, project_id=job.project_id) if okf_dir else None
 
     if job.job_type == "local_file_ingest":
         path = job.payload["path"]
         async with PipelineStore(database_url, data_dir) as store:
             await store.init_schema()  # idempotent (CREATE TABLE IF NOT EXISTS)
-            return await run_local_ingest(Path(path), max_tokens, model, store, project_id=job.project_id)
+            return await run_local_ingest(
+                Path(path), max_tokens, model, store, project_id=job.project_id, okf_writer=okf_writer
+            )
 
     source = _SAAS_JOB_TYPES.get(job.job_type)
     if source is not None:
         async with PipelineStore(database_url, data_dir) as store:
             await store.init_schema()
-            return await run_saas_ingest(source, max_tokens, model, store, project_id=job.project_id)
+            return await run_saas_ingest(
+                source, max_tokens, model, store, project_id=job.project_id, okf_writer=okf_writer
+            )
 
     raise ValueError(f"unknown job_type: {job.job_type}")
 

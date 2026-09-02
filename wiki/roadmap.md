@@ -173,11 +173,14 @@ Slack은 추가로 `channel_project_map`(`KF_SLACK_CHANNEL_PROJECT_MAP`)을 지�
   한 번이 아니라, `build_tick`(`scheduling/scheduler.py`)이 **매 tick이 끝날 때마다**
   `write_manifest()`/`write_views()`를 다시 부른다 — 트리 스캔 기반 재생성이라 반복 호출해도
   안전하고, 증분 동기화로 새로 수집된 것들이 다음 tick을 기다리지 않고 그 tick 안에서 바로
-  매니페스트/뷰에 반영된다([`okf.md`](okf.md), [`scheduling.md`](scheduling.md) 참고). `serve`/
-  `worker` job queue 경로는 여전히 `okf_writer`를 연결하지 않는다 — 원하면 `POST /ingest`에
-  `okf_dir` 필드를 추가하고 `worker.py`가 job 처리 시 `OKFWriter`를 만들어 넘기면 되는데,
-  `project_id`/`max_tokens`/`model`이 이미 그 경로를 거치는 것과 같은 패턴이라 후속 과제로
-  남겨둔다.
+  매니페스트/뷰에 반영된다([`okf.md`](okf.md), [`scheduling.md`](scheduling.md) 참고).
+- ~~`serve`/`worker` job queue 경로에도 OKF 연결~~ — 완료. `POST /ingest`에 `okf_dir` 필드가
+  추가돼 `project_id`/`max_tokens`/`model`과 같은 패턴으로 job payload에 실려가고,
+  `worker.py`의 `_dispatch()`가 그 필드로 `OKFWriter(okf_dir, project_id=job.project_id)`를
+  만들어 `run_local_ingest`/`run_saas_ingest`에 넘긴다. job은 1회성 실행이라(`schedule`의
+  반복 tick과 달리) `ingest.py`의 `_run_collector`가 실행이 끝난 뒤 매니페스트/뷰를 한 번만
+  재생성한다 — [`api.md`](api.md), [`okf.md`](okf.md) 참고. 이제 세 진입점(`extract`/
+  `schedule`/`serve`+`worker`) 모두 OKF를 지원한다.
 
 ### 2단계 — 시각 자료 처리 고도화
 
@@ -292,6 +295,33 @@ Knowledge가 나온다.
   `KF_SUPERSEDES_SIMILARITY_THRESHOLD` 모두 유닛 테스트(mock 기반)로만 검증됨. 특히
   `group_size > 1`일 때 실제 LLM이 여러 청크를 하나의 응답으로 잘 요약/추출하는지, 임계값
   0.9/0.8이 실전 텍스트에 적절한지는 실제 API 키로 확인이 필요하다.
+
+### 6단계 — 문서 전체 요약 (Document Summary) — 후순위, 미착수
+
+`KnowledgeObject.summary`(각 객체 자체의 요약)와 별개로, 문서 전체를 아우르는 요약이 아직 없다
+([`knowledge-object-schema.md`](knowledge-object-schema.md) 참고 — `summary` 필드는 "이
+구절의 요약이지 문서 전체가 아니다"라고 명시돼 있음). 설계 방향은 정해졌지만 우선순위상
+뒤로 미룬다:
+
+- **저장 위치**: `resources/{source_id}.yaml`(OKF 리소스 파일)에 `summary` 필드 1개만 추가.
+  문서당 1회 계산·1회 저장 — `objects/{type}/{ko_id}.yaml` 각각에 중복 저장하지 않는다(KO가
+  많은 문서에서 중복 비대화 방지).
+- **입력 설계 주의 — "elements 전체 텍스트 이어붙이기"는 채택하지 않는다**: chunker
+  (`chunking/adaptive.py`)가 `max_tokens_per_chunk=4000`(안전마진 적용 시 실질 3,200)로 문서를
+  쪼개는 이유 자체가 "문서를 한 번에 LLM에 못 넣는다"는 전제이고, Document 크기에 상한이
+  없어 대용량 PDF/긴 트랜스크립트는 얼마든지 커질 수 있다. 컨텍스트 윈도우 초과 시
+  `anthropic.BadRequestError`가 발생하는데 `@anthropic_retry()`의 재시도 대상
+  (`RateLimitError`/`APIConnectionError`/`InternalServerError`)에 없어 재시도로 해결되지
+  않고, 문서 단위 요약 호출을 그룹 단위 추출처럼 try/except로 격리하지 않으면 요약 실패가
+  문서 전체 처리를 중단시킬 위험도 있다.
+- **채택할 설계 — map-reduce**: chunk-group별로 이미 만들어지는 `ExtractionResult.summary`
+  (`extraction/schemas.py`)를 모아(map은 이미 존재) 그 요약들만 다시 한번 LLM으로 요약
+  (reduce) — 원문 전체가 아니라 요약들의 요약이라 입력 크기가 훨씬 작고 예측 가능하다.
+  `pipeline.py`의 그룹 병렬 추출·병합(174~182행 부근) 직후, `write_resource` 호출 전에
+  reduce 단계를 넣고, 그룹 단위 추출과 동일하게 try/except로 감싸 실패해도 나머지 파이프라인
+  (리소스/오브젝트 쓰기)은 계속 진행되도록 한다.
+- **설정**: `document_summary_enabled: bool = False` 같은 `KF_*` 옵트인 플래그로 시작(기존
+  `KF_DEDUP_SIMILARITY_THRESHOLD` 등과 같은 관례).
 
 **한 줄 정의(향후 아키텍처 문서화 시 재사용)**: "Multi-source SaaS 및 File 데이터를 수집하고,
 source별 semantic context를 복원한 뒤 adaptive chunking과 knowledge extraction을 수행하여

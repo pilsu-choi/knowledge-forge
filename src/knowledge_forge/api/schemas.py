@@ -30,6 +30,13 @@ class IngestRequest(BaseModel):
     source: str = "local"
     max_tokens: int | None = None
     model: str | None = None
+    # Optional, like extract/schedule's --okf-dir: also write a file-based
+    # OKF Knowledge Base tree (manifest.yaml + resources/objects/relations)
+    # to this directory, under a {project_id}/ subfolder - independent of
+    # Postgres storage (always on for a job). worker.py's _dispatch() builds
+    # the OKFWriter and writes the manifest/views once, at the end of the
+    # job (a job is a one-shot run, unlike `schedule`'s repeating tick).
+    okf_dir: str | None = None
     # Tenancy key this ingest run's Source/Document/Job rows are tagged
     # with. Defaults to "default" for single-tenant callers.
     project_id: str = "default"

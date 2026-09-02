@@ -85,3 +85,28 @@ async def test_run_local_ingest_returns_object_and_relation_counts(tmp_path, mon
     assert result["object_count"] >= 2  # at least one KO per file
     assert "relation_count" in result
     assert client.messages.calls >= 2
+
+
+async def test_run_local_ingest_writes_okf_tree_and_manifest_once(tmp_path, monkeypatch):
+    """A job is a one-shot run (unlike `schedule`'s repeating tick) - the
+    manifest/views only need to be written once, at the end (see
+    ingest.py's module docstring)."""
+    from knowledge_forge.okf import OKFWriter
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "a.md").write_text("# A\n\nHello world.")
+    okf_dir = tmp_path / "okf"
+
+    client = _FakeClient()
+    monkeypatch.setattr(
+        "knowledge_forge.ingest.get_extractor", lambda model=None: ClaudeExtractor(client=client)
+    )
+    okf_writer = OKFWriter(okf_dir, project_id="PRJ-X")
+
+    result = await run_local_ingest(src_dir, max_tokens=4000, model=None, store=None, project_id="PRJ-X", okf_writer=okf_writer)
+
+    assert result["object_count"] >= 1
+    manifest_path = okf_dir / "PRJ-X" / "manifest.yaml"
+    assert manifest_path.exists()
+    assert len(list((okf_dir / "PRJ-X" / "resources").glob("*.yaml"))) == 1

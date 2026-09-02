@@ -43,8 +43,8 @@ async def test_dispatch_routes_slack_ingest_to_run_saas_ingest(monkeypatch):
 
     calls = []
 
-    async def fake_run_saas_ingest(source, max_tokens, model, store, project_id):
-        calls.append((source, max_tokens, model, project_id))
+    async def fake_run_saas_ingest(source, max_tokens, model, store, project_id, okf_writer=None):
+        calls.append((source, max_tokens, model, project_id, okf_writer))
         return {"object_count": 1, "relation_count": 0}
 
     monkeypatch.setattr("knowledge_forge.worker.run_saas_ingest", fake_run_saas_ingest)
@@ -53,7 +53,7 @@ async def test_dispatch_routes_slack_ingest_to_run_saas_ingest(monkeypatch):
     result = await _dispatch(job, "postgresql://fake", "/tmp/data")
 
     assert result == {"object_count": 1, "relation_count": 0}
-    assert calls == [("slack", 2000, "m", "PRJ-A")]
+    assert calls == [("slack", 2000, "m", "PRJ-A", None)]
 
 
 async def test_dispatch_defaults_max_tokens_and_model_when_absent(monkeypatch):
@@ -61,7 +61,7 @@ async def test_dispatch_defaults_max_tokens_and_model_when_absent(monkeypatch):
 
     calls = []
 
-    async def fake_run_saas_ingest(source, max_tokens, model, store, project_id):
+    async def fake_run_saas_ingest(source, max_tokens, model, store, project_id, okf_writer=None):
         calls.append((source, max_tokens, model))
         return {}
 
@@ -78,8 +78,8 @@ async def test_dispatch_still_routes_local_file_ingest(monkeypatch, tmp_path):
 
     calls = []
 
-    async def fake_run_local_ingest(path, max_tokens, model, store, project_id):
-        calls.append((str(path), max_tokens, model, project_id))
+    async def fake_run_local_ingest(path, max_tokens, model, store, project_id, okf_writer=None):
+        calls.append((str(path), max_tokens, model, project_id, okf_writer))
         return {}
 
     monkeypatch.setattr("knowledge_forge.worker.run_local_ingest", fake_run_local_ingest)
@@ -87,7 +87,35 @@ async def test_dispatch_still_routes_local_file_ingest(monkeypatch, tmp_path):
     job = _job("local_file_ingest", {"path": str(tmp_path), "max_tokens": 1000}, project_id="PRJ-B")
     await _dispatch(job, "postgresql://fake", "/tmp/data")
 
-    assert calls == [(str(tmp_path), 1000, None, "PRJ-B")]
+    assert calls == [(str(tmp_path), 1000, None, "PRJ-B", None)]
+
+
+async def test_dispatch_builds_okf_writer_when_job_has_okf_dir(monkeypatch, tmp_path):
+    from knowledge_forge.okf import OKFWriter
+
+    monkeypatch.setattr("knowledge_forge.worker.PipelineStore", _FakePipelineStore)
+
+    calls = []
+
+    async def fake_run_local_ingest(path, max_tokens, model, store, project_id, okf_writer=None):
+        calls.append(okf_writer)
+        return {}
+
+    monkeypatch.setattr("knowledge_forge.worker.run_local_ingest", fake_run_local_ingest)
+
+    okf_dir = tmp_path / "okf"
+    job = _job(
+        "local_file_ingest",
+        {"path": str(tmp_path), "okf_dir": str(okf_dir)},
+        project_id="PRJ-C",
+    )
+    await _dispatch(job, "postgresql://fake", "/tmp/data")
+
+    assert len(calls) == 1
+    assert isinstance(calls[0], OKFWriter)
+    # OKFWriter's __init__ eagerly creates the (fallback/default) project
+    # subtree - confirms it was built with this job's project_id, not "default".
+    assert (okf_dir / "PRJ-C").is_dir()
 
 
 async def test_dispatch_raises_on_unknown_job_type():

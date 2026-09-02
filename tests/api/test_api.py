@@ -214,6 +214,27 @@ def test_ingest_saas_source_enqueues_matching_job_type(monkeypatch):
     assert "path" not in payload
 
 
+def test_ingest_forwards_okf_dir_to_job_payload(tmp_path):
+    (tmp_path / "a.md").write_text("hello")
+    job_store = _FakeJobStore()
+    client = _make_client(job_store, _FakeReadStore())
+
+    resp = client.post("/ingest", json={"path": str(tmp_path / "a.md"), "okf_dir": "/tmp/okf"})
+
+    assert resp.status_code == 202
+    assert job_store.enqueued[0][1]["okf_dir"] == "/tmp/okf"
+
+
+def test_ingest_omits_okf_dir_defaults_to_none(tmp_path):
+    (tmp_path / "a.md").write_text("hello")
+    job_store = _FakeJobStore()
+    client = _make_client(job_store, _FakeReadStore())
+
+    client.post("/ingest", json={"path": str(tmp_path / "a.md")})
+
+    assert job_store.enqueued[0][1]["okf_dir"] is None
+
+
 def test_ingest_unknown_source_returns_400(monkeypatch):
     monkeypatch.setattr(
         "knowledge_forge.api.routes.ingest.SAAS_COLLECTOR_BUILDERS", {"slack": lambda: None}

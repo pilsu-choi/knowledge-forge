@@ -31,10 +31,15 @@
 소스 이름을 쓴다:
 
 - `source: "local"`(기본값): 경로 존재를 확인한 뒤 `local_file_ingest`
-  (`{"path", "max_tokens", "model"}`) enqueue. `path`가 필수.
+  (`{"path", "max_tokens", "model", "okf_dir"}`) enqueue. `path`가 필수.
 - `source: "slack" | "notion" | "gdrive" | "gmail"`(`collectors.saas.factory.SAAS_COLLECTOR_BUILDERS`의
-  키): `"{source}_ingest"`(예: `slack_ingest`, `{"max_tokens", "model"}` — `path` 없음, KF_*
-  env 설정으로 커넥터를 조립하므로) enqueue. 목록에 없는 `source`는 `400`.
+  키): `"{source}_ingest"`(예: `slack_ingest`, `{"max_tokens", "model", "okf_dir"}` — `path` 없음,
+  KF_* env 설정으로 커넥터를 조립하므로) enqueue. 목록에 없는 `source`는 `400`.
+
+`okf_dir`(선택, 기본 `null`)은 `extract`/`schedule`의 `--okf-dir`와 같은 뜻 — 주면
+Postgres 저장과 별개로 파일 기반 OKF Knowledge Base도 그 디렉터리(`{project_id}/` 서브폴더)에
+기록한다([`okf.md`](okf.md)). job은 1회성 실행이라 `extract`처럼 job이 끝난 뒤 매니페스트/뷰를
+한 번만 재생성한다(`schedule`의 매 tick 재생성과는 다름).
 
 `worker.py`의 `_dispatch()`가 `job_type`을 보고 `local_file_ingest`는 `ingest.run_local_ingest()`,
 `{source}_ingest`는 `ingest.run_saas_ingest(source, ...)`를 호출한다 — 새 SaaS 커넥터가
@@ -77,7 +82,7 @@ Objects/Relations)가 붙어 있어 Swagger UI에서 리소스별로 묶여 보�
 | 메서드/경로 | 설명 |
 |---|---|
 | `GET /health` | liveness, DB 의존 없음(컨테이너 healthcheck용) |
-| `POST /ingest` | `{"source": "<local(기본)\|slack\|notion\|gdrive\|gmail>", "path": "<local일 때만 필수>", "max_tokens": <선택>, "model": "<선택>", "project_id": "<선택, 기본 "default">"}` → `local_file_ingest` 또는 `{source}_ingest` job enqueue, `202` + `{job_id, status}` |
+| `POST /ingest` | `{"source": "<local(기본)\|slack\|notion\|gdrive\|gmail>", "path": "<local일 때만 필수>", "max_tokens": <선택>, "model": "<선택>", "okf_dir": "<선택>", "project_id": "<선택, 기본 "default">"}` → `local_file_ingest` 또는 `{source}_ingest` job enqueue, `202` + `{job_id, status}` |
 | `GET /jobs/{job_id}` | job 상태/결과 조회, 없으면 `404` |
 | `GET /jobs?status=&project_id=` | job 목록(페이지네이션 `limit`/`offset`) |
 | `GET /sources?project_id=&limit=&offset=` | 저장된 Source 조회 |
