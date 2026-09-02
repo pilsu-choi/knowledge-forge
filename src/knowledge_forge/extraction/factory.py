@@ -6,6 +6,7 @@ rest of the pipeline (both implementations satisfy the same Extractor ABC).
 
 from knowledge_forge.config import settings
 from knowledge_forge.extraction.base import Extractor
+from knowledge_forge.extraction.claude_agent_sdk_extractor import ClaudeAgentSDKExtractor
 from knowledge_forge.extraction.claude_extractor import ClaudeExtractor
 from knowledge_forge.extraction.openrouter_extractor import OpenRouterExtractor
 
@@ -13,4 +14,6 @@ from knowledge_forge.extraction.openrouter_extractor import OpenRouterExtractor
 def get_extractor(model: str | None = None) -> Extractor:
     if settings.llm_provider == "openrouter":
         return OpenRouterExtractor(model=model or settings.openrouter_extraction_model)
+    if settings.llm_provider == "claude_agent_sdk":
+        return ClaudeAgentSDKExtractor(model=model or settings.claude_agent_sdk_extraction_model)
     return ClaudeExtractor(model=model or settings.extraction_model)

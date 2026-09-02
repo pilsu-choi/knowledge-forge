@@ -9,6 +9,13 @@ dependencies = [
     "pydantic-settings>=2.5",
     "anthropic>=0.69",
     "openai>=1.50",
+    # KF_LLM_PROVIDER=claude_agent_sdk (wiki/llm-providers.md) - drives the
+    # `claude` CLI as a subprocess instead of calling the Anthropic Messages
+    # API directly, so extraction can run off an existing Claude Code OAuth
+    # login instead of a separate ANTHROPIC_API_KEY. Kept a base dependency
+    # (not an optional extra), matching anthropic/openai above, since
+    # retry.py imports its exception types unconditionally.
+    "claude-agent-sdk>=0.2",
     "typer>=0.12",
     "tiktoken>=0.8",
     "pdfplumber>=0.11",

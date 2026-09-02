@@ -43,13 +43,23 @@ class Settings(BaseSettings):
     data_dir: str = "./data"
 
     # Which LLM backend Knowledge Extraction and Vision extraction use.
-    # "anthropic" (default) is the production-tested path; "openrouter" is
-    # implemented and unit-tested against mocks only - see
-    # wiki/llm-providers.md for the current verification status.
-    llm_provider: Literal["anthropic", "openrouter"] = "anthropic"
+    # "anthropic" (default) is the production-tested path; "openrouter" and
+    # "claude_agent_sdk" are implemented and unit-tested against mocks only
+    # - see wiki/llm-providers.md for the current verification status.
+    llm_provider: Literal["anthropic", "openrouter", "claude_agent_sdk"] = "anthropic"
     openrouter_extraction_model: str = "anthropic/claude-haiku-4.5"
     openrouter_vision_model: str = "anthropic/claude-haiku-4.5"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
+
+    # "claude_agent_sdk" drives the `claude` CLI as a subprocess (via the
+    # claude_agent_sdk package) instead of calling the Anthropic Messages
+    # API directly - the CLI resolves its own credentials (browser OAuth
+    # login, a `claude setup-token` CLAUDE_CODE_OAUTH_TOKEN, or a plain
+    # ANTHROPIC_API_KEY), so a machine that already has Claude Code logged
+    # in needs no separate API key. See extraction/claude_agent_sdk_extractor.py.
+    claude_agent_sdk_extraction_model: str = "claude-opus-5"
+    # Only needed when `claude` isn't on PATH under that exact name.
+    claude_agent_sdk_cli_path: str | None = None
 
     # SaaS collector credentials (KF_-prefixed, see collectors/saas/factory.py
     # for how these turn into an authenticated SDK client + Collector). All
