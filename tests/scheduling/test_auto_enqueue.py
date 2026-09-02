@@ -1,9 +1,9 @@
 """Tests for auto_enqueue's parsing and per-source tick logic, without a
-real Postgres (a fake JobStore stands in - same pattern
-tests/test_worker_dispatch_routing.py uses for PipelineStore). The actual
-AsyncIOScheduler wiring (start_auto_enqueue_scheduler) is exercised without
-waiting for a real fire, same as tests/scheduling/test_scheduler.py does for
-`schedule`'s scheduler.
+real Postgres or Redis (a fake JobStore and a fake Celery task stand in -
+same pattern tests/test_worker_dispatch_routing.py uses for PipelineStore).
+The actual AsyncIOScheduler wiring (start_auto_enqueue_scheduler) is
+exercised without waiting for a real fire, same as
+tests/scheduling/test_scheduler.py does for `schedule`'s scheduler.
 """
 
 import json
@@ -94,13 +94,28 @@ class _FakeJobStore:
         return _FakeJob(job_id="job-1")
 
 
+class _FakeCeleryTask:
+    def __init__(self):
+        self.dispatched: list[tuple] = []
+
+    def apply_async(self, args, task_id):
+        self.dispatched.append((args, task_id))
+
+
 @pytest.fixture(autouse=True)
 def _reset_fake_job_store():
     _FakeJobStore.enqueued = []
     yield
 
 
-async def test_tick_enqueues_local_job_with_expected_payload(monkeypatch):
+@pytest.fixture(autouse=True)
+def _fake_run_ingest_job(monkeypatch):
+    fake_task = _FakeCeleryTask()
+    monkeypatch.setattr("knowledge_forge.scheduling.auto_enqueue.run_ingest_job", fake_task)
+    return fake_task
+
+
+async def test_tick_enqueues_local_job_with_expected_payload(monkeypatch, _fake_run_ingest_job):
     monkeypatch.setattr("knowledge_forge.scheduling.auto_enqueue.JobStore", _FakeJobStore)
     source = ScheduledSource(source="local", path="/app/input", project_id="PRJ-A", max_tokens=2000, okf_dir="/app/okf")
 
@@ -109,6 +124,9 @@ async def test_tick_enqueues_local_job_with_expected_payload(monkeypatch):
     assert _FakeJobStore.enqueued == [
         ("local_file_ingest", {"path": "/app/input", "max_tokens": 2000, "okf_dir": "/app/okf"}, "PRJ-A")
     ]
+    # enqueue() returns job_id="job-1" (see _FakeJobStore) - the tick must
+    # hand that same id to Celery so Flower and GET /jobs/{id} agree.
+    assert _fake_run_ingest_job.dispatched == [(["job-1"], "job-1")]
 
 
 async def test_tick_enqueues_saas_job_without_path(monkeypatch):

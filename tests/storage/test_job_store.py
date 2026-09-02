@@ -7,7 +7,6 @@ tests/storage/test_postgres_store.py. To run these locally:
     KF_TEST_DATABASE_URL=postgresql://kf:kf@localhost:15432/knowledge_forge uv run pytest tests/storage/test_job_store.py -v
 """
 
-import asyncio
 import os
 
 import pytest
@@ -25,12 +24,9 @@ async def _cleanup(store: JobStore, job_id: str) -> None:
 
 @pytest.fixture(autouse=True)
 async def _clear_jobs_table():
-    # This DSN is a shared dev/CI Postgres, not a per-test sandbox - a stray
-    # pending row left by a manual `curl /ingest` or a previously failed run
-    # would otherwise get picked up by claim_next() instead of the row a
-    # test just created, since claim_next() is (by design) "oldest pending,
-    # regardless of who created it". Clearing before each test makes these
-    # tests independent of whatever else has touched this table.
+    # This DSN is a shared dev/CI Postgres, not a per-test sandbox - clearing
+    # before each test makes these tests independent of whatever else has
+    # touched this table (e.g. a stray row from a manual `curl /ingest`).
     async with JobStore(DSN) as store:
         await store.init_schema()
         await store.conn.execute("DELETE FROM jobs")
@@ -89,38 +85,18 @@ async def test_enqueue_defaults_project_id_and_list_filters_by_it():
             await _cleanup(store, job_a.job_id)
 
 
-async def test_claim_next_marks_running_and_skips_already_claimed():
+async def test_mark_running_sets_status_and_started_at():
     async with JobStore(DSN) as store:
         await store.init_schema()
         job = await store.enqueue("local_file_ingest", {"path": "/tmp/z.md"})
         try:
-            claimed = await store.claim_next()
-            assert claimed is not None
-            assert claimed.job_id == job.job_id
-            assert claimed.status == JobStatus.RUNNING
-            assert claimed.started_at is not None
+            await store.mark_running(job.job_id)
 
-            # No other pending job with this id - re-claiming shouldn't pick
-            # a running job back up. (Another queued job could race in from
-            # a different test process, so only assert on our own job_id.)
-            again = await store.get(job.job_id)
-            assert again.status == JobStatus.RUNNING
+            running = await store.get(job.job_id)
+            assert running.status == JobStatus.RUNNING
+            assert running.started_at is not None
         finally:
             await _cleanup(store, job.job_id)
-
-
-async def test_claim_next_is_concurrency_safe_across_connections():
-    async with JobStore(DSN) as store_a, JobStore(DSN) as store_b:
-        await store_a.init_schema()
-        job1 = await store_a.enqueue("local_file_ingest", {"path": "/tmp/c1.md"})
-        job2 = await store_a.enqueue("local_file_ingest", {"path": "/tmp/c2.md"})
-        try:
-            claimed_a, claimed_b = await asyncio.gather(store_a.claim_next(), store_b.claim_next())
-            assert claimed_a is not None and claimed_b is not None
-            assert {claimed_a.job_id, claimed_b.job_id} == {job1.job_id, job2.job_id}
-        finally:
-            await _cleanup(store_a, job1.job_id)
-            await _cleanup(store_a, job2.job_id)
 
 
 async def test_mark_succeeded_and_mark_failed():

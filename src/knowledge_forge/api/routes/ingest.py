@@ -3,8 +3,10 @@ half of Ingest/Process separation (wiki/roadmap.md 4단계). `source`
 ("local", the default, or one of collectors.saas.factory.SAAS_COLLECTOR_BUILDERS)
 picks the job_type enqueued - "local_file_ingest" for local, or
 "{source}_ingest" (e.g. "slack_ingest") for a SaaS source - mirroring
-cli.py extract/schedule's --source. worker.py's _dispatch() is what
-actually builds the matching Collector when it claims the job.
+cli.py extract/schedule's --source. Writes the `jobs` row, then hands its
+job_id to Celery (celery_app.run_ingest_job) over Redis so a
+`knowledge-forge worker` process actually runs it - worker.py's _dispatch()
+is what builds the matching Collector once it does.
 """
 
 from pathlib import Path
@@ -13,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from knowledge_forge.api.deps import get_job_store
 from knowledge_forge.api.schemas import IngestRequest, IngestResponse
+from knowledge_forge.celery_app import run_ingest_job
 from knowledge_forge.collectors.base import ensure_utc
 from knowledge_forge.collectors.saas.factory import SAAS_COLLECTOR_BUILDERS, job_type_for_source
 from knowledge_forge.config import settings
@@ -71,6 +74,7 @@ async def ingest(request: IngestRequest, job_store: JobStore = Depends(get_job_s
             },
             project_id=request.project_id,
         )
+        run_ingest_job.apply_async(args=[job.job_id], task_id=job.job_id)
         return IngestResponse(job_id=job.job_id, status=job.status)
 
     if request.source not in SAAS_COLLECTOR_BUILDERS:
@@ -84,4 +88,5 @@ async def ingest(request: IngestRequest, job_store: JobStore = Depends(get_job_s
         {"max_tokens": max_tokens, "model": request.model, "okf_dir": request.okf_dir, **backfill_payload},
         project_id=request.project_id,
     )
+    run_ingest_job.apply_async(args=[job.job_id], task_id=job.job_id)
     return IngestResponse(job_id=job.job_id, status=job.status)

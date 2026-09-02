@@ -29,6 +29,11 @@ dependencies = [
     "pyyaml>=6.0",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
+    # Job execution transport (celery_app.py) - the `jobs` Postgres table
+    # stays the source of truth for job status/results, Celery+Redis is
+    # only how a job gets from `POST /ingest` to a worker process. Adopted
+    # so Flower (below) has a broker/worker to monitor - see wiki/api.md.
+    "celery[redis]>=5.4",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +44,9 @@ slack = ["slack-sdk>=3.27"]
 google = ["google-api-python-client>=2.100", "google-auth>=2.30"]
 notion = ["notion-client>=2.2"]
 korean = ["kss>=6.0.4"]
+# Local dev only - docker-compose runs Flower from the standalone
+# `mher/flower` image instead (no app code needed, see docker-compose.yml).
+flower = ["flower>=2.0"]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",

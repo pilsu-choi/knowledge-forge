@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import pytest
 
 from knowledge_forge.storage.job_store import Job, JobStatus
-from knowledge_forge.worker import _dispatch
+from knowledge_forge.worker import _dispatch, _execute_job
 
 
 class _FakePipelineStore:
@@ -144,6 +144,70 @@ async def test_dispatch_parses_since_until_from_payload_and_passes_to_run_saas_i
     assert calls == [
         (datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc), datetime(2026, 8, 1, 18, 0, tzinfo=timezone.utc))
     ]
+
+
+class _FakeJobStore:
+    """Stands in for storage.job_store.JobStore - `_execute_job` opens one of
+    these itself (see worker.py's per-job self-healing rationale), so it's
+    monkeypatched at the module level, same as `_FakePipelineStore` above."""
+
+    def __init__(self, dsn: str):
+        self._dsn = dsn
+        self.calls: list[tuple] = []
+
+    async def __aenter__(self) -> "_FakeJobStore":
+        return self
+
+    async def __aexit__(self, *exc_info) -> None:
+        return None
+
+    async def get(self, job_id: str) -> Job:
+        self.calls.append(("get", job_id))
+        return self._job
+
+    async def mark_running(self, job_id: str) -> None:
+        self.calls.append(("mark_running", job_id))
+
+    async def mark_succeeded(self, job_id: str, result: dict) -> None:
+        self.calls.append(("mark_succeeded", job_id, result))
+
+    async def mark_failed(self, job_id: str, error: str) -> None:
+        self.calls.append(("mark_failed", job_id, error))
+
+
+async def test_execute_job_marks_running_then_succeeded(monkeypatch):
+    monkeypatch.setattr("knowledge_forge.worker.PipelineStore", _FakePipelineStore)
+
+    async def fake_run_local_ingest(path, max_tokens, model, store, project_id, okf_writer=None, since=None, until=None):
+        return {"object_count": 1}
+
+    monkeypatch.setattr("knowledge_forge.worker.run_local_ingest", fake_run_local_ingest)
+
+    fake_store = _FakeJobStore("postgresql://fake")
+    fake_store._job = _job("local_file_ingest", {"path": "/tmp/x"})
+    monkeypatch.setattr("knowledge_forge.worker.JobStore", lambda dsn: fake_store)
+
+    result = await _execute_job("j1", "postgresql://fake", "/tmp/data")
+
+    assert result == {"object_count": 1}
+    assert fake_store.calls == [
+        ("get", "j1"),
+        ("mark_running", "j1"),
+        ("mark_succeeded", "j1", {"object_count": 1}),
+    ]
+
+
+async def test_execute_job_marks_failed_and_reraises_on_dispatch_error(monkeypatch):
+    fake_store = _FakeJobStore("postgresql://fake")
+    fake_store._job = _job("mystery_type", {})
+    monkeypatch.setattr("knowledge_forge.worker.JobStore", lambda dsn: fake_store)
+
+    with pytest.raises(ValueError, match="unknown job_type"):
+        await _execute_job("j1", "postgresql://fake", "/tmp/data")
+
+    assert fake_store.calls[:2] == [("get", "j1"), ("mark_running", "j1")]
+    assert fake_store.calls[2][:2] == ("mark_failed", "j1")
+    assert "unknown job_type" in fake_store.calls[2][2]
 
 
 async def test_dispatch_defaults_since_until_to_none_when_absent(monkeypatch):

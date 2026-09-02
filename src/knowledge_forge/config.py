@@ -42,6 +42,13 @@ class Settings(BaseSettings):
     # Root directory for the content-addressed raw blob store (RawBlobStore).
     data_dir: str = "./data"
 
+    # Celery broker + result backend (celery_app.py) - unlike database_url,
+    # this has a real default rather than None: the Celery app object needs
+    # a concrete broker URL to construct, and `POST /ingest` can't dispatch
+    # jobs without one. Assumes a locally-running Redis for bare `serve`/
+    # `worker` runs; docker-compose overrides this to the `redis` service.
+    redis_url: str = "redis://localhost:6379/0"
+
     # Which LLM backend Knowledge Extraction and Vision extraction use.
     # "anthropic" (default) is the production-tested path; "openrouter" and
     # "claude_agent_sdk" are implemented and unit-tested against mocks only

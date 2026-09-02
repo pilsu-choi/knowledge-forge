@@ -38,6 +38,19 @@ services:
     #   docker compose run --rm app schedule /app/input --interval-seconds 3600
     command: ["db", "init"]
 
+  # Broker + result backend for the Celery-based job transport (wiki/api.md)
+  # that carries a job from `POST /ingest` to `worker`. The `jobs` Postgres
+  # table above stays the source of truth for status/results.
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "16379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   # `POST /ingest` enqueues a job to the `jobs` table and returns 202
   # immediately - it never calls the LLM itself, so it needs no Anthropic
   # credentials (unlike `app`/`worker`). See wiki/api.md.
@@ -46,9 +59,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       KF_DATABASE_URL: postgresql://kf:kf@postgres:5432/knowledge_forge
       KF_DATA_DIR: /app/data
+      KF_REDIS_URL: redis://redis:6379/0
       # Auto-scheduling (wiki/scheduling.md "serve 자동 스케줄링"): starting
       # this service is then enough to also periodically enqueue ingest
       # jobs - no separate `schedule` process/service needed. Empty by
@@ -60,18 +76,21 @@ services:
       - "8000:8000"
     command: ["serve", "--host", "0.0.0.0", "--port", "8000"]
 
-  # Polls `jobs` (FOR UPDATE SKIP LOCKED) and runs the actual pipeline for
-  # each claimed job - the "process" half of Ingest/Process separation
-  # (wiki/roadmap.md 4단계). Needs Anthropic credentials since it performs
-  # the real extraction, unlike `api`.
+  # Consumes jobs dispatched over Redis and runs the actual pipeline for
+  # each - the "process" half of Ingest/Process separation (wiki/roadmap.md
+  # 4단계). Needs Anthropic credentials since it performs the real
+  # extraction, unlike `api`.
   worker:
     build: .
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       KF_DATABASE_URL: postgresql://kf:kf@postgres:5432/knowledge_forge
       KF_DATA_DIR: /app/data
+      KF_REDIS_URL: redis://redis:6379/0
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
     volumes:
@@ -82,6 +101,18 @@ services:
       # _dispatch() is what actually writes the OKF tree, not `api`.
       - ./okf:/app/okf
     command: ["worker"]
+
+  # Monitoring GUI for the Celery worker(s) above - reads the same Redis
+  # broker, no app code/build needed. http://localhost:5555.
+  flower:
+    image: mher/flower:2.0
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+    ports:
+      - "5555:5555"
 
 volumes:
   kf-postgres-data:

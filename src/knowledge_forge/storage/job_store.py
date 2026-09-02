@@ -3,7 +3,8 @@
 Deliberately a separate class from `PostgresStore`/`PipelineStore`: those
 persist the Knowledge Graph itself, this persists queue *events* (a job's
 lifecycle), and their callers differ (the FastAPI process enqueues, the
-worker process claims). Same connection pattern as `PostgresStore` -
+Celery-driven worker process runs and updates). Same connection pattern as
+`PostgresStore` -
 autocommit, one connection per instance, used as an async context manager -
 for the same reason: simple lifecycle, self-heals across process restarts.
 """
@@ -138,34 +139,15 @@ class JobStore:
             rows = await cur.fetchall()
         return [_row_to_job(row) for row in rows]
 
-    async def claim_next(self) -> Job | None:
-        """Atomically picks the oldest pending job and marks it running.
-
-        A single `WITH ... FOR UPDATE SKIP LOCKED` + `UPDATE` statement is
-        one atomic unit of work in Postgres even under autocommit, so two
-        workers racing this call always get distinct jobs (or one gets
-        None) - no explicit transaction block needed.
-        """
-        started_at = datetime.now(timezone.utc)
-        async with self.conn.cursor() as cur:
-            await cur.execute(
-                f"""
-                WITH next_job AS (
-                    SELECT job_id FROM jobs
-                    WHERE status = 'pending'
-                    ORDER BY created_at
-                    FOR UPDATE SKIP LOCKED
-                    LIMIT 1
-                )
-                UPDATE jobs SET status = 'running', started_at = %s
-                FROM next_job
-                WHERE jobs.job_id = next_job.job_id
-                RETURNING {", ".join(f"jobs.{c.strip()}" for c in _COLUMNS.split(","))}
-                """,
-                (started_at,),
-            )
-            row = await cur.fetchone()
-        return _row_to_job(row) if row is not None else None
+    async def mark_running(self, job_id: str) -> None:
+        # Called by worker.py's `_execute_job` when a Celery task picks up
+        # the job - Celery/Redis (not `FOR UPDATE SKIP LOCKED`) now owns
+        # delivering each job to exactly one worker, so this is a plain
+        # UPDATE rather than the old claim_next()'s atomic claim-and-lock.
+        await self.conn.execute(
+            "UPDATE jobs SET status = 'running', started_at = %s WHERE job_id = %s",
+            (datetime.now(timezone.utc), job_id),
+        )
 
     async def mark_succeeded(self, job_id: str, result: dict) -> None:
         await self.conn.execute(

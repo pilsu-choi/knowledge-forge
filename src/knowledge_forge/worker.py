@@ -1,16 +1,15 @@
-"""Job-queue worker: the "process" half of Ingest/Process separation
+"""Job-queue execution: the "process" half of Ingest/Process separation
 (wiki/roadmap.md 4단계, wiki/api.md). The FastAPI server's `POST /ingest`
-enqueues a row and returns immediately; this polls `jobs` with
-`JobStore.claim_next()` (Postgres `FOR UPDATE SKIP LOCKED`) and actually
-runs the pipeline - a separate, restartable process, deployed as its own
-docker-compose service.
+enqueues a `jobs` row and dispatches a Celery task carrying its `job_id`;
+`_execute_job` (called from `celery_app.run_ingest_job`, running inside a
+`knowledge-forge worker` process) loads that row, marks it running, and
+actually runs the pipeline.
 
 Same failure-isolation philosophy as `scheduling/scheduler.py`'s tick: one
-job's exception is recorded on that job (status=failed) and the loop moves
-on, rather than crashing the whole worker process.
+job's exception is recorded on that job (status=failed) - here it's also
+re-raised so Celery/Flower see the task as failed too.
 """
 
-import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -81,32 +80,28 @@ async def _dispatch(job: Job, database_url: str, data_dir: str) -> dict:
     raise ValueError(f"unknown job_type: {job.job_type}")
 
 
-async def run_worker(
-    database_url: str,
-    data_dir: str,
-    poll_interval_seconds: float = 2.0,
-) -> None:
-    """Runs forever, polling `jobs` for pending work, until interrupted
-    (Ctrl-C / SIGINT)."""
+async def _execute_job(job_id: str, database_url: str, data_dir: str) -> dict:
+    """Body of the `run_ingest_job` Celery task (celery_app.py). Opens its
+    own `JobStore` connection per call - same self-healing-across-reconnects
+    rationale as `scheduling/scheduler.py`'s per-tick store_factory and
+    `scheduling/auto_enqueue.py`'s per-tick JobStore.
+
+    Re-raises on failure (after recording it on the job) so Celery marks the
+    task itself FAILED - that's what Flower surfaces, on top of the `jobs`
+    row `GET /jobs/{id}` reads.
+    """
     async with JobStore(database_url) as job_store:
-        await job_store.init_schema()
-        logger.info("worker started, polling every %.1fs", poll_interval_seconds)
+        job = await job_store.get(job_id)
+        if job is None:
+            raise ValueError(f"unknown job_id: {job_id}")
+        await job_store.mark_running(job_id)
+        logger.info("running job %s (%s)", job.job_id, job.job_type)
         try:
-            while True:
-                job = await job_store.claim_next()
-                if job is None:
-                    await asyncio.sleep(poll_interval_seconds)
-                    continue
-                logger.info("claimed job %s (%s)", job.job_id, job.job_type)
-                try:
-                    result = await _dispatch(job, database_url, data_dir)
-                except Exception as exc:  # noqa: BLE001 - one bad job must not kill the worker
-                    logger.exception("job %s failed", job.job_id)
-                    await job_store.mark_failed(job.job_id, str(exc))
-                else:
-                    await job_store.mark_succeeded(job.job_id, result)
-                    logger.info("job %s succeeded: %s", job.job_id, result)
-        except (KeyboardInterrupt, SystemExit):
-            pass
-        finally:
-            logger.info("worker stopped")
+            result = await _dispatch(job, database_url, data_dir)
+        except Exception as exc:  # noqa: BLE001 - record on the job before re-raising
+            logger.exception("job %s failed", job_id)
+            await job_store.mark_failed(job_id, str(exc))
+            raise
+        await job_store.mark_succeeded(job_id, result)
+        logger.info("job %s succeeded: %s", job_id, result)
+        return result
