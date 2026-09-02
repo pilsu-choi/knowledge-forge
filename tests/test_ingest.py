@@ -4,11 +4,16 @@ returned summary counts matter, not persistence (that's covered by
 tests/storage/test_job_store.py and the worker's own live-DB test).
 """
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
+from knowledge_forge.collectors.base import Cursor, RawItem
+from knowledge_forge.collectors.saas import factory
+from knowledge_forge.collectors.saas.base import SaaSCollector
 from knowledge_forge.extraction.claude_extractor import ClaudeExtractor
 from knowledge_forge.extraction.schemas import ExtractionResult
-from knowledge_forge.ingest import run_local_ingest
+from knowledge_forge.ingest import run_local_ingest, run_saas_ingest
+from knowledge_forge.models.source import SourceType
 
 
 class _FakeMessages:
@@ -32,6 +37,38 @@ class _FakeMessages:
 class _FakeClient:
     def __init__(self):
         self.messages = _FakeMessages()
+
+
+class _FakeSaaSCollector(SaaSCollector):
+    source_type = SourceType.SLACK
+
+    def initial_sync(self):
+        yield RawItem(
+            uri="slack://c/1",
+            content=b"hello from slack",
+            content_hash="h1",
+            modified_at=datetime.now(timezone.utc),
+            metadata={"channel": "c", "ts": "1.0"},
+        )
+
+    def incremental_sync(self, cursor):
+        return iter(())
+
+    def get_cursor(self):
+        return Cursor()
+
+
+async def test_run_saas_ingest_builds_collector_from_source_and_returns_counts(monkeypatch):
+    client = _FakeClient()
+    monkeypatch.setattr(
+        "knowledge_forge.ingest.get_extractor", lambda model=None: ClaudeExtractor(client=client)
+    )
+    monkeypatch.setitem(factory.SAAS_COLLECTOR_BUILDERS, "slack", lambda: _FakeSaaSCollector(client=object()))
+
+    result = await run_saas_ingest("slack", max_tokens=4000, model=None, store=None)
+
+    assert result["object_count"] >= 1
+    assert "relation_count" in result
 
 
 async def test_run_local_ingest_returns_object_and_relation_counts(tmp_path, monkeypatch):

@@ -25,7 +25,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 _TAGS_METADATA = [
     {"name": "Health", "description": "liveness 체크. DB 의존 없음(컨테이너 healthcheck용)."},
-    {"name": "Ingest", "description": "로컬 파일을 job으로 enqueue한다 (`local_file_ingest`)."},
+    {"name": "Ingest", "description": "로컬 파일 또는 SaaS 소스를 job으로 enqueue한다 (`local_file_ingest`/`{source}_ingest`)."},
     {"name": "Jobs", "description": "enqueue된 job의 상태/결과 조회."},
     {"name": "Sources", "description": "수집된 원본(Source) 조회."},
     {"name": "Documents", "description": "파싱된 Document(elements 포함) 조회."},

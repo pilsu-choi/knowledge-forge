@@ -24,13 +24,24 @@
 검증한다. 처리량이 실제로 문제가 되면 그때 Redis/전용 큐로 옮기면 된다 — 지금 규모에서는
 과설계다.
 
-## v1 범위: `local_file_ingest` job type 하나만
+## job type: `local_file_ingest` + `{source}_ingest`
 
-`jobs.job_type`이 payload 모양을 구분한다. 지금은 이미 동작하는 `LocalFileCollector` 경로를
-검증하는 `local_file_ingest`(`{"path", "max_tokens", "model"}`) 하나만 있다. **SaaS 소스는
-아직 여기 연결되어 있지 않다** — 로드맵 1단계(SaaS CLI/OAuth 연동)가 끝나야 `slack_ingest` 같은
-새 job_type을 추가할 수 있다. 큐/워커 자체는 그때 다시 설계할 필요 없이 `worker.py`의
-`_dispatch`에 분기 하나만 추가하면 된다.
+`jobs.job_type`이 payload 모양을 구분한다. `POST /ingest`의 `source`(기본값 `"local"`)가
+어떤 job_type이 enqueue되는지 결정한다 — `cli.py`의 `extract`/`schedule --source`와 같은
+소스 이름을 쓴다:
+
+- `source: "local"`(기본값): 경로 존재를 확인한 뒤 `local_file_ingest`
+  (`{"path", "max_tokens", "model"}`) enqueue. `path`가 필수.
+- `source: "slack" | "notion" | "gdrive" | "gmail"`(`collectors.saas.factory.SAAS_COLLECTOR_BUILDERS`의
+  키): `"{source}_ingest"`(예: `slack_ingest`, `{"max_tokens", "model"}` — `path` 없음, KF_*
+  env 설정으로 커넥터를 조립하므로) enqueue. 목록에 없는 `source`는 `400`.
+
+`worker.py`의 `_dispatch()`가 `job_type`을 보고 `local_file_ingest`는 `ingest.run_local_ingest()`,
+`{source}_ingest`는 `ingest.run_saas_ingest(source, ...)`를 호출한다 — 새 SaaS 커넥터가
+`SAAS_COLLECTOR_BUILDERS`에 추가되면 `_dispatch`는 자동으로 그 job_type도 처리한다(하드코딩된
+매핑을 늘릴 필요 없음). 큐/워커 인프라 자체(`FOR UPDATE SKIP LOCKED` 폴링, 실패 격리)는
+`local_file_ingest` 하나였을 때 그대로다 — 새 job_type 추가가 재설계를 요구하지 않는다는
+설계 의도가 그대로 맞아떨어졌다.
 
 ## 실행
 
@@ -66,7 +77,7 @@ Objects/Relations)가 붙어 있어 Swagger UI에서 리소스별로 묶여 보�
 | 메서드/경로 | 설명 |
 |---|---|
 | `GET /health` | liveness, DB 의존 없음(컨테이너 healthcheck용) |
-| `POST /ingest` | `{"path": "<로컬 경로>", "project_id": "<선택, 기본 "default">"}` → 경로 존재 확인 후 `local_file_ingest` job enqueue, `202` + `{job_id, status}` |
+| `POST /ingest` | `{"source": "<local(기본)\|slack\|notion\|gdrive\|gmail>", "path": "<local일 때만 필수>", "max_tokens": <선택>, "model": "<선택>", "project_id": "<선택, 기본 "default">"}` → `local_file_ingest` 또는 `{source}_ingest` job enqueue, `202` + `{job_id, status}` |
 | `GET /jobs/{job_id}` | job 상태/결과 조회, 없으면 `404` |
 | `GET /jobs?status=&project_id=` | job 목록(페이지네이션 `limit`/`offset`) |
 | `GET /sources?project_id=&limit=&offset=` | 저장된 Source 조회 |
@@ -120,6 +131,7 @@ job을 `failed`로 표시할 뿐 워커 프로세스 자체를 죽이지 않는�
   처리량이 문제될 수 있다. `psycopg_pool`로 옮기는 건 실제 병목이 확인된 뒤의 후속 과제.
 - **워커는 poll 기반**(`--poll-interval-seconds`, 기본 2초) — job이 없을 때 최대 poll 간격만큼
   지연될 수 있다. `LISTEN`/`NOTIFY`로 즉시 깨우는 건 지연이 실제 문제가 될 때의 후속 과제.
-- **`local_file_ingest` job type 하나뿐** — 위 "v1 범위" 참고.
 - **`/ingest`의 경로 존재 검증은 enqueue 시점 스냅샷** — 워커가 실제로 job을 집어들 때 파일이
   사라졌으면(레이스) job은 `failed`로 끝난다(정상적인 실패 격리 경로, 별도 처리 불필요).
+- **SaaS ingest job은 실제 계정으로 라이브 검증되지 않았다** — CLI `--source`와 마찬가지로
+  모킹 테스트만 거쳤다(`tests/test_worker_dispatch_routing.py`, `tests/test_ingest.py`).

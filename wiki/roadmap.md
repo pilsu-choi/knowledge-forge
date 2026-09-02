@@ -40,8 +40,10 @@
 - **API 서버 + Postgres 기반 Job Queue/Worker**: `knowledge-forge serve`(FastAPI)의 `POST
   /ingest`가 즉시 `202`+job_id를 응답하고, 별도 프로세스인 `knowledge-forge worker`가 `jobs`
   테이블을 `FOR UPDATE SKIP LOCKED`로 폴링해 실제 파이프라인을 실행한다 — 4단계 "Ingest와
-  Process 분리"의 큐/워커 인프라 자체는 완료([`api.md`](api.md)). 단 v1은 `local_file_ingest`
-  job type 하나뿐이고 SaaS ingest는 1단계(아래) 완료 후 새 job_type으로 추가된다.
+  Process 분리"의 큐/워커 인프라 자체는 완료([`api.md`](api.md)). `local_file_ingest`에 더해
+  `POST /ingest`의 `source` 필드로 SaaS ingest(`{source}_ingest`, 예: `slack_ingest`)도
+  enqueue할 수 있다 — `worker.py`의 `_dispatch()`가 `collectors.saas.factory.SAAS_COLLECTOR_BUILDERS`를
+  보고 CLI `--source`와 같은 이름으로 라우팅한다.
 - **컨테이너화**: `Dockerfile` + `docker-compose.yml`(앱 + Postgres) — [`dev-guide.md`](dev-guide.md).
 - **인증**: 활성 LLM Provider에 맞는 자격 증명(Anthropic: `ANTHROPIC_API_KEY`/`ant auth login`
   OAuth, OpenRouter: `OPENROUTER_API_KEY`) 사전 점검 + 친절한 에러 메시지.
@@ -243,15 +245,15 @@ Knowledge가 나온다.
    첨부파일이 발견되면 기존 File Collector→Parser 경로로 넘긴다(별도 재구현 없이 기존
    파이프라인 재사용). 현재 4개 SaaS 커넥터는 아직 첨부파일 감지/추출 자체를 하지 않음
    ([`saas-connectors.md`](saas-connectors.md)) — 이것도 1단계에서 함께 다뤄야 한다.
-4. ~~**Ingest와 Process 분리**~~ — 큐/워커 인프라는 완료:
+4. ~~**Ingest와 Process 분리**~~ — 큐/워커 인프라와 SaaS 연결 둘 다 완료:
    `knowledge-forge serve`(FastAPI)의 `POST /ingest`가 `jobs` 테이블(Postgres)에 enqueue하고
    즉시 `202`+job_id를 응답, 별도 프로세스 `knowledge-forge worker`가 `FOR UPDATE SKIP LOCKED`
-   폴링으로 job을 집어 `run_pipeline`을 실행한다 — [`api.md`](api.md) 참고. **다만 v1 job
-   type은 여전히 `local_file_ingest` 하나뿐이다**(`worker.py`) — 이건 1단계와 별개의 진입점이라
-   1단계(CLI `--source`)가 끝났다고 자동으로 풀리지 않는다: SaaS 소스가 이 큐를 타려면
-   `worker.py`에 새 job_type(예: `slack_ingest`, `_build_collector()`와 같은 factory 호출을
-   재사용)을 직접 추가해야 한다. 즉 4번 항목의 "설계"는 끝났지만 SaaS를 이 큐에 연결하는 작업은
-   아직 별도로 남아 있다.
+   폴링으로 job을 집어 `run_pipeline`을 실행한다 — [`api.md`](api.md) 참고. `POST /ingest`의
+   `source` 필드(CLI `--source`와 동일한 이름 체계)가 `local_file_ingest` 또는
+   `{source}_ingest`(예: `slack_ingest`)를 enqueue하고, `worker.py`의 `_dispatch()`가
+   `collectors.saas.factory.SAAS_COLLECTOR_BUILDERS`를 보고 라우팅한다 — 이 매핑에 새 SaaS
+   커넥터가 추가되면 `_dispatch`가 자동으로 그 job_type도 처리하므로, 새 커넥터를 추가할 때마다
+   `worker.py`를 따로 고칠 필요가 없다.
 5. **스케줄링 성격 구분** — Slack/Gmail처럼 계속 생성되는 데이터는 polling(현재
    `knowledge-forge schedule`이 이 모델) 또는 향후 webhook/event-driven ingest가 맞고, 정적
    파일 소스는 최초 1회 + 변경 감지 재처리로 충분하다는 게 이미 맞게 설계되어 있음 — 다만

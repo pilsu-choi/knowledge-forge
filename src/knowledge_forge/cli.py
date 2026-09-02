@@ -9,6 +9,7 @@ import typer
 from knowledge_forge.chunking import AdaptiveChunker
 from knowledge_forge.collectors.base import Collector
 from knowledge_forge.collectors.local_file import LocalFileCollector
+from knowledge_forge.collectors.saas.factory import SAAS_COLLECTOR_BUILDERS
 from knowledge_forge.config import settings
 from knowledge_forge.extraction.auth import credential_hint_ko, has_resolvable_credentials
 from knowledge_forge.extraction.factory import get_extractor
@@ -33,20 +34,15 @@ def _ensure_authenticated() -> None:
         raise typer.Exit(1)
 
 
-_SAAS_COLLECTOR_BUILDERS = {
-    "slack": "build_slack_collector",
-    "notion": "build_notion_collector",
-    "gdrive": "build_gdrive_collector",
-    "gmail": "build_gmail_collector",
-}
-
-
 def _build_collector(source: str, path: Optional[Path]) -> Collector:
     """`source` picks which Collector `extract`/`schedule` run: "local" (the
     default) walks `path` via LocalFileCollector; "slack"/"notion"/"gdrive"/
     "gmail" build an authenticated SaaS collector from KF_* env config via
-    collectors/saas/factory.py (see wiki/saas-connectors.md) - `path` is
-    unused for those.
+    collectors/saas/factory.py's SAAS_COLLECTOR_BUILDERS (see
+    wiki/saas-connectors.md) - `path` is unused for those. The same mapping
+    backs api/routes/ingest.py's `source` field and worker.py's
+    `{source}_ingest` job dispatch, so a source is picked the same way
+    everywhere.
     """
     if source == "local":
         if path is None:
@@ -54,17 +50,15 @@ def _build_collector(source: str, path: Optional[Path]) -> Collector:
             raise typer.Exit(1)
         return LocalFileCollector(root=path)
 
-    builder_name = _SAAS_COLLECTOR_BUILDERS.get(source)
-    if builder_name is None:
+    builder = SAAS_COLLECTOR_BUILDERS.get(source)
+    if builder is None:
         typer.echo(
-            f"알 수 없는 --source '{source}' (local/{'/'.join(_SAAS_COLLECTOR_BUILDERS)} 중 하나여야 합니다).",
+            f"알 수 없는 --source '{source}' (local/{'/'.join(SAAS_COLLECTOR_BUILDERS)} 중 하나여야 합니다).",
             err=True,
         )
         raise typer.Exit(1)
 
-    from knowledge_forge.collectors.saas import factory
-
-    return getattr(factory, builder_name)()
+    return builder()
 
 
 def _open_store() -> Optional[PipelineStore]:
@@ -97,7 +91,7 @@ def extract(
     source: str = typer.Option(
         "local",
         "--source",
-        help=f"Collector to run: local (default, needs PATH) or one of {', '.join(_SAAS_COLLECTOR_BUILDERS)} "
+        help=f"Collector to run: local (default, needs PATH) or one of {', '.join(SAAS_COLLECTOR_BUILDERS)} "
         "(built from KF_* env config, see wiki/saas-connectors.md).",
     ),
     max_tokens: int = typer.Option(4000, "--max-tokens", help="Max tokens per chunk before splitting further."),
@@ -187,7 +181,7 @@ def schedule(
     source: str = typer.Option(
         "local",
         "--source",
-        help=f"Collector to run: local (default, needs PATH) or one of {', '.join(_SAAS_COLLECTOR_BUILDERS)} "
+        help=f"Collector to run: local (default, needs PATH) or one of {', '.join(SAAS_COLLECTOR_BUILDERS)} "
         "(built from KF_* env config, see wiki/saas-connectors.md).",
     ),
     interval_seconds: int = typer.Option(

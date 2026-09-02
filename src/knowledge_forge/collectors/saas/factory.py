@@ -9,7 +9,9 @@ required settings are missing.
 
 import json
 from pathlib import Path
+from typing import Callable
 
+from knowledge_forge.collectors.base import Collector
 from knowledge_forge.collectors.saas.base import SaaSAuthConfig
 from knowledge_forge.collectors.saas.gdrive import GoogleDriveCollector
 from knowledge_forge.collectors.saas.gmail import GmailCollector
@@ -110,3 +112,16 @@ def build_gmail_collector() -> GmailCollector:
 
     client = build("gmail", "v1", credentials=credentials)
     return GmailCollector(client=client, query=settings.gmail_query)
+
+
+# Canonical source-name -> builder mapping, shared by every caller that lets
+# an operator pick a SaaS source by name instead of importing a specific
+# build_*_collector() (cli.py's --source, api/routes/ingest.py's `source`
+# field, worker.py's `{source}_ingest` job dispatch) - one place to extend
+# when a new SaaS collector is added.
+SAAS_COLLECTOR_BUILDERS: dict[str, Callable[[], Collector]] = {
+    "slack": build_slack_collector,
+    "notion": build_notion_collector,
+    "gdrive": build_gdrive_collector,
+    "gmail": build_gmail_collector,
+}

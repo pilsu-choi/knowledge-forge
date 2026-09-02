@@ -18,7 +18,18 @@ T = TypeVar("T")
 
 
 class IngestRequest(BaseModel):
-    path: str
+    # Required (and only meaningful) when source == "local" (the default) -
+    # a SaaS source is built from KF_* env config instead
+    # (collectors/saas/factory.py), so `path` is ignored for those.
+    path: str | None = None
+    # "local" (default) or one of collectors.saas.factory.SAAS_COLLECTOR_BUILDERS
+    # (currently "slack"/"notion"/"gdrive"/"gmail") - mirrors cli.py extract/
+    # schedule's --source. Validated against that mapping in the route, not
+    # here, so this schema doesn't need to import factory.py's SDK-adjacent
+    # module just to spell out a Literal.
+    source: str = "local"
+    max_tokens: int | None = None
+    model: str | None = None
     # Tenancy key this ingest run's Source/Document/Job rows are tagged
     # with. Defaults to "default" for single-tenant callers.
     project_id: str = "default"

@@ -189,6 +189,42 @@ def test_ingest_missing_path_returns_400():
     assert resp.status_code == 400
 
 
+def test_ingest_local_without_path_returns_400():
+    client = _make_client(_FakeJobStore(), _FakeReadStore())
+
+    resp = client.post("/ingest", json={})
+
+    assert resp.status_code == 400
+
+
+def test_ingest_saas_source_enqueues_matching_job_type(monkeypatch):
+    monkeypatch.setattr(
+        "knowledge_forge.api.routes.ingest.SAAS_COLLECTOR_BUILDERS", {"slack": lambda: None}
+    )
+    job_store = _FakeJobStore()
+    client = _make_client(job_store, _FakeReadStore())
+
+    resp = client.post("/ingest", json={"source": "slack", "project_id": "PRJ-A"})
+
+    assert resp.status_code == 202
+    assert resp.json()["job_id"] == "job-1"
+    job_type, payload, project_id = job_store.enqueued[0]
+    assert job_type == "slack_ingest"
+    assert project_id == "PRJ-A"
+    assert "path" not in payload
+
+
+def test_ingest_unknown_source_returns_400(monkeypatch):
+    monkeypatch.setattr(
+        "knowledge_forge.api.routes.ingest.SAAS_COLLECTOR_BUILDERS", {"slack": lambda: None}
+    )
+    client = _make_client(_FakeJobStore(), _FakeReadStore())
+
+    resp = client.post("/ingest", json={"source": "carrier-pigeon"})
+
+    assert resp.status_code == 400
+
+
 def test_get_job_roundtrip_and_404(tmp_path):
     (tmp_path / "a.md").write_text("hello")
     job_store = _FakeJobStore()

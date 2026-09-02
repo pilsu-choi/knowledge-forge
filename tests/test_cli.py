@@ -31,9 +31,7 @@ def test_unknown_source_exits():
 
 
 def test_saas_source_delegates_to_matching_factory_builder(monkeypatch):
-    from knowledge_forge.collectors.saas import factory
-
     sentinel = object()
-    monkeypatch.setattr(factory, "build_slack_collector", lambda: sentinel)
+    monkeypatch.setitem(cli.SAAS_COLLECTOR_BUILDERS, "slack", lambda: sentinel)
 
     assert cli._build_collector("slack", None) is sentinel

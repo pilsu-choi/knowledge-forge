@@ -14,21 +14,38 @@ import asyncio
 import logging
 from pathlib import Path
 
-from knowledge_forge.ingest import run_local_ingest
+from knowledge_forge.collectors.saas.factory import SAAS_COLLECTOR_BUILDERS
+from knowledge_forge.ingest import run_local_ingest, run_saas_ingest
 from knowledge_forge.storage.job_store import Job, JobStore
 from knowledge_forge.storage.store import PipelineStore
 
 logger = logging.getLogger(__name__)
 
+# job_type naming: "local_file_ingest" predates the `{source}_ingest`
+# convention (api/routes/ingest.py's `source` field) and keeps its own name
+# for backward compatibility with already-enqueued/persisted jobs; every
+# SaaS source instead gets "{source}_ingest" (e.g. "slack_ingest"),
+# generated from SAAS_COLLECTOR_BUILDERS so a new SaaS collector doesn't need
+# a matching change here.
+_SAAS_JOB_TYPES = {f"{source}_ingest": source for source in SAAS_COLLECTOR_BUILDERS}
+
 
 async def _dispatch(job: Job, database_url: str, data_dir: str) -> dict:
+    max_tokens = job.payload.get("max_tokens", 4000)
+    model = job.payload.get("model")
+
     if job.job_type == "local_file_ingest":
         path = job.payload["path"]
-        max_tokens = job.payload.get("max_tokens", 4000)
-        model = job.payload.get("model")
         async with PipelineStore(database_url, data_dir) as store:
             await store.init_schema()  # idempotent (CREATE TABLE IF NOT EXISTS)
             return await run_local_ingest(Path(path), max_tokens, model, store, project_id=job.project_id)
+
+    source = _SAAS_JOB_TYPES.get(job.job_type)
+    if source is not None:
+        async with PipelineStore(database_url, data_dir) as store:
+            await store.init_schema()
+            return await run_saas_ingest(source, max_tokens, model, store, project_id=job.project_id)
+
     raise ValueError(f"unknown job_type: {job.job_type}")
 
 
