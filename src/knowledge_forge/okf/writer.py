@@ -212,7 +212,13 @@ class OKFWriter:
 
     def _project_root(self, project_id: str) -> Path:
         root = self._base_root / project_id
-        for sub in (_RESOURCES_DIR, _OBJECTS_DIR, _RELATIONS_DIR, _LINKS_DIR, _VIEWS_DIR):
+        # relations/ and links/ are deliberately NOT created here: they only
+        # exist when an edge's endpoints fail to resolve (see module
+        # docstring), so pre-creating them leaves permanently-empty
+        # directories in the common case where every edge inlines cleanly.
+        # write_relations()/write_links() create them on demand via
+        # _write_markdown()'s mkdir(parents=True).
+        for sub in (_RESOURCES_DIR, _OBJECTS_DIR, _VIEWS_DIR):
             (root / sub).mkdir(parents=True, exist_ok=True)
         return root
 
