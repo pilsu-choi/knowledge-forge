@@ -158,14 +158,26 @@ uv run knowledge-forge db export-okf --okf-dir ./okf
 
 ## 브라우저로 확인하기 (`GET /ui`)
 
-쌓인 트리를 파일탐색기 대신 브라우저로 훑어보려면 `KF_OKF_DIR`을 그 디렉터리로 지정해
-`serve`를 띄운다 - Postgres/Celery/Redis 설정 없이도 뜬다(`GET /okf/*`, [`api.md`](api.md)는
-파일시스템만 읽는다):
+`/ui`는 `frontend/`의 React+Vite SPA다(`GET /okf/*` 위에서 동작, [`api.md`](api.md)는
+파일시스템만 읽으므로 Postgres/Celery/Redis 설정 없이도 뜬다). 한 번 빌드해 두면
+`api/app.py`가 `frontend/dist`를 `/ui`에 그대로 마운트한다(디렉터리가 없으면 `/ui`
+마운트만 건너뛰고 나머지 API는 정상 기동 - 아직 빌드 전인 새 클론에서도 서버가 죽지 않는다):
 
 ```bash
+npm --prefix frontend install
+npm --prefix frontend run build     # frontend/dist 생성 (1회, 이후 코드 바뀔 때만 재실행)
+
 KF_OKF_DIR=./okf uv run knowledge-forge serve --port 8000
 # http://localhost:8000/ui/ 접속 - 프로젝트 선택 → 타입별 카드 목록 → 클릭해 frontmatter +
-# 렌더링된 body(Relations 링크는 클릭으로 peer 오브젝트 이동) 확인
+# 렌더링된 body(Relations 링크는 클릭으로 peer 오브젝트 이동) 확인. ⌘K/Ctrl+K로 프로젝트
+# 전체 오브젝트 검색.
+```
+
+프론트엔드 자체를 고칠 때는 핫리로드가 붙는 Vite 개발 서버를 따로 띄운다(`vite.config.ts`가
+`/okf/*`를 8000번 포트로 프록시한다 - 백엔드는 위 `serve` 그대로 켜 둔 채):
+
+```bash
+npm --prefix frontend run dev   # http://localhost:5173
 ```
 
 좌측 레일의 "그래프" 탭은 같은 트리를 Cytoscape.js로 그린다 - 문서(`resources/`)를 compound

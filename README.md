@@ -296,6 +296,7 @@ src/knowledge_forge/
 
 tests/                     # pytest, asyncio_mode=auto — 모델/파서/청커는 네트워크 불필요,
                             # Extraction은 anthropic.AsyncAnthropic 모킹으로 API 키 없이 통과
+frontend/                   # React+Vite OKF 뷰어 — 빌드하면 api/app.py가 /ui에 마운트 (wiki/ui.md)
 wiki/                       # 아키텍처/스키마/설계 결정 전체 문서 인덱스
 PRD.md                      # 제품 요구사항
 ```
