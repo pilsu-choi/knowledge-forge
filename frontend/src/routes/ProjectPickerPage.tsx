@@ -1,5 +1,5 @@
 import { Navigate } from "react-router-dom";
-import { useProjects } from "../hooks/useOkf";
+import { useProjects } from "@/hooks/useOkf";
 
 export function ProjectPickerPage() {
   const { data: projects, isLoading, error } = useProjects();
@@ -8,9 +8,9 @@ export function ProjectPickerPage() {
 
   if (error) {
     return (
-      <div className="empty-screen">
-        <div>초기화 실패: {(error as Error).message}</div>
-        <div className="hint">KF_OKF_DIR 환경 변수를 확인하세요.</div>
+      <div className="flex h-screen flex-col items-center justify-center gap-2 px-6 text-center">
+        <div className="text-sm text-muted-foreground">초기화 실패: {(error as Error).message}</div>
+        <div className="text-xs text-muted-foreground">KF_OKF_DIR 환경 변수를 확인하세요.</div>
       </div>
     );
   }
@@ -20,12 +20,13 @@ export function ProjectPickerPage() {
   }
 
   return (
-    <div className="empty-screen">
-      <div className="headline">아직 OKF 프로젝트가 없습니다</div>
-      <div className="hint">
-        <code>knowledge-forge extract --okf-dir &lt;dir&gt;</code> 또는{" "}
-        <code>knowledge-forge schedule --okf-dir &lt;dir&gt;</code>로 트리를 만든 뒤,
-        그 경로를 <code>KF_OKF_DIR</code>로 지정해 서버를 다시 띄우세요.
+    <div className="flex h-screen flex-col items-center justify-center gap-2 px-6 text-center">
+      <div className="text-base font-semibold">아직 OKF 프로젝트가 없습니다</div>
+      <div className="max-w-md text-sm text-muted-foreground">
+        <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">knowledge-forge extract --okf-dir &lt;dir&gt;</code> 또는{" "}
+        <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">knowledge-forge schedule --okf-dir &lt;dir&gt;</code>로
+        트리를 만든 뒤, 그 경로를 <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">KF_OKF_DIR</code>로 지정해
+        서버를 다시 띄우세요.
       </div>
     </div>
   );

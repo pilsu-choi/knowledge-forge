@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import { Route, Routes } from "react-router-dom";
-import { PathSegmentsProvider } from "./lib/pathSegments";
+import { PathSegmentsProvider } from "@/lib/pathSegments";
+import { StateMessage } from "@/components/StateMessage";
 import { ProjectPickerPage } from "./routes/ProjectPickerPage";
 import { ProjectLayout } from "./routes/ProjectLayout";
 import { OverviewPage } from "./routes/OverviewPage";
@@ -25,7 +26,7 @@ export default function App() {
           <Route
             path="graph"
             element={
-              <Suspense fallback={<div className="empty">그래프 뷰 불러오는 중…</div>}>
+              <Suspense fallback={<StateMessage>그래프 뷰 불러오는 중…</StateMessage>}>
                 <GraphPage />
               </Suspense>
             }

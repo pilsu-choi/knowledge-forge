@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { TypeHallmark } from "./TypeBadge";
+import { TypeDot } from "@/components/TypeBadge";
+import { StateMessage } from "@/components/StateMessage";
 
 export interface CardItem {
   path: string;
@@ -37,30 +38,33 @@ export function CardGrid({
   return (
     <div>
       {searchable && (
-        <div style={{ marginBottom: 16 }}>
-          <input
-            className="filter-input"
-            placeholder="제목·설명·태그 검색…"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
-        </div>
+        <input
+          className="mb-4 w-full max-w-sm rounded-md border border-input bg-background px-3 py-1.5 text-sm outline-none focus:border-ring"
+          placeholder="제목·설명·태그 검색…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
       )}
       {filtered.length === 0 ? (
-        <div className="empty">{q ? "일치하는 항목이 없습니다." : emptyMessage}</div>
+        <StateMessage>{q ? "일치하는 항목이 없습니다." : emptyMessage}</StateMessage>
       ) : (
-        <div className="grid">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-3">
           {filtered.map((item) => (
-            <button type="button" className="card" key={item.path} onClick={() => onSelect(item)}>
-              <div className="row">
-                {item.type && <TypeHallmark type={item.type} />}
-                <div className="title">{item.title}</div>
+            <button
+              type="button"
+              key={item.path}
+              onClick={() => onSelect(item)}
+              className="flex flex-col gap-1.5 rounded-lg border border-border bg-card p-3.5 text-left transition-colors hover:border-primary/50 hover:bg-accent/40"
+            >
+              <div className="flex items-center gap-2">
+                {item.type && <TypeDot type={item.type} />}
+                <div className="truncate text-sm font-medium">{item.title}</div>
               </div>
-              {item.desc && <div className="desc">{item.desc}</div>}
+              {item.desc && <div className="line-clamp-2 text-xs text-muted-foreground">{item.desc}</div>}
               {item.tags && item.tags.length > 0 && (
-                <div className="chips">
+                <div className="mt-1 flex flex-wrap gap-1">
                   {item.tags.slice(0, 6).map((t) => (
-                    <span className="chip" key={t}>
+                    <span key={t} className="rounded-full bg-muted px-2 py-0.5 font-mono text-[0.68rem] text-muted-foreground">
                       {t}
                     </span>
                   ))}

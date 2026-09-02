@@ -1,8 +1,8 @@
 import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useLayoutData } from "./ProjectLayout";
-import { CardGrid, type CardItem } from "../components/CardGrid";
-import { usePathSegments } from "../lib/pathSegments";
+import { CardGrid, type CardItem } from "@/components/CardGrid";
+import { usePathSegments } from "@/lib/pathSegments";
 
 export function ResourcesPage() {
   const { project, manifest } = useLayoutData();

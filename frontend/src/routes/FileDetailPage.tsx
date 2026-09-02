@@ -1,10 +1,12 @@
 import { useMemo } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { ArrowLeft } from "lucide-react";
 import { useLayoutData } from "./ProjectLayout";
-import { useFile } from "../hooks/useOkf";
-import { FrontmatterPanel } from "../components/FrontmatterPanel";
-import { MarkdownBody } from "../components/MarkdownBody";
-import { usePathSegments } from "../lib/pathSegments";
+import { useFile } from "@/hooks/useOkf";
+import { FrontmatterPanel } from "@/components/FrontmatterPanel";
+import { MarkdownBody } from "@/components/MarkdownBody";
+import { StateMessage } from "@/components/StateMessage";
+import { usePathSegments } from "@/lib/pathSegments";
 
 export function FileDetailPage() {
   const { project } = useLayoutData();
@@ -22,24 +24,25 @@ export function FileDetailPage() {
   );
   usePathSegments(segments);
 
-  if (isLoading) return <div className="empty">불러오는 중…</div>;
-  if (error) return <div className="empty">불러오기 실패: {(error as Error).message}</div>;
+  if (isLoading) return <StateMessage>불러오는 중…</StateMessage>;
+  if (error) return <StateMessage>불러오기 실패: {(error as Error).message}</StateMessage>;
   if (!data) return null;
 
   const title = (data.frontmatter.title as string) || (data.frontmatter.type as string) || relPath;
 
   return (
-    <div>
-      <a className="detail-link mb-3.5 inline-block" onClick={() => navigate(-1)}>
-        ← 뒤로
-      </a>
-      <div className="detail-head">
-        <h1>{title}</h1>
-      </div>
-      <div className="detail-grid">
-        <FrontmatterPanel frontmatter={data.frontmatter} sticky />
-        <MarkdownBody project={project} html={data.body_html} />
-      </div>
+    <div className="mx-auto max-w-[760px]">
+      <button
+        type="button"
+        onClick={() => navigate(-1)}
+        className="mb-4 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+      >
+        <ArrowLeft className="size-3.5" />
+        뒤로
+      </button>
+      <h1 className="mb-4 text-2xl font-semibold tracking-tight">{title}</h1>
+      <FrontmatterPanel frontmatter={data.frontmatter} />
+      <MarkdownBody project={project} html={data.body_html} />
     </div>
   );
 }

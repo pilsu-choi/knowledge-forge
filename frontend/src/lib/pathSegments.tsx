@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import type { PathSegment } from "../components/PathBar";
+import type { PathSegment } from "@/components/PathBar";
 
 const Ctx = createContext<{
   segments: PathSegment[];

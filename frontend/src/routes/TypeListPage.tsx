@@ -1,9 +1,10 @@
 import { useMemo } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useLayoutData } from "./ProjectLayout";
-import { useObjectsByType } from "../hooks/useOkf";
-import { CardGrid, type CardItem } from "../components/CardGrid";
-import { usePathSegments } from "../lib/pathSegments";
+import { useObjectsByType } from "@/hooks/useOkf";
+import { CardGrid, type CardItem } from "@/components/CardGrid";
+import { StateMessage } from "@/components/StateMessage";
+import { usePathSegments } from "@/lib/pathSegments";
 
 export function TypeListPage() {
   const { project } = useLayoutData();
@@ -25,8 +26,8 @@ export function TypeListPage() {
     [cards, type],
   );
 
-  if (isLoading) return <div className="empty">불러오는 중…</div>;
-  if (error) return <div className="empty">불러오기 실패: {(error as Error).message}</div>;
+  if (isLoading) return <StateMessage>불러오는 중…</StateMessage>;
+  if (error) return <StateMessage>불러오기 실패: {(error as Error).message}</StateMessage>;
 
   return (
     <CardGrid

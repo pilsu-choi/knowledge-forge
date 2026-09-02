@@ -1,17 +1,19 @@
 import cytoscape, { type Core, type ElementDefinition, type StylesheetJsonBlock } from "cytoscape";
 import cytoscapeExpandCollapse from "cytoscape-expand-collapse";
-import { ZoomIn, ZoomOut, Maximize } from "lucide-react";
+import { ZoomIn, ZoomOut, Maximize, X } from "lucide-react";
 import { useCallback, useMemo, useRef, useState } from "react";
 import CytoscapeComponent from "react-cytoscapejs";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import * as api from "../lib/api";
-import type { GraphData, GraphDocument, GraphObject } from "../lib/api";
-import { GRAPH_DARK, GRAPH_LIGHT, graphDocColor, graphNodeColor, type GraphPalette } from "../lib/graphPalette";
-import { truncate, typeColorVar } from "../lib/typeMeta";
-import { useResolvedTheme } from "../hooks/useResolvedTheme";
-import { TypeHallmark } from "./TypeBadge";
-import { FrontmatterPanel } from "./FrontmatterPanel";
+import * as api from "@/lib/api";
+import type { GraphData, GraphDocument, GraphObject } from "@/lib/api";
+import { GRAPH_DARK, GRAPH_LIGHT, graphDocColor, graphNodeColor, type GraphPalette } from "@/lib/graphPalette";
+import { truncate, typeColorVar } from "@/lib/typeMeta";
+import { useResolvedTheme } from "@/hooks/useResolvedTheme";
+import { TypeDot } from "@/components/TypeBadge";
+import { FrontmatterPanel } from "@/components/FrontmatterPanel";
+import { StateMessage } from "@/components/StateMessage";
+import { Button } from "@/components/ui/button";
 
 let extensionRegistered = false;
 
@@ -21,9 +23,9 @@ function graphStyle(p: GraphPalette): StylesheetJsonBlock[] {
       selector: "node.doc",
       style: {
         shape: "round-rectangle",
-        "background-opacity": 0.12,
+        "background-opacity": 0.1,
         "background-color": (ele: cytoscape.NodeSingular) => graphDocColor(p, ele.data("source_type")),
-        "border-width": 2,
+        "border-width": 1.5,
         "border-color": (ele: cytoscape.NodeSingular) => graphDocColor(p, ele.data("source_type")),
         label: "data(label)",
         "text-valign": "top",
@@ -31,7 +33,7 @@ function graphStyle(p: GraphPalette): StylesheetJsonBlock[] {
         "text-margin-y": -10,
         "text-wrap": "wrap",
         "text-max-width": "100px",
-        "font-family": '"IBM Plex Sans", sans-serif',
+        "font-family": "Inter, sans-serif",
         "font-size": 10,
         "font-weight": 600,
         color: p.ink,
@@ -43,18 +45,17 @@ function graphStyle(p: GraphPalette): StylesheetJsonBlock[] {
       selector: "node.obj",
       style: {
         shape: "ellipse",
-        width: 22,
-        height: 22,
+        width: 9,
+        height: 9,
         "background-color": (ele: cytoscape.NodeSingular) => graphNodeColor(p, ele.data("type")),
-        "border-width": 2,
-        "border-color": p.surface,
+        "border-width": 0,
         label: "data(label)",
         "text-valign": "bottom",
         "text-halign": "center",
-        "text-margin-y": 5,
-        "font-family": '"IBM Plex Sans", sans-serif',
-        "font-size": 8.5,
-        color: p.ink,
+        "text-margin-y": 4,
+        "font-family": "Inter, sans-serif",
+        "font-size": 8,
+        color: p.muted,
         "text-wrap": "wrap",
         "text-max-width": "64px",
       },
@@ -62,24 +63,26 @@ function graphStyle(p: GraphPalette): StylesheetJsonBlock[] {
     {
       selector: "edge",
       style: {
-        width: 1.4,
+        width: 1,
         "line-color": p.edge,
         "curve-style": "bezier",
-        "target-arrow-shape": "triangle",
-        "target-arrow-color": p.edge,
-        "arrow-scale": 0.7,
+        "target-arrow-shape": "none",
+        opacity: 0.6,
         label: "data(type)",
-        "font-family": '"IBM Plex Mono", monospace',
-        "font-size": 7.5,
+        "font-family": "ui-monospace, monospace",
+        "font-size": 7,
         color: p.muted,
         "text-background-color": p.bg,
         "text-background-opacity": 0.85,
         "text-background-padding": "2px",
       },
     },
-    { selector: ".dim", style: { opacity: 0.12 } },
-    { selector: "node.selected", style: { "border-width": 3, "border-color": p.ember } },
-    { selector: "node.cy-expand-collapse-collapsed-node", style: { "background-opacity": 0.26 } },
+    { selector: ".dim", style: { opacity: 0.1 } },
+    {
+      selector: "node.selected",
+      style: { "border-width": 2, "border-color": p.accent, "background-opacity": 1, "border-opacity": 1 },
+    },
+    { selector: "node.cy-expand-collapse-collapsed-node", style: { "background-opacity": 0.22 } },
   ];
 }
 
@@ -231,34 +234,34 @@ export function GraphCanvas({ project, data }: { project: string; data: GraphDat
 
   return (
     <div>
-      <div className="graph-toolbar">
-        <button type="button" className="btn" onClick={() => ecApiRef.current?.collapseAll()}>
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        <Button variant="outline" size="sm" onClick={() => ecApiRef.current?.collapseAll()}>
           모두 접기
-        </button>
-        <button type="button" className="btn" onClick={() => ecApiRef.current?.expandAll()}>
+        </Button>
+        <Button variant="outline" size="sm" onClick={() => ecApiRef.current?.expandAll()}>
           모두 펼치기
-        </button>
-        <div className="zoom-controls">
-          <button type="button" className="icon-btn" title="축소" onClick={() => zoomBy(1 / ZOOM_FACTOR)}>
+        </Button>
+        <div className="flex gap-1">
+          <Button variant="ghost" size="icon" title="축소" onClick={() => zoomBy(1 / ZOOM_FACTOR)}>
             <ZoomOut size={15} />
-          </button>
-          <button type="button" className="icon-btn" title="확대" onClick={() => zoomBy(ZOOM_FACTOR)}>
+          </Button>
+          <Button variant="ghost" size="icon" title="확대" onClick={() => zoomBy(ZOOM_FACTOR)}>
             <ZoomIn size={15} />
-          </button>
-          <button type="button" className="icon-btn" title="전체 보기" onClick={fitAll}>
+          </Button>
+          <Button variant="ghost" size="icon" title="전체 보기" onClick={fitAll}>
             <Maximize size={15} />
-          </button>
+          </Button>
         </div>
-        <div className="graph-legend">
+        <div className="flex flex-wrap gap-3 font-mono text-xs text-muted-foreground">
           {typesPresent.map((t) => (
-            <span key={t}>
-              <span className="dot" style={{ background: typeColorVar(t) }} />
+            <span key={t} className="flex items-center gap-1.5">
+              <span className="inline-block size-2 rounded-full" style={{ background: typeColorVar(t) }} />
               {t}
             </span>
           ))}
         </div>
       </div>
-      <div className="graph-wrap">
+      <div className="graph-wrap h-[min(72vh,660px)] rounded-xl border border-border">
         <CytoscapeComponent
           key={project}
           className="cy-canvas"
@@ -270,25 +273,38 @@ export function GraphCanvas({ project, data }: { project: string; data: GraphDat
           wheelSensitivity={4}
           cy={onCy}
         />
-        <div className={`g-drawer ${selection ? "open" : ""}`}>
-          <div className="g-drawer-head">
-            {selection?.type && <TypeHallmark type={selection.type} size="sm" />}
-            <h4>{selection?.title}</h4>
-            <button type="button" className="g-drawer-close" onClick={() => setSelection(null)}>
-              ✕
-            </button>
+        <div
+          // z-[1000]: cytoscape-expand-collapse renders its cue/fisheye
+          // overlay canvas at z-index:999 (hardcoded by the plugin) -
+          // without a higher z-index here that canvas sits on top of the
+          // drawer and silently eats every click, wheel, and even the close
+          // button while the drawer is open.
+          className={`absolute top-0 right-0 bottom-0 z-[1000] flex w-[360px] flex-col border-l border-border bg-popover shadow-2xl transition-transform duration-200 ${
+            selection ? "translate-x-0" : "translate-x-full"
+          }`}
+        >
+          <div className="flex items-start gap-2 border-b border-border px-4 py-3">
+            {selection?.type && <TypeDot type={selection.type} className="mt-1.5" />}
+            <h4 className="text-sm leading-snug font-semibold">{selection?.title}</h4>
+            <Button variant="ghost" size="icon" className="ml-auto -mt-1 -mr-1 size-6" onClick={() => setSelection(null)}>
+              <X className="size-3.5" />
+            </Button>
           </div>
-          <div className="g-drawer-body">
-            {detailQuery.isLoading && <div className="empty">불러오는 중…</div>}
-            {detailQuery.error && <div className="empty">불러오기 실패: {(detailQuery.error as Error).message}</div>}
-            {detailQuery.data && <FrontmatterPanel frontmatter={detailQuery.data.frontmatter} />}
+          {/* min-h-0: flex children default to min-height:auto, which lets
+              content overflow past the drawer's bounds instead of scrolling
+              inside it. */}
+          <div className="min-h-0 flex-1 overflow-y-auto p-4 text-sm">
+            {detailQuery.isLoading && <StateMessage>불러오는 중…</StateMessage>}
+            {detailQuery.error && <StateMessage>불러오기 실패: {(detailQuery.error as Error).message}</StateMessage>}
+            {detailQuery.data && <FrontmatterPanel frontmatter={detailQuery.data.frontmatter} compact />}
             {selection && (
-              <a
-                className="detail-link"
+              <button
+                type="button"
+                className="text-sm text-primary hover:underline"
                 onClick={() => navigate(`/${encodeURIComponent(project)}/f/${selection.id}`)}
               >
                 본문 전체 보기 →
-              </a>
+              </button>
             )}
           </div>
         </div>

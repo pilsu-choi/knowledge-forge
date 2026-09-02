@@ -1,30 +1,22 @@
-import { typeColorVar } from "../lib/typeMeta";
+import { typeColorVar } from "@/lib/typeMeta";
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 
-function initials(type: string): string {
-  return type
-    .split("_")
-    .map((p) => p[0] ?? "")
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
-}
-
-export function TypeHallmark({ type, size = "md" }: { type: string; size?: "sm" | "md" }) {
+export function TypeDot({ type, className }: { type: string; className?: string }) {
   return (
     <span
-      className={`hallmark ${size === "sm" ? "sm" : ""}`}
+      className={cn("inline-block size-2 shrink-0 rounded-full", className)}
       style={{ background: typeColorVar(type) }}
       title={type}
-    >
-      {initials(type)}
-    </span>
+    />
   );
 }
 
 export function TypeBadgePill({ type }: { type: string }) {
   return (
-    <span className="badge" style={{ background: typeColorVar(type) }}>
+    <Badge variant="outline" className="gap-1.5 font-mono font-normal">
+      <TypeDot type={type} />
       {type}
-    </span>
+    </Badge>
   );
 }

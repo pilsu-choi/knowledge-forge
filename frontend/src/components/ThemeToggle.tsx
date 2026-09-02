@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Moon, Sun, SunMoon } from "lucide-react";
-import { applyTheme, getStoredTheme, type Theme } from "../lib/theme";
+import { applyTheme, getStoredTheme, type Theme } from "@/lib/theme";
+import { Button } from "@/components/ui/button";
 
 const CYCLE: Theme[] = ["system", "dark", "light"];
 const ICON: Record<Theme, typeof Sun> = { system: SunMoon, dark: Moon, light: Sun };
@@ -13,15 +14,25 @@ export function ThemeToggle() {
     applyTheme(theme);
   }, [theme]);
 
+  useEffect(() => {
+    const mql = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => {
+      if (theme === "system") applyTheme("system");
+    };
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, [theme]);
+
   const Icon = ICON[theme];
   return (
-    <button
+    <Button
       type="button"
-      className="icon-btn"
+      variant="ghost"
+      size="icon"
       title={`테마: ${LABEL[theme]} (클릭해 전환)`}
       onClick={() => setTheme(CYCLE[(CYCLE.indexOf(theme) + 1) % CYCLE.length])}
     >
       <Icon size={15} />
-    </button>
+    </Button>
   );
 }

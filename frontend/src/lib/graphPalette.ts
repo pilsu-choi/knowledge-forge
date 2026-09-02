@@ -8,51 +8,51 @@ export interface GraphPalette {
   surface: string;
   bg: string;
   edge: string;
-  ember: string;
+  accent: string;
   types: Record<string, string>;
   docs: Record<string, string>;
 }
 
 export const GRAPH_LIGHT: GraphPalette = {
-  ink: "#1c1b19",
-  muted: "#726d63",
+  ink: "#2e3338",
+  muted: "#6c6f76",
   surface: "#ffffff",
-  bg: "#f7f5f1",
-  edge: "#cfc8b8",
-  ember: "#d1490f",
+  bg: "#ffffff",
+  edge: "#d8d5cf",
+  accent: "#7c5cdb",
   types: {
-    entity: "#4a5ec4",
-    fact: "#1f8fae",
-    concept: "#8a53c4",
-    decision: "#1f9d74",
-    event: "#b9821f",
-    issue: "#c4502a",
-    action_item: "#748a2a",
-    policy: "#b4448f",
-    requirement: "#1f9d7a",
+    entity: "#4d78c9",
+    fact: "#2f9b8f",
+    concept: "#8a5cd6",
+    decision: "#3f9a5c",
+    event: "#b8862f",
+    issue: "#c2564a",
+    action_item: "#7a8a3a",
+    policy: "#b0509a",
+    requirement: "#2f9a7a",
   },
-  docs: { slack: "#c4551f", gmail: "#9a5a26", other: "#8a8071" },
+  docs: { slack: "#b8632f", gmail: "#9a6a3a", other: "#8a8478" },
 };
 
 export const GRAPH_DARK: GraphPalette = {
-  ink: "#e9e6e0",
-  muted: "#9a9ca5",
-  surface: "#131519",
-  bg: "#0b0c0f",
-  edge: "#3a3d47",
-  ember: "#ff6a3d",
+  ink: "#dcddde",
+  muted: "#999999",
+  surface: "#202020",
+  bg: "#1e1e1e",
+  edge: "#33333a",
+  accent: "#8b6cf0",
   types: {
-    entity: "#7c8fe0",
-    fact: "#5ec8e0",
-    concept: "#b28ce0",
-    decision: "#4fd1a5",
-    event: "#f0b64d",
-    issue: "#f2795a",
-    action_item: "#a9c95e",
-    policy: "#e07ec0",
-    requirement: "#7fe0b0",
+    entity: "#7fa8f0",
+    fact: "#5fc9bb",
+    concept: "#b79aef",
+    decision: "#7fca94",
+    event: "#e0b463",
+    issue: "#e58a7e",
+    action_item: "#b3c273",
+    policy: "#e08cca",
+    requirement: "#6fd6ae",
   },
-  docs: { slack: "#ff8a5c", gmail: "#e0975a", other: "#c9a08a" },
+  docs: { slack: "#e0975c", gmail: "#cf9d6e", other: "#999488" },
 };
 
 export function graphNodeColor(p: GraphPalette, type: string): string {

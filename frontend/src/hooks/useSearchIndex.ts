@@ -1,7 +1,7 @@
 import { useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
-import * as api from "../lib/api";
-import type { Manifest, ObjectCard } from "../lib/api";
+import * as api from "@/lib/api";
+import type { Manifest, ObjectCard } from "@/lib/api";
 
 export interface SearchEntry extends ObjectCard {
   type: string;
