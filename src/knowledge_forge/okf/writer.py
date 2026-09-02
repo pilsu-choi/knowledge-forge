@@ -16,6 +16,7 @@ Layout:
       resources/{source_id}.yaml           # Source + Document (the source-native unit)
       objects/{type}/{knowledge_object_id}.yaml
       relations/{relation_id}.yaml
+      links/{link_id}.yaml                 # resource-to-resource edges (wiki/okf.md)
       views/by_topic.yaml                  # topic -> [{id, type, path}]
       views/by_document.yaml               # document_id -> {title, objects: [...]}
       views/timeline.yaml                  # [{id, type, path, extracted_at}], chronological
@@ -64,12 +65,14 @@ import yaml
 import knowledge_forge
 from knowledge_forge.models.document import Document
 from knowledge_forge.models.knowledge_object import KnowledgeObject
+from knowledge_forge.models.link import Link
 from knowledge_forge.models.relation import Relation
 from knowledge_forge.models.source import Source
 
 _RESOURCES_DIR = "resources"
 _OBJECTS_DIR = "objects"
 _RELATIONS_DIR = "relations"
+_LINKS_DIR = "links"
 _VIEWS_DIR = "views"
 
 
@@ -85,7 +88,7 @@ class OKFWriter:
 
     def _project_root(self, project_id: str) -> Path:
         root = self._base_root / project_id
-        for sub in (_RESOURCES_DIR, _OBJECTS_DIR, _RELATIONS_DIR, _VIEWS_DIR):
+        for sub in (_RESOURCES_DIR, _OBJECTS_DIR, _RELATIONS_DIR, _LINKS_DIR, _VIEWS_DIR):
             (root / sub).mkdir(parents=True, exist_ok=True)
         return root
 
@@ -137,6 +140,15 @@ class OKFWriter:
         for rel in relations:
             self._write_yaml(root, f"{_RELATIONS_DIR}/{rel.relation_id}.yaml", rel.model_dump(mode="json"))
 
+    def write_links(self, links: list[Link], project_id: str | None = None) -> None:
+        """Resource-level cross-document edges (wiki/okf.md's "그래프 뷰어
+        대비" decision) - same routing rationale as write_relations(): a
+        Link's endpoints are (source_id, document_id) pairs, not a Source of
+        its own, so it can't route itself by content."""
+        root = self._project_root(project_id or self._default_project_id)
+        for link in links:
+            self._write_yaml(root, f"{_LINKS_DIR}/{link.link_id}.yaml", link.model_dump(mode="json"))
+
     def write_manifest(self) -> dict[str, Path]:
         return {project_id: self._write_manifest_for(project_id) for project_id in self._known_project_ids()}
 
@@ -151,6 +163,7 @@ class OKFWriter:
             "resources": self._catalog_resources(root),
             "objects": self._catalog_objects(root),
             "relations": self._catalog_relations(root),
+            "links": self._catalog_links(root),
         }
         path = root / "manifest.yaml"
         with path.open("w", encoding="utf-8") as f:
@@ -219,6 +232,13 @@ class OKFWriter:
     def _catalog_relations(self, root: Path) -> list[dict[str, Any]]:
         entries = []
         for f in sorted((root / _RELATIONS_DIR).glob("*.yaml")):
+            payload = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+            entries.append({"id": f.stem, "type": payload.get("type", "unknown"), "path": self._relpath(root, f)})
+        return entries
+
+    def _catalog_links(self, root: Path) -> list[dict[str, Any]]:
+        entries = []
+        for f in sorted((root / _LINKS_DIR).glob("*.yaml")):
             payload = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
             entries.append({"id": f.stem, "type": payload.get("type", "unknown"), "path": self._relpath(root, f)})
         return entries

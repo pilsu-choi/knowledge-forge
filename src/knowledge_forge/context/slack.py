@@ -12,7 +12,16 @@ turns a channel's message stream into "episodes":
   episodes wherever the gap to the previous message exceeds `gap_seconds`
   ("Conversation Segmentation").
 
-Each episode becomes one merged RawItem.
+Each episode becomes one merged RawItem. Consecutive timeline episodes in
+the same channel are additionally annotated with a `links` metadata entry
+(`{"type": ..., "target_uri": <previous episode's uri>}`) - the generic
+convention `pipeline.run_pipeline` resolves into `Link` records once each
+episode's Source/Document exist (see wiki/okf.md's "그래프 뷰어 대비"
+decision: episode-to-episode edges can't be expressed by `Relation`, which
+only ever connects `KnowledgeObject`s produced within one document). Thread
+episodes are deliberately left unlinked here - reconciling their yield
+order against the timeline's chronology is a separate, harder problem left
+for later.
 """
 
 from collections import defaultdict
@@ -21,6 +30,7 @@ from typing import Iterator
 from knowledge_forge.collectors.base import RawItem
 from knowledge_forge.context.base import ContextReconstructor
 from knowledge_forge.ids import content_hash as compute_content_hash
+from knowledge_forge.models.link import LinkType
 
 _DEFAULT_GAP_SECONDS = 1800.0
 
@@ -73,8 +83,11 @@ class SlackConversationReconstructor(ContextReconstructor):
         remaining = sorted(
             (m for m in messages if m.metadata["ts"] not in consumed_ts), key=_ts
         )
+        previous_uri: str | None = None
         for episode in self._segment(remaining):
-            yield self._merge(channel, episode, thread_ts=None)
+            item = self._merge(channel, episode, thread_ts=None, previous_uri=previous_uri)
+            previous_uri = item.uri
+            yield item
 
     def _segment(self, ordered_messages: list[RawItem]) -> Iterator[list[RawItem]]:
         episode: list[RawItem] = []
@@ -89,7 +102,13 @@ class SlackConversationReconstructor(ContextReconstructor):
         if episode:
             yield episode
 
-    def _merge(self, channel: str, episode: list[RawItem], thread_ts: str | None) -> RawItem:
+    def _merge(
+        self,
+        channel: str,
+        episode: list[RawItem],
+        thread_ts: str | None,
+        previous_uri: str | None = None,
+    ) -> RawItem:
         content = "\n\n".join(_format_message(m) for m in episode).encode("utf-8")
         participants = list(
             dict.fromkeys(m.metadata.get("user") for m in episode if m.metadata.get("user"))
@@ -105,6 +124,8 @@ class SlackConversationReconstructor(ContextReconstructor):
         }
         if thread_ts is not None:
             metadata["thread_ts"] = thread_ts
+        if previous_uri is not None:
+            metadata["links"] = [{"type": LinkType.SAME_CHANNEL_SEQUENCE.value, "target_uri": previous_uri}]
         return RawItem(
             uri=f"slack://{channel}/{kind}/{anchor}",
             content=content,

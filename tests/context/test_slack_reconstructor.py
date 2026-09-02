@@ -48,6 +48,37 @@ def test_non_thread_messages_segment_on_time_gap():
     assert "thread_ts" not in episodes[1].metadata
 
 
+def test_consecutive_timeline_episodes_in_same_channel_are_linked():
+    items = [
+        _msg("general", "0.0", "A", "hello"),
+        # gap of 10000s > gap_seconds=1800 -> new episode
+        _msg("general", "10000.0", "A", "unrelated later topic"),
+    ]
+
+    episodes = list(SlackConversationReconstructor(gap_seconds=1800).reconstruct(iter(items)))
+
+    assert len(episodes) == 2
+    assert "links" not in episodes[0].metadata
+    assert episodes[1].metadata["links"] == [
+        {"type": "same_channel_sequence", "target_uri": episodes[0].uri}
+    ]
+
+
+def test_thread_episodes_are_not_linked_into_the_timeline_sequence():
+    items = [
+        _msg("general", "100.0", "A", "배포 언제 할까요?", thread_ts="100.0"),
+        _msg("general", "5000.0", "B", "오늘 오후 가능합니다", thread_ts="100.0"),
+        _msg("general", "10000.0", "A", "unrelated timeline message"),
+    ]
+
+    episodes = list(SlackConversationReconstructor(gap_seconds=60).reconstruct(iter(items)))
+
+    thread_episode = next(e for e in episodes if e.metadata.get("thread_ts"))
+    timeline_episode = next(e for e in episodes if not e.metadata.get("thread_ts"))
+    assert "links" not in thread_episode.metadata
+    assert "links" not in timeline_episode.metadata  # nothing preceded it in the timeline
+
+
 def test_channels_are_segmented_independently():
     items = [
         _msg("general", "0.0", "A", "hello general"),

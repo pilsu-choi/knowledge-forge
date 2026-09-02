@@ -21,6 +21,7 @@ from knowledge_forge.extraction.base import ExtractionOutcome, Extractor
 from knowledge_forge.extraction.grouping import group_chunks
 from knowledge_forge.extraction.versioning import resolve_supersedes
 from knowledge_forge.ids import stable_id
+from knowledge_forge.models.link import Link, LinkEndpoint, LinkType
 from knowledge_forge.models.source import Source, SourceRef
 from knowledge_forge.parsers.registry import ParserRegistry
 
@@ -42,6 +43,33 @@ def _make_source(collector: Collector, item: RawItem, project_id: str) -> Source
         metadata=item.metadata,
         project_id=item.project_id or project_id,
     )
+
+
+def _resolve_links(
+    item: RawItem, current: LinkEndpoint, endpoint_by_uri: dict[str, LinkEndpoint]
+) -> list[Link]:
+    """Materializes `Link` records for the resource-level edges a
+    ContextReconstructor annotated on `item.metadata["links"]` (see
+    context/slack.py) - each entry names a `type` and the `target_uri` of an
+    earlier-yielded item in this same run, resolved here against every
+    prior item's already-known (source_id, document_id) endpoint. An entry
+    whose target was never seen (e.g. it failed parsing and got skipped) is
+    silently dropped - there is nothing to point the edge at."""
+    links = []
+    for entry in item.metadata.get("links", []):
+        target = endpoint_by_uri.get(entry["target_uri"])
+        if target is None:
+            continue
+        links.append(
+            Link(
+                link_id=stable_id("link", entry["type"], target.source_id, current.source_id),
+                type=LinkType(entry["type"]),
+                source_ref=target,
+                target_ref=current,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+    return links
 
 
 async def run_pipeline(
@@ -86,7 +114,12 @@ async def run_pipeline(
     item stream into semantically complete units (see knowledge_forge.context)
     - a Slack message or Gmail email in isolation is often incomplete.
     Defaults to `default_reconstructor_for(collector.source_type)`, which is
-    a no-op for File/Notion/Google Drive sources.
+    a no-op for File/Notion/Google Drive sources. A reconstructor can also
+    annotate a RawItem's `metadata["links"]` with edges to earlier-yielded
+    items in the same run (see context/slack.py) - `_resolve_links()` turns
+    those into `Link` records once both endpoints' Source/Document exist,
+    written via `okf_writer.write_links()` (wiki/okf.md's "그래프 뷰어 대비"
+    decision: these are resource-to-resource edges `Relation` can't express).
 
     `project_id` (default "default") tags every Source this run collects,
     unless the RawItem itself carries a `project_id` (e.g. SlackCollector's
@@ -107,6 +140,7 @@ async def run_pipeline(
     (extraction/versioning.py) at `settings.supersedes_similarity_threshold`.
     """
     reconstructor = context_reconstructor or default_reconstructor_for(collector.source_type)
+    link_endpoints_by_uri: dict[str, LinkEndpoint] = {}
     for item in reconstructor.reconstruct(collector.sync(cursor)):
         if item.deleted:
             logger.info("skipping deleted item: %s", item.uri)
@@ -130,6 +164,13 @@ async def run_pipeline(
             await store.record_document(document)
         if okf_writer is not None:
             okf_writer.write_resource(source, document)
+
+        current_endpoint = LinkEndpoint(source_id=source.source_id, document_id=document.document_id)
+        if okf_writer is not None:
+            links = _resolve_links(item, current_endpoint, link_endpoints_by_uri)
+            if links:
+                okf_writer.write_links(links, source.project_id)
+        link_endpoints_by_uri[item.uri] = current_endpoint
 
         chunks = chunker.chunk(document)
         if store is not None:
