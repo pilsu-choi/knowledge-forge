@@ -1,0 +1,763 @@
+@import "tailwindcss";
+
+/*
+  "Forge" token system: raw (ember, warm) -> refined (steel, cool). Source
+  documents (resources/) are always ember-family, extracted KnowledgeObjects
+  are always steel-family - see wiki/okf.md's "raw -> typed" pipeline shape.
+  Dark is the signature mode; light is a fully-specified fallback, not an
+  afterthought, following the same three-tier override as the old /ui.
+*/
+:root {
+  --bg: #f7f5f1;
+  --surface: #ffffff;
+  --surface-2: #efece5;
+  --border: #e5e0d6;
+  --ink: #1c1b19;
+  --muted: #726d63;
+  --muted-2: #948f83;
+
+  --ember: #d1490f;
+  --ember-dim: rgba(209, 73, 15, 0.1);
+  --steel: #2f6fae;
+  --focus: var(--ember);
+
+  --t-entity: #4a5ec4;
+  --t-fact: #1f8fae;
+  --t-concept: #8a53c4;
+  --t-decision: #1f9d74;
+  --t-event: #b9821f;
+  --t-issue: #c4502a;
+  --t-action_item: #748a2a;
+  --t-policy: #b4448f;
+  --t-requirement: #1f9d7a;
+
+  --doc-slack: #c4551f;
+  --doc-gmail: #9a5a26;
+  --doc-other: #8a8071;
+
+  --edge: #cfc8b8;
+
+  --font-display: "IBM Plex Mono", ui-monospace, monospace;
+  --font-body: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b0c0f;
+    --surface: #131519;
+    --surface-2: #1b1e24;
+    --border: #242732;
+    --ink: #e9e6e0;
+    --muted: #9a9ca5;
+    --muted-2: #6b6d76;
+
+    --ember: #ff6a3d;
+    --ember-dim: rgba(255, 106, 61, 0.14);
+    --steel: #5fb0e0;
+
+    --t-entity: #7c8fe0;
+    --t-fact: #5ec8e0;
+    --t-concept: #b28ce0;
+    --t-decision: #4fd1a5;
+    --t-event: #f0b64d;
+    --t-issue: #f2795a;
+    --t-action_item: #a9c95e;
+    --t-policy: #e07ec0;
+    --t-requirement: #7fe0b0;
+
+    --doc-slack: #ff8a5c;
+    --doc-gmail: #e0975a;
+    --doc-other: #c9a08a;
+
+    --edge: #3a3d47;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0b0c0f;
+  --surface: #131519;
+  --surface-2: #1b1e24;
+  --border: #242732;
+  --ink: #e9e6e0;
+  --muted: #9a9ca5;
+  --muted-2: #6b6d76;
+
+  --ember: #ff6a3d;
+  --ember-dim: rgba(255, 106, 61, 0.14);
+  --steel: #5fb0e0;
+
+  --t-entity: #7c8fe0;
+  --t-fact: #5ec8e0;
+  --t-concept: #b28ce0;
+  --t-decision: #4fd1a5;
+  --t-event: #f0b64d;
+  --t-issue: #f2795a;
+  --t-action_item: #a9c95e;
+  --t-policy: #e07ec0;
+  --t-requirement: #7fe0b0;
+
+  --doc-slack: #ff8a5c;
+  --doc-gmail: #e0975a;
+  --doc-other: #c9a08a;
+
+  --edge: #3a3d47;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 14px;
+}
+a {
+  color: inherit;
+}
+::selection {
+  background: var(--ember-dim);
+  color: var(--ink);
+}
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Path bar - the signature element: a literal, clickable okf:// path     */
+/* ---------------------------------------------------------------------- */
+.pathbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--muted);
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+.pathbar::-webkit-scrollbar {
+  display: none;
+}
+.pathbar .scheme {
+  color: var(--muted-2);
+}
+.pathbar .sep {
+  color: var(--muted-2);
+  margin: 0 2px;
+}
+.pathbar .seg {
+  padding: 2px 5px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--muted);
+}
+.pathbar .seg:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.pathbar .seg.current {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Type badge - hexagonal "hallmark stamp", the recurring micro-signature */
+/* ---------------------------------------------------------------------- */
+.hallmark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  clip-path: polygon(50% 0%, 95% 25%, 95% 75%, 50% 100%, 5% 75%, 5% 25%);
+  font-family: var(--font-mono);
+  font-size: 0.55rem;
+  font-weight: 700;
+  color: #0b0c0f;
+}
+.hallmark.sm {
+  width: 16px;
+  height: 16px;
+  font-size: 0.4rem;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Layout shell                                                           */
+/* ---------------------------------------------------------------------- */
+.topbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.brand {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 0.92rem;
+  letter-spacing: -0.01em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  text-decoration: none;
+  flex: 0 0 auto;
+}
+.brand .mark {
+  width: 18px;
+  height: 18px;
+  color: var(--ember);
+}
+
+.select {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--ink);
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+}
+.icon-btn:hover {
+  color: var(--ink);
+  border-color: var(--ember);
+}
+
+.rail {
+  flex: 0 0 240px;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  padding: 18px 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.rail h2 {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+  margin: 0 0 8px;
+  font-weight: 600;
+}
+.stat-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.stat {
+  flex: 1 1 60px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 9px;
+}
+.stat .n {
+  font-family: var(--font-mono);
+  font-size: 1.05rem;
+  color: var(--ink);
+}
+.stat .l {
+  font-size: 0.63rem;
+  color: var(--muted);
+  margin-top: 1px;
+}
+
+.nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  text-decoration: none;
+  color: var(--ink);
+  border: none;
+  background: none;
+  width: 100%;
+  text-align: left;
+  font-family: var(--font-body);
+}
+.nav-item:hover {
+  background: var(--surface-2);
+}
+.nav-item.active {
+  background: var(--surface-2);
+  font-weight: 600;
+  box-shadow: inset 2px 0 0 var(--ember);
+}
+.nav-item .cnt {
+  margin-left: auto;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+}
+
+.main {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 20px 26px;
+  min-width: 0;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Cards                                                                  */
+/* ---------------------------------------------------------------------- */
+.filter-input {
+  width: 100%;
+  max-width: 360px;
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--ink);
+  border-radius: 7px;
+  padding: 8px 10px;
+}
+.filter-input:focus {
+  border-color: var(--ember);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 13px 14px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: left;
+}
+.card:hover {
+  border-color: var(--ember);
+}
+.card .row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.card .title {
+  font-weight: 600;
+  font-size: 0.92rem;
+  line-height: 1.35;
+}
+.card .desc {
+  font-size: 0.8rem;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.chip {
+  font-size: 0.7rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+.badge {
+  display: inline-block;
+  font-size: 0.63rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-radius: 4px;
+  padding: 2px 7px;
+  color: #0b0c0f;
+  width: fit-content;
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+
+.empty {
+  color: var(--muted);
+  font-size: 0.88rem;
+  padding: 20px 0;
+}
+
+.empty-screen {
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 10px;
+  font-family: var(--font-mono);
+  color: var(--muted);
+  text-align: center;
+  padding: 0 24px;
+}
+.empty-screen .headline {
+  font-family: var(--font-display);
+  color: var(--ink);
+  font-size: 1rem;
+}
+.empty-screen .hint {
+  font-size: 0.82rem;
+  max-width: 420px;
+}
+.empty-screen code {
+  font-family: var(--font-mono);
+  background: var(--surface-2);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+
+/* ---------------------------------------------------------------------- */
+/* File detail                                                            */
+/* ---------------------------------------------------------------------- */
+.detail-head h1 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.3rem;
+  margin: 0 0 16px;
+  letter-spacing: -0.01em;
+}
+.detail-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) 1fr;
+  gap: 24px;
+  align-items: start;
+}
+@media (max-width: 860px) {
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.fm-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+/* Only the file-detail page's two-column layout wants the panel pinned
+   while the prose column scrolls past it - the graph drawer reuses the same
+   component in a single short column, where sticky positioning has nothing
+   to pin against and was clipping the panel instead of letting it scroll. */
+.fm-box.sticky {
+  position: sticky;
+  top: 20px;
+}
+.fm-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.82rem;
+}
+.fm-row .k {
+  color: var(--muted-2);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.fm-row .v {
+  word-break: break-word;
+}
+.fm-row pre {
+  margin: 0;
+  font-size: 0.72rem;
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+}
+
+.body-html {
+  line-height: 1.7;
+  font-size: 0.92rem;
+}
+.body-html h2 {
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+  margin-top: 24px;
+}
+.body-html a {
+  color: var(--steel);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.body-html ul {
+  padding-left: 20px;
+}
+.body-html code {
+  font-family: var(--font-mono);
+  background: var(--surface-2);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 0.85em;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Graph                                                                  */
+/* ---------------------------------------------------------------------- */
+.graph-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.btn {
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 500;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--ink);
+  border-radius: 7px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.btn:hover {
+  border-color: var(--ember);
+}
+.zoom-controls {
+  display: flex;
+  gap: 4px;
+}
+.graph-legend {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 0.74rem;
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+.graph-legend .dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: middle;
+  transform: rotate(45deg);
+}
+.graph-wrap {
+  position: relative;
+  height: min(72vh, 660px);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--bg);
+  background-image: radial-gradient(circle, var(--border) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+.cy-canvas {
+  width: 100%;
+  height: 100%;
+}
+.g-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 300px;
+  /* cytoscape-expand-collapse renders its cue/fisheye overlay canvas at
+     z-index:999 (hardcoded by the plugin) - without a higher z-index here
+     that canvas sits on top of the drawer and silently eats every click,
+     wheel, and even the close button while the drawer is open. */
+  z-index: 1000;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  transform: translateX(100%);
+  transition: transform 0.18s ease;
+  display: flex;
+  flex-direction: column;
+  box-shadow: -8px 0 24px -12px rgba(0, 0, 0, 0.4);
+}
+.g-drawer.open {
+  transform: translateX(0);
+}
+.g-drawer-head {
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.g-drawer-head h4 {
+  font-family: var(--font-display);
+  font-size: 0.9rem;
+  margin: 0;
+  line-height: 1.4;
+}
+.g-drawer-close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 1rem;
+  cursor: pointer;
+}
+.g-drawer-body {
+  padding: 12px 16px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0; /* flex children default to min-height:auto, which lets
+    content overflow past the drawer's bounds instead of scrolling inside it */
+  font-size: 0.82rem;
+}
+.detail-link {
+  display: inline-block;
+  margin-top: 10px;
+  color: var(--steel);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Command palette (cmdk)                                                 */
+/* ---------------------------------------------------------------------- */
+[cmdk-overlay] {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(2px);
+  z-index: 60;
+}
+[cmdk-dialog] {
+  position: fixed;
+  top: 14vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(560px, 92vw);
+  z-index: 61;
+}
+[cmdk-root] {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 20px 50px -20px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+[cmdk-input] {
+  width: 100%;
+  padding: 14px 16px;
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--ink);
+  outline: none;
+}
+[cmdk-list] {
+  max-height: 360px;
+  overflow-y: auto;
+  padding: 6px;
+}
+[cmdk-empty] {
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+[cmdk-group-heading] {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted-2);
+  padding: 8px 10px 4px;
+}
+[cmdk-item] {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 7px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+[cmdk-item][data-selected="true"] {
+  background: var(--surface-2);
+}
+[cmdk-item] .hint {
+  margin-left: auto;
+  color: var(--muted-2);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+}
