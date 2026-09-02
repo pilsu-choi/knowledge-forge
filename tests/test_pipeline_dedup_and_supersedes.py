@@ -14,6 +14,7 @@ from knowledge_forge.collectors.local_file import LocalFileCollector
 from knowledge_forge.extraction.base import ExtractionOutcome, Extractor
 from knowledge_forge.models.chunk import HierarchyLevel
 from knowledge_forge.models.knowledge_object import DocumentRef, Evidence, KnowledgeObject, KnowledgeObjectType
+from knowledge_forge.models.relation import RelationType
 from knowledge_forge.models.source import SourceRef, SourceType
 from knowledge_forge.parsers.registry import default_registry
 from knowledge_forge.pipeline import run_pipeline
@@ -62,8 +63,15 @@ async def test_repeated_claim_across_chunks_of_one_document_is_merged_by_dedup(t
 
     assert len(outcomes) == 1  # one merged ExtractionOutcome per document
     objects = outcomes[0].objects
-    assert len(objects) == 1  # every chunk's identical FACT collapsed into one
-    assert len(objects[0].evidence) >= 2  # evidence absorbed from every merged chunk
+    # Every chunk's identical FACT stays addressable (dedup.py no longer
+    # drops duplicates - see its docstring) rather than collapsing into one;
+    # only the canonical (earliest extracted_at) absorbs the others' evidence.
+    assert len(objects) >= 2
+    canonical = min(objects, key=lambda ko: (ko.extracted_at, ko.knowledge_object_id))
+    assert len(canonical.evidence) >= 2  # evidence absorbed from every merged chunk
+    dup_relations = [r for r in outcomes[0].relations if r.type == RelationType.DUPLICATE_OF]
+    assert len(dup_relations) == len(objects) - 1
+    assert all(r.object_id == canonical.knowledge_object_id for r in dup_relations)
 
 
 class _FakeStore:

@@ -33,8 +33,13 @@ def test_near_identical_same_type_objects_are_merged_into_the_earliest():
 
     result = merge_duplicates([a, b], [], threshold=0.9)
 
-    assert [ko.knowledge_object_id for ko in result.objects] == ["ko1"]
-    canonical = result.objects[0]
+    # Both stay addressable (mirrors resolve_supersedes, which never deletes
+    # the prior object either) - only the canonical (ko1, earliest
+    # extracted_at) absorbs the duplicate's evidence/topics; the duplicate
+    # (ko2) comes back unmodified so the DUPLICATE_OF relation naming it as
+    # subject_id below never dangles once a Postgres store persists it.
+    assert {ko.knowledge_object_id for ko in result.objects} == {"ko1", "ko2"}
+    canonical = next(ko for ko in result.objects if ko.knowledge_object_id == "ko1")
     assert {e.chunk_id for e in canonical.evidence} == {"c1", "c2"}
     assert set(canonical.topics) == {"m&a", "governance"}
 

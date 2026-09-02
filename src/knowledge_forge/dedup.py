@@ -42,14 +42,24 @@ def merge_duplicates(
     relations: list[Relation],
     threshold: float = DEFAULT_DEDUP_THRESHOLD,
 ) -> DedupResult:
-    """Merges near-duplicate, same-type objects (by `summary` similarity).
+    """Merges near-duplicate, same-type objects (by `summary` similarity)
+    into a canonical one for read-time collapsing, without removing anyone
+    from the returned `objects` - mirrors `extraction/versioning.py`'s
+    `resolve_supersedes()`, which keeps both the new and prior object
+    addressable rather than deleting the prior one.
 
     For each cluster of near-duplicates, the object with the earliest
-    `extracted_at` (ties broken by id, for determinism) is kept as
-    canonical; its `evidence`/`topics` absorb the duplicates'. Every other
-    relation in `relations` that referenced a merged-away id is rewritten
-    to point at the canonical id instead, so the returned relation list
-    never dangles.
+    `extracted_at` (ties broken by id, for determinism) becomes canonical;
+    its own copy in `objects` absorbs the duplicates' `evidence`/`topics`.
+    Every duplicate stays in the returned `objects` list unmodified (not
+    just referenced by a `Relation`) - a `DUPLICATE_OF` relation is emitted
+    from each duplicate to the canonical as the audit trail, and a
+    Postgres-backed `store` has a foreign key from `relations.subject_id`
+    to `knowledge_objects.id`, so the id that relation names must actually
+    be in the returned/persisted object set (see wiki/architecture.md
+    "설계 결정: 중복 제거와 재추출 버전 관리는..."). Every other relation in
+    `relations` that referenced a merged-away id is rewritten to point at
+    the canonical id instead, so the returned relation list never dangles.
     """
     if len(objects) < 2:
         return DedupResult(objects=list(objects), relations=list(relations))
@@ -96,6 +106,11 @@ def merge_duplicates(
                         merged_topics.append(topic)
                         seen_topics.add(topic)
                 canonical_of[dup.knowledge_object_id] = canonical.knowledge_object_id
+                # The duplicate itself stays in `kept` (unmodified) - it's
+                # what the DUPLICATE_OF relation below names as `subject_id`,
+                # and a dangling reference there would violate the
+                # relations.subject_id foreign key once `store` persists it.
+                kept.append(dup)
                 new_relations.append(
                     Relation(
                         relation_id=stable_id("dedup", dup.knowledge_object_id, canonical.knowledge_object_id),
