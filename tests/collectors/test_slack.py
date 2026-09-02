@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from knowledge_forge.collectors.base import Cursor
 from knowledge_forge.collectors.saas.slack import SlackCollector
 
@@ -110,3 +112,44 @@ def test_no_channel_project_map_leaves_project_id_unset():
     items = list(collector.initial_sync())
 
     assert items[0].project_id is None
+
+
+def test_backfill_sync_passes_oldest_and_latest_and_filters_replies_outside_window():
+    client = _FakeSlackClient()
+    client.history_pages["general"] = [
+        [
+            {"ts": "100.0", "text": "in range", "user": "U1"},
+            {"ts": "200.0", "text": "thread parent", "user": "U2", "thread_ts": "200.0", "reply_count": 2},
+        ],
+    ]
+    client.replies[("general", "200.0")] = [
+        {"ts": "200.0", "text": "thread parent", "user": "U2", "thread_ts": "200.0"},
+        {"ts": "201.0", "text": "in-range reply", "user": "U3", "thread_ts": "200.0"},
+        {"ts": "999.0", "text": "out-of-range reply", "user": "U1", "thread_ts": "200.0"},
+    ]
+
+    collector = SlackCollector(client=client, channels=["general"])
+    since = datetime.fromtimestamp(100.0, tz=timezone.utc)
+    until = datetime.fromtimestamp(250.0, tz=timezone.utc)
+    items = list(collector.backfill_sync(since, until))
+
+    texts = [item.content.decode("utf-8") for item in items]
+    assert texts == ["in range", "thread parent", "in-range reply"]
+
+    call = next(c for c in client.history_calls if c["channel"] == "general")
+    assert call["oldest"] == "100.0"
+    assert call["latest"] == "250.0"
+
+    # backfill_sync must not disturb the incremental-sync cursor
+    assert collector.get_cursor().data["channels"] == {}
+
+
+def test_backfill_sync_without_until_omits_latest_param():
+    client = _FakeSlackClient()
+    client.history_pages["general"] = [[{"ts": "100.0", "text": "hi", "user": "U1"}]]
+
+    collector = SlackCollector(client=client, channels=["general"])
+    items = list(collector.backfill_sync(datetime.fromtimestamp(50.0, tz=timezone.utc)))
+
+    assert len(items) == 1
+    assert "latest" not in client.history_calls[0]

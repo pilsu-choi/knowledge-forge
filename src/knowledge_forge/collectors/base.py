@@ -9,12 +9,25 @@ files, a page token / updated-after timestamp for SaaS APIs).
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, ClassVar, Iterator
 
 from pydantic import BaseModel, Field
 
 from knowledge_forge.models.source import SourceType
+
+
+def ensure_utc(value: datetime) -> datetime:
+    """Normalizes a naive datetime (no tzinfo - e.g. from cli.py's `--since`/
+    `--until` or a request body's ISO string with no offset) to UTC, and
+    passes an already-aware datetime through unchanged. Every `RawItem.
+    modified_at` a Collector produces is UTC-aware, so `backfill_sync`'s
+    `since`/`until` comparisons need the same to compare correctly - callers
+    that accept `since`/`until` from a human (cli.py's `backfill` command,
+    api/routes/ingest.py's IngestRequest) should normalize through this
+    before passing them on.
+    """
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 @dataclass
@@ -55,3 +68,20 @@ class Collector(ABC):
 
     def sync(self, cursor: Cursor | None = None) -> Iterator[RawItem]:
         return self.initial_sync() if cursor is None else self.incremental_sync(cursor)
+
+    def backfill_sync(self, since: datetime, until: datetime | None = None) -> Iterator[RawItem]:
+        """Yield only items modified in `[since, until]`, independent of (and
+        without touching) the collector's incremental-sync cursor - for
+        recovering a window of data missed while scheduled sync wasn't
+        running (see pipeline.py's `since`/`until` and cli.py's `backfill`
+        command).
+
+        Default implementation: re-runs initial_sync() and filters by
+        `RawItem.modified_at`. Correct for every collector, but re-fetches
+        everything to do it - collectors with a windowed API (SlackCollector,
+        GmailCollector) override this with a pushed-down time-bounded query
+        instead.
+        """
+        for item in self.initial_sync():
+            if item.modified_at >= since and (until is None or item.modified_at <= until):
+                yield item

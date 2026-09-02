@@ -12,6 +12,7 @@ on, rather than crashing the whole worker process.
 
 import asyncio
 import logging
+from datetime import datetime
 from pathlib import Path
 
 from knowledge_forge.collectors.saas.factory import SAAS_COLLECTOR_BUILDERS, job_type_for_source
@@ -28,6 +29,10 @@ logger = logging.getLogger(__name__)
 _SAAS_JOB_TYPES = {job_type_for_source(source): source for source in SAAS_COLLECTOR_BUILDERS}
 
 
+def _parse_datetime(value: str | None) -> datetime | None:
+    return datetime.fromisoformat(value) if value is not None else None
+
+
 async def _dispatch(job: Job, database_url: str, data_dir: str) -> dict:
     max_tokens = job.payload.get("max_tokens", 4000)
     model = job.payload.get("model")
@@ -37,13 +42,25 @@ async def _dispatch(job: Job, database_url: str, data_dir: str) -> dict:
     # the manifest/views once, at the end - see ingest.py's module docstring.
     okf_dir = job.payload.get("okf_dir")
     okf_writer = OKFWriter(okf_dir, project_id=job.project_id) if okf_dir else None
+    # Opt-in backfill window (api/routes/ingest.py's IngestRequest.since/
+    # until), round-tripped through the job payload as ISO strings since
+    # `payload` must be JSON-safe - see pipeline.py's since/until docstring.
+    since = _parse_datetime(job.payload.get("since"))
+    until = _parse_datetime(job.payload.get("until"))
 
     if job.job_type == job_type_for_source("local"):
         path = job.payload["path"]
         async with PipelineStore(database_url, data_dir) as store:
             await store.init_schema()  # idempotent (CREATE TABLE IF NOT EXISTS)
             return await run_local_ingest(
-                Path(path), max_tokens, model, store, project_id=job.project_id, okf_writer=okf_writer
+                Path(path),
+                max_tokens,
+                model,
+                store,
+                project_id=job.project_id,
+                okf_writer=okf_writer,
+                since=since,
+                until=until,
             )
 
     source = _SAAS_JOB_TYPES.get(job.job_type)
@@ -51,7 +68,14 @@ async def _dispatch(job: Job, database_url: str, data_dir: str) -> dict:
         async with PipelineStore(database_url, data_dir) as store:
             await store.init_schema()
             return await run_saas_ingest(
-                source, max_tokens, model, store, project_id=job.project_id, okf_writer=okf_writer
+                source,
+                max_tokens,
+                model,
+                store,
+                project_id=job.project_id,
+                okf_writer=okf_writer,
+                since=since,
+                until=until,
             )
 
     raise ValueError(f"unknown job_type: {job.job_type}")

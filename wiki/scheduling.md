@@ -181,6 +181,68 @@ ingest가 붙을 자리(`roadmap.md` 4단계)에 맞다. 이 문서가 다루는
 전용으로 유지되고, `serve`/`worker`가 SaaS 소스까지 포함하는 general-purpose ingest 경로로
 확장된다 - 서로 대체 관계가 아니라 다른 트리거 성격(주기 vs. 요청)에 맞는 별도 실행 모드다.
 
+## 놓친 구간 재수집 — backfill
+
+`schedule`/`serve`+`KF_SCHEDULED_SOURCES` 프로세스가 한동안 죽어있었다면, 위에서 설명한
+"첫 tick도 특별 취급 없이 증분 동기화"만으로는 그 사이 놓친 데이터가 복구되지 않는 소스가
+있다 - 로컬 파일 소스는 `state_path`에 커서가 남아있어 다음 tick이 알아서 그 사이의 변경을
+따라잡지만, Slack/Gmail 같은 SaaS 소스는 커서가 프로세스 메모리에만 있어서 재시작하면
+`initial_sync()`부터 다시 돈다(위 "동작 방식" 절 참고) - 그리고 애초에 "정확히 몇 시부터 몇
+시까지만" 다시 수집하고 싶은 경우엔 그마저도 맞지 않는다.
+
+`Collector.backfill_sync(since, until)`(`collectors/base.py`)가 이 구멍을 메운다 - 정규
+증분 동기화 커서(`get_cursor()`/`incremental_sync()`)를 **전혀 건드리지 않는** 완전히
+독립적인 경로로, `run_pipeline(..., since=..., until=...)`이 주어지면 `collector.sync(cursor)`
+대신 이걸 호출한다(`pipeline.py`). 나머지(Source/Document/Chunk/KnowledgeObject 저장, dedup,
+supersedes, OKF 기록)는 평소와 완전히 동일하게 재사용된다 - id가 결정론적(`stable_id`)이고
+Postgres 저장이 전부 upsert라서, 같은 구간을 여러 번 재수집해도 중복이 쌓이지 않는다.
+
+기본 구현(`Collector.backfill_sync`)은 `initial_sync()`를 전부 돌며 `RawItem.modified_at`으로
+필터링한다 - 모든 컬렉터에서 정확하게 동작하지만 전체를 다시 훑는다. Slack/Gmail은 API 레벨에서
+시간 윈도우를 밀어넣도록 오버라이드한다:
+
+- **Slack**(`collectors/saas/slack.py`): `conversations_history`의 `oldest`/`latest`에
+  `since`/`until`(Unix timestamp)을 그대로 전달한다. 스레드 답글(`conversations_replies`)은
+  `latest`로 제한되지 않으므로, 채널 메시지든 답글이든 만들어진 모든 아이템을 한 번 더
+  `[since, until]`로 필터링한다.
+- **Gmail**(`collectors/saas/gmail.py`): Gmail 검색 문법(`after:`/`before:`)은 **일(day)
+  단위 정밀도만** 지원한다 - `since`/`until`이 속한 날짜 경계로 쿼리를 넓힌 뒤(기존
+  `KF_GMAIL_QUERY`와 결합), 가져온 각 메일의 정확한 `internalDate`를 다시 `since`/`until`로
+  필터링해서 실제로는 시/분 단위 정밀도를 만족시킨다. `_refresh_history_id()`는 호출하지
+  않는다 - 증분 동기화용 history 커서를 backfill이 건드리면 안 되기 때문이다.
+
+### 사용법 — CLI
+
+```bash
+uv run knowledge-forge backfill --source slack --project-id PRJ-A \
+  --since 2026-08-01T09:00:00 --until 2026-08-01T18:00:00
+```
+
+`extract`와 옵션이 거의 같다(`--max-tokens`/`--model`/`--output`/`--store`/`--okf-dir`
+공유) - `--since`(필수)/`--until`(선택, 기본값 now)만 추가됐다. 형식은
+`YYYY-MM-DD` 또는 `YYYY-MM-DDTHH:MM:SS[+HH:MM]`(타임존 오프셋 없으면 UTC로 간주) -
+Python `datetime.fromisoformat`이 이 프로젝트가 지원하는 3.10에서 trailing `Z`를 못 받으므로
+`Z` 대신 `+00:00`을 쓴다.
+
+### 사용법 — API (`serve`+`worker`, `KF_SCHEDULED_SOURCES` 운영 환경 복구용)
+
+`POST /ingest`의 `IngestRequest`에 `since`/`until`을 실으면 그 job은 일반 ingest 대신 backfill로
+동작한다:
+
+```bash
+curl -X POST http://localhost:8000/ingest -H "Content-Type: application/json" -d '{
+  "source": "slack", "project_id": "PRJ-A",
+  "since": "2026-08-01T09:00:00", "until": "2026-08-01T18:00:00"
+}'
+```
+
+`since`/`until`은 `job.payload`에 ISO 문자열로 실려 enqueue되고(payload는 JSON-safe해야 함),
+`worker.py`의 `_dispatch()`가 다시 `datetime`으로 파싱해 `run_saas_ingest`/`run_local_ingest`에
+넘긴다. 이 job은 `auto_enqueue.py`가 도는 스케줄러의 컬렉터 인스턴스와 완전히 분리된, job마다
+새로 만들어지는 컬렉터를 쓰므로(`worker.py`가 이미 그렇게 동작) 살아있는 스케줄러의 커서 상태를
+건드릴 일이 없다 - 즉 `KF_SCHEDULED_SOURCES`가 계속 정상 주기로 돌고 있는 동안에도 안전하게 과거
+구간 backfill job을 얼마든지 추가로 넣을 수 있다.
+
 ## 테스트
 
 `run_scheduled_sync`는 이벤트 루프 위에서 영원히 대기하므로 스케줄 루프 자체를 단위

@@ -40,6 +40,14 @@ class IngestRequest(BaseModel):
     # Tenancy key this ingest run's Source/Document/Job rows are tagged
     # with. Defaults to "default" for single-tenant callers.
     project_id: str = "default"
+    # Opt-in backfill window: when `since` is given, this job re-collects
+    # only items modified in [since, until] (default until: now) via
+    # Collector.backfill_sync(), independent of the source's incremental
+    # sync cursor - see pipeline.py's since/until docstring and cli.py's
+    # `backfill` command. Naive (no tzinfo) values are treated as UTC by
+    # the route (see collectors/base.py's `ensure_utc`).
+    since: datetime | None = None
+    until: datetime | None = None
 
 
 class IngestResponse(BaseModel):

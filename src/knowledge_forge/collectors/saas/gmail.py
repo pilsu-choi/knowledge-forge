@@ -1,5 +1,5 @@
 import base64
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 
 from knowledge_forge.collectors.base import Cursor, RawItem
@@ -141,3 +141,38 @@ class GmailCollector(SaaSCollector):
 
     def get_cursor(self) -> Cursor:
         return Cursor(data={"history_id": self._history_id})
+
+    def backfill_sync(self, since: datetime, until: datetime | None = None) -> Iterator[RawItem]:
+        """Pushes `since`/`until` down into the `messages.list` search query
+        instead of the base class's list-everything-then-filter default -
+        avoids paginating the entire mailbox just to backfill one window.
+
+        Gmail's `after:`/`before:` search operators only have day precision
+        (no time-of-day), so the query widens to whole-day boundaries and
+        every fetched message's exact `internalDate` is re-filtered against
+        `since`/`until` before being yielded - giving the caller real
+        hour/minute precision despite the query itself being day-granular.
+        `until`'s day is widened by one, since Gmail's `before:` is exclusive
+        of the given date.
+
+        Does not call `_refresh_history_id()` - backfill must never disturb
+        the incremental-sync history cursor.
+        """
+        query_parts = [self._query] if self._query else []
+        query_parts.append(f"after:{since.strftime('%Y/%m/%d')}")
+        if until is not None:
+            before_date = until + timedelta(days=1)
+            query_parts.append(f"before:{before_date.strftime('%Y/%m/%d')}")
+        query = " ".join(query_parts)
+
+        def request_fn(cursor: str | None) -> tuple[list[dict], str | None]:
+            response = self._client.users().messages().list(
+                userId="me", q=query, pageToken=cursor
+            ).execute()
+            return response.get("messages", []), response.get("nextPageToken")
+
+        for summary in self._paginate(request_fn):
+            message = self._fetch_message(summary["id"])
+            item = _raw_item_for_message(message)
+            if item.modified_at >= since and (until is None or item.modified_at <= until):
+                yield item

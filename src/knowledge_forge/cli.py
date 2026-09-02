@@ -1,13 +1,14 @@
 import asyncio
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import typer
 
 from knowledge_forge.chunking import AdaptiveChunker
-from knowledge_forge.collectors.base import Collector
+from knowledge_forge.collectors.base import Collector, ensure_utc
 from knowledge_forge.collectors.local_file import LocalFileCollector
 from knowledge_forge.collectors.saas.factory import SAAS_COLLECTOR_BUILDERS
 from knowledge_forge.config import settings
@@ -59,6 +60,24 @@ def _build_collector(source: str, path: Optional[Path]) -> Collector:
         raise typer.Exit(1)
 
     return builder()
+
+
+def _parse_datetime_arg(value: str, option_name: str) -> datetime:
+    """Parses `--since`/`--until`'s ISO 8601 string (`YYYY-MM-DD` or
+    `YYYY-MM-DDTHH:MM:SS[+HH:MM]` - no trailing `Z`, Python's fromisoformat()
+    doesn't accept it before 3.11 and this project supports 3.10+). A value
+    with no offset is treated as UTC via `ensure_utc`, matching every
+    Collector's UTC-aware `RawItem.modified_at`.
+    """
+    try:
+        return ensure_utc(datetime.fromisoformat(value))
+    except ValueError:
+        typer.echo(
+            f"{option_name}: '{value}'을(를) 날짜/시각으로 해석할 수 없습니다 "
+            "(YYYY-MM-DD 또는 YYYY-MM-DDTHH:MM:SS[+HH:MM] 형식을 사용하세요).",
+            err=True,
+        )
+        raise typer.Exit(1)
 
 
 def _open_store() -> Optional[PipelineStore]:
@@ -168,6 +187,126 @@ def extract(
 
     typer.echo(
         f"{len(knowledge_objects)}개의 Knowledge Object, {len(relations)}개의 Relation 생성 완료"
+        + (f" (OKF: {okf_dir})" if okf_dir else ""),
+        err=True,
+    )
+
+
+@app.command()
+def backfill(
+    path: Optional[Path] = typer.Argument(
+        None, help="A local file or directory to ingest. Required when --source local (the default); unused otherwise."
+    ),
+    since: str = typer.Option(
+        ..., "--since", help="Start of the window to re-collect (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS[+HH:MM]; "
+        "no tz offset is treated as UTC)."
+    ),
+    until: Optional[str] = typer.Option(
+        None, "--until", help="End of the window (same format as --since). Defaults to now."
+    ),
+    source: str = typer.Option(
+        "local",
+        "--source",
+        help=f"Collector to run: local (default, needs PATH) or one of {', '.join(SAAS_COLLECTOR_BUILDERS)} "
+        "(built from KF_* env config, see wiki/saas-connectors.md).",
+    ),
+    max_tokens: int = typer.Option(4000, "--max-tokens", help="Max tokens per chunk before splitting further."),
+    model: Optional[str] = typer.Option(
+        None, "--model", help="Extraction model. Defaults to the active provider's (KF_LLM_PROVIDER) own default model."
+    ),
+    output: Optional[Path] = typer.Option(None, "--output", help="Output file. Defaults to stdout."),
+    pretty: bool = typer.Option(False, "--pretty", help="Write an indented JSON array instead of JSONL."),
+    store: bool = typer.Option(
+        True, "--store/--no-store", help="Persist Source/Document/Chunk/KnowledgeObject to Postgres + raw bytes to disk."
+    ),
+    okf_dir: Optional[Path] = typer.Option(
+        None,
+        "--okf-dir",
+        help="Also write a file-based OKF Knowledge Base tree (manifest.yaml + resources/objects/relations) to this directory, under a {project-id}/ subfolder.",
+    ),
+    project_id: str = typer.Option(
+        "default", "--project-id", help="Tenancy key tagged on every Source/Document this run persists."
+    ),
+) -> None:
+    """Re-collect only items modified in [--since, --until] and run them through the full
+    pipeline - for recovering data missed while `schedule`/`serve`'s scheduled sync wasn't
+    running, without touching that source's incremental-sync cursor at all (see
+    Collector.backfill_sync). Slack pushes the window down to `oldest`/`latest`; Gmail's
+    `after:`/`before:` search only has day precision, so it widens to whole days and then
+    filters each message's exact timestamp - --since/--until's time-of-day still applies
+    precisely to what gets collected."""
+    _ensure_authenticated()
+    since_dt = _parse_datetime_arg(since, "--since")
+    until_dt = _parse_datetime_arg(until, "--until") if until is not None else None
+    if until_dt is not None and since_dt > until_dt:
+        typer.echo("--since는 --until보다 이후일 수 없습니다.", err=True)
+        raise typer.Exit(1)
+
+    collector = _build_collector(source, path)
+    registry = default_registry()
+    chunker = AdaptiveChunker(max_tokens_per_chunk=max_tokens)
+    extractor = get_extractor(model=model)
+    pipeline_store = _open_store() if store else None
+    okf_writer = OKFWriter(okf_dir, project_id=project_id) if okf_dir else None
+
+    async def _run():
+        if pipeline_store is not None:
+            async with pipeline_store:
+                await pipeline_store.init_schema()  # idempotent (CREATE TABLE IF NOT EXISTS)
+                return [
+                    outcome
+                    async for outcome in run_pipeline(
+                        collector,
+                        registry,
+                        chunker,
+                        extractor,
+                        store=pipeline_store,
+                        okf_writer=okf_writer,
+                        project_id=project_id,
+                        since=since_dt,
+                        until=until_dt,
+                    )
+                ]
+        return [
+            outcome
+            async for outcome in run_pipeline(
+                collector,
+                registry,
+                chunker,
+                extractor,
+                store=None,
+                okf_writer=okf_writer,
+                project_id=project_id,
+                since=since_dt,
+                until=until_dt,
+            )
+        ]
+
+    outcomes = asyncio.run(_run())
+    if okf_writer is not None:
+        okf_writer.write_manifest()
+        okf_writer.write_views()
+
+    knowledge_objects = [ko for outcome in outcomes for ko in outcome.objects]
+    relations = [rel for outcome in outcomes for rel in outcome.relations]
+
+    out = output.open("w", encoding="utf-8") if output else sys.stdout
+    try:
+        if pretty:
+            payload = [ko.model_dump(mode="json") for ko in knowledge_objects]
+            json.dump(payload, out, ensure_ascii=False, indent=2)
+            out.write("\n")
+        else:
+            for ko in knowledge_objects:
+                out.write(ko.model_dump_json())
+                out.write("\n")
+    finally:
+        if output:
+            out.close()
+
+    typer.echo(
+        f"백필 완료 ({since_dt.isoformat()} ~ {until_dt.isoformat() if until_dt else 'now'}): "
+        f"{len(knowledge_objects)}개의 Knowledge Object, {len(relations)}개의 Relation 생성"
         + (f" (OKF: {okf_dir})" if okf_dir else ""),
         err=True,
     )

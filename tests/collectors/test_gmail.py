@@ -1,5 +1,5 @@
 import base64
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -161,3 +161,43 @@ def test_get_cursor_before_any_sync_raises_nothing_but_has_no_history_id():
     client = _FakeGmailClient(_FakeUsersResource(_FakeMessagesResource([], {}), profile={}))
     collector = GmailCollector(client=client)
     assert collector.get_cursor().data["history_id"] is None
+
+
+def test_backfill_sync_builds_after_before_query_and_filters_by_exact_time():
+    list_pages = [{"messages": [{"id": "m1"}, {"id": "m2"}], "nextPageToken": None}]
+    get_by_id = {
+        "m1": _text_plain_message("m1", "in window", internal_date_ms=1_700_050_000_000),
+        "m2": _text_plain_message("m2", "outside window", internal_date_ms=1_700_000_000_000),
+    }
+    messages = _FakeMessagesResource(list_pages, get_by_id)
+    users = _FakeUsersResource(messages, profile={"historyId": "999"})
+    client = _FakeGmailClient(users)
+
+    collector = GmailCollector(client=client, query="in:inbox")
+    since = datetime.fromtimestamp(1_700_040_000, tz=timezone.utc)
+    until = datetime.fromtimestamp(1_700_060_000, tz=timezone.utc)
+    items = list(collector.backfill_sync(since, until))
+
+    assert [i.uri for i in items] == ["gmail://m1"]
+
+    query = messages.list_calls[0]["q"]
+    assert "in:inbox" in query
+    assert f"after:{since.strftime('%Y/%m/%d')}" in query
+    assert f"before:{(until + timedelta(days=1)).strftime('%Y/%m/%d')}" in query
+
+    # backfill_sync must never advance the incremental-sync history cursor
+    assert collector.get_cursor().data["history_id"] is None
+
+
+def test_backfill_sync_without_until_has_no_before_clause():
+    list_pages = [{"messages": [], "nextPageToken": None}]
+    messages = _FakeMessagesResource(list_pages, {})
+    users = _FakeUsersResource(messages, profile={"historyId": "1"})
+    client = _FakeGmailClient(users)
+
+    collector = GmailCollector(client=client)
+    list(collector.backfill_sync(datetime(2026, 8, 1, tzinfo=timezone.utc)))
+
+    query = messages.list_calls[0]["q"]
+    assert "before:" not in query
+    assert "after:2026/08/01" in query

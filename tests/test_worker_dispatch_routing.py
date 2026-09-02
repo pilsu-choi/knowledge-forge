@@ -43,7 +43,7 @@ async def test_dispatch_routes_slack_ingest_to_run_saas_ingest(monkeypatch):
 
     calls = []
 
-    async def fake_run_saas_ingest(source, max_tokens, model, store, project_id, okf_writer=None):
+    async def fake_run_saas_ingest(source, max_tokens, model, store, project_id, okf_writer=None, since=None, until=None):
         calls.append((source, max_tokens, model, project_id, okf_writer))
         return {"object_count": 1, "relation_count": 0}
 
@@ -61,7 +61,7 @@ async def test_dispatch_defaults_max_tokens_and_model_when_absent(monkeypatch):
 
     calls = []
 
-    async def fake_run_saas_ingest(source, max_tokens, model, store, project_id, okf_writer=None):
+    async def fake_run_saas_ingest(source, max_tokens, model, store, project_id, okf_writer=None, since=None, until=None):
         calls.append((source, max_tokens, model))
         return {}
 
@@ -78,7 +78,7 @@ async def test_dispatch_still_routes_local_file_ingest(monkeypatch, tmp_path):
 
     calls = []
 
-    async def fake_run_local_ingest(path, max_tokens, model, store, project_id, okf_writer=None):
+    async def fake_run_local_ingest(path, max_tokens, model, store, project_id, okf_writer=None, since=None, until=None):
         calls.append((str(path), max_tokens, model, project_id, okf_writer))
         return {}
 
@@ -97,7 +97,7 @@ async def test_dispatch_builds_okf_writer_when_job_has_okf_dir(monkeypatch, tmp_
 
     calls = []
 
-    async def fake_run_local_ingest(path, max_tokens, model, store, project_id, okf_writer=None):
+    async def fake_run_local_ingest(path, max_tokens, model, store, project_id, okf_writer=None, since=None, until=None):
         calls.append(okf_writer)
         return {}
 
@@ -122,3 +122,42 @@ async def test_dispatch_raises_on_unknown_job_type():
     job = _job("mystery_type", {})
     with pytest.raises(ValueError, match="unknown job_type"):
         await _dispatch(job, "postgresql://fake", "/tmp/data")
+
+
+async def test_dispatch_parses_since_until_from_payload_and_passes_to_run_saas_ingest(monkeypatch):
+    """api/routes/ingest.py enqueues since/until as ISO strings (payload must be
+    JSON-safe) - _dispatch must parse them back into datetimes before calling
+    run_saas_ingest/run_local_ingest (see pipeline.py's since/until docstring)."""
+    monkeypatch.setattr("knowledge_forge.worker.PipelineStore", _FakePipelineStore)
+
+    calls = []
+
+    async def fake_run_saas_ingest(source, max_tokens, model, store, project_id, okf_writer=None, since=None, until=None):
+        calls.append((since, until))
+        return {}
+
+    monkeypatch.setattr("knowledge_forge.worker.run_saas_ingest", fake_run_saas_ingest)
+
+    job = _job("slack_ingest", {"since": "2026-08-01T09:00:00+00:00", "until": "2026-08-01T18:00:00+00:00"})
+    await _dispatch(job, "postgresql://fake", "/tmp/data")
+
+    assert calls == [
+        (datetime(2026, 8, 1, 9, 0, tzinfo=timezone.utc), datetime(2026, 8, 1, 18, 0, tzinfo=timezone.utc))
+    ]
+
+
+async def test_dispatch_defaults_since_until_to_none_when_absent(monkeypatch):
+    monkeypatch.setattr("knowledge_forge.worker.PipelineStore", _FakePipelineStore)
+
+    calls = []
+
+    async def fake_run_saas_ingest(source, max_tokens, model, store, project_id, okf_writer=None, since=None, until=None):
+        calls.append((since, until))
+        return {}
+
+    monkeypatch.setattr("knowledge_forge.worker.run_saas_ingest", fake_run_saas_ingest)
+
+    job = _job("slack_ingest", {})
+    await _dispatch(job, "postgresql://fake", "/tmp/data")
+
+    assert calls == [(None, None)]

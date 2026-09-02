@@ -236,6 +236,59 @@ def test_ingest_omits_okf_dir_defaults_to_none(tmp_path):
     assert job_store.enqueued[0][1]["okf_dir"] is None
 
 
+def test_ingest_with_since_becomes_a_backfill_job(monkeypatch):
+    """since/until (see wiki/scheduling.md "놓친 구간 재수집") round-trip through
+    the job payload as ISO strings - worker.py's _dispatch parses them back."""
+    monkeypatch.setattr(
+        "knowledge_forge.api.routes.ingest.SAAS_COLLECTOR_BUILDERS", {"slack": lambda: None}
+    )
+    job_store = _FakeJobStore()
+    client = _make_client(job_store, _FakeReadStore())
+
+    resp = client.post(
+        "/ingest",
+        json={
+            "source": "slack",
+            "project_id": "PRJ-A",
+            "since": "2026-08-01T09:00:00",
+            "until": "2026-08-01T18:00:00",
+        },
+    )
+
+    assert resp.status_code == 202
+    payload = job_store.enqueued[0][1]
+    assert payload["since"] == "2026-08-01T09:00:00+00:00"  # naive input normalized to UTC
+    assert payload["until"] == "2026-08-01T18:00:00+00:00"
+
+
+def test_ingest_without_since_omits_backfill_fields_from_payload(tmp_path):
+    (tmp_path / "a.md").write_text("hello")
+    job_store = _FakeJobStore()
+    client = _make_client(job_store, _FakeReadStore())
+
+    client.post("/ingest", json={"path": str(tmp_path / "a.md")})
+
+    payload = job_store.enqueued[0][1]
+    assert "since" not in payload
+    assert "until" not in payload
+
+
+def test_ingest_since_after_until_returns_400(tmp_path):
+    (tmp_path / "a.md").write_text("hello")
+    client = _make_client(_FakeJobStore(), _FakeReadStore())
+
+    resp = client.post(
+        "/ingest",
+        json={
+            "path": str(tmp_path / "a.md"),
+            "since": "2026-08-01T18:00:00Z",
+            "until": "2026-08-01T09:00:00Z",
+        },
+    )
+
+    assert resp.status_code == 400
+
+
 def test_ingest_unknown_source_returns_400(monkeypatch):
     monkeypatch.setattr(
         "knowledge_forge.api.routes.ingest.SAAS_COLLECTOR_BUILDERS", {"slack": lambda: None}

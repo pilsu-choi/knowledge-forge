@@ -82,6 +82,8 @@ async def run_pipeline(
     context_reconstructor: ContextReconstructor | None = None,
     okf_writer: "OKFWriter | None" = None,
     project_id: str = "default",
+    since: datetime | None = None,
+    until: datetime | None = None,
 ) -> AsyncIterator[ExtractionOutcome]:
     """Run the full pipeline over everything a Collector yields.
 
@@ -138,10 +140,20 @@ async def run_pipeline(
     there is something to compare against - new objects are matched to the
     same source's prior objects to auto-fill `supersedes`/`version`
     (extraction/versioning.py) at `settings.supersedes_similarity_threshold`.
+
+    `since` (mutually exclusive with `cursor` in practice - when given, the
+    item stream is `collector.backfill_sync(since, until)` instead of
+    `collector.sync(cursor)`) re-collects a specific date/time window
+    independent of the collector's incremental cursor - for recovering data
+    missed while scheduled sync wasn't running (see cli.py's `backfill`
+    command and collectors/base.py's `Collector.backfill_sync`). Everything
+    downstream (storage, dedup, supersedes, OKF writing) runs exactly as for
+    a normal sync - backfill is just a different RawItem source.
     """
     reconstructor = context_reconstructor or default_reconstructor_for(collector.source_type)
+    items = collector.backfill_sync(since, until) if since is not None else collector.sync(cursor)
     link_endpoints_by_uri: dict[str, LinkEndpoint] = {}
-    for item in reconstructor.reconstruct(collector.sync(cursor)):
+    for item in reconstructor.reconstruct(items):
         if item.deleted:
             logger.info("skipping deleted item: %s", item.uri)
             continue

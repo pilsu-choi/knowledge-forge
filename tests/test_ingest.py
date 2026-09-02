@@ -4,7 +4,7 @@ returned summary counts matter, not persistence (that's covered by
 tests/storage/test_job_store.py and the worker's own live-DB test).
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from knowledge_forge.collectors.base import Cursor, RawItem
@@ -47,8 +47,15 @@ class _FakeSaaSCollector(SaaSCollector):
             uri="slack://c/1",
             content=b"hello from slack",
             content_hash="h1",
-            modified_at=datetime.now(timezone.utc),
+            modified_at=datetime.now(timezone.utc) - timedelta(days=30),
             metadata={"channel": "c", "ts": "1.0"},
+        )
+        yield RawItem(
+            uri="slack://c/2",
+            content=b"more recent slack message",
+            content_hash="h2",
+            modified_at=datetime.now(timezone.utc),
+            metadata={"channel": "c", "ts": "2.0"},
         )
 
     def incremental_sync(self, cursor):
@@ -69,6 +76,29 @@ async def test_run_saas_ingest_builds_collector_from_source_and_returns_counts(m
 
     assert result["object_count"] >= 1
     assert "relation_count" in result
+
+
+async def test_run_saas_ingest_with_since_only_collects_the_backfill_window(monkeypatch):
+    """`since`/`until` (from api/routes/ingest.py's IngestRequest, threaded through
+    worker.py's _dispatch) route the fake collector through Collector.backfill_sync's
+    default (list-everything-then-filter) - only the recent of the two RawItems
+    _FakeSaaSCollector yields falls in [since, until]."""
+    client = _FakeClient()
+    monkeypatch.setattr(
+        "knowledge_forge.ingest.get_extractor", lambda model=None: ClaudeExtractor(client=client)
+    )
+    monkeypatch.setitem(factory.SAAS_COLLECTOR_BUILDERS, "slack", lambda: _FakeSaaSCollector(client=object()))
+
+    result = await run_saas_ingest(
+        "slack",
+        max_tokens=4000,
+        model=None,
+        store=None,
+        since=datetime.now(timezone.utc) - timedelta(hours=1),
+    )
+
+    assert result["object_count"] >= 1
+    assert client.messages.calls == 1  # only the in-window item reached extraction
 
 
 async def test_run_local_ingest_returns_object_and_relation_counts(tmp_path, monkeypatch):

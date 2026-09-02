@@ -70,11 +70,13 @@ class SlackCollector(SaaSCollector):
             project_id=self._channel_project_map.get(channel),
         )
 
-    def _sync_channel(self, channel: str, oldest: str | None) -> Iterator[RawItem]:
+    def _sync_channel(self, channel: str, oldest: str | None, latest: str | None = None) -> Iterator[RawItem]:
         def request_fn(cursor: str | None) -> tuple[list[dict], str | None]:
             kwargs: dict[str, Any] = {"channel": channel, "cursor": cursor}
             if oldest is not None:
                 kwargs["oldest"] = oldest
+            if latest is not None:
+                kwargs["latest"] = latest
             response = self._client.conversations_history(**kwargs)
             messages = response["messages"]
             next_cursor = response.get("response_metadata", {}).get("next_cursor") or None
@@ -106,3 +108,28 @@ class SlackCollector(SaaSCollector):
 
     def get_cursor(self) -> Cursor:
         return Cursor(data={"channels": dict(self._latest_ts)})
+
+    def backfill_sync(self, since: datetime, until: datetime | None = None) -> Iterator[RawItem]:
+        """Pushes `since`/`until` down to Slack's `oldest`/`latest`
+        `conversations_history` params instead of the base class's
+        list-everything-then-filter default - avoids walking a channel's
+        entire history just to backfill one window. Thread replies
+        (`conversations_replies`) aren't bounded by `latest`, so every
+        yielded item (parent and replies alike) is still filtered against
+        `[since, until]` before being yielded, for correctness. `_sync_channel`
+        updates `self._latest_ts` as a side effect of pagination (it's shared
+        with initial_sync/incremental_sync) - snapshotted and restored around
+        the loop below so backfill_sync leaves the incremental-sync cursor
+        exactly as it found it.
+        """
+        latest_ts_snapshot = dict(self._latest_ts)
+        oldest = str(since.timestamp())
+        latest = str(until.timestamp()) if until is not None else None
+        try:
+            for channel in self._channels:
+                for item in self._sync_channel(channel, oldest=oldest, latest=latest):
+                    ts = _ts_to_datetime(item.metadata["ts"])
+                    if ts >= since and (until is None or ts <= until):
+                        yield item
+        finally:
+            self._latest_ts = latest_ts_snapshot
