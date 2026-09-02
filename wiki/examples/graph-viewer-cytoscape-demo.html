@@ -1,0 +1,661 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Episode Atlas — Cytoscape.js demo</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape-expand-collapse@4.1.1/cytoscape-expand-collapse.min.js"></script>
+<style>
+  /*
+    wiki/okf.md "그래프 뷰어 대비" 결정의 두 번째 프로토타입.
+    첫 번째(d3-force, Claude Artifact로만 존재)와 같은 예시 데이터·같은
+    시각 톤을 쓰되, 렌더링/상호작용을 Cytoscape.js로 다시 짠 비교용 데모.
+
+    d3 버전과 다른 점 (구현상 실익):
+      - 문서가 자기 KnowledgeObject를 담는 관계를 가짜 "contain" 엣지로
+        흉내내지 않고, Cytoscape의 compound node(parent)로 표현 - 문서
+        노드가 자기 자식들을 감싸는 박스로 자동 렌더링된다.
+      - cytoscape-expand-collapse 확장으로 문서 노드를 접으면 그 안의
+        KnowledgeObject들이 요약되고 펼치면 다시 드릴다운된다(노드 우상단
+        +/- 큐 버튼, 또는 좌측 레일의 "모두 접기/펼치기").
+      - hover 시 이웃 강조, 클릭 시 상세 패널 등은 Cytoscape API
+        (closedNeighborhood/connectedEdges)로 직접 계산 없이 얻는다.
+
+    Cytoscape는 캔버스 렌더러라 색상을 런타임 JS 팔레트로 넘겨야 한다
+    (CSS 변수를 셀렉터 스타일에서 직접 못 읽음) - applyTheme()이 시스템/
+    명시적 테마를 감지해 stylesheet를 다시 빌드한다. 나머지 DOM 크롬
+    (상단바/좌측 레일/상세 패널)은 d3 버전과 동일하게 CSS 커스텀 프로퍼티로
+    라이트/다크를 처리한다.
+  */
+  :root{
+    --bg:#f6f3ec; --surface:#ffffff; --surface-2:#efeae0; --border:#ddd6c7;
+    --ink:#211d17; --muted:#726b5c; --muted-2:#8f8877;
+    --decision:#2c6e63; --decision-ink:#1d4a43;
+    --issue:#b5652e; --issue-ink:#8a4a1f;
+    --action:#6e7c3f; --action-ink:#525d2c;
+    --entity:#4a5570; --fact:#5b7a94;
+    --doc-slack:#3e5c76; --doc-gmail:#8a5a3b;
+    --edge-relation:#a39b87; --edge-link:#2c6e63; --edge-gap:#b5652e;
+    --focus:#2c6e63;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#17140f; --surface:#211d17; --surface-2:#2a2419; --border:#3a3327;
+      --ink:#f1ece1; --muted:#b4ab97; --muted-2:#8f8877;
+      --decision:#5fbfa9; --decision-ink:#8fd9c8;
+      --issue:#e0925a; --issue-ink:#f0b384;
+      --action:#a3b56b; --action-ink:#c2d194;
+      --entity:#8b9bc7; --fact:#8fb4d1;
+      --doc-slack:#7a9bc0; --doc-gmail:#d19a6e;
+      --edge-relation:#5a5344; --edge-link:#5fbfa9; --edge-gap:#e0925a;
+      --focus:#5fbfa9;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#17140f; --surface:#211d17; --surface-2:#2a2419; --border:#3a3327;
+    --ink:#f1ece1; --muted:#b4ab97; --muted-2:#8f8877;
+    --decision:#5fbfa9; --decision-ink:#8fd9c8;
+    --issue:#e0925a; --issue-ink:#f0b384;
+    --action:#a3b56b; --action-ink:#c2d194;
+    --entity:#8b9bc7; --fact:#8fb4d1;
+    --doc-slack:#7a9bc0; --doc-gmail:#d19a6e;
+    --edge-relation:#5a5344; --edge-link:#5fbfa9; --edge-gap:#e0925a;
+    --focus:#5fbfa9;
+  }
+
+  *{box-sizing:border-box;}
+  html,body{ height:100%; margin:0; }
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:"IBM Plex Sans", system-ui, sans-serif;
+    height:100vh; overflow:hidden;
+    display:flex; flex-direction:column;
+  }
+  ::selection{ background:var(--decision); color:var(--surface); }
+
+  .topbar{
+    flex:0 0 auto; display:flex; align-items:baseline; gap:14px;
+    padding:16px 22px 12px; border-bottom:1px solid var(--border);
+    background:var(--surface);
+  }
+  .topbar h1{
+    font-family:"Fraunces", Georgia, serif; font-weight:600; font-size:1.5rem;
+    letter-spacing:-0.01em; margin:0; text-wrap:balance;
+  }
+  .topbar .path{
+    font-family:"IBM Plex Mono", monospace; font-size:0.78rem; color:var(--muted);
+    padding-top:3px;
+  }
+  .topbar .badge{
+    font-size:0.72rem; letter-spacing:.04em; text-transform:uppercase;
+    border-radius:999px; padding:3px 10px; white-space:nowrap;
+  }
+  .topbar .sample-badge{ margin-left:auto; color:var(--issue-ink); border:1px solid var(--issue); }
+  .topbar .lib-badge{ color:var(--decision-ink); border:1px solid var(--decision); }
+
+  .layout{ flex:1 1 auto; display:flex; min-height:0; }
+
+  .rail{
+    flex:0 0 264px; border-right:1px solid var(--border); background:var(--surface);
+    padding:18px 16px; overflow-y:auto;
+    display:flex; flex-direction:column; gap:22px;
+  }
+  .rail h2{
+    font-size:0.68rem; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--muted); margin:0 0 10px; font-weight:600;
+  }
+  .stat-row{ display:flex; gap:10px; }
+  .stat{
+    flex:1; background:var(--surface-2); border:1px solid var(--border);
+    border-radius:8px; padding:9px 10px;
+  }
+  .stat .n{ font-family:"IBM Plex Mono",monospace; font-size:1.15rem; font-variant-numeric:tabular-nums; }
+  .stat .l{ font-size:0.68rem; color:var(--muted); margin-top:1px; }
+
+  .filters{ display:flex; flex-direction:column; gap:8px; }
+  .filter{
+    display:flex; align-items:center; gap:8px; font-size:0.82rem;
+    cursor:pointer; user-select:none; padding:3px 0;
+  }
+  .filter input{ accent-color:var(--focus); width:14px; height:14px; }
+  .swatch-line{ width:20px; height:0; border-top-width:2.5px; border-top-style:solid; flex:0 0 auto; }
+  .filter .hint{ color:var(--muted); font-size:0.72rem; margin-left:auto; }
+
+  .btn-row{ display:flex; gap:8px; }
+  .btn{
+    flex:1; font-family:"IBM Plex Sans", sans-serif; font-size:0.76rem; font-weight:500;
+    background:var(--surface-2); border:1px solid var(--border); color:var(--ink);
+    border-radius:7px; padding:7px 8px; cursor:pointer;
+  }
+  .btn:hover{ border-color:var(--focus); }
+  .btn:focus-visible{ outline:2px solid var(--focus); outline-offset:1px; }
+
+  .legend{ display:flex; flex-direction:column; gap:7px; }
+  .legend-item{ display:flex; align-items:center; gap:9px; font-size:0.8rem; }
+  .dot{ width:11px; height:11px; border-radius:50%; flex:0 0 auto; }
+  .sq{ width:11px; height:11px; border-radius:2.5px; flex:0 0 auto; }
+  .legend-item .lbl{ color:var(--ink); }
+
+  .note{
+    font-size:0.76rem; line-height:1.5; color:var(--muted);
+    border-top:1px dashed var(--border); padding-top:12px;
+  }
+  .note b{ color:var(--issue-ink); font-weight:600; }
+  .note code{ font-family:"IBM Plex Mono", monospace; }
+
+  .graph-wrap{ flex:1 1 auto; position:relative; min-width:0; }
+  #cy{ width:100%; height:100%; }
+
+  .empty-hint{
+    position:absolute; left:22px; bottom:18px; font-size:0.78rem; color:var(--muted);
+    max-width:320px; line-height:1.5; pointer-events:none;
+  }
+
+  .drawer{
+    position:absolute; top:0; right:0; bottom:0; width:340px;
+    background:var(--surface); border-left:1px solid var(--border);
+    transform:translateX(100%); transition:transform .22s ease;
+    display:flex; flex-direction:column; box-shadow:-8px 0 24px -12px rgba(0,0,0,.25);
+  }
+  .drawer.open{ transform:translateX(0); }
+  .drawer-head{
+    padding:16px 18px 12px; border-bottom:1px solid var(--border);
+    display:flex; gap:10px; align-items:flex-start;
+  }
+  .drawer-head .type-chip{
+    font-size:0.66rem; text-transform:uppercase; letter-spacing:.05em;
+    padding:2px 8px; border-radius:999px; color:var(--surface); font-weight:600;
+    white-space:nowrap; margin-top:3px;
+  }
+  .drawer-head h3{
+    font-family:"Fraunces", Georgia, serif; font-size:1.05rem; font-weight:600;
+    margin:0; line-height:1.35; text-wrap:balance;
+  }
+  .drawer-close{
+    margin-left:auto; background:none; border:none; color:var(--muted);
+    font-size:1.1rem; cursor:pointer; line-height:1; padding:2px 4px;
+  }
+  .drawer-body{ padding:14px 18px 20px; overflow-y:auto; flex:1; }
+  .drawer-body h4{
+    font-size:0.68rem; letter-spacing:.07em; text-transform:uppercase;
+    color:var(--muted); margin:16px 0 8px;
+  }
+  .drawer-body h4:first-child{ margin-top:0; }
+  .yaml{
+    font-family:"IBM Plex Mono", monospace; font-size:0.74rem; line-height:1.6;
+    background:var(--surface-2); border:1px solid var(--border); border-radius:8px;
+    padding:11px 12px; white-space:pre-wrap; word-break:break-word; color:var(--ink);
+  }
+  .back-list{ display:flex; flex-direction:column; gap:6px; }
+  .back-item{
+    display:flex; align-items:center; gap:8px; font-size:0.79rem;
+    padding:7px 9px; background:var(--surface-2); border:1px solid var(--border);
+    border-radius:7px; cursor:pointer;
+  }
+  .back-item:hover{ border-color:var(--focus); }
+  .back-item .tag{
+    font-family:"IBM Plex Mono",monospace; font-size:0.65rem; color:var(--muted);
+    white-space:nowrap;
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>Episode Atlas</h1>
+  <div class="path">./okf/proj-demo/{resources,objects,relations,links}/*.yaml</div>
+  <div class="badge lib-badge">Cytoscape.js 구현</div>
+  <div class="badge sample-badge">예시 데이터</div>
+</div>
+
+<div class="layout">
+  <aside class="rail">
+    <div>
+      <h2>구성</h2>
+      <div class="stat-row">
+        <div class="stat"><div class="n" id="stat-docs">–</div><div class="l">documents</div></div>
+        <div class="stat"><div class="n" id="stat-objs">–</div><div class="l">objects</div></div>
+        <div class="stat"><div class="n" id="stat-edges">–</div><div class="l">edges</div></div>
+      </div>
+    </div>
+
+    <div>
+      <h2>문서 접기/펼치기</h2>
+      <div class="btn-row">
+        <button class="btn" id="collapse-all">모두 접기</button>
+        <button class="btn" id="expand-all">모두 펼치기</button>
+      </div>
+    </div>
+
+    <div>
+      <h2>엣지 필터</h2>
+      <div class="filters">
+        <label class="filter">
+          <input type="checkbox" id="f-relation" checked>
+          <span class="swatch-line" style="border-color:var(--edge-relation)"></span>
+          relations/*.yaml
+          <span class="hint" id="cnt-relation"></span>
+        </label>
+        <label class="filter">
+          <input type="checkbox" id="f-link" checked>
+          <span class="swatch-line" style="border-color:var(--edge-link)"></span>
+          links/*.yaml
+          <span class="hint" id="cnt-link"></span>
+        </label>
+        <label class="filter">
+          <input type="checkbox" id="f-gap" checked>
+          <span class="swatch-line" style="border-color:var(--edge-gap); border-top-style:dashed"></span>
+          links/*.yaml (미생성)
+          <span class="hint" id="cnt-gap"></span>
+        </label>
+      </div>
+    </div>
+
+    <div>
+      <h2>노드</h2>
+      <div class="legend">
+        <div class="legend-item"><span class="sq" style="background:var(--doc-slack)"></span><span class="lbl">Slack episode/thread</span></div>
+        <div class="legend-item"><span class="sq" style="background:var(--doc-gmail)"></span><span class="lbl">Gmail thread</span></div>
+        <div class="legend-item"><span class="dot" style="background:var(--issue)"></span><span class="lbl">issue</span></div>
+        <div class="legend-item"><span class="dot" style="background:var(--decision)"></span><span class="lbl">decision</span></div>
+        <div class="legend-item"><span class="dot" style="background:var(--action)"></span><span class="lbl">action_item</span></div>
+        <div class="legend-item"><span class="dot" style="background:var(--entity)"></span><span class="lbl">entity</span></div>
+        <div class="legend-item"><span class="dot" style="background:var(--fact)"></span><span class="lbl">fact</span></div>
+      </div>
+    </div>
+
+    <div class="note">
+      문서 박스는 <code>resources/{source_id}.yaml</code>, 그 안의 원은 문서에서
+      추출된 <code>objects/{type}/{id}.yaml</code>다 — 별도 "포함" 엣지 없이
+      Cytoscape의 compound node(parent)로 표현된다. 점선 테두리 = 스레드 에피소드.
+      <br><br>
+      <b>점선 주황 엣지</b>는 <code>LinkType.CROSS_SOURCE_REFERENCE</code> —
+      스키마는 있지만 아직 어떤 파이프라인도 생성하지 않는 케이스의 예시입니다.
+    </div>
+  </aside>
+
+  <div class="graph-wrap">
+    <div id="cy"></div>
+    <div class="empty-hint">노드 클릭 = 파일 미리보기 · 문서 박스 우상단 −/+ = 접기/펼치기 · 휠/드래그로 이동·확대.</div>
+
+    <div class="drawer" id="drawer">
+      <div class="drawer-head">
+        <div><div class="type-chip" id="d-chip">-</div></div>
+        <h3 id="d-title">-</h3>
+        <button class="drawer-close" id="d-close" aria-label="닫기">✕</button>
+      </div>
+      <div class="drawer-body">
+        <h4>파일 내용</h4>
+        <div class="yaml" id="d-yaml"></div>
+        <h4>연결된 엣지</h4>
+        <div class="back-list" id="d-edges"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+
+// ---------------------------------------------------------------------
+// 예시 데이터 — d3-force 버전(Artifact)과 동일한 배포-지연 시나리오.
+// knowledge-forge의 OKF 스키마(Source/Document/KnowledgeObject/Relation/
+// Link)를 흉내낸 것으로, 실제 파이프라인 실행 결과가 아닙니다.
+// ---------------------------------------------------------------------
+
+const documents = [
+  { id:"src_slack_1", source_type:"slack", subtype:"episode", uri:"slack://deploy/episode/1756702800.0",
+    label:"#deploy · 09:00 에피소드", subtitle:"배포 일정 초기 논의", message_count:4,
+    participants:["kim","lee"] },
+  { id:"src_slack_2", source_type:"slack", subtype:"episode", uri:"slack://deploy/episode/1756711200.0",
+    label:"#deploy · 11:40 에피소드", subtitle:"DB 마이그레이션 오류 발견", message_count:6,
+    participants:["kim","park"] },
+  { id:"src_slack_3", source_type:"slack", subtype:"thread", uri:"slack://deploy/thread/1756711400.0",
+    label:"#deploy · 스레드", subtitle:"마이그레이션 롤백 계획", message_count:5,
+    participants:["park","choi"] },
+  { id:"src_gmail_1", source_type:"gmail", subtype:"thread", uri:"gmail://thread/t-8841",
+    label:"Re: 배포 일정 확정", subtitle:"정식 배포 일정 공지", message_count:3,
+    participants:["kim","stakeholders@"] },
+  { id:"src_gmail_2", source_type:"gmail", subtype:"thread", uri:"gmail://thread/t-8902",
+    label:"Re: 스테이징 QA 결과", subtitle:"QA 통과 확인 및 승인 요청", message_count:2,
+    participants:["choi","kim"] },
+];
+
+const objects = [
+  { id:"ko_issue_1", type:"issue", document:"src_slack_1",
+    summary:"QA가 아직 끝나지 않아 09:00 배포는 불가", topics:["배포","QA"] },
+  { id:"ko_decision_1", type:"decision", document:"src_slack_1",
+    summary:"배포를 오늘 오후로 연기", topics:["배포"] },
+
+  { id:"ko_issue_2", type:"issue", document:"src_slack_2",
+    summary:"DB 마이그레이션 스크립트에서 오류 발견", topics:["배포","DB"] },
+  { id:"ko_decision_2", type:"decision", document:"src_slack_2",
+    summary:"배포를 익일 10:00 KST로 재연기", topics:["배포"] },
+  { id:"ko_entity_1", type:"entity", document:"src_slack_2",
+    summary:"프로덕션 DB", topics:["DB"] },
+
+  { id:"ko_issue_3", type:"issue", document:"src_slack_3",
+    summary:"롤백 시 최근 트랜잭션 데이터 손실 우려", topics:["DB","롤백"] },
+  { id:"ko_action_1", type:"action_item", document:"src_slack_3",
+    summary:"롤백 스크립트 작성 및 드라이런", topics:["롤백"] },
+
+  { id:"ko_decision_3", type:"decision", document:"src_gmail_1",
+    summary:"정식 배포 일정을 9/3 10:00 KST로 확정 공지", topics:["배포","공지"] },
+  { id:"ko_entity_2", type:"entity", document:"src_gmail_1",
+    summary:"이해관계자 그룹 (Stakeholders)", topics:["공지"] },
+
+  { id:"ko_fact_1", type:"fact", document:"src_gmail_2",
+    summary:"스테이징 QA 100% 통과", topics:["QA"] },
+  { id:"ko_action_2", type:"action_item", document:"src_gmail_2",
+    summary:"최종 배포 승인 회신 발송", topics:["배포","승인"] },
+];
+
+const relations = [
+  { id:"rel_1", type:"caused_by", subject:"ko_decision_1", object:"ko_issue_1" },
+  { id:"rel_2", type:"caused_by", subject:"ko_decision_2", object:"ko_issue_2" },
+  { id:"rel_3", type:"mentions",  subject:"ko_issue_2",    object:"ko_entity_1" },
+  { id:"rel_4", type:"depends_on",subject:"ko_action_1",   object:"ko_issue_3" },
+  { id:"rel_5", type:"mentions",  subject:"ko_decision_3", object:"ko_entity_2" },
+  { id:"rel_6", type:"caused_by", subject:"ko_action_2",   object:"ko_fact_1" },
+];
+
+// implemented:true 인 것만 실제 파이프라인(context/slack.py, context/gmail.py
+// + pipeline._resolve_links)이 생성함.
+const links = [
+  { id:"lnk_1", type:"same_channel_sequence", source:"src_slack_1", target:"src_slack_2", implemented:true },
+  { id:"lnk_2", type:"thread_sequence",        source:"src_gmail_1", target:"src_gmail_2", implemented:true },
+  { id:"lnk_3", type:"cross_source_reference", source:"src_gmail_1", target:"src_slack_2", implemented:false },
+];
+
+// ---------------------------------------------------------------------
+
+function shortLabel(summary){ return summary.length>24 ? summary.slice(0,23)+"…" : summary; }
+const docById = Object.fromEntries(documents.map(d=>[d.id,d]));
+const objById = Object.fromEntries(objects.map(o=>[o.id,o]));
+
+const elements = [
+  ...documents.map(d => ({
+    data: { id:d.id, kind:"document", label:d.label, source_type:d.source_type, subtype:d.subtype },
+    classes: "doc",
+  })),
+  ...objects.map(o => ({
+    data: { id:o.id, parent:o.document, kind:"object", type:o.type, shortLabel:shortLabel(o.summary) },
+    classes: "obj obj-" + o.type,
+  })),
+  ...relations.map(r => ({
+    data: { id:r.id, source:r.subject, target:r.object, kind:"relation", type:r.type },
+    classes: "relation",
+  })),
+  ...links.map(l => ({
+    data: { id:l.id, source:l.source, target:l.target, kind: l.implemented?"link":"link-gap", type:l.type },
+    classes: l.implemented ? "link" : "link-gap",
+  })),
+];
+
+document.getElementById("stat-docs").textContent = documents.length;
+document.getElementById("stat-objs").textContent = objects.length;
+document.getElementById("stat-edges").textContent = relations.length + links.length;
+document.getElementById("cnt-relation").textContent = relations.length;
+document.getElementById("cnt-link").textContent = links.filter(l=>l.implemented).length;
+document.getElementById("cnt-gap").textContent = links.filter(l=>!l.implemented).length;
+
+// ---------------------------------------------------------------------
+// theme-aware stylesheet — Cytoscape renders to canvas, so colors are
+// plain JS strings resolved from this palette, not CSS var() references.
+// ---------------------------------------------------------------------
+
+const LIGHT = {
+  bg:"#f6f3ec", surface:"#ffffff", ink:"#211d17", muted:"#726b5c",
+  decision:"#2c6e63", issue:"#b5652e", action:"#6e7c3f", entity:"#4a5570", fact:"#5b7a94",
+  docSlack:"#3e5c76", docGmail:"#8a5a3b",
+  edgeRelation:"#a39b87", edgeLink:"#2c6e63", edgeGap:"#b5652e", focus:"#2c6e63",
+};
+const DARK = {
+  bg:"#17140f", surface:"#211d17", ink:"#f1ece1", muted:"#b4ab97",
+  decision:"#5fbfa9", issue:"#e0925a", action:"#a3b56b", entity:"#8b9bc7", fact:"#8fb4d1",
+  docSlack:"#7a9bc0", docGmail:"#d19a6e",
+  edgeRelation:"#5a5344", edgeLink:"#5fbfa9", edgeGap:"#e0925a", focus:"#5fbfa9",
+};
+
+function currentPalette(){
+  const explicit = document.documentElement.getAttribute("data-theme");
+  if(explicit === "dark") return DARK;
+  if(explicit === "light") return LIGHT;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? DARK : LIGHT;
+}
+
+function objColor(type, p){
+  return { entity:p.entity, fact:p.fact, decision:p.decision, action_item:p.action, issue:p.issue }[type] || p.muted;
+}
+
+function buildStyle(p){
+  return [
+    { selector: "node.doc", style: {
+        "shape": "round-rectangle",
+        "background-color": ele => ele.data("source_type")==="slack" ? p.docSlack : p.docGmail,
+        "background-opacity": 0.14,
+        "border-width": 2,
+        "border-color": ele => ele.data("source_type")==="slack" ? p.docSlack : p.docGmail,
+        "border-style": ele => ele.data("subtype")==="thread" ? "dashed" : "solid",
+        "label": "data(label)",
+        "text-valign": "top", "text-halign": "center", "text-margin-y": -8,
+        "font-family": '"IBM Plex Sans", sans-serif', "font-size": 11, "font-weight": 600,
+        "color": p.ink,
+        "padding": 26,
+        "compound-sizing-wrt-labels": "include",
+    }},
+    { selector: "node.obj", style: {
+        "shape": "ellipse",
+        "width": ele => ele.data("type")==="entity" ? 30 : 24,
+        "height": ele => ele.data("type")==="entity" ? 30 : 24,
+        "background-color": ele => objColor(ele.data("type"), p),
+        "border-width": 2, "border-color": p.surface,
+        "label": "data(shortLabel)",
+        "text-valign": "bottom", "text-halign": "center", "text-margin-y": 6,
+        "font-family": '"IBM Plex Sans", sans-serif', "font-size": 9,
+        "color": p.ink,
+        "text-wrap": "wrap", "text-max-width": "70px",
+    }},
+    { selector: "edge.relation", style: {
+        "width": 1.6, "line-color": p.edgeRelation, "curve-style": "bezier",
+        "target-arrow-shape": "triangle", "target-arrow-color": p.edgeRelation, "arrow-scale": 0.7,
+        "label": "data(type)", "font-family": '"IBM Plex Mono", monospace', "font-size": 8,
+        "color": p.muted, "text-background-color": p.bg, "text-background-opacity": 0.85, "text-background-padding": "2px",
+    }},
+    { selector: "edge.link", style: {
+        "width": 3, "line-color": p.edgeLink,
+        "curve-style": "unbundled-bezier", "control-point-distances": [50], "control-point-weights": [0.5],
+        "target-arrow-shape": "triangle", "target-arrow-color": p.edgeLink, "arrow-scale": 0.9,
+        "label": "data(type)", "font-family": '"IBM Plex Mono", monospace', "font-size": 8.5,
+        "color": p.edgeLink, "text-background-color": p.bg, "text-background-opacity": 0.85, "text-background-padding": "2px",
+    }},
+    { selector: "edge.link-gap", style: {
+        "width": 2.2, "line-color": p.edgeGap, "line-style": "dashed", "line-dash-pattern": [5,4],
+        "curve-style": "unbundled-bezier", "control-point-distances": [-50], "control-point-weights": [0.5],
+        "target-arrow-shape": "triangle", "target-arrow-color": p.edgeGap, "arrow-scale": 0.9,
+        "label": "data(type)", "font-family": '"IBM Plex Mono", monospace', "font-size": 8.5,
+        "color": p.edgeGap, "text-background-color": p.bg, "text-background-opacity": 0.85, "text-background-padding": "2px",
+    }},
+    { selector: ".dim", style: { "opacity": 0.12 } },
+    { selector: ".hidden", style: { "display": "none" } },
+    { selector: "node.selected", style: { "border-width": 3, "border-color": p.focus } },
+    { selector: "node.doc.selected", style: { "border-width": 3, "border-color": p.focus } },
+    { selector: "node.cy-expand-collapse-collapsed-node", style: {
+        "background-opacity": 0.28,
+        "border-style": "solid",
+    }},
+  ];
+}
+
+// ---------------------------------------------------------------------
+// cytoscape init
+// ---------------------------------------------------------------------
+
+cytoscape.use(cytoscapeExpandCollapse);
+
+const cy = cytoscape({
+  container: document.getElementById("cy"),
+  elements,
+  style: buildStyle(currentPalette()),
+  layout: { name: "cose", padding: 40, nodeDimensionsIncludeLabels: true, animate: false, randomize: false, gravity: 220, idealEdgeLength: 90 },
+  wheelSensitivity: 0.25,
+  minZoom: 0.3, maxZoom: 3,
+});
+
+const expandCollapseApi = cy.expandCollapse({
+  layoutBy: { name: "cose", padding: 40, nodeDimensionsIncludeLabels: true, animate: true, randomize: false, gravity: 220, idealEdgeLength: 90 },
+  fisheye: true,
+  animate: true,
+  undoable: false,
+  cueEnabled: true,
+});
+
+document.getElementById("collapse-all").addEventListener("click", () => expandCollapseApi.collapseAll());
+document.getElementById("expand-all").addEventListener("click", () => expandCollapseApi.expandAll());
+
+// theme changes: OS-level toggle or a host stamping data-theme later -----
+
+function applyTheme(){ cy.style(buildStyle(currentPalette())); }
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
+new MutationObserver(applyTheme).observe(document.documentElement, { attributes:true, attributeFilter:["data-theme"] });
+
+// ---------------------------------------------------------------------
+// hover / selection highlighting
+// ---------------------------------------------------------------------
+
+let selected = null;
+
+function neighborhoodOf(node){
+  let scope = node.closedNeighborhood();
+  if(node.isParent()){
+    const kids = node.descendants();
+    scope = scope.union(kids).union(kids.connectedEdges());
+  }
+  return scope;
+}
+function focusOn(node){
+  const scope = neighborhoodOf(node);
+  cy.elements().difference(scope).addClass("dim");
+  scope.removeClass("dim");
+}
+function clearFocus(){ cy.elements().removeClass("dim"); }
+
+cy.on("mouseover", "node", evt => { if(!selected) focusOn(evt.target); });
+cy.on("mouseout", "node", evt => { if(!selected) clearFocus(); });
+
+cy.on("tap", "node", evt => {
+  if(evt.target.hasClass("cy-expand-collapse-collapsed-node") && evt.originalEvent && evt.originalEvent.target && evt.originalEvent.target.closest){
+    // let the expand/collapse cue button handle its own click without also selecting
+  }
+  selected = evt.target;
+  cy.nodes().removeClass("selected");
+  selected.addClass("selected");
+  focusOn(selected);
+  openDrawer(selected);
+});
+cy.on("tap", evt => {
+  if(evt.target === cy){
+    selected = null;
+    cy.nodes().removeClass("selected");
+    clearFocus();
+    closeDrawer();
+  }
+});
+
+// ---------------------------------------------------------------------
+// edge filters
+// ---------------------------------------------------------------------
+
+function applyFilters(){
+  const showRel = document.getElementById("f-relation").checked;
+  const showLink = document.getElementById("f-link").checked;
+  const showGap = document.getElementById("f-gap").checked;
+  cy.edges(".relation").toggleClass("hidden", !showRel);
+  cy.edges(".link").toggleClass("hidden", !showLink);
+  cy.edges(".link-gap").toggleClass("hidden", !showGap);
+}
+["f-relation","f-link","f-gap"].forEach(id=>{
+  document.getElementById(id).addEventListener("change", applyFilters);
+});
+applyFilters();
+
+// ---------------------------------------------------------------------
+// detail drawer
+// ---------------------------------------------------------------------
+
+const drawer = document.getElementById("drawer");
+
+function docYaml(d){
+  return `source:
+  source_id: ${d.id}
+  source_type: ${d.source_type}
+  uri: ${d.uri}
+document:
+  title: "${d.label}"
+  element_count: ${d.message_count}
+metadata:
+  participants: [${d.participants.join(", ")}]`;
+}
+function objYaml(o){
+  return `knowledge_object_id: ${o.id}
+type: ${o.type}
+document:
+  document_id: ${o.document}
+summary: "${o.summary}"
+topics: [${o.topics.join(", ")}]`;
+}
+
+function openDrawer(node){
+  const id = node.id();
+  const isDoc = node.hasClass("doc");
+  const record = isDoc ? docById[id] : objById[id];
+
+  const chip = document.getElementById("d-chip");
+  const title = document.getElementById("d-title");
+  const yaml = document.getElementById("d-yaml");
+  const edgesBox = document.getElementById("d-edges");
+
+  const colorVar = isDoc
+    ? (record.source_type==="slack" ? "var(--doc-slack)" : "var(--doc-gmail)")
+    : `var(--${record.type==="action_item" ? "action" : record.type})`;
+  chip.style.background = colorVar;
+  chip.textContent = isDoc ? `${record.source_type} · ${record.subtype}` : record.type;
+  title.textContent = isDoc ? record.label : record.summary;
+  yaml.textContent = isDoc ? docYaml(record) : objYaml(record);
+
+  const rows = node.connectedEdges().filter(e => !e.hasClass("hidden")).map(e => {
+    const other = e.source().id()===id ? e.target() : e.source();
+    const otherRecord = other.hasClass("doc") ? docById[other.id()] : objById[other.id()];
+    const label = other.hasClass("doc") ? otherRecord.label : otherRecord.summary;
+    return `<div class="back-item" data-nid="${other.id()}"><span class="tag">${e.data("type")}</span><span>${label.length>34?label.slice(0,33)+"…":label}</span></div>`;
+  });
+  edgesBox.innerHTML = rows.join("") || `<div style="color:var(--muted);font-size:0.8rem;">연결된 엣지 없음</div>`;
+  edgesBox.querySelectorAll(".back-item").forEach(el => {
+    el.addEventListener("click", () => {
+      const target = cy.getElementById(el.getAttribute("data-nid"));
+      if(target.empty()) return;
+      selected = target;
+      cy.nodes().removeClass("selected");
+      target.addClass("selected");
+      focusOn(target);
+      openDrawer(target);
+    });
+  });
+
+  drawer.classList.add("open");
+}
+function closeDrawer(){ drawer.classList.remove("open"); }
+document.getElementById("d-close").addEventListener("click", (ev) => {
+  ev.stopPropagation();
+  selected = null;
+  cy.nodes().removeClass("selected");
+  clearFocus();
+  closeDrawer();
+});
+
+})();
+</script>
+</body>
+</html>
