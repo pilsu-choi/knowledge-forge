@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from knowledge_forge.api.deps import get_job_store
 from knowledge_forge.api.schemas import IngestRequest, IngestResponse
-from knowledge_forge.collectors.saas.factory import SAAS_COLLECTOR_BUILDERS
+from knowledge_forge.collectors.saas.factory import SAAS_COLLECTOR_BUILDERS, job_type_for_source
 from knowledge_forge.config import settings
 from knowledge_forge.storage.job_store import JobStore
 
@@ -38,7 +38,7 @@ async def ingest(request: IngestRequest, job_store: JobStore = Depends(get_job_s
             raise HTTPException(status_code=400, detail=f"path not found: {request.path}")
 
         job = await job_store.enqueue(
-            "local_file_ingest",
+            job_type_for_source("local"),
             {"path": request.path, "max_tokens": max_tokens, "model": request.model, "okf_dir": request.okf_dir},
             project_id=request.project_id,
         )
@@ -51,7 +51,7 @@ async def ingest(request: IngestRequest, job_store: JobStore = Depends(get_job_s
         )
 
     job = await job_store.enqueue(
-        f"{request.source}_ingest",
+        job_type_for_source(request.source),
         {"max_tokens": max_tokens, "model": request.model, "okf_dir": request.okf_dir},
         project_id=request.project_id,
     )

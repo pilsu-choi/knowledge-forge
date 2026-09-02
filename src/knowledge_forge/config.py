@@ -85,5 +85,15 @@ class Settings(BaseSettings):
     gmail_token_path: str | None = None
     gmail_query: str | None = None
 
+    # Sources to auto-sync on an interval, started from inside `serve`'s own
+    # process (scheduling/auto_enqueue.py) so the API server alone is enough
+    # to also drive periodic sync - no separate `knowledge-forge schedule`
+    # process needed. Inline JSON array or a path to a file containing one
+    # (same "inline-or-path" convention as slack_channel_project_map above),
+    # each entry shaped like IngestRequest plus `interval_seconds`, e.g.
+    # '[{"source": "local", "path": "/app/input", "interval_seconds": 600}]'.
+    # None (default) disables auto-scheduling entirely.
+    scheduled_sources: str | None = None
+
 
 settings = Settings()

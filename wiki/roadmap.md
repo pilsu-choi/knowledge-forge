@@ -270,7 +270,11 @@ Knowledge가 나온다.
    `knowledge-forge schedule`이 이 모델) 또는 향후 webhook/event-driven ingest가 맞고, 정적
    파일 소스는 최초 1회 + 변경 감지 재처리로 충분하다는 게 이미 맞게 설계되어 있음 — 다만
    Slack/Gmail의 짧은 polling 주기가 필요해질 경우 API rate limit 대응(3단계에서 이미 언급)이
-   더 중요해진다.
+   더 중요해진다. ~~`serve`를 켜두는 것만으로 polling이 시작되는 배포 형태~~ — 완료.
+   `KF_SCHEDULED_SOURCES`(`scheduling/auto_enqueue.py`)가 `serve`의 lifespan에서 소스별
+   반복 job을 이 4단계-4의 `jobs` 큐에 직접 enqueue한다 — `schedule`처럼 파이프라인을 별도
+   프로세스에서 직접 실행하지 않고 `POST /ingest`와 동일한 경로를 타므로, 실행 경로가 늘지
+   않는다([`scheduling.md`](scheduling.md) "`serve` 자동 스케줄링" 참고).
 
 ### 5단계 — Typed Knowledge Graph 고도화 (Phase 6에서 완료, 위 "완료된 범위" 참고)
 

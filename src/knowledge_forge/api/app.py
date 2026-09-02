@@ -9,6 +9,7 @@ from fastapi import FastAPI
 
 from knowledge_forge.api.routes import health, ingest, jobs, knowledge, sources
 from knowledge_forge.config import settings
+from knowledge_forge.scheduling.auto_enqueue import parse_scheduled_sources, start_auto_enqueue_scheduler
 from knowledge_forge.storage.job_store import JobStore
 
 
@@ -17,10 +18,23 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Best-effort, once, at startup - not per request (api/deps.py). Skipped
     # entirely when no KF_DATABASE_URL is set so the server can still come
     # up and serve /health (every other route 503s via api/deps.py).
+    scheduler = None
     if settings.database_url:
         async with JobStore(settings.database_url) as store:
             await store.init_schema()
+
+        # Auto-scheduling (KF_SCHEDULED_SOURCES, scheduling/auto_enqueue.py):
+        # starting `serve` is enough to also start periodic sync, with no
+        # separate `knowledge-forge schedule` process. Disabled by default -
+        # only starts when KF_SCHEDULED_SOURCES is actually configured.
+        # Parsing before the try-less call is deliberate: a malformed value
+        # should fail server startup loudly, not silently schedule nothing.
+        scheduled_sources = parse_scheduled_sources(settings.scheduled_sources)
+        if scheduled_sources:
+            scheduler = start_auto_enqueue_scheduler(settings.database_url, scheduled_sources)
     yield
+    if scheduler is not None:
+        scheduler.shutdown()
 
 
 _TAGS_METADATA = [

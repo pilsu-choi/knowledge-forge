@@ -125,3 +125,16 @@ SAAS_COLLECTOR_BUILDERS: dict[str, Callable[[], Collector]] = {
     "gdrive": build_gdrive_collector,
     "gmail": build_gmail_collector,
 }
+
+
+def job_type_for_source(source: str) -> str:
+    """Maps a `source` name to the job_type enqueued for it - the single
+    source of truth for a mapping otherwise duplicated across every caller
+    that turns a `source` into a job (api/routes/ingest.py, worker.py's
+    dispatch, scheduling/auto_enqueue.py). "local_file_ingest" for "local"
+    keeps its own name for backward compatibility with already-enqueued/
+    persisted jobs (it predates this convention); every other source gets
+    "{source}_ingest", so a new SAAS_COLLECTOR_BUILDERS entry needs no
+    matching change here.
+    """
+    return "local_file_ingest" if source == "local" else f"{source}_ingest"

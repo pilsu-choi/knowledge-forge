@@ -14,7 +14,7 @@ import asyncio
 import logging
 from pathlib import Path
 
-from knowledge_forge.collectors.saas.factory import SAAS_COLLECTOR_BUILDERS
+from knowledge_forge.collectors.saas.factory import SAAS_COLLECTOR_BUILDERS, job_type_for_source
 from knowledge_forge.ingest import run_local_ingest, run_saas_ingest
 from knowledge_forge.okf import OKFWriter
 from knowledge_forge.storage.job_store import Job, JobStore
@@ -22,13 +22,10 @@ from knowledge_forge.storage.store import PipelineStore
 
 logger = logging.getLogger(__name__)
 
-# job_type naming: "local_file_ingest" predates the `{source}_ingest`
-# convention (api/routes/ingest.py's `source` field) and keeps its own name
-# for backward compatibility with already-enqueued/persisted jobs; every
-# SaaS source instead gets "{source}_ingest" (e.g. "slack_ingest"),
-# generated from SAAS_COLLECTOR_BUILDERS so a new SaaS collector doesn't need
-# a matching change here.
-_SAAS_JOB_TYPES = {f"{source}_ingest": source for source in SAAS_COLLECTOR_BUILDERS}
+# job_type -> source, the reverse of job_type_for_source() - generated from
+# SAAS_COLLECTOR_BUILDERS so a new SaaS collector doesn't need a matching
+# change here.
+_SAAS_JOB_TYPES = {job_type_for_source(source): source for source in SAAS_COLLECTOR_BUILDERS}
 
 
 async def _dispatch(job: Job, database_url: str, data_dir: str) -> dict:
@@ -41,7 +38,7 @@ async def _dispatch(job: Job, database_url: str, data_dir: str) -> dict:
     okf_dir = job.payload.get("okf_dir")
     okf_writer = OKFWriter(okf_dir, project_id=job.project_id) if okf_dir else None
 
-    if job.job_type == "local_file_ingest":
+    if job.job_type == job_type_for_source("local"):
         path = job.payload["path"]
         async with PipelineStore(database_url, data_dir) as store:
             await store.init_schema()  # idempotent (CREATE TABLE IF NOT EXISTS)

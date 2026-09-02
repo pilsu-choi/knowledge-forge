@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from knowledge_forge.api.app import create_app
 from knowledge_forge.api.deps import get_job_store, get_read_store
+from knowledge_forge.config import settings
 from knowledge_forge.models.document import Document, DocumentMetadata, TextBlock
 from knowledge_forge.models.knowledge_object import DocumentRef, KnowledgeObject, KnowledgeObjectType
 from knowledge_forge.models.relation import Relation, RelationType
@@ -327,3 +328,57 @@ def test_get_document_404():
     client = _make_client(_FakeJobStore(), _FakeReadStore())
     resp = client.get("/documents/nope")
     assert resp.status_code == 404
+
+
+class _FakeLifespanJobStore:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return None
+
+    async def init_schema(self):
+        return None
+
+
+def test_lifespan_starts_auto_enqueue_scheduler_when_configured(monkeypatch):
+    """`serve` starting is enough to also start periodic sync when
+    KF_SCHEDULED_SOURCES is set - the whole point of auto_enqueue.py."""
+    calls = []
+
+    class _FakeScheduler:
+        def shutdown(self):
+            calls.append("shutdown")
+
+    def fake_start(dsn, sources):
+        calls.append(("start", dsn, sources))
+        return _FakeScheduler()
+
+    monkeypatch.setattr("knowledge_forge.api.app.JobStore", lambda dsn: _FakeLifespanJobStore())
+    monkeypatch.setattr("knowledge_forge.api.app.start_auto_enqueue_scheduler", fake_start)
+    monkeypatch.setattr(settings, "database_url", "postgresql://fake")
+    monkeypatch.setattr(settings, "scheduled_sources", '[{"source": "local", "path": "/app/input"}]')
+
+    with TestClient(create_app()):
+        pass
+
+    assert calls[0][0] == "start"
+    assert calls[0][1] == "postgresql://fake"
+    assert calls[0][2][0].path == "/app/input"
+    assert calls[-1] == "shutdown"
+
+
+def test_lifespan_skips_scheduler_when_not_configured(monkeypatch):
+    started = []
+    monkeypatch.setattr("knowledge_forge.api.app.JobStore", lambda dsn: _FakeLifespanJobStore())
+    monkeypatch.setattr(
+        "knowledge_forge.api.app.start_auto_enqueue_scheduler",
+        lambda dsn, sources: started.append(sources) or None,
+    )
+    monkeypatch.setattr(settings, "database_url", "postgresql://fake")
+    monkeypatch.setattr(settings, "scheduled_sources", None)
+
+    with TestClient(create_app()):
+        pass
+
+    assert started == []

@@ -122,6 +122,55 @@ DB 연결이 끊겨도 다음 tick이 스스로 복구한다.
 쓴다 — 두 명령 사이에 설정을 옮길 때 헷갈리지 않도록 의도적으로 맞췄다. `--interval-seconds`
 만 `schedule` 고유 옵션이다.
 
+## `serve` 자동 스케줄링 (`KF_SCHEDULED_SOURCES`, `scheduling/auto_enqueue.py`)
+
+`knowledge-forge schedule`은 파이프라인을 직접(in-process) 반복 실행하는 별도 프로세스다 —
+운영하려면 그 프로세스 자체를 켜두고 있어야 한다. 반면 `serve`(`api/app.py`)를 시작하는
+것만으로도 자동으로 주기적 수집이 시작되길 원한다면 `KF_SCHEDULED_SOURCES`를 쓴다:
+
+```bash
+export KF_SCHEDULED_SOURCES='[
+  {"source": "local", "path": "/app/input", "project_id": "default", "interval_seconds": 600, "okf_dir": "/app/okf"},
+  {"source": "slack", "project_id": "PRJ-A", "interval_seconds": 300}
+]'
+uv run knowledge-forge serve
+```
+
+값은 inline JSON 배열이거나(위 예시), 그런 배열을 담은 파일 경로 — `KF_SLACK_CHANNEL_PROJECT_MAP`
+등이 쓰는 "inline 또는 파일 경로" 관례와 같다(`collectors/saas/factory.py::_load_json_config`).
+각 원소는 `POST /ingest`(`IngestRequest`)와 같은 필드에 `interval_seconds`(기본 600)가 추가된
+모양이다 — `source`가 `"local"`이면 `path`가 필수, 그 외(`SAAS_COLLECTOR_BUILDERS`의 키)는
+`path`가 무시된다. 형식이 잘못됐거나 `source`가 알 수 없는 값이면 `serve` 시작 자체가
+실패한다(조용히 아무것도 스케줄하지 않는 대신) — `api/app.py`의 lifespan이 `parse_scheduled_sources()`를
+그대로 전파한다.
+
+### 왜 `run_pipeline`을 직접 부르지 않고 enqueue만 하는가
+
+`schedule`의 `build_tick`(위 절)은 매 tick마다 `run_pipeline`을 직접 실행한다 — 파이프라인을
+실행하는 코드 경로가 그 프로세스 안에 하나 더 생기는 셈이다. `auto_enqueue.py`는 대신 매
+tick마다 **`POST /ingest`가 하는 것과 정확히 같은 일**, 즉 `JobStore.enqueue()`로 `jobs`
+테이블에 job 하나를 넣기만 한다(`_build_tick`, `job_type_for_source()`로 job_type 결정) —
+실제 파이프라인 실행은 여전히 `worker.py`의 `_dispatch()` 하나뿐이다. 그 덕에:
+
+- **새 진입점이 새 실행 경로를 만들지 않는다** — OKF 연결, 실패 격리, `project_id` 태깅 등
+  `_dispatch()`에 이미 있는 동작을 자동 스케줄링도 그대로 물려받는다. `_dispatch()`를 고치면
+  수동/자동 ingest 모두에 한 번에 반영된다.
+- **무거운 작업(LLM 호출)은 `worker`가, 가벼운 작업(enqueue)은 `api`가 맡는다** — `worker`는
+  이미 별도 프로세스로 수평 확장 가능하게 설계되어 있으므로(`wiki/api.md`), 스케줄되는 소스
+  수가 늘어도 `api` 프로세스 자체의 부하는 거의 늘지 않는다.
+- **`schedule`은 그대로 남아 있다** — 파일 소스 하나를 신경 안 쓰고 포그라운드로 켜두는
+  가벼운 용도(SIGUSR1/HTTP 수동 트리거 포함)에는 여전히 `schedule`이 더 간단하다. 두 진입점은
+  서로 대체 관계가 아니라 다른 배포 형태(장기 실행 CLI 프로세스 vs. 이미 떠 있는 API 서버)에
+  맞는 선택지다.
+
+### docker-compose
+
+`api` 서비스에 `KF_SCHEDULED_SOURCES` 환경변수 하나만 채우면 된다(`docker-compose.yml` 참고,
+호스트 환경변수 또는 `.env`로 주입) — 별도 서비스를 추가할 필요가 없다. `okf_dir`을 컨테이너
+경로(예: `/app/okf`)로 설정했다면 그 디렉터리를 실제로 쓰는 쪽은 `worker`이므로(`_dispatch()`가
+`OKFWriter`를 만드는 곳), `worker` 서비스에 그 경로를 볼륨 마운트해야 호스트에도 파일이
+남는다(`./okf:/app/okf`, 이미 `docker-compose.yml`에 배선되어 있음).
+
 ## `schedule` vs. `serve`/`worker` — 언제 뭘 쓰나
 
 `schedule`은 하나의 장기 실행 프로세스가 스스로 반복 호출하는 **폴링** 모델이다 - 정적 파일

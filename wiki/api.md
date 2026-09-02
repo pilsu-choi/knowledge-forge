@@ -73,6 +73,15 @@ curl localhost:8000/jobs/<job_id>
 curl localhost:8000/knowledge-objects
 ```
 
+## 자동 스케줄링 (`KF_SCHEDULED_SOURCES`)
+
+`serve` 프로세스 자체가 (`api/app.py`의 lifespan에서) 소스별 반복 job을 이 `jobs` 큐에
+enqueue할 수도 있다 — `knowledge-forge schedule`처럼 별도 프로세스를 띄우지 않고도
+`serve`를 시작하는 것만으로 주기적 수집이 시작된다. 자세한 설명은
+[`scheduling.md`](scheduling.md)의 "`serve` 자동 스케줄링" 절 참고. 기본값은 비활성화
+(`KF_SCHEDULED_SOURCES` 미설정) — 명시적으로 설정하지 않는 한 이 절 이전까지의 동작(요청이
+와야 enqueue)과 완전히 동일하다.
+
 ## 엔드포인트
 
 FastAPI가 자동 생성하는 대화형 문서도 있다: `GET /docs`(Swagger UI), `GET /redoc`, `GET

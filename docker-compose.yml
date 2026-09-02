@@ -49,6 +49,13 @@ services:
     environment:
       KF_DATABASE_URL: postgresql://kf:kf@postgres:5432/knowledge_forge
       KF_DATA_DIR: /app/data
+      # Auto-scheduling (wiki/scheduling.md "serve 자동 스케줄링"): starting
+      # this service is then enough to also periodically enqueue ingest
+      # jobs - no separate `schedule` process/service needed. Empty by
+      # default (no auto-scheduling). Example (uncomment/edit and set on the
+      # host, or in a .env file docker compose reads):
+      #   KF_SCHEDULED_SOURCES='[{"source":"local","path":"/app/input","interval_seconds":600,"okf_dir":"/app/okf"}]'
+      KF_SCHEDULED_SOURCES: ${KF_SCHEDULED_SOURCES:-}
     ports:
       - "8000:8000"
     command: ["serve", "--host", "0.0.0.0", "--port", "8000"]
@@ -70,6 +77,10 @@ services:
     volumes:
       - ./data:/app/data
       - ./input:/app/input:ro
+      # Only needed when a job's `okf_dir` (e.g. from KF_SCHEDULED_SOURCES
+      # above) points inside the container at /app/okf - worker.py's
+      # _dispatch() is what actually writes the OKF tree, not `api`.
+      - ./okf:/app/okf
     command: ["worker"]
 
 volumes:
