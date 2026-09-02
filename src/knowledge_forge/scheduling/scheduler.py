@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from knowledge_forge.chunking import AdaptiveChunker
+from knowledge_forge.collectors.base import Collector
 from knowledge_forge.collectors.local_file import LocalFileCollector
 from knowledge_forge.extraction.factory import get_extractor
 from knowledge_forge.parsers.registry import default_registry
@@ -45,7 +46,7 @@ DEFAULT_TRIGGER_API_PORT = 8765
 
 
 def build_tick(
-    collector: LocalFileCollector,
+    collector: Collector,
     registry,
     chunker,
     extractor,
@@ -172,7 +173,8 @@ def _install_manual_trigger_handler(scheduler: AsyncIOScheduler) -> bool:
 
 
 async def run_scheduled_sync(
-    root: Path | str,
+    root: Path | str | None = None,
+    collector: Collector | None = None,
     interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
     max_tokens: int = 4000,
     model: str | None = None,
@@ -183,15 +185,29 @@ async def run_scheduled_sync(
     trigger_api_port: int | None = DEFAULT_TRIGGER_API_PORT,
 ) -> None:
     """Runs forever as a background job on the current event loop,
-    incrementally syncing `root` every `interval_seconds` (firing once
-    immediately at startup, then on the interval) until interrupted
-    (Ctrl-C / SIGINT). An operator can also force an out-of-cycle sync at
-    any time via `kill -USR1 <pid>`, or by POSTing to `/trigger` on the
-    trigger API (bound to `trigger_api_host:trigger_api_port`, disabled by
-    passing `trigger_api_port=None`) - see trigger_now()/build_trigger_app()
-    and wiki/scheduling.md.
+    incrementally syncing every `interval_seconds` (firing once immediately
+    at startup, then on the interval) until interrupted (Ctrl-C / SIGINT).
+    An operator can also force an out-of-cycle sync at any time via
+    `kill -USR1 <pid>`, or by POSTing to `/trigger` on the trigger API
+    (bound to `trigger_api_host:trigger_api_port`, disabled by passing
+    `trigger_api_port=None`) - see trigger_now()/build_trigger_app() and
+    wiki/scheduling.md.
+
+    Exactly one of `root` or `collector` must be given. `root` builds a
+    `LocalFileCollector(root=root, state_path=state_path)` - `state_path`
+    persists its cursor to disk, so incremental sync survives a process
+    restart. `collector` takes an already-built Collector (e.g. from
+    collectors/saas/factory.py) as-is; its cursor only lives in memory for
+    this process's lifetime (see SlackCollector), since SaaS collectors have
+    no `state_path` equivalent yet - restarting `schedule` re-runs their
+    initial_sync().
     """
-    collector = LocalFileCollector(root=root, state_path=state_path)
+    if collector is None:
+        if root is None:
+            raise ValueError("run_scheduled_sync() needs either `root` or `collector`.")
+        collector = LocalFileCollector(root=root, state_path=state_path)
+    elif root is not None:
+        raise ValueError("run_scheduled_sync() takes `root` or `collector`, not both.")
     registry = default_registry()
     chunker = AdaptiveChunker(max_tokens_per_chunk=max_tokens)
     # model=None lets get_extractor() pick the active provider's own

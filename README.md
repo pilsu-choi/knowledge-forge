@@ -125,7 +125,7 @@ flowchart LR
 
 ### SaaS 커넥터
 
-실제 SDK 연동으로 전부 구현되어 있다 (`src/knowledge_forge/collectors/saas/`). **다만 `knowledge-forge` CLI에는 아직 연결되어 있지 않다** — `extract`/`schedule`은 현재 `LocalFileCollector`만 사용한다. CLI 연동 전까지는 직접 인증된 SDK 클라이언트를 주입해서 사용해야 한다 (자세한 방법: [`wiki/dev-guide.md`](wiki/dev-guide.md#saas-커넥터-사용하기-cli-연동-전)).
+실제 SDK 연동으로 전부 구현되어 있다 (`src/knowledge_forge/collectors/saas/`). `collectors/saas/factory.py`의 `build_*_collector()`가 `KF_`-접두사 `.env` 값(아래 [환경 변수](#환경-변수) 참고)을 읽어 인증된 SDK 클라이언트 생성부터 커넥터 조립까지 대신해준다 — 직접 SDK 클라이언트를 만들어 주입할 필요가 없다. `knowledge-forge extract`/`schedule`의 `--source {slack,notion,gdrive,gmail}`로 바로 실행할 수 있다 (자세한 방법: [`wiki/dev-guide.md`](wiki/dev-guide.md#saas-커넥터-사용하기)).
 
 | 소스 | 초기 동기화 | 증분 동기화 | 삭제 감지 |
 |---|---|---|---|
@@ -168,7 +168,7 @@ uv sync --extra xlsx --extra pptx --extra hwpx --extra slack --extra google --ex
 
 ## 환경 변수
 
-`KF_` 접두사를 가진 값은 `src/knowledge_forge/config.py`의 `Settings`에서 관리된다.
+`KF_` 접두사를 가진 값은 `src/knowledge_forge/config.py`의 `Settings`에서 관리되며, 저장소 루트의 `.env` 파일(`env_file=".env"`)을 자동으로 읽는다 — 템플릿은 [`.env.example`](.env.example) 참고.
 
 | 환경변수 | 기본값 | 설명 |
 |---|---|---|
@@ -183,6 +183,22 @@ uv sync --extra xlsx --extra pptx --extra hwpx --extra slack --extra google --ex
 | `KF_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API 엔드포인트 |
 | `OPENROUTER_API_KEY` | (없음) | OpenRouter API 키 |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` | (없음) | Anthropic 자격 증명 (SDK가 자동 탐색) |
+
+### SaaS 커넥터 자격 증명
+
+`collectors/saas/factory.py`의 `build_*_collector()`가 읽는 값 — 쓰려는 소스만 채우면 된다.
+
+| 환경변수 | 설명 |
+|---|---|
+| `KF_SLACK_BOT_TOKEN` | Slack Bot Token (`xoxb-...`) |
+| `KF_SLACK_CHANNELS` | 동기화할 채널 ID, 콤마 구분 (예: `C0123,C0456`) |
+| `KF_NOTION_TOKEN` | Notion Integration 토큰 |
+| `KF_NOTION_DATABASE_ID` | 특정 데이터베이스로 범위를 좁힐 때만 설정 (없으면 접근 가능한 모든 페이지 검색) |
+| `KF_GDRIVE_CREDENTIALS_JSON` | 서비스 계정 JSON — 인라인 값 또는 파일 경로 둘 다 허용 |
+| `KF_GDRIVE_FOLDER_ID` | 동기화 대상 폴더 (없으면 서비스 계정이 볼 수 있는 전체 파일) |
+| `KF_GMAIL_CREDENTIALS_PATH` | OAuth 클라이언트 설정 파일 경로(토큰 최초 발급용) |
+| `KF_GMAIL_TOKEN_PATH` | 이미 발급된 user OAuth 토큰(`token.json`) 경로 — 필수, 이 파일이 있어야 factory가 클라이언트를 만든다 |
+| `KF_GMAIL_QUERY` | Gmail 검색 쿼리로 동기화 범위 제한 (예: `label:PI/CANDIDATE`) |
 
 전체 설명과 프로바이더 전환 근거는 [`wiki/dev-guide.md`](wiki/dev-guide.md), [`wiki/llm-providers.md`](wiki/llm-providers.md) 참고.
 

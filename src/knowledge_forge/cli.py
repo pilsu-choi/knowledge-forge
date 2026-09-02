@@ -7,6 +7,7 @@ from typing import Optional
 import typer
 
 from knowledge_forge.chunking import AdaptiveChunker
+from knowledge_forge.collectors.base import Collector
 from knowledge_forge.collectors.local_file import LocalFileCollector
 from knowledge_forge.config import settings
 from knowledge_forge.extraction.auth import credential_hint_ko, has_resolvable_credentials
@@ -30,6 +31,40 @@ def _ensure_authenticated() -> None:
     if not has_resolvable_credentials():
         typer.echo(credential_hint_ko(), err=True)
         raise typer.Exit(1)
+
+
+_SAAS_COLLECTOR_BUILDERS = {
+    "slack": "build_slack_collector",
+    "notion": "build_notion_collector",
+    "gdrive": "build_gdrive_collector",
+    "gmail": "build_gmail_collector",
+}
+
+
+def _build_collector(source: str, path: Optional[Path]) -> Collector:
+    """`source` picks which Collector `extract`/`schedule` run: "local" (the
+    default) walks `path` via LocalFileCollector; "slack"/"notion"/"gdrive"/
+    "gmail" build an authenticated SaaS collector from KF_* env config via
+    collectors/saas/factory.py (see wiki/saas-connectors.md) - `path` is
+    unused for those.
+    """
+    if source == "local":
+        if path is None:
+            typer.echo("--source local(기본값)은 PATH 인자가 필요합니다.", err=True)
+            raise typer.Exit(1)
+        return LocalFileCollector(root=path)
+
+    builder_name = _SAAS_COLLECTOR_BUILDERS.get(source)
+    if builder_name is None:
+        typer.echo(
+            f"알 수 없는 --source '{source}' (local/{'/'.join(_SAAS_COLLECTOR_BUILDERS)} 중 하나여야 합니다).",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    from knowledge_forge.collectors.saas import factory
+
+    return getattr(factory, builder_name)()
 
 
 def _open_store() -> Optional[PipelineStore]:
@@ -56,7 +91,15 @@ def _main() -> None:
 
 @app.command()
 def extract(
-    path: Path = typer.Argument(..., help="A local file or directory to ingest."),
+    path: Optional[Path] = typer.Argument(
+        None, help="A local file or directory to ingest. Required when --source local (the default); unused otherwise."
+    ),
+    source: str = typer.Option(
+        "local",
+        "--source",
+        help=f"Collector to run: local (default, needs PATH) or one of {', '.join(_SAAS_COLLECTOR_BUILDERS)} "
+        "(built from KF_* env config, see wiki/saas-connectors.md).",
+    ),
     max_tokens: int = typer.Option(4000, "--max-tokens", help="Max tokens per chunk before splitting further."),
     model: Optional[str] = typer.Option(
         None, "--model", help="Extraction model. Defaults to the active provider's (KF_LLM_PROVIDER) own default model."
@@ -75,9 +118,9 @@ def extract(
         "default", "--project-id", help="Tenancy key tagged on every Source/Document this run persists."
     ),
 ) -> None:
-    """Run a local file/directory through the full pipeline and emit Knowledge Objects."""
+    """Run a local file/directory (or a SaaS source, via --source) through the full pipeline and emit Knowledge Objects."""
     _ensure_authenticated()
-    collector = LocalFileCollector(root=path)
+    collector = _build_collector(source, path)
     registry = default_registry()
     chunker = AdaptiveChunker(max_tokens_per_chunk=max_tokens)
     extractor = get_extractor(model=model)
@@ -138,7 +181,15 @@ def extract(
 
 @app.command()
 def schedule(
-    path: Path = typer.Argument(..., help="A local file or directory to ingest."),
+    path: Optional[Path] = typer.Argument(
+        None, help="A local file or directory to ingest. Required when --source local (the default); unused otherwise."
+    ),
+    source: str = typer.Option(
+        "local",
+        "--source",
+        help=f"Collector to run: local (default, needs PATH) or one of {', '.join(_SAAS_COLLECTOR_BUILDERS)} "
+        "(built from KF_* env config, see wiki/saas-connectors.md).",
+    ),
     interval_seconds: int = typer.Option(
         DEFAULT_INTERVAL_SECONDS, "--interval-seconds", help="Seconds between incremental sync runs (default: 10 minutes)."
     ),
@@ -164,11 +215,27 @@ def schedule(
         DEFAULT_TRIGGER_API_PORT, "--trigger-port", help="Bind port for the manual-trigger HTTP API."
     ),
 ) -> None:
-    """Run the pipeline on a repeating interval inside one long-lived
-    process, incrementally re-syncing `path` each time (Ctrl-C to stop).
-    An operator can force an out-of-cycle sync at any time, either via
-    `kill -USR1 <pid>` or `POST http://<trigger-host>:<trigger-port>/trigger`."""
+    """Run the pipeline on a repeating interval inside one long-lived process,
+    incrementally re-syncing `path` (or a SaaS source, via --source) each
+    time (Ctrl-C to stop). An operator can force an out-of-cycle sync at any
+    time, either via `kill -USR1 <pid>` or
+    `POST http://<trigger-host>:<trigger-port>/trigger`."""
     _ensure_authenticated()
+
+    # Local keeps going through run_scheduled_sync's own root+state_path
+    # handling (disk-persisted cursor across process restarts, see
+    # scheduler.py) - only SaaS sources are built up front and handed in as
+    # an already-constructed collector, since they track their own in-memory
+    # cursor across ticks within this one long-lived process.
+    root = None
+    collector = None
+    if source == "local":
+        if path is None:
+            typer.echo("--source local(기본값)은 PATH 인자가 필요합니다.", err=True)
+            raise typer.Exit(1)
+        root = path
+    else:
+        collector = _build_collector(source, path)
 
     store_factory = None
     if store:
@@ -184,7 +251,7 @@ def schedule(
         f", POST http://{trigger_host}:{trigger_port}/trigger로 즉시 동기화 가능" if trigger_api else ""
     )
     typer.echo(
-        f"스케줄러 시작: {path} 를 {interval_seconds}초 간격으로 증분 동기화합니다 "
+        f"스케줄러 시작: {root if collector is None else source} 를 {interval_seconds}초 간격으로 증분 동기화합니다 "
         f"(중단하려면 Ctrl-C, 즉시 동기화하려면 다른 터미널에서 kill -USR1 <pid>{trigger_msg}).",
         err=True,
     )
@@ -192,7 +259,8 @@ def schedule(
 
     asyncio.run(
         run_scheduled_sync(
-            root=path,
+            root=root,
+            collector=collector,
             interval_seconds=interval_seconds,
             max_tokens=max_tokens,
             model=model,

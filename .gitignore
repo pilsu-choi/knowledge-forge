@@ -6,8 +6,10 @@ __pycache__/
 dist/
 build/
 .env
+.env.bak
 .knowledge-forge-state/
 *.jsonl
 !tests/fixtures/*.jsonl
 /data/
 /input/
+.secrets/

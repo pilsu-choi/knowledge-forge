@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     OpenRouter provider classes at construction time, not stored here.
     """
 
-    model_config = SettingsConfigDict(env_prefix="KF_", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="KF_", env_file=".env", extra="ignore")
 
     extraction_model: str = "claude-opus-5"
     max_tokens_per_chunk: int = 4000
@@ -50,6 +50,31 @@ class Settings(BaseSettings):
     openrouter_extraction_model: str = "anthropic/claude-haiku-4.5"
     openrouter_vision_model: str = "anthropic/claude-haiku-4.5"
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
+
+    # SaaS collector credentials (KF_-prefixed, see collectors/saas/factory.py
+    # for how these turn into an authenticated SDK client + Collector). All
+    # optional - only the fields for the source(s) actually in use need to
+    # be set; the corresponding build_*_collector() raises a clear error if
+    # a required one is missing.
+    slack_bot_token: str | None = None
+    # Comma-separated channel IDs to sync, e.g. "C0123,C0456".
+    slack_channels: str | None = None
+
+    notion_token: str | None = None
+    notion_database_id: str | None = None
+
+    # Service-account credentials for Drive: either the JSON itself or a
+    # path to the JSON file.
+    gdrive_credentials_json: str | None = None
+    # Folder to sync; omit to sync every file the service account can see.
+    gdrive_folder_id: str | None = None
+
+    # Gmail uses a pre-authorized user OAuth token (no service-account
+    # delegation) - both are paths to files produced by a one-off OAuth
+    # setup, not inline JSON.
+    gmail_credentials_path: str | None = None
+    gmail_token_path: str | None = None
+    gmail_query: str | None = None
 
 
 settings = Settings()

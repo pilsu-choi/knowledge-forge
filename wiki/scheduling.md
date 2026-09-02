@@ -7,8 +7,13 @@
 
 ```bash
 uv run knowledge-forge schedule <path> \
+  [--source local|slack|notion|gdrive|gmail] \
   [--interval-seconds 600] [--max-tokens 4000] [--model claude-opus-5] [--store/--no-store]
 ```
+
+`<path>`는 `--source local`(기본값)일 때만 필요하다 — 그 외 SaaS 소스는
+`collectors/saas/factory.py`가 `.env`(`KF_*`)로부터 조립하므로 `path`가 무시된다
+([`saas-connectors.md`](saas-connectors.md)).
 
 포그라운드 프로세스로 실행되며(내부적으로 `asyncio.run(run_scheduled_sync(...))`), Ctrl-C로
 정상 종료한다. `--interval-seconds`의 기본값은 600초(10분)다
@@ -16,12 +21,19 @@ uv run knowledge-forge schedule <path> \
 
 ## 동작 방식 (`src/knowledge_forge/scheduling/scheduler.py`)
 
-`run_scheduled_sync(root, interval_seconds=DEFAULT_INTERVAL_SECONDS, max_tokens=4000, model=None,
-store_factory=None, state_path=None)`(async 함수)가:
+`run_scheduled_sync(root=None, collector=None, interval_seconds=DEFAULT_INTERVAL_SECONDS,
+max_tokens=4000, model=None, store_factory=None, state_path=None)`(async 함수)는 `root`
+또는 `collector` 둘 중 정확히 하나를 받는다 - `root`가 주어지면
+`LocalFileCollector(root=root, state_path=state_path)`를 만들어 쓰고(디스크에 커서를
+영속화해 프로세스 재시작에도 이어서 동기화), `collector`가 주어지면(CLI의 `--source slack`
+등이 `_build_collector()`로 미리 만들어 넘김) 그걸 그대로 쓴다 - 이 경우 커서는 이
+프로세스가 살아있는 동안만 메모리에 있고(`SlackCollector._latest_ts` 등), 재시작하면
+`initial_sync()`부터 다시 돈다(SaaS 컬렉터에는 아직 `state_path` 같은 디스크 영속화가 없음).
+어느 쪽이든:
 
-1. `LocalFileCollector`/`ParserRegistry`/`AdaptiveChunker`/`get_extractor()`(활성
-   `KF_LLM_PROVIDER`에 맞는 Extractor, [`llm-providers.md`](llm-providers.md) 참고)를
-   **한 번만** 생성해 재사용한다(매 tick마다 다시 만들지 않음).
+1. `ParserRegistry`/`AdaptiveChunker`/`get_extractor()`(활성 `KF_LLM_PROVIDER`에 맞는
+   Extractor, [`llm-providers.md`](llm-providers.md) 참고)를 Collector와 함께 **한 번만**
+   생성해 재사용한다(매 tick마다 다시 만들지 않음).
 2. `build_tick(...)`으로 매 tick마다 실행할 **async** 함수를 만든다 — 한 tick 안에서 한 문서의
    여러 청크/표/이미지에 대한 LLM 호출은 `run_pipeline`이 동시 실행한다
    ([`architecture.md`](architecture.md)의 Knowledge Extraction 절 참고).

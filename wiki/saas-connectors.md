@@ -13,9 +13,18 @@
 channels=[...])`처럼 **호출자가 클라이언트를 직접 만들어서 넘겨야** 한다.
 
 이는 의도된 스코프 경계다 — 이번 단계에서 구현한 건 "인증된 클라이언트가 주어졌을 때 동기화
-로직"이지 "인증 자체"가 아니다. `knowledge-forge` CLI에는 아직 이 커넥터들을 실행하는 명령이
-없다(예: `knowledge-forge slack ...` 같은 건 존재하지 않음) — [`roadmap.md`](roadmap.md)의
-후속 계획 참고.
+로직"이지 "인증 자체"가 아니다. `knowledge-forge slack ...` 같은 소스별 전용 명령은 없지만,
+`extract`/`schedule`의 `--source slack` 같은 옵션으로 실행할 수 있다(아래 참고,
+[`roadmap.md`](roadmap.md) 1단계).
+
+클라이언트를 직접 만드는 부분은 `collectors/saas/factory.py`의 `build_slack_collector()` /
+`build_notion_collector()` / `build_gdrive_collector()` / `build_gmail_collector()`가
+대신해준다 — `KF_SLACK_BOT_TOKEN` 등 `.env`의 `KF_*` 설정을 읽어 SDK 클라이언트를 만들고
+커넥터까지 조립해서 반환한다(사용법: [`dev-guide.md`](dev-guide.md#saas-커넥터-사용하기)).
+`SaaSCollector` 자체의 "클라이언트는 주입받는다"는 설계는 그대로다 — factory는 그 주입을
+대신 해주는 얇은 조립 계층일 뿐, 커넥터 인터페이스를 바꾸지 않는다. `knowledge-forge extract`/
+`schedule`의 `--source {slack,notion,gdrive,gmail}`가 이 factory를 호출해 CLI에서 바로
+실행한다(`src/knowledge_forge/cli.py`의 `_build_collector()`).
 
 ## 커넥터별 요약
 

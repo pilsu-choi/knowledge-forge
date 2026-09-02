@@ -22,6 +22,7 @@ from knowledge_forge.scheduling.scheduler import (
     SYNC_JOB_ID,
     build_tick,
     build_trigger_app,
+    run_scheduled_sync,
     trigger_now,
 )
 
@@ -135,6 +136,19 @@ async def test_tick_swallows_exceptions_and_logs_instead_of_raising(tmp_path, ca
 
 def test_default_interval_is_ten_minutes():
     assert DEFAULT_INTERVAL_SECONDS == 600
+
+
+async def test_run_scheduled_sync_requires_root_or_collector():
+    # Both validation branches raise before scheduler.start()'s forever loop,
+    # so this is safe to await directly (unlike a real run_scheduled_sync()
+    # call, which never returns).
+    with pytest.raises(ValueError, match="root.*collector"):
+        await run_scheduled_sync()
+
+
+async def test_run_scheduled_sync_rejects_both_root_and_collector(tmp_path):
+    with pytest.raises(ValueError, match="not both"):
+        await run_scheduled_sync(root=tmp_path, collector=LocalFileCollector(root=tmp_path))
 
 
 async def test_trigger_now_reschedules_job_to_run_immediately():

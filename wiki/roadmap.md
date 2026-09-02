@@ -13,8 +13,19 @@
   수 없어(URL/경로 참조일 뿐) VLM을 적용하지 않고 `src`/`alt`만 기록한다 —
   [`parsers.md`](parsers.md)의 "HTML" 절 참고.
 - **4개 SaaS 커넥터 전부 실구현**: Slack/Gmail/Google Drive/Notion — 인증된 클라이언트를
-  주입받아 초기/증분 동기화 수행([`saas-connectors.md`](saas-connectors.md)). 모킹 테스트만
-  검증됨, CLI 연동은 아직 없음(아래 참고).
+  주입받아 초기/증분 동기화 수행([`saas-connectors.md`](saas-connectors.md)). Slack은 실제
+  워크스페이스 대상 연결성 스모크 테스트(채널 멤버십 확인 + `initial_sync()` 실행)까지 거쳤지만,
+  나머지는 여전히 모킹 테스트만 검증됨, 4개 전부 실 계정으로의 전체 파이프라인(파서→청커→LLM
+  추출→저장) 라이브 검증은 아직 없음 — 아래 1단계 참고.
+- **SaaS 커넥터 `.env` 기반 인증 조립 + CLI 연동**: `collectors/saas/factory.py`의
+  `build_*_collector()`가 `KF_SLACK_BOT_TOKEN`/`KF_NOTION_TOKEN`/`KF_GDRIVE_CREDENTIALS_JSON`/
+  `KF_GMAIL_TOKEN_PATH` 등 `KF_*` 설정(저장소 루트 `.env`, `Settings(env_file=".env")`)을 읽어
+  SDK 클라이언트 생성 + 커넥터 조립까지 대신하고, `extract`/`schedule`의
+  `--source {slack,notion,gdrive,gmail}`이 이걸 호출한다(`cli.py`의 `_build_collector()`) —
+  호출자가 더 이상 직접 SDK 클라이언트를 만들어 생성자에 주입하거나, factory가 만든 커넥터를
+  직접 `run_pipeline()`에 넘길 필요가 없다([`dev-guide.md`](dev-guide.md#saas-커넥터-사용하기)).
+  Gmail은 사전 발급된 user OAuth 토큰(`KF_GMAIL_TOKEN_PATH`)의 만료 갱신까지만 자동화했고,
+  최초 토큰 발급(브라우저 동의 플로우)은 아직 없다 — 아래 1단계 참고.
 - **Context Reconstruction**: Collector와 Parser 사이에 신설된 단계 — Slack은 스레드 그룹핑 +
   시간 간격 기반 Conversation Segmentation, Gmail은 `threadId` 기준 Thread Reconstruction으로
   원본 메시지 스트림을 semantic unit으로 병합한다. File/Notion/Google Drive는 항등(변경 없음).
@@ -118,17 +129,29 @@ Dashboard / Chat UI다. 이들을 지금 만들지 않는 이유는 스코프 �
 
 ### 1단계 — SaaS 커넥터 CLI/인증 연동
 
-커넥터 코드 자체는 완료됐지만([`saas-connectors.md`](saas-connectors.md)), **인증된 SDK
-클라이언트를 실제로 만들어서 커넥터에 주입하는 부분은 이번 범위 밖**이다 — 지금은
-`knowledge-forge` CLI에서 SaaS 소스를 실행할 방법이 없다(`extract`/`schedule`은
-`LocalFileCollector`만 사용). 다음이 필요하다:
+커넥터 코드 자체는 완료됐고([`saas-connectors.md`](saas-connectors.md)), **`.env`(`KF_*`)
+설정으로부터 인증된 SDK 클라이언트를 만들어 커넥터에 주입하는 부분(`collectors/saas/factory.py`)과
+**`extract`/`schedule`의 `--source` 옵션으로 CLI에서 바로 실행하는 부분도 완료됐다**
+(`cli.py`의 `_build_collector()`) — Slack Bot Token/Notion Integration 토큰/GDrive 서비스
+계정/이미 발급된 Gmail user OAuth 토큰(만료 시 자동 갱신 포함)은 factory 하나로 커넥터까지
+조립되고, `--source slack`처럼 지정하면 `extract`/`schedule`이 이미 갖춘 파서/청커/추출/저장
+배선을 그대로 SaaS 커넥터에도 재사용한다. `schedule --source slack`처럼 스케줄러에 물릴 때는
+`run_scheduled_sync(collector=...)`로 이미 만들어진 SaaS 컬렉터를 그대로 넘긴다 — 다만 이
+경로는 `LocalFileCollector`의 `state_path`(디스크 영속 커서)에 대응하는 게 없어서, 커서가
+프로세스 생애주기 동안만 메모리에 있다(`schedule` 재시작 시 SaaS 소스는 처음부터 다시 돈다).
 
-- OAuth 토큰 발급/저장/갱신(Slack App 설치, Google OAuth 동의 화면, Notion Integration 토큰 등
-  소스별로 흐름이 다름).
-- `knowledge-forge slack`/`gmail`/`gdrive`/`notion` 같은 CLI 명령 신설 — `extract`/`schedule`이
-  이미 갖춘 파서/청커/추출/저장 배선을 SaaS 커넥터에도 재사용.
+다음이 남아 있다:
+
+- Gmail의 **최초** user OAuth 토큰 발급(브라우저 동의 화면을 띄우는 `InstalledAppFlow` 등) —
+  factory는 이미 있는 `token.json`의 만료 갱신만 하고, 최초 발급 자체는 아직 자동화 안 됨.
+  Slack App 설치(Bot Token 발급)와 Notion Integration 토큰 발급도 각 플랫폼 관리 화면에서
+  수동으로 해야 한다(이건 플랫폼 쪽 1회성 설정이라 자동화 대상이 아님).
 - rate limit 대응(현재 커넥터 코드에는 없음).
-- 실제 계정/토큰으로 각 커넥터의 라이브 검증(현재는 모킹 테스트만 존재).
+- 실제 계정/토큰으로 각 커넥터의 **전체 파이프라인** 라이브 검증(현재는 모킹 테스트 + Slack만
+  연결성 스모크 테스트 — `factory` 자체는 fake SDK 모듈 주입 테스트만 거쳤다,
+  `tests/collectors/test_saas_factory.py`). 특히 파서→청커→LLM 추출까지 이어지는 실제 실행은
+  아직 어떤 SaaS 소스로도 검증되지 않았다 — 실제 계정 데이터를 LLM에 보내는 비용/데이터 민감성
+  문제가 있어 신중한 확인 후 진행할 것.
 
 ### 2단계 — 시각 자료 처리 고도화
 
@@ -163,10 +186,11 @@ Dashboard / Chat UI다. 이들을 지금 만들지 않는 이유는 스코프 �
 ### 4단계 — Source-aware Context Reconstruction
 
 사용자가 제시한 설계 방향을 코드로 구현했다 —
-[`context-reconstruction.md`](context-reconstruction.md) 참고. 단, **1단계(SaaS CLI/인증
-연동)가 아직 없어 실제로 실행할 방법은 없다** — `run_pipeline`이 `SlackCollector`/
-`GmailCollector`를 받으면 자동으로 이 재구성을 거치도록 배선은 끝났지만, CLI에서 그 컬렉터를
-만들어 넘기는 진입점 자체가 없다는 뜻이다. 아래 액션 아이템 중 1~2는 구현 완료, 3~5는 여전히
+[`context-reconstruction.md`](context-reconstruction.md) 참고. **1단계(SaaS CLI/인증 연동)가
+끝나 `extract`/`schedule --source slack`으로 실행할 진입점은 이제 있다** — `run_pipeline`이
+`SlackCollector`/`GmailCollector`를 받으면 자동으로 이 재구성을 거치도록 배선도 이미 끝나
+있다. 다만 실제 계정 데이터로 이 재구성 로직 자체가 라이브 검증된 적은 아직 없다(위 1단계의
+"전체 파이프라인 라이브 검증" 항목 참고). 아래 액션 아이템 중 1~2는 구현 완료, 3~5는 여전히
 미구현이다.
 
 **핵심 문제의식**: 현재 파이프라인은 "하나의 수집 단위(RawItem) = 하나의 독립적인 의미 단위"를
@@ -208,9 +232,11 @@ Knowledge가 나온다.
    `knowledge-forge serve`(FastAPI)의 `POST /ingest`가 `jobs` 테이블(Postgres)에 enqueue하고
    즉시 `202`+job_id를 응답, 별도 프로세스 `knowledge-forge worker`가 `FOR UPDATE SKIP LOCKED`
    폴링으로 job을 집어 `run_pipeline`을 실행한다 — [`api.md`](api.md) 참고. **다만 v1 job
-   type은 `local_file_ingest` 하나뿐이다** — SaaS 소스가 이 큐를 타려면 여전히 1단계(SaaS
-   CLI/인증 연동)가 먼저 끝나야 새 job_type(예: `slack_ingest`)을 추가할 수 있다. 즉 4번
-   항목의 "설계"는 끝났지만 SaaS에 실제로 연결되는 건 1단계에 달려 있다는 점은 그대로다.
+   type은 여전히 `local_file_ingest` 하나뿐이다**(`worker.py`) — 이건 1단계와 별개의 진입점이라
+   1단계(CLI `--source`)가 끝났다고 자동으로 풀리지 않는다: SaaS 소스가 이 큐를 타려면
+   `worker.py`에 새 job_type(예: `slack_ingest`, `_build_collector()`와 같은 factory 호출을
+   재사용)을 직접 추가해야 한다. 즉 4번 항목의 "설계"는 끝났지만 SaaS를 이 큐에 연결하는 작업은
+   아직 별도로 남아 있다.
 5. **스케줄링 성격 구분** — Slack/Gmail처럼 계속 생성되는 데이터는 polling(현재
    `knowledge-forge schedule`이 이 모델) 또는 향후 webhook/event-driven ingest가 맞고, 정적
    파일 소스는 최초 1회 + 변경 감지 재처리로 충분하다는 게 이미 맞게 설계되어 있음 — 다만

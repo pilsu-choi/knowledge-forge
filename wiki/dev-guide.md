@@ -44,7 +44,9 @@ uv sync --extra xlsx --extra pptx --extra hwpx --extra slack --extra google --ex
 
 ## Knowledge Forge 자체 설정값
 
-`KF_` 접두사를 가진 환경변수(`src/knowledge_forge/config.py`의 `Settings`):
+`KF_` 접두사를 가진 환경변수(`src/knowledge_forge/config.py`의 `Settings`)는 저장소 루트의
+`.env` 파일(`SettingsConfigDict(env_file=".env")`)을 자동으로 읽는다 — 실제 OS 환경변수로
+export할 필요 없이 `.env`에 값을 채워 넣으면 된다. 템플릿은 [`.env.example`](../.env.example).
 
 | 환경변수 | 기본값 | 설명 |
 |---|---|---|
@@ -59,16 +61,24 @@ uv sync --extra xlsx --extra pptx --extra hwpx --extra slack --extra google --ex
 | `KF_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API 엔드포인트 |
 | `OPENROUTER_API_KEY` | (없음) | OpenRouter API 키(`KF_` 접두사 아님, `ANTHROPIC_API_KEY`처럼 `Settings`에 중복 저장하지 않음) |
 
+SaaS 커넥터(Slack/Gmail/Google Drive/Notion) 자격 증명용 `KF_*` 변수는 별도 표로
+["SaaS 커넥터 사용하기"](#saas-커넥터-사용하기) 절에 정리되어 있다.
+
 ## CLI 실행
 
 ### 1회성 추출
 
 ```bash
-uv run knowledge-forge extract <path> [--max-tokens 4000] [--model claude-opus-5] \
-  [--output out.jsonl] [--pretty] [--store/--no-store] [--okf-dir ./okf]
+uv run knowledge-forge extract <path> [--source local|slack|notion|gdrive|gmail] \
+  [--max-tokens 4000] [--model claude-opus-5] \
+  [--output out.jsonl] [--pretty] [--store/--no-store] [--okf-dir ./okf] [--project-id PRJ-...]
 ```
 
-- `<path>`: 단일 파일 또는 디렉토리(디렉토리면 재귀적으로 순회).
+- `<path>`: 단일 파일 또는 디렉토리(디렉토리면 재귀적으로 순회). `--source local`(기본값)일
+  때만 필요하고, SaaS 소스에서는 무시된다.
+- `--source`(기본값 `local`): `slack`/`notion`/`gdrive`/`gmail`을 주면 `path` 대신
+  `collectors/saas/factory.py`의 해당 `build_*_collector()`가 `.env`(`KF_*`)로부터 조립한
+  커넥터를 사용한다 — 파서/청커/추출/저장 배선은 로컬 파일과 완전히 동일하게 재사용된다.
 - `--output`: 생략 시 stdout에 JSONL(한 줄에 Knowledge Object 하나) 출력.
 - `--pretty`: 들여쓴 JSON 배열로 출력(사람이 읽기용, 대량 처리에는 비권장).
 - `--store`(기본값): `KF_DATABASE_URL`이 설정되어 있으면 Postgres+디스크에 저장([`storage.md`](storage.md)).
@@ -80,15 +90,20 @@ uv run knowledge-forge extract <path> [--max-tokens 4000] [--model claude-opus-5
 
 ```bash
 uv run knowledge-forge extract tests/fixtures/sample.md --pretty
+uv run knowledge-forge extract --source slack --project-id PRJ-DEFAULT --no-store
 ```
 
 ### 주기 실행 (스케줄링)
 
 ```bash
-uv run knowledge-forge schedule <path> --interval-seconds 600
+uv run knowledge-forge schedule <path> [--source local|slack|notion|gdrive|gmail] --interval-seconds 600
 ```
 
-`extract`와 같은 파이프라인을 하나의 프로세스 안에서 반복 실행한다(Ctrl-C로 종료).
+`extract`와 같은 파이프라인을 하나의 프로세스 안에서 반복 실행한다(Ctrl-C로 종료). `--source`
+의미는 `extract`와 동일하다 — 다만 `local`은 여전히 `state_path` 기반으로 커서를 디스크에
+영속화해 프로세스 재시작에도 이어서 동기화하지만, SaaS 소스는 아직 그런 영속화가 없어서
+(`run_scheduled_sync`가 만든 Collector 인스턴스가 이 프로세스 생애주기 동안만 메모리에 커서를
+들고 있음) `schedule` 프로세스를 재시작하면 SaaS 쪽은 처음부터(`initial_sync()`) 다시 돈다.
 `--interval-seconds`의 기본값은 600초(10분)이고, 인터벌을 기다리지 않고 즉시 한 번 더
 동기화하도록 `kill -USR1 <pid>` 또는 `curl -X POST http://127.0.0.1:8765/trigger`로 수동
 트리거할 수 있다(HTTP 트리거는 기본 활성화, `--no-trigger-api`로 끌 수 있음). 자세한 내용은
@@ -152,27 +167,52 @@ uv run pytest
 `tests/parsers/test_pdf_vlm_hybrid.py`), 표/이미지가 없는 문서는 애초에 자격 증명을
 건드리지 않는다.
 
-## SaaS 커넥터 사용하기 (CLI 연동 전)
+## SaaS 커넥터 사용하기
 
 Slack/Gmail/Google Drive/Notion 커넥터(`src/knowledge_forge/collectors/saas/`)는 전부 실구현
-되어 있지만, `knowledge-forge` CLI에는 아직 연결되어 있지 않다 — `extract`/`schedule`은
-`LocalFileCollector`만 사용한다. 지금 SaaS 소스를 쓰려면 직접 스크립트를 작성해 인증된 SDK
-클라이언트를 만들고 커넥터에 주입해야 한다:
+되어 있고, `knowledge-forge extract`/`schedule`의 `--source {slack,notion,gdrive,gmail}`로
+바로 실행할 수 있다(위 [CLI 실행](#cli-실행) 참고). 인증된 SDK 클라이언트를 직접 만들 필요는
+없다 — `collectors/saas/factory.py`의 `build_*_collector()`가 아래 `KF_*` 설정(`.env`)을
+읽어서 클라이언트 생성부터 커넥터 조립까지 대신하고, CLI가 그걸 호출한다. 필요한 extra
+(`slack`/`google`/`notion`, 자세한 내용은 [셋업](#셋업))가 설치되어 있어야 한다.
+
+CLI를 거치지 않고 커넥터만 직접 조립해 커스텀 스크립트에서 쓰고 싶다면:
 
 ```python
-from slack_sdk import WebClient
-from knowledge_forge.collectors.saas.slack import SlackCollector
+from knowledge_forge.collectors.saas.factory import build_slack_collector
+from knowledge_forge.pipeline import run_pipeline
+# ... parser registry / chunker / extractor 등은 cli.py의 extract()가 하는 것과 동일하게 준비
 
-client = WebClient(token="xoxb-...")
-collector = SlackCollector(client=client, channels=["C0123456789"])
-for item in collector.initial_sync():
-    ...  # RawItem — 이후 pipeline.run_pipeline()에 다른 Collector처럼 넘기면 된다
+collector = build_slack_collector()  # KF_SLACK_BOT_TOKEN / KF_SLACK_CHANNELS(또는 CHANNEL_PROJECT_MAP)를 읽음
+async for outcome in run_pipeline(collector, registry, chunker, extractor):
+    ...
 ```
+
+빠진 설정이 있으면 `build_*_collector()`가 어떤 `KF_*` 변수가 필요한지 담은
+`RuntimeError`를 즉시 던진다.
+
+### SaaS 커넥터 자격 증명 (`KF_*`)
+
+| 환경변수 | 대상 커넥터 | 설명 |
+|---|---|---|
+| `KF_SLACK_BOT_TOKEN` | Slack | Bot Token (`xoxb-...`) |
+| `KF_SLACK_CHANNELS` | Slack | 동기화할 채널 ID, 콤마 구분 (예: `C0123,C0456`) |
+| `KF_NOTION_TOKEN` | Notion | Integration 토큰 |
+| `KF_NOTION_DATABASE_ID` | Notion | 특정 데이터베이스로 범위를 좁힐 때만 설정 (없으면 `search()`로 접근 가능한 모든 페이지) |
+| `KF_GDRIVE_CREDENTIALS_JSON` | Google Drive | 서비스 계정 JSON — 인라인 값 또는 파일 경로 둘 다 허용(`json.loads` 실패 시 경로로 재시도) |
+| `KF_GDRIVE_FOLDER_ID` | Google Drive | 동기화 대상 폴더 ID (없으면 서비스 계정이 볼 수 있는 전체 파일) |
+| `KF_GMAIL_CREDENTIALS_PATH` | Gmail | OAuth 클라이언트 설정 파일 경로 — 토큰을 최초 발급할 때만 쓰이고, factory 자체는 아직 이 파일로 인터랙티브 OAuth 동의 플로우를 수행하지 않는다 |
+| `KF_GMAIL_TOKEN_PATH` | Gmail | 이미 발급된 user OAuth 토큰(`token.json`) 경로 — **필수**, 이 파일이 없으면 factory가 바로 에러를 낸다. 만료됐고 `refresh_token`이 있으면 factory가 자동으로 갱신해 같은 경로에 다시 쓴다 |
+| `KF_GMAIL_QUERY` | Gmail | Gmail 검색 쿼리로 동기화 범위 제한 (예: `label:PI/CANDIDATE`) |
+
+Gmail은 서비스 계정 위임이 아니라 사전에 발급된 user OAuth 토큰을 전제로 한다 — 최초 토큰
+발급(브라우저 동의 화면을 띄우는 `InstalledAppFlow` 등)은 이번 범위 밖이라 별도로 한 번
+수행해서 `KF_GMAIL_TOKEN_PATH`에 결과 `token.json`을 둬야 한다.
 
 각 커넥터가 정확히 어떤 API를 호출하는지는 클래스 docstring과
 [`saas-connectors.md`](saas-connectors.md)를 참고. 전부 모킹 테스트로만 검증되어 실제
-계정으로는 아직 라이브 검증되지 않았다 — 자세한 내용과 후속 계획(CLI 연동, 인증 관리)은
-[`roadmap.md`](roadmap.md) 참고.
+계정으로는 아직 라이브 검증되지 않았다 — 자세한 내용과 후속 계획(CLI 연동, Gmail 최초 OAuth
+플로우)은 [`roadmap.md`](roadmap.md) 참고.
 
 ## 새 SaaS Collector 추가하기
 
