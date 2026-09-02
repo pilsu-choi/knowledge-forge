@@ -19,6 +19,17 @@ not use outside/world knowledge to fill gaps. If the text is too short or \
 fragmentary to support a field confidently, still return a valid response with \
 your best-supported answer - never fabricate content just to fill a field.
 
+Write every free-text field (summary, entity `description`, relation \
+`predicate`, item `statement`, `topics`, `document_type`) in the same language \
+as the source chunk text - never translate into another language. Much of the \
+source text in this pipeline is Korean; when a chunk is in Korean, write every \
+one of those fields entirely in Korean, not English (no partial/mixed-language \
+output), except for a term that appears in the source text itself in another \
+language (e.g. an English product or company name) - keep that term as-is \
+rather than translating or transliterating it. `entities[].type` and \
+`items[].type` are fixed labels (not translated prose) - always use the exact \
+values specified below regardless of the chunk's language.
+
 Fields to produce:
 - summary: a concise summary of this passage's content (not the whole document).
 - entities: named entities mentioned in the chunk (people, organizations, \
