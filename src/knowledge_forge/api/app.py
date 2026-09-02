@@ -50,7 +50,10 @@ _TAGS_METADATA = [
     {"name": "OKF", "description": "OKF 파일 트리(KF_OKF_DIR) 조회. Postgres 불필요 - /ui가 이 API로 뜬다."},
 ]
 
-_STATIC_DIR = Path(__file__).parent / "static"
+# React+Vite app in frontend/ (frontend/vite.config.ts builds with
+# base:'/ui/' to match this mount). Built by `npm --prefix frontend run
+# build` - not committed (frontend/dist is gitignored, same as any dist/).
+_FRONTEND_DIST = Path(__file__).parent.parent.parent.parent / "frontend" / "dist"
 
 
 def create_app() -> FastAPI:
@@ -67,5 +70,9 @@ def create_app() -> FastAPI:
     app.include_router(sources.router)
     app.include_router(knowledge.router)
     app.include_router(okf.router)
-    app.mount("/ui", StaticFiles(directory=_STATIC_DIR, html=True), name="ui")
+    # StaticFiles() raises at construction if the directory is missing, which
+    # would otherwise take down the whole app (including /health) on a fresh
+    # clone that hasn't run the frontend build yet - skip the mount instead.
+    if _FRONTEND_DIST.is_dir():
+        app.mount("/ui", StaticFiles(directory=_FRONTEND_DIST, html=True), name="ui")
     return app
