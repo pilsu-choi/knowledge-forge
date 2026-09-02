@@ -11,7 +11,7 @@
 | DOCX | `.docx` | ✅ 실제 동작 | 규칙 기반(`python-docx`) | 표는 규칙 기반, **이미지는 VLM** | 스타일명(`Heading N`) 기반 헤딩 감지, `inline_shapes`의 Picture만 대상 |
 | Markdown | `.md` | ✅ 실제 동작 | 규칙 기반(`markdown-it-py`) | 규칙 기반 | GFM 테이블 포함 |
 | TXT | `.txt` | ✅ 실제 동작 | 규칙 기반(표준 라이브러리) | - | 빈 줄 기준 단락 분리, 헤딩 감지 없음 |
-| XLSX | `.xlsx` | ✅ 실제 동작 | - | 표는 규칙 기반, **앵커된 이미지는 VLM** | 시트별 `TableElement`(셀 값이 이미 텍스트라 VLM 불필요), `worksheet._images`의 앵커 이미지는 `describe_figure()` |
+| XLSX | `.xlsx` | ✅ 실제 동작 | - | 표는 규칙 기반, **앵커된 이미지는 VLM** | 시트를 제목/표/각주 영역으로 분리, 표는 병합 셀 전파 + 다단 헤더 감지(아래 "XLSX" 참고), `worksheet._images`의 앵커 이미지는 `describe_figure()` |
 | PPTX | `.pptx` | ✅ 실제 동작 | 규칙 기반(`python-pptx`) | 표·차트는 규칙 기반, **그림(Picture)은 VLM** | 네이티브 차트는 결정론적 데이터 추출, 아래 참고 |
 | Image | `.png`/`.jpg`/`.jpeg` | ✅ 실제 동작 | - | **VLM 전용** | OCR(`pytesseract`) 대체 — 시스템 `tesseract-ocr` 의존성 완전히 제거됨 |
 | HWPX | `.hwpx` | ✅ 실제 동작 | 규칙 기반(`python-hwpx`) | 표는 규칙 기반, **이미지는 VLM** | `python-hwpx` 라이브러리 기반, 아래 "HWPX" 참고 |
@@ -45,6 +45,41 @@ LibreOffice headless 같은 슬라이드 래스터화 백엔드가 없어 이미
 `TableElement`(헤더 행 `["", *categories]`, 시리즈별 데이터 행, `extraction_method=
 "rule_based"`)로 렌더링한다 — `parsers/pptx.py`의 `_parse_chart()`, 자세한 설계 배경은
 [`vision-extraction.md`](vision-extraction.md) 참고.
+
+### XLSX: 영역 분리, 병합 셀 전파, 다단 헤더
+
+초기 구현은 시트 하나를 `TableElement` 하나로 통째 변환했다(`sheet.iter_rows(values_only=True)`) —
+`pandas.read_excel()`과 다를 바 없는 "단순 파싱" 수준이라, 시트 안에 제목/각주가 섞여 있으면
+표 데이터에 그대로 끼어들고, 병합된 셀은 좌상단이 아닌 나머지 칸이 전부 빈 문자열로 날아가
+(예: 2단 헤더의 상위 헤더 "2025년"이 병합된 칸에서 손실) 검색·청킹 품질을 떨어뜨렸다.
+`XlsxParser`(`src/knowledge_forge/parsers/xlsx.py`)는 이를 4단계로 재구성한다:
+
+1. **그리드 구축**(`_build_grid`): 셀 값 + `font.bold` 플래그를 읽고, `sheet.merged_cells.ranges`를
+   순회해 병합 범위 전체에 좌상단 값/굵게 여부를 전파한다 — python-docx/pptx가 병합 테이블 셀의
+   텍스트를 이미 중복해서 노출하는 것과 동일한 동작으로 맞춘 것(표 6-9행 각 파서 설명 참고).
+2. **영역 분리**(`_split_blocks`/`_classify_block`): 완전히 빈 행으로 시트를 블록 단위로 나누고,
+   각 블록을 `table`(≥2행 & ≥2열의 격자형, `※`/`*`/`주:` 등으로 시작하지 않음)/`title`(시트의
+   첫 블록이면서 표 모양이 아님)/`note`(그 외 표 모양이 아닌 블록)로 분류한다. `title`/`note`는
+   `TextBlock`으로, `table`은 `TableElement`로 나간다 — 시트 제목이나 각주가 표의 데이터 행으로
+   섞여 들어가는 것을 막는다.
+3. **다단 헤더 감지**(`_detect_header_rows`): 표 블록의 선행 행 중 굵은 글씨 셀이 있는 연속 행
+   수를 센다(openpyxl 기본 스타일은 굵게가 아니므로 신호로 쓸 수 있음) — 최소 데이터 행 1개는
+   항상 남도록 멈추고, 굵게 신호가 전혀 없으면 다른 모든 파서와 같은 기본값 1로 폴백한다.
+   `TableElement.header_rows`에 기록되며, `chunking.hierarchy.split_table_by_rows()`가 이
+   값만큼의 헤더 행을 모두 반복해 청크를 나눈다([`adaptive-chunking.md`](adaptive-chunking.md#표-행-단위-분리-row-aware-split)
+   참고).
+4. **선택적 구조화**(`_build_structured`, `_extract_formulas`): `header_rows > 1`이면 각 데이터
+   행을 헤더 계층별로 중첩한 `dict`(`TableElement.structured`, 예:
+   `{"항목": "외래", "2025년": {"기본급": ..., "가산율": ...}}`)를 추가로 만든다. 두 번째
+   워크북 로드(`data_only=False`)로 수식 셀의 원본 수식 문자열도 `TableElement.formulas`(cell
+   ref → `"=SUM(...)"`)에 남긴다. 둘 다 현재 청킹 파이프라인은 읽지 않는 순수 부가 필드로, 향후
+   온톨로지/그래프 추출기가 붙을 때를 위해 손실 없이 보존해두는 용도다 — `rows`(평탄한
+   `list[list[str]]`)만이 검색·청킹이 실제로 소비하는 정본(canonical) 표현이다.
+
+**스코프 밖**: named range, freeze pane, hidden row/column, data validation, cell comment,
+hyperlink는 의도적으로 다루지 않는다 — 지금 청킹 파이프라인이 소비할 곳이 없어 ROI가 낮다고
+판단했다. 영역 분류도 스타일/공백 패턴 기반 규칙만 쓰고 LLM 폴백은 넣지 않았다 — 실제 데이터로
+애매한 케이스가 나오면 그때 추가할 사항으로 남겨둔다.
 
 ## PDF 라이브러리 선택: `pdfplumber` vs `PyMuPDF`
 

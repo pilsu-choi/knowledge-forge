@@ -61,6 +61,9 @@ class Node:
     # data. None for every other node.
     table_rows: list[list[str]] | None = None
     table_caption: str | None = None
+    # How many leading rows of table_rows are header rows (see
+    # TableElement.header_rows). Meaningless when table_rows is None.
+    header_rows: int = 1
 
     @property
     def page_range(self) -> tuple[int, int] | None:
@@ -135,6 +138,7 @@ def _build_paragraph(element: DocumentElement) -> Node:
         children=None,
         table_rows=element.rows if isinstance(element, TableElement) else None,
         table_caption=element.caption if isinstance(element, TableElement) else None,
+        header_rows=element.header_rows if isinstance(element, TableElement) else 1,
     )
 
 
@@ -231,12 +235,15 @@ def split_table_by_rows(node: Node, budget: int) -> list[Node] | None:
     """
     if not node.table_rows or len(node.table_rows) < 2:
         return None
-    header, *data_rows = node.table_rows
+    # Clamp so at least one data row always remains, even if header_rows was
+    # mis-detected as covering the whole table.
+    header_count = max(1, min(node.header_rows, len(node.table_rows) - 1))
+    header_rows, data_rows = node.table_rows[:header_count], node.table_rows[header_count:]
     prefix_lines = [node.table_caption] if node.table_caption else []
-    header_line = " | ".join(header)
+    header_lines = [" | ".join(r) for r in header_rows]
 
     def render(rows: list[list[str]]) -> str:
-        return "\n".join([*prefix_lines, header_line, *(" | ".join(r) for r in rows)])
+        return "\n".join([*prefix_lines, *header_lines, *(" | ".join(r) for r in rows)])
 
     groups: list[list[list[str]]] = []
     current: list[list[str]] = []

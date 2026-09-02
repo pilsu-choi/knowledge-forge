@@ -42,6 +42,24 @@ def test_small_table_stays_as_a_single_chunk():
     assert "item-0" in chunks[0].text and "item-1" in chunks[0].text
 
 
+def test_multi_level_header_is_repeated_whole_in_every_split_chunk():
+    # header_rows=2: a merged top header ("2025년") plus its sub-labels
+    # ("기본급"/"가산율") - both header lines must survive into every split
+    # chunk, not just the first, or a later chunk's rows lose their columns.
+    header = [["구분", "2025년", "2025년"], ["", "기본급", "가산율"]]
+    rows = header + [[str(i), str(i * 100), f"{i}%"] for i in range(500)]
+    table = TableElement(element_id="tb3", rows=rows, caption="Report", header_rows=2)
+    doc = Document(document_id="doc4", source=make_source_ref(), elements=[table])
+
+    max_tokens = 100
+    chunks = AdaptiveChunker(max_tokens_per_chunk=max_tokens).chunk(doc)
+
+    assert len(chunks) > 1
+    for c in chunks:
+        assert "구분 | 2025년 | 2025년" in c.text
+        assert " | 기본급 | 가산율" in c.text
+
+
 def test_single_oversized_row_falls_back_gracefully():
     # One row so large that even header + one row exceeds budget - must still
     # terminate with every emitted chunk under budget (via hard-split fallback).

@@ -40,6 +40,21 @@ class TableElement(ElementBase):
     # crop (see vision.extractor); "rule_based" for a deterministic parser
     # (openpyxl, python-docx, ...); None when the parser predates this field.
     extraction_method: Literal["rule_based", "vlm"] | None = None
+    # How many leading rows of `rows` are header rows (e.g. 2 for a
+    # multi-level XLSX header where a merged top row like "2025년" sits
+    # above "기본급"/"가산율"). Default 1 preserves the single-header-row
+    # assumption every parser but xlsx still makes.
+    header_rows: int = 1
+    # Optional nested representation of a multi-level-header table (see
+    # parsers/xlsx.py), keyed by the leaf header labels. `rows` stays the
+    # flat, universally-consumed form (chunking renders it directly); this
+    # is purely additive for future ontology/graph consumers - nothing in
+    # chunking reads it today.
+    structured: dict | None = None
+    # Cell-ref (e.g. "B7") -> original formula string, for cells whose
+    # value in `rows` is a computed/cached result rather than a literal.
+    # Only populated where the source format preserves formulas (XLSX).
+    formulas: dict[str, str] | None = None
 
 
 class ListElement(ElementBase):

@@ -44,6 +44,10 @@ async def test_xlsx_parses_sheet_into_a_table_element_and_embedded_image():
     assert tables[0].rows[1] == ["1", "Ada", "100"]
     assert tables[0].rows[2] == ["2", "Grace", "200"]
     assert tables[0].extraction_method == "rule_based"
+    # no merged multi-level header or formulas in this fixture - defaults hold.
+    assert tables[0].header_rows == 1
+    assert tables[0].structured is None
+    assert tables[0].formulas is None
 
     # the embedded picture anchored on the sheet is described via VLM, not
     # left unparsed.
