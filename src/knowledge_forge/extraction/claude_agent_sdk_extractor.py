@@ -11,11 +11,14 @@ Claude Code logged in needs no separate Anthropic API key to run
 extraction. See extraction/auth.py for the credential preflight and
 wiki/llm-providers.md for how to enable this via KF_LLM_PROVIDER.
 
-Every built-in tool is disabled (`tools=[]`) and `max_turns=1`: this
-provider is used for a single structured-output completion, the same
-one-call-per-chunk-bundle shape as ClaudeExtractor/OpenRouterExtractor -
-never an actual agentic/tool-using session. The CLI must not read/write
-files or run commands on this call's behalf.
+Every built-in tool is disabled (`tools=[]`): this provider is used for a
+single structured-output completion, the same one-call-per-chunk-bundle
+shape as ClaudeExtractor/OpenRouterExtractor - never an actual
+agentic/tool-using session. The CLI must not read/write files or run
+commands on this call's behalf. `max_turns=3` (not 1) gives the SDK's own
+output_format-validation retry (see `_options()`) room to re-prompt on a
+schema mismatch - it does not open the door to real multi-step tool use,
+since `tools=[]` still forbids that regardless of turn count.
 """
 
 import asyncio
@@ -65,7 +68,14 @@ class ClaudeAgentSDKExtractor(Extractor):
             cli_path=self._cli_path,
             system_prompt=SYSTEM_PROMPT,
             tools=[],
-            max_turns=1,
+            # >1 despite this being a single logical completion: the SDK's
+            # own output_format validation re-prompts the model on a schema
+            # mismatch (see the module docstring), and each re-prompt counts
+            # as another turn - max_turns=1 was observed live to fail real
+            # chunks with "Reached maximum number of turns (1)" whenever the
+            # first attempt didn't validate. tools=[] means no turn can do
+            # anything but retry the same JSON, so raising this is safe.
+            max_turns=3,
             output_format={"type": "json_schema", "schema": ExtractionResult.model_json_schema()},
         )
 

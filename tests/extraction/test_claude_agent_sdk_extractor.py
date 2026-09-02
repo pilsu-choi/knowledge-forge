@@ -134,7 +134,7 @@ async def test_extract_maps_extraction_result_into_typed_knowledge_objects_and_r
     assert query_fn.calls == 1
     options = query_fn.last_kwargs["options"]
     assert options.tools == []
-    assert options.max_turns == 1
+    assert options.max_turns == 3
     assert options.output_format["type"] == "json_schema"
 
 
