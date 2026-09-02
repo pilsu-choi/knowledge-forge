@@ -41,7 +41,7 @@ uv run knowledge-forge extract <path> --pretty
 | `KF_OPENROUTER_VISION_MODEL` | `anthropic/claude-haiku-4.5` | Vision 추출(표/이미지/차트)에 쓸 OpenRouter 모델 슬러그 |
 | `KF_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API 엔드포인트 |
 | `OPENROUTER_API_KEY` | (없음) | OpenRouter API 키. `KF_` 접두사가 아님 — `ANTHROPIC_API_KEY`를 `Settings`에 중복 저장하지 않는 것과 같은 원칙으로, provider 클래스 생성 시점에 환경에서 직접 읽는다 |
-| `KF_CLAUDE_AGENT_SDK_EXTRACTION_MODEL` | `claude-opus-5` | Knowledge Extraction에 쓸 모델 (Claude Agent SDK 경로) |
+| `KF_CLAUDE_AGENT_SDK_EXTRACTION_MODEL` | `claude-haiku-4-5-20251001` | Knowledge Extraction에 쓸 모델 (Claude Agent SDK 경로) |
 | `KF_CLAUDE_AGENT_SDK_CLI_PATH` | (없음 → PATH의 `claude`) | `claude` 바이너리가 PATH에 없을 때만 명시적 경로 지정 |
 | `CLAUDE_CODE_OAUTH_TOKEN` | (없음) | `claude setup-token`으로 발급하는 장기 OAuth 토큰. `KF_` 접두사가 아님 — `claude` CLI가 직접 읽는 표준 환경변수라 여기서 중복 관리하지 않는다. headless/CI 환경에서 브라우저 로그인 대신 사용 |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` | (없음) | `claude` CLI 자체가 인식하는 표준 자격 증명 — 이미 로그인돼 있지 않아도 이 경로로 동작한다 |

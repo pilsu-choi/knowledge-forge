@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     # login, a `claude setup-token` CLAUDE_CODE_OAUTH_TOKEN, or a plain
     # ANTHROPIC_API_KEY), so a machine that already has Claude Code logged
     # in needs no separate API key. See extraction/claude_agent_sdk_extractor.py.
-    claude_agent_sdk_extraction_model: str = "claude-opus-5"
+    claude_agent_sdk_extraction_model: str = "claude-haiku-4-5-20251001"
     # Only needed when `claude` isn't on PATH under that exact name.
     claude_agent_sdk_cli_path: str | None = None
 

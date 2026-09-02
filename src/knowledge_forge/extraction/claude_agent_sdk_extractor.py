@@ -37,7 +37,7 @@ from knowledge_forge.retry import claude_agent_sdk_retry, is_retryable_claude_ag
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "claude-opus-5"
+DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
 
 class ClaudeAgentSDKExtractor(Extractor):
