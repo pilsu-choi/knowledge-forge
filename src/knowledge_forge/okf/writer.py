@@ -20,11 +20,21 @@ Layout:
       views/by_document.yaml               # document_id -> {title, objects: [...]}
       views/timeline.yaml                  # [{id, type, path, extracted_at}], chronological
 
-Every writer is scoped to one project_id's subtree (`<root>/{project_id}/`)
-so each project's OKF tree can be located, git-diffed, or copied out on its
-own - the manifest/views a `write_manifest()`/`write_views()` call rebuilds
-are that project's alone, not a mix of every project ever written under
-`<root>`.
+Each project gets its own subtree (`<root>/{project_id}/`) so it can be
+located, git-diffed, or copied out on its own. One OKFWriter instance can
+still write into several project subtrees in the same run - every
+`write_resource`/`write_objects` call routes to the project_id already
+carried by the Source/KnowledgeObject it's writing (`Source.project_id`,
+`KnowledgeObject.source.project_id` - see pipeline.py's per-item
+`RawItem.project_id` override, e.g. one Slack collector spanning several
+projects' channels), not a single project_id fixed at construction time.
+`write_relations()` takes the project_id explicitly (a Relation carries no
+Source of its own) - pipeline.py passes the enclosing document's
+`source.project_id`. `write_manifest()`/`write_views()` rebuild every
+project subtree found under `<root>` (each still scoped to its own
+records, never mixed with another project's), returned as
+`{project_id: path}` (or `{project_id: [paths]}` for views) since one run
+can touch more than one.
 
 The manifest is a catalog, not a knowledge store in itself: for every
 resource/object/relation it holds just id + type + the relative path to
@@ -65,15 +75,37 @@ _VIEWS_DIR = "views"
 
 class OKFWriter:
     def __init__(self, root: Path | str, project_id: str = "default"):
-        self._root = Path(root) / project_id
+        self._base_root = Path(root)
+        # `project_id` is the fallback used by write_relations() (a Relation
+        # carries no Source of its own to route by) and ensures at least one
+        # project subtree exists even for a writer that never writes a
+        # single item - matches the old always-one-project behavior.
+        self._default_project_id = project_id
+        self._project_root(project_id)
+
+    def _project_root(self, project_id: str) -> Path:
+        root = self._base_root / project_id
         for sub in (_RESOURCES_DIR, _OBJECTS_DIR, _RELATIONS_DIR, _VIEWS_DIR):
-            (self._root / sub).mkdir(parents=True, exist_ok=True)
+            (root / sub).mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _known_project_ids(self) -> list[str]:
+        """Every project subtree that exists under root - discovered by
+        scanning the filesystem (like write_manifest()/write_views()
+        already did per-project, see module docstring) rather than tracked
+        in memory, so a manifest/views rebuild sees every project a prior
+        OKFWriter instance wrote too, not just this one's."""
+        if not self._base_root.is_dir():
+            return [self._default_project_id]
+        ids = sorted(d.name for d in self._base_root.iterdir() if d.is_dir())
+        return ids or [self._default_project_id]
 
     def write_resource(self, source: Source, document: Document) -> None:
         """One resource file per Source, holding the Source record and a
         thin pointer to its Document (not the full element tree - that
         stays in the pipeline's own storage; the resource file's job is to
         be a stable, addressable "this is where object X came from")."""
+        root = self._project_root(source.project_id)
         payload = {
             "source": source.model_dump(mode="json"),
             "document": {
@@ -82,42 +114,64 @@ class OKFWriter:
                 "element_count": len(document.elements),
             },
         }
-        self._write_yaml(f"{_RESOURCES_DIR}/{source.source_id}.yaml", payload)
+        self._write_yaml(root, f"{_RESOURCES_DIR}/{source.source_id}.yaml", payload)
 
     def write_objects(self, objects: list[KnowledgeObject]) -> None:
         for ko in objects:
+            root = self._project_root(ko.source.project_id)
             self._write_yaml(
+                root,
                 f"{_OBJECTS_DIR}/{ko.type.value}/{ko.knowledge_object_id}.yaml",
                 ko.model_dump(mode="json"),
             )
 
-    def write_relations(self, relations: list[Relation]) -> None:
+    def write_relations(self, relations: list[Relation], project_id: str | None = None) -> None:
+        """`project_id` is required to route correctly whenever a run spans
+        more than one project - a Relation only holds KnowledgeObject ids
+        (subject_id/object_id), not a Source, so it can't be routed by its
+        own content the way write_objects() routes by
+        `KnowledgeObject.source.project_id`. Defaults to the writer's
+        construction-time project_id for callers with a single project.
+        """
+        root = self._project_root(project_id or self._default_project_id)
         for rel in relations:
-            self._write_yaml(f"{_RELATIONS_DIR}/{rel.relation_id}.yaml", rel.model_dump(mode="json"))
+            self._write_yaml(root, f"{_RELATIONS_DIR}/{rel.relation_id}.yaml", rel.model_dump(mode="json"))
 
-    def write_manifest(self) -> Path:
+    def write_manifest(self) -> dict[str, Path]:
+        return {project_id: self._write_manifest_for(project_id) for project_id in self._known_project_ids()}
+
+    def write_views(self) -> dict[str, list[Path]]:
+        return {project_id: self._write_views_for(project_id) for project_id in self._known_project_ids()}
+
+    def _write_manifest_for(self, project_id: str) -> Path:
+        root = self._project_root(project_id)
         manifest = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "pipeline_version": knowledge_forge.__version__,
-            "resources": self._catalog_resources(),
-            "objects": self._catalog_objects(),
-            "relations": self._catalog_relations(),
+            "resources": self._catalog_resources(root),
+            "objects": self._catalog_objects(root),
+            "relations": self._catalog_relations(root),
         }
-        path = self._root / "manifest.yaml"
+        path = root / "manifest.yaml"
         with path.open("w", encoding="utf-8") as f:
             yaml.safe_dump(manifest, f, allow_unicode=True, sort_keys=False)
         return path
 
-    def write_views(self) -> list[Path]:
+    def _write_views_for(self, project_id: str) -> list[Path]:
+        root = self._project_root(project_id)
         by_topic: dict[str, list[dict[str, Any]]] = {}
         by_document: dict[str, dict[str, Any]] = {}
         timeline: list[dict[str, Any]] = []
 
-        objects_dir = self._root / _OBJECTS_DIR
+        objects_dir = root / _OBJECTS_DIR
         for type_dir in sorted(d for d in objects_dir.iterdir() if d.is_dir()):
             for f in sorted(type_dir.glob("*.yaml")):
                 payload = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
-                entry = {"id": payload.get("knowledge_object_id", f.stem), "type": type_dir.name, "path": self._relpath(f)}
+                entry = {
+                    "id": payload.get("knowledge_object_id", f.stem),
+                    "type": type_dir.name,
+                    "path": self._relpath(root, f),
+                }
 
                 for topic in payload.get("topics") or []:
                     by_topic.setdefault(topic, []).append(entry)
@@ -134,48 +188,47 @@ class OKFWriter:
 
         timeline.sort(key=lambda e: e["extracted_at"])
 
-        paths = [
-            self._write_yaml(f"{_VIEWS_DIR}/by_topic.yaml", dict(sorted(by_topic.items()))),
-            self._write_yaml(f"{_VIEWS_DIR}/by_document.yaml", dict(sorted(by_document.items()))),
-            self._write_yaml(f"{_VIEWS_DIR}/timeline.yaml", {"timeline": timeline}),
+        return [
+            self._write_yaml(root, f"{_VIEWS_DIR}/by_topic.yaml", dict(sorted(by_topic.items()))),
+            self._write_yaml(root, f"{_VIEWS_DIR}/by_document.yaml", dict(sorted(by_document.items()))),
+            self._write_yaml(root, f"{_VIEWS_DIR}/timeline.yaml", {"timeline": timeline}),
         ]
-        return paths
 
-    def _catalog_resources(self) -> list[dict[str, Any]]:
+    def _catalog_resources(self, root: Path) -> list[dict[str, Any]]:
         entries = []
-        for f in sorted((self._root / _RESOURCES_DIR).glob("*.yaml")):
+        for f in sorted((root / _RESOURCES_DIR).glob("*.yaml")):
             payload = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
             source = payload.get("source", {})
             entries.append(
                 {
                     "id": source.get("source_id", f.stem),
                     "type": source.get("source_type", "unknown"),
-                    "path": self._relpath(f),
+                    "path": self._relpath(root, f),
                 }
             )
         return entries
 
-    def _catalog_objects(self) -> list[dict[str, Any]]:
+    def _catalog_objects(self, root: Path) -> list[dict[str, Any]]:
         entries = []
-        objects_dir = self._root / _OBJECTS_DIR
+        objects_dir = root / _OBJECTS_DIR
         for type_dir in sorted(d for d in objects_dir.iterdir() if d.is_dir()):
             for f in sorted(type_dir.glob("*.yaml")):
-                entries.append({"id": f.stem, "type": type_dir.name, "path": self._relpath(f)})
+                entries.append({"id": f.stem, "type": type_dir.name, "path": self._relpath(root, f)})
         return entries
 
-    def _catalog_relations(self) -> list[dict[str, Any]]:
+    def _catalog_relations(self, root: Path) -> list[dict[str, Any]]:
         entries = []
-        for f in sorted((self._root / _RELATIONS_DIR).glob("*.yaml")):
+        for f in sorted((root / _RELATIONS_DIR).glob("*.yaml")):
             payload = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
-            entries.append({"id": f.stem, "type": payload.get("type", "unknown"), "path": self._relpath(f)})
+            entries.append({"id": f.stem, "type": payload.get("type", "unknown"), "path": self._relpath(root, f)})
         return entries
 
-    def _write_yaml(self, rel_path: str, payload: dict) -> Path:
-        path = self._root / rel_path
+    def _write_yaml(self, root: Path, rel_path: str, payload: dict) -> Path:
+        path = root / rel_path
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8") as f:
             yaml.safe_dump(payload, f, allow_unicode=True, sort_keys=False)
         return path
 
-    def _relpath(self, path: Path) -> str:
-        return str(path.relative_to(self._root))
+    def _relpath(self, root: Path, path: Path) -> str:
+        return str(path.relative_to(root))

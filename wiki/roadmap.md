@@ -160,11 +160,13 @@ Slack은 추가로 `channel_project_map`(`KF_SLACK_CHANNEL_PROJECT_MAP`)을 지�
   `tests/collectors/test_saas_factory.py`). 특히 파서→청커→LLM 추출까지 이어지는 실제 실행은
   아직 어떤 SaaS 소스로도 검증되지 않았다 — 실제 계정 데이터를 LLM에 보내는 비용/데이터 민감성
   문제가 있어 신중한 확인 후 진행할 것.
-- Slack의 `KF_SLACK_CHANNEL_PROJECT_MAP`처럼 여러 프로젝트에 걸친 채널별 귀속은 Postgres
-  `--store` 경로에서만 올바르게 반영된다 — `--okf-dir`(OKFWriter)는 여전히 실행 시점의 단일
-  `--project-id` 폴더에 전부 쓴다(`OKFWriter.__init__`이 `project_id`로 루트를 고정).
-  다중 프로젝트 Slack 수집과 OKF 출력을 같이 쓰려면 OKFWriter도 아이템별 project_id를
-  인식하도록 확장이 필요하다 — 아직 미구현.
+- ~~Slack의 `KF_SLACK_CHANNEL_PROJECT_MAP`처럼 여러 프로젝트에 걸친 채널별 귀속이 `--okf-dir`
+  (OKFWriter)에서도 올바르게 반영되도록~~ — 완료. `OKFWriter`가 더 이상 생성 시점의
+  `--project-id` 하나로 루트를 고정하지 않고, `write_resource`/`write_objects`가 아이템별
+  `Source.project_id`/`KnowledgeObject.source.project_id`를 보고 각자의
+  `{root}/{project_id}/`에 쓴다(`Relation`은 자기 `Source`가 없어 `write_relations()`가
+  `project_id`를 인자로 받는다). `write_manifest()`/`write_views()`는 실행이 건드린 프로젝트
+  수만큼 `{project_id: path}`를 돌려준다 — [`okf.md`](okf.md) "다중 프로젝트 라우팅" 참고.
 
 ### 2단계 — 시각 자료 처리 고도화
 

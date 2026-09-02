@@ -71,11 +71,11 @@ relations:
 
 ```python
 writer = OKFWriter(root)
-writer.write_resource(source, document)   # Source당 1회
-writer.write_objects(outcome.objects)     # 문서당 (병합된 ExtractionOutcome 1개)
-writer.write_relations(outcome.relations) # 문서당
-writer.write_manifest()                   # 실행 끝에 1회 — 트리 스캔 후 재생성
-writer.write_views()                      # 실행 끝에 1회 — 트리 스캔 후 재생성
+writer.write_resource(source, document)              # Source당 1회
+writer.write_objects(outcome.objects)                # 문서당 (병합된 ExtractionOutcome 1개)
+writer.write_relations(outcome.relations, project_id) # 문서당
+writer.write_manifest()                              # 실행 끝에 1회 — 프로젝트별로 트리 스캔 후 재생성
+writer.write_views()                                 # 실행 끝에 1회 — 프로젝트별로 트리 스캔 후 재생성
 ```
 
 `pipeline.run_pipeline(..., okf_writer=writer)`를 넘기면 위 `write_resource`/`write_objects`/
@@ -83,6 +83,20 @@ writer.write_views()                      # 실행 끝에 1회 — 트리 스캔
 `write_views()`만 호출자(CLI)가 파이프라인 실행이 끝난 뒤 한 번씩 호출하면 된다(`cli.py`의
 `extract` 명령이 이렇게 한다). `PostgresStore`와 마찬가지로 완전히 opt-in이며(`store`와
 독립적으로 켜고 끌 수 있음), 켜지 않으면 아무 파일도 만들지 않는다.
+
+**다중 프로젝트 라우팅**: `OKFWriter(root, project_id="default")`의 `project_id`는 더 이상
+전체 인스턴스를 하나의 프로젝트에 고정하지 않는다 — `write_resource`/`write_objects`는 넘겨받은
+`Source.project_id`/`KnowledgeObject.source.project_id`를 보고 그때그때 올바른
+`<root>/{project_id}/` 아래에 쓴다(예: `KF_SLACK_CHANNEL_PROJECT_MAP`으로 여러 프로젝트의
+채널을 한 번에 수집하는 Slack 커넥터, [`saas-connectors.md`](saas-connectors.md) 참고).
+`Relation`은 자기 자신의 `Source`가 없어서 이렇게 라우팅할 수 없으므로 `write_relations()`가
+`project_id`를 인자로 받는다(`pipeline.py`가 그 문서의 `source.project_id`를 넘겨준다) —
+생성자의 `project_id`는 이 인자가 생략됐을 때의 폴백, 그리고 파이프라인이 파일 하나도 쓰기 전
+그 프로젝트 서브트리가 최소한 존재하게 만드는 용도로만 남아 있다. `write_manifest()`/
+`write_views()`는 이제 그 실행에서 실제로 쓰여진 프로젝트가 몇 개든 `root` 아래에 있는 모든
+프로젝트 서브트리를 스캔해 `{project_id: path}`(views는 `{project_id: [path, ...]}`)로 돌려준다
+— 프로젝트별 매니페스트/뷰는 여전히 그 프로젝트 자신의 레코드만 담고, 다른 프로젝트와 섞이지
+않는다.
 
 ## 사용법
 

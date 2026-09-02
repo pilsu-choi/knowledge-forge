@@ -64,7 +64,7 @@ def test_writer_produces_manifest_indexing_resources_objects_and_relations(tmp_p
     )
     writer.write_relations([relation])
 
-    manifest_path = writer.write_manifest()
+    manifest_path = writer.write_manifest()["default"]
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
 
     assert manifest["resources"] == [{"id": "s1", "type": "local_file", "path": "resources/s1.yaml"}]
@@ -94,7 +94,7 @@ def test_write_views_indexes_objects_by_topic_document_and_timeline(tmp_path):
     entity = entity.model_copy(update={"topics": ["alpha"], "extracted_at": datetime(2026, 1, 1, tzinfo=timezone.utc)})
     writer.write_objects([fact, entity])
 
-    paths = writer.write_views()
+    paths = writer.write_views()["default"]
     assert {p.name for p in paths} == {"by_topic.yaml", "by_document.yaml", "timeline.yaml"}
 
     by_topic = yaml.safe_load((tmp_path / "default" / "views/by_topic.yaml").read_text(encoding="utf-8"))
@@ -116,7 +116,85 @@ def test_manifest_reflects_objects_written_across_multiple_writer_instances(tmp_
     OKFWriter(tmp_path).write_objects([_sample_object("ko1", KnowledgeObjectType.FACT)])
     second_writer = OKFWriter(tmp_path)
     second_writer.write_objects([_sample_object("ko2", KnowledgeObjectType.EVENT)])
-    manifest_path = second_writer.write_manifest()
+    manifest_path = second_writer.write_manifest()["default"]
 
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     assert {o["id"] for o in manifest["objects"]} == {"ko1", "ko2"}
+
+
+def test_writer_routes_each_item_to_its_own_project_subtree(tmp_path):
+    """One OKFWriter instance can be handed items from several projects in
+    the same run (e.g. a Slack collector spanning several projects' channels,
+    RawItem.project_id) - each must land under its own <root>/{project_id}/,
+    not get mixed into the writer's construction-time default."""
+    src_a = Source(
+        source_id="sa",
+        source_type=SourceType.SLACK,
+        uri="slack://ca/1",
+        content_hash="ha",
+        collected_at=datetime.now(timezone.utc),
+        project_id="PRJ-A",
+    )
+    doc_a = Document(
+        document_id="da",
+        source=SourceRef.from_source(src_a),
+        elements=[TextBlock(element_id="ea", text="a")],
+        metadata=DocumentMetadata(title="A"),
+    )
+    src_b = Source(
+        source_id="sb",
+        source_type=SourceType.SLACK,
+        uri="slack://cb/1",
+        content_hash="hb",
+        collected_at=datetime.now(timezone.utc),
+        project_id="PRJ-B",
+    )
+    doc_b = Document(
+        document_id="db",
+        source=SourceRef.from_source(src_b),
+        elements=[TextBlock(element_id="eb", text="b")],
+        metadata=DocumentMetadata(title="B"),
+    )
+
+    writer = OKFWriter(tmp_path)  # default project_id, never used here
+    writer.write_resource(src_a, doc_a)
+    writer.write_resource(src_b, doc_b)
+
+    ko_a = _sample_object("ko-a", KnowledgeObjectType.FACT).model_copy(
+        update={"source": SourceRef.from_source(src_a)}
+    )
+    ko_b = _sample_object("ko-b", KnowledgeObjectType.FACT).model_copy(
+        update={"source": SourceRef.from_source(src_b)}
+    )
+    writer.write_objects([ko_a, ko_b])
+
+    assert (tmp_path / "PRJ-A" / "resources" / "sa.yaml").exists()
+    assert (tmp_path / "PRJ-B" / "resources" / "sb.yaml").exists()
+    assert (tmp_path / "PRJ-A" / "objects" / "fact" / "ko-a.yaml").exists()
+    assert (tmp_path / "PRJ-B" / "objects" / "fact" / "ko-b.yaml").exists()
+    # never cross-written into the other project's subtree
+    assert not (tmp_path / "PRJ-A" / "resources" / "sb.yaml").exists()
+    assert not (tmp_path / "PRJ-B" / "resources" / "sa.yaml").exists()
+
+    manifests = writer.write_manifest()
+    assert set(manifests) == {"default", "PRJ-A", "PRJ-B"}
+    manifest_a = yaml.safe_load(manifests["PRJ-A"].read_text(encoding="utf-8"))
+    assert {o["id"] for o in manifest_a["objects"]} == {"ko-a"}
+    manifest_b = yaml.safe_load(manifests["PRJ-B"].read_text(encoding="utf-8"))
+    assert {o["id"] for o in manifest_b["objects"]} == {"ko-b"}
+
+
+def test_write_relations_routes_by_explicit_project_id_argument(tmp_path):
+    writer = OKFWriter(tmp_path)
+    relation = Relation(
+        relation_id="rel-a",
+        type=RelationType.MENTIONS,
+        subject_id="ko-a",
+        object_id="ko-a2",
+        evidence=["c1"],
+        created_at=datetime.now(timezone.utc),
+    )
+    writer.write_relations([relation], "PRJ-A")
+
+    assert (tmp_path / "PRJ-A" / "relations" / "rel-a.yaml").exists()
+    assert not (tmp_path / "default" / "relations" / "rel-a.yaml").exists()

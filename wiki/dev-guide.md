@@ -84,10 +84,9 @@ uv run knowledge-forge extract <path> [--source local|slack|notion|gdrive|gmail]
 - `--store`(기본값): `KF_DATABASE_URL`이 설정되어 있으면 Postgres+디스크에 저장([`storage.md`](storage.md)).
   없으면 경고만 출력하고 출력 전용으로 계속 진행한다.
 - `--okf-dir`: 지정하면 `--store`와 별개로, manifest.yaml + resources/objects/relations로
-  된 파일 기반 Knowledge Base도 그 디렉터리에 기록한다([`okf.md`](okf.md)). **주의**: OKFWriter는
-  생성 시점의 `--project-id` 하나로 고정된 `{root}/{project_id}/` 아래에만 쓴다 — Slack의
-  `KF_SLACK_CHANNEL_PROJECT_MAP`으로 한 실행이 여러 프로젝트에 걸쳐 있어도 OKF 출력은 전부 이
-  단일 폴더에 섞여 들어간다(Postgres `--store` 경로만 아이템별 `project_id`를 올바르게 반영함).
+  된 파일 기반 Knowledge Base도 그 디렉터리에 기록한다([`okf.md`](okf.md)). `KF_SLACK_CHANNEL_PROJECT_MAP`으로
+  한 실행이 여러 프로젝트에 걸쳐 있어도, `OKFWriter`가 아이템별 `project_id`를 보고 각자의
+  `{root}/{project_id}/` 서브트리에 정확히 나눠 쓴다(Postgres `--store` 경로와 동일한 라우팅).
 
 예시:
 

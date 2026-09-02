@@ -179,7 +179,7 @@ async def run_pipeline(
                 await store.record_relations(merged_outcome.relations)
             if okf_writer is not None:
                 okf_writer.write_objects(merged_outcome.objects)
-                okf_writer.write_relations(merged_outcome.relations)
+                okf_writer.write_relations(merged_outcome.relations, source.project_id)
             yield merged_outcome
         if unexpected is not None:
             raise unexpected
