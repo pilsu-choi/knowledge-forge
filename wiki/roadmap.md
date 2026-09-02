@@ -169,6 +169,15 @@ Slack은 추가로 `channel_project_map`(`KF_SLACK_CHANNEL_PROJECT_MAP`)을 지�
   `{root}/{project_id}/`에 쓴다(`Relation`은 자기 `Source`가 없어 `write_relations()`가
   `project_id`를 인자로 받는다). `write_manifest()`/`write_views()`는 실행이 건드린 프로젝트
   수만큼 `{project_id: path}`를 돌려준다 — [`okf.md`](okf.md) "다중 프로젝트 라우팅" 참고.
+- ~~`knowledge-forge schedule`에도 `--okf-dir`~~ — 완료. `extract`처럼 실행 전체가 끝난 뒤
+  한 번이 아니라, `build_tick`(`scheduling/scheduler.py`)이 **매 tick이 끝날 때마다**
+  `write_manifest()`/`write_views()`를 다시 부른다 — 트리 스캔 기반 재생성이라 반복 호출해도
+  안전하고, 증분 동기화로 새로 수집된 것들이 다음 tick을 기다리지 않고 그 tick 안에서 바로
+  매니페스트/뷰에 반영된다([`okf.md`](okf.md), [`scheduling.md`](scheduling.md) 참고). `serve`/
+  `worker` job queue 경로는 여전히 `okf_writer`를 연결하지 않는다 — 원하면 `POST /ingest`에
+  `okf_dir` 필드를 추가하고 `worker.py`가 job 처리 시 `OKFWriter`를 만들어 넘기면 되는데,
+  `project_id`/`max_tokens`/`model`이 이미 그 경로를 거치는 것과 같은 패턴이라 후속 과제로
+  남겨둔다.
 
 ### 2단계 — 시각 자료 처리 고도화
 

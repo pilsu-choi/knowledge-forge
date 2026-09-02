@@ -55,12 +55,14 @@ class _FakeClient:
         self.messages = _FakeMessages(raise_error=raise_error)
 
 
-def _make_tick(tmp_path, client, store_factory=None):
+def _make_tick(tmp_path, client, store_factory=None, okf_writer=None):
     collector = LocalFileCollector(root=tmp_path)
     registry = default_registry()
     chunker = AdaptiveChunker(max_tokens_per_chunk=4000)
     extractor = ClaudeExtractor(client=client)
-    return collector, build_tick(collector, registry, chunker, extractor, store_factory=store_factory)
+    return collector, build_tick(
+        collector, registry, chunker, extractor, store_factory=store_factory, okf_writer=okf_writer
+    )
 
 
 def _produced_count(caplog) -> int:
@@ -108,6 +110,46 @@ async def test_second_tick_only_picks_up_new_file_incrementally(tmp_path, caplog
     assert second_tick_count >= 1
     assert client.messages.calls > first_calls
     assert client.messages.calls - first_calls == second_tick_count
+
+
+async def test_tick_writes_and_refreshes_okf_tree(tmp_path, caplog):
+    """--okf-dir on `schedule` (build_tick's okf_writer) must, unlike
+    `extract`'s one-shot write_manifest()/write_views() at process exit,
+    refresh the manifest/views at the end of *every* tick - otherwise a
+    long-running `schedule` process's OKF tree would never reflect anything
+    collected after the first tick."""
+    from knowledge_forge.okf import OKFWriter
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    okf_dir = tmp_path / "okf"
+    (src_dir / "a.md").write_text("# A\n\nHello world.")
+
+    client = _FakeClient()
+    registry = default_registry()
+    chunker = AdaptiveChunker(max_tokens_per_chunk=4000)
+    extractor = ClaudeExtractor(client=client)
+    collector = LocalFileCollector(root=src_dir)
+    okf_writer = OKFWriter(okf_dir)
+    tick = build_tick(collector, registry, chunker, extractor, okf_writer=okf_writer)
+
+    await tick()
+
+    manifest_path = okf_dir / "default" / "manifest.yaml"
+    assert manifest_path.exists()
+    first_manifest = manifest_path.read_text(encoding="utf-8")
+    assert "objects:" in first_manifest
+
+    (src_dir / "b.md").write_text("# B\n\nA second file, added before the next tick.")
+    await tick()
+
+    second_manifest = manifest_path.read_text(encoding="utf-8")
+    # The second tick's manifest must include the object(s) from the first
+    # tick too (not just the newly-added file's) - the whole point of
+    # rebuilding by scanning the tree on every tick, not tracking in memory.
+    assert second_manifest != first_manifest
+    resources_dir = okf_dir / "default" / "resources"
+    assert len(list(resources_dir.glob("*.yaml"))) == 2
 
 
 async def test_tick_swallows_exceptions_and_logs_instead_of_raising(tmp_path, caplog):

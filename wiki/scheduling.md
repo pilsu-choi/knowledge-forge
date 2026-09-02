@@ -8,12 +8,18 @@
 ```bash
 uv run knowledge-forge schedule <path> \
   [--source local|slack|notion|gdrive|gmail] \
-  [--interval-seconds 600] [--max-tokens 4000] [--model claude-opus-5] [--store/--no-store]
+  [--interval-seconds 600] [--max-tokens 4000] [--model claude-opus-5] \
+  [--store/--no-store] [--okf-dir ./okf]
 ```
 
 `<path>`는 `--source local`(기본값)일 때만 필요하다 — 그 외 SaaS 소스는
 `collectors/saas/factory.py`가 `.env`(`KF_*`)로부터 조립하므로 `path`가 무시된다
 ([`saas-connectors.md`](saas-connectors.md)).
+
+`--okf-dir`는 `extract`와 같은 의미지만 타이밍이 다르다 — `extract`는 전체 실행이 끝난 뒤
+매니페스트/뷰를 한 번만 재생성하는 반면, `schedule`은 **매 tick이 끝날 때마다** 재생성한다
+(`build_tick`, [`okf.md`](okf.md) 참고) — 트리 스캔 기반이라 반복 호출해도 안전하고, 그래야
+증분 동기화로 새로 수집된 것들이 다음 tick을 기다리지 않고 그 tick 안에서 바로 반영된다.
 
 포그라운드 프로세스로 실행되며(내부적으로 `asyncio.run(run_scheduled_sync(...))`), Ctrl-C로
 정상 종료한다. `--interval-seconds`의 기본값은 600초(10분)다

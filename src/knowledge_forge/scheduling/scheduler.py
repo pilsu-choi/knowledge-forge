@@ -27,6 +27,7 @@ from knowledge_forge.pipeline import run_pipeline
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+    from knowledge_forge.okf import OKFWriter
     from knowledge_forge.storage.store import PipelineStore
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ def build_tick(
     extractor,
     store_factory: Optional[Callable[[], "PipelineStore"]] = None,
     project_id: str = "default",
+    okf_writer: "OKFWriter | None" = None,
 ) -> Callable[[], "asyncio.Future[None]"]:
     """Returns a zero-arg async tick function that runs one incremental sync pass.
 
@@ -71,6 +73,14 @@ def build_tick(
     the tick finishes, rather than holding one Postgres connection open
     across the whole scheduler's lifetime - simpler lifecycle, and it
     self-heals from a connection dropped between ticks.
+
+    `okf_writer` (opt-in, like `--okf-dir` on `extract`) gets `write_resource`/
+    `write_objects`/`write_relations` calls from `run_pipeline` during the
+    tick same as `extract`, and `write_manifest()`/`write_views()` once more
+    at the end of *every* tick (not just once at process exit, unlike
+    `extract`) - safe to call repeatedly since both rebuild by scanning the
+    tree (see okf/writer.py), so each tick's manifest/views end up correct
+    for everything collected so far, incremental sync included.
     """
 
     async def _tick() -> None:
@@ -82,16 +92,33 @@ def build_tick(
                     outcomes = [
                         outcome
                         async for outcome in run_pipeline(
-                            collector, registry, chunker, extractor, cursor=cursor, store=store, project_id=project_id
+                            collector,
+                            registry,
+                            chunker,
+                            extractor,
+                            cursor=cursor,
+                            store=store,
+                            okf_writer=okf_writer,
+                            project_id=project_id,
                         )
                     ]
             else:
                 outcomes = [
                     outcome
                     async for outcome in run_pipeline(
-                        collector, registry, chunker, extractor, cursor=cursor, store=None, project_id=project_id
+                        collector,
+                        registry,
+                        chunker,
+                        extractor,
+                        cursor=cursor,
+                        store=None,
+                        okf_writer=okf_writer,
+                        project_id=project_id,
                     )
                 ]
+            if okf_writer is not None:
+                okf_writer.write_manifest()
+                okf_writer.write_views()
             object_count = sum(len(outcome.objects) for outcome in outcomes)
             logger.info("scheduled sync tick produced %d Knowledge Object(s)", object_count)
         except Exception:  # noqa: BLE001 - one failed tick must not kill the scheduler
@@ -181,6 +208,7 @@ async def run_scheduled_sync(
     store_factory: Optional[Callable[[], "PipelineStore"]] = None,
     state_path: Path | str | None = None,
     project_id: str = "default",
+    okf_writer: "OKFWriter | None" = None,
     trigger_api_host: str | None = DEFAULT_TRIGGER_API_HOST,
     trigger_api_port: int | None = DEFAULT_TRIGGER_API_PORT,
 ) -> None:
@@ -201,6 +229,11 @@ async def run_scheduled_sync(
     this process's lifetime (see SlackCollector), since SaaS collectors have
     no `state_path` equivalent yet - restarting `schedule` re-runs their
     initial_sync().
+
+    `okf_writer` is optional (like `extract`'s `--okf-dir`, which builds one
+    the same way, `OKFWriter(okf_dir, project_id=project_id)`) - passed
+    through to build_tick() as-is, see its docstring for why every tick, not
+    just process exit, re-writes the manifest/views.
     """
     if collector is None:
         if root is None:
@@ -213,7 +246,15 @@ async def run_scheduled_sync(
     # model=None lets get_extractor() pick the active provider's own
     # default model instead of always defaulting to an Anthropic model id.
     extractor = get_extractor(model=model)
-    tick = build_tick(collector, registry, chunker, extractor, store_factory=store_factory, project_id=project_id)
+    tick = build_tick(
+        collector,
+        registry,
+        chunker,
+        extractor,
+        store_factory=store_factory,
+        project_id=project_id,
+        okf_writer=okf_writer,
+    )
 
     scheduler = AsyncIOScheduler()
     scheduler.add_job(tick, "interval", seconds=interval_seconds, next_run_time=datetime.now(), id=SYNC_JOB_ID)

@@ -194,6 +194,12 @@ def schedule(
     store: bool = typer.Option(
         True, "--store/--no-store", help="Persist Source/Document/Chunk/KnowledgeObject to Postgres + raw bytes to disk."
     ),
+    okf_dir: Optional[Path] = typer.Option(
+        None,
+        "--okf-dir",
+        help="Also write a file-based OKF Knowledge Base tree (manifest.yaml + resources/objects/relations) to "
+        "this directory, under {project-id}/ subfolder(s) - refreshed at the end of every tick, not just once.",
+    ),
     project_id: str = typer.Option(
         "default", "--project-id", help="Tenancy key tagged on every Source/Document this run persists."
     ),
@@ -251,6 +257,8 @@ def schedule(
     )
     from knowledge_forge.scheduling.scheduler import run_scheduled_sync
 
+    okf_writer = OKFWriter(okf_dir, project_id=project_id) if okf_dir else None
+
     asyncio.run(
         run_scheduled_sync(
             root=root,
@@ -260,6 +268,7 @@ def schedule(
             model=model,
             store_factory=store_factory,
             project_id=project_id,
+            okf_writer=okf_writer,
             trigger_api_host=trigger_host if trigger_api else None,
             trigger_api_port=trigger_port if trigger_api else None,
         )
