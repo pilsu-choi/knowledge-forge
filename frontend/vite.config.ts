@@ -1,3 +1,4 @@
+import path from 'node:path'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { defineConfig } from 'vite'
@@ -8,6 +9,9 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   base: '/ui/',
   plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: { '@': path.resolve(import.meta.dirname, './src') },
+  },
   server: {
     proxy: {
       // `/okf/*` is a sibling FastAPI router, not under `/ui` - proxy it
