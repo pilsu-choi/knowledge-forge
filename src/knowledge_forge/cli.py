@@ -23,6 +23,7 @@ from knowledge_forge.scheduling.scheduler import (
     DEFAULT_TRIGGER_API_PORT,
 )
 from knowledge_forge.storage import PipelineStore
+from knowledge_forge.storage.postgres_store import PostgresStore
 
 app = typer.Typer(help="Knowledge Forge: Collector -> Parser -> Adaptive Chunker -> Knowledge Extraction.")
 db_app = typer.Typer(help="PostgreSQL storage schema management.")
@@ -467,6 +468,98 @@ def db_init() -> None:
 
     asyncio.run(_run())
     typer.echo("스키마 초기화 완료", err=True)
+
+
+@db_app.command("export-okf")
+def db_export_okf(
+    okf_dir: Path = typer.Option(..., "--okf-dir", help="Directory to write the OKF Knowledge Base tree to."),
+    project_id: Optional[str] = typer.Option(
+        None, "--project-id", help="Only export this project's data. Omit to export every project found in Postgres."
+    ),
+    page_size: int = typer.Option(200, "--page-size", help="Rows fetched per paginated read."),
+) -> None:
+    """Rebuild a file-based OKF tree from Source/Document/KnowledgeObject/Relation data already
+    persisted in Postgres - for a run that collected without --okf-dir. Resource-level Links
+    (Slack thread sequencing, cross-source references) are NOT recoverable this way: pipeline.py
+    only ever materializes them in memory during a live run and never persists them to Postgres,
+    so this command's output has everything except links/."""
+    if not settings.database_url:
+        typer.echo("KF_DATABASE_URL이 설정되지 않았습니다.", err=True)
+        raise typer.Exit(1)
+
+    async def _run() -> tuple[int, int, int]:
+        db = PostgresStore(settings.database_url)
+        await db.connect()
+        try:
+            writer = OKFWriter(okf_dir, project_id=project_id or "default")
+            resource_count = object_count = relation_count = 0
+
+            offset = 0
+            while True:
+                sources = await db.list_sources(project_id=project_id, limit=page_size, offset=offset)
+                if not sources:
+                    break
+                for source in sources:
+                    documents = await db.list_documents(source_id=source.source_id, limit=1)
+                    if not documents:
+                        continue
+                    writer.write_resource(source, documents[0])
+                    resource_count += 1
+
+                    obj_offset = 0
+                    while True:
+                        objects = await db.list_knowledge_objects(
+                            source_id=source.source_id, limit=page_size, offset=obj_offset
+                        )
+                        if not objects:
+                            break
+                        writer.write_objects(objects)
+                        object_count += len(objects)
+                        obj_offset += page_size
+                offset += page_size
+
+            # Relations carry no project_id/source of their own (see
+            # OKFWriter.write_relations's docstring) - route each by the
+            # project_id of the KnowledgeObject its subject_id names, same as
+            # pipeline.py routes a live run's relations by the enclosing
+            # document's source.project_id.
+            subject_project: dict[str, str] = {}
+            ko_offset = 0
+            while True:
+                objects = await db.list_knowledge_objects(limit=page_size, offset=ko_offset)
+                if not objects:
+                    break
+                for ko in objects:
+                    subject_project[ko.knowledge_object_id] = ko.source.project_id
+                ko_offset += page_size
+
+            rel_offset = 0
+            while True:
+                relations = await db.list_relations(limit=page_size, offset=rel_offset)
+                if not relations:
+                    break
+                by_project: dict[str, list] = {}
+                for rel in relations:
+                    rel_project = subject_project.get(rel.subject_id) or subject_project.get(rel.object_id)
+                    if project_id is not None and rel_project != project_id:
+                        continue
+                    by_project.setdefault(rel_project or "default", []).append(rel)
+                for rel_project_id, rels in by_project.items():
+                    writer.write_relations(rels, project_id=rel_project_id)
+                    relation_count += len(rels)
+                rel_offset += page_size
+
+            writer.write_manifest()
+            writer.write_views()
+        finally:
+            await db.close()
+        return resource_count, object_count, relation_count
+
+    resources, objects, relations = asyncio.run(_run())
+    typer.echo(
+        f"OKF 백필 완료: 리소스 {resources}개, Knowledge Object {objects}개, Relation {relations}개 (OKF: {okf_dir})",
+        err=True,
+    )
 
 
 if __name__ == "__main__":
