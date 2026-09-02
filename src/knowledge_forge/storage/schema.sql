@@ -113,3 +113,19 @@ CREATE TABLE IF NOT EXISTS jobs (
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT 'default';
 CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_project_id ON jobs(project_id);
+
+-- Incremental-sync bookmark for the job-queue ingest path (ingest.py's
+-- run_saas_ingest), keyed by `source` ("slack", "notion", ...) - one row per
+-- SaaS source, holding whatever opaque shape that source's Collector.
+-- get_cursor()/Cursor.data produces (see collectors/base.py). A single
+-- SAAS_COLLECTOR_BUILDERS[source]() call already covers every channel/
+-- resource that source's KF_* env config names in one Cursor (e.g.
+-- SlackCollector's per-channel latest-ts map), so "one row per source name"
+-- is the right granularity - not one row per channel. Distinct from
+-- `schedule`'s in-memory cursor (scheduling/scheduler.py), which a
+-- long-lived CLI process holds for its own lifetime instead of persisting.
+CREATE TABLE IF NOT EXISTS sync_cursors (
+    source       TEXT PRIMARY KEY,
+    cursor_data  JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at   TIMESTAMPTZ NOT NULL
+);

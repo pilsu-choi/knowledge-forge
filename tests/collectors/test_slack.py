@@ -78,6 +78,24 @@ def test_incremental_sync_passes_oldest_from_cursor():
     assert random_call["oldest"] == "0"  # no prior cursor for this channel
 
 
+def test_incremental_sync_preserves_prior_cursor_position_for_a_channel_with_no_new_messages():
+    client = _FakeSlackClient()
+    client.history_pages["general"] = [[{"ts": "300.0", "text": "newer message", "user": "U1"}]]
+    client.history_pages["quiet"] = [[]]  # no new messages this round
+
+    collector = SlackCollector(client=client, channels=["general", "quiet"])
+    cursor = Cursor(data={"channels": {"general": "200.0", "quiet": "150.0"}})
+    list(collector.incremental_sync(cursor))
+
+    # "quiet" never called _track_latest this round - without seeding from
+    # the incoming cursor, its prior position would be dropped here, and a
+    # caller that persists this cursor (ingest.py's run_saas_ingest) would
+    # then re-pull "quiet"'s entire history on the next sync.
+    updated = collector.get_cursor().data["channels"]
+    assert updated["quiet"] == "150.0"
+    assert updated["general"] == "300.0"
+
+
 def test_slack_never_yields_deleted_items():
     client = _FakeSlackClient()
     client.history_pages["general"] = [[{"ts": "1.0", "text": "hi", "user": "U1"}]]

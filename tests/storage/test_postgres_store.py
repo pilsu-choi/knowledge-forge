@@ -103,6 +103,7 @@ async def store():
         await db.conn.execute("DELETE FROM chunks WHERE chunk_id LIKE 'test-%'")
         await db.conn.execute("DELETE FROM documents WHERE document_id LIKE 'test-%'")
         await db.conn.execute("DELETE FROM sources WHERE source_id LIKE 'test-%'")
+        await db.conn.execute("DELETE FROM sync_cursors WHERE source LIKE 'test-%'")
 
 
 async def test_save_and_upsert_all_tables_is_idempotent(store):
@@ -238,3 +239,19 @@ async def test_list_documents_filters_by_source_id(store):
 
 async def test_get_document_returns_none_for_unknown_id(store):
     assert await store.get_document("no-such-document") is None
+
+
+async def test_sync_cursor_round_trips_and_upserts(store):
+    assert await store.get_sync_cursor("test-source") is None
+
+    await store.save_sync_cursor("test-source", {"channels": {"c1": "1.0"}}, datetime.now(timezone.utc))
+    assert await store.get_sync_cursor("test-source") == {"channels": {"c1": "1.0"}}
+
+    # A second save for the same source overwrites rather than duplicating.
+    await store.save_sync_cursor("test-source", {"channels": {"c1": "2.0"}}, datetime.now(timezone.utc))
+    assert await store.get_sync_cursor("test-source") == {"channels": {"c1": "2.0"}}
+
+    row = await (await store.conn.execute(
+        "SELECT count(*) FROM sync_cursors WHERE source = %s", ("test-source",)
+    )).fetchone()
+    assert row[0] == 1

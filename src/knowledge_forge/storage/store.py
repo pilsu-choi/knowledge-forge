@@ -4,7 +4,9 @@ Bundles the disk-based raw blob store and the PostgreSQL structured store
 so callers (cli.py, scheduling) construct one object instead of wiring two.
 """
 
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from knowledge_forge.collectors.base import RawItem
 from knowledge_forge.models.chunk import Chunk
@@ -49,3 +51,9 @@ class PipelineStore:
 
     async def list_prior_knowledge_objects(self, source_id: str) -> list[KnowledgeObject]:
         return await self._db.list_knowledge_objects_by_source(source_id)
+
+    async def get_sync_cursor(self, source: str) -> dict[str, Any] | None:
+        return await self._db.get_sync_cursor(source)
+
+    async def save_sync_cursor(self, source: str, cursor_data: dict[str, Any]) -> None:
+        await self._db.save_sync_cursor(source, cursor_data, datetime.now(timezone.utc))

@@ -42,6 +42,13 @@ class _FakeClient:
 class _FakeSaaSCollector(SaaSCollector):
     source_type = SourceType.SLACK
 
+    def __init__(self, client):
+        super().__init__(client=client)
+        # Populated for cursor-persistence assertions - not exercised by
+        # tests that don't care about it.
+        self.sync_calls: list[Cursor | None] = []
+        self.cursor_to_return = Cursor(data={"channels": {"c": "2.0"}})
+
     def initial_sync(self):
         yield RawItem(
             uri="slack://c/1",
@@ -61,8 +68,47 @@ class _FakeSaaSCollector(SaaSCollector):
     def incremental_sync(self, cursor):
         return iter(())
 
+    def sync(self, cursor=None):
+        self.sync_calls.append(cursor)
+        return super().sync(cursor)
+
     def get_cursor(self):
-        return Cursor()
+        return self.cursor_to_return
+
+
+class _FakeCursorStore:
+    """Minimal stand-in for PipelineStore covering exactly what run_pipeline
+    (via store is not None) and run_saas_ingest's cursor load/save need -
+    same minimal-fake philosophy as test_pipeline_dedup_and_supersedes.py's
+    _FakeStore."""
+
+    def __init__(self, initial_cursor_data=None):
+        self._cursor_data = initial_cursor_data
+        self.saved_cursor_data = None
+
+    async def record_source(self, source, item):
+        pass
+
+    async def record_document(self, document):
+        pass
+
+    async def record_chunks(self, chunks):
+        pass
+
+    async def record_knowledge_objects(self, objects):
+        pass
+
+    async def record_relations(self, relations):
+        pass
+
+    async def list_prior_knowledge_objects(self, source_id):
+        return []
+
+    async def get_sync_cursor(self, source):
+        return self._cursor_data
+
+    async def save_sync_cursor(self, source, cursor_data):
+        self.saved_cursor_data = cursor_data
 
 
 async def test_run_saas_ingest_builds_collector_from_source_and_returns_counts(monkeypatch):
@@ -99,6 +145,57 @@ async def test_run_saas_ingest_with_since_only_collects_the_backfill_window(monk
 
     assert result["object_count"] >= 1
     assert client.messages.calls == 1  # only the in-window item reached extraction
+
+
+async def test_run_saas_ingest_persists_the_collectors_cursor_after_a_successful_run(monkeypatch):
+    client = _FakeClient()
+    monkeypatch.setattr(
+        "knowledge_forge.ingest.get_extractor", lambda model=None: ClaudeExtractor(client=client)
+    )
+    collector = _FakeSaaSCollector(client=object())
+    monkeypatch.setitem(factory.SAAS_COLLECTOR_BUILDERS, "slack", lambda: collector)
+    store = _FakeCursorStore(initial_cursor_data=None)
+
+    await run_saas_ingest("slack", max_tokens=4000, model=None, store=store)
+
+    # No prior cursor -> Collector.sync(None) -> initial_sync (base.py).
+    assert collector.sync_calls == [None]
+    assert store.saved_cursor_data == {"channels": {"c": "2.0"}}
+
+
+async def test_run_saas_ingest_loads_the_persisted_cursor_and_syncs_incrementally(monkeypatch):
+    client = _FakeClient()
+    monkeypatch.setattr(
+        "knowledge_forge.ingest.get_extractor", lambda model=None: ClaudeExtractor(client=client)
+    )
+    collector = _FakeSaaSCollector(client=object())
+    monkeypatch.setitem(factory.SAAS_COLLECTOR_BUILDERS, "slack", lambda: collector)
+    store = _FakeCursorStore(initial_cursor_data={"channels": {"c": "1.0"}})
+
+    await run_saas_ingest("slack", max_tokens=4000, model=None, store=store)
+
+    assert len(collector.sync_calls) == 1
+    assert collector.sync_calls[0].data == {"channels": {"c": "1.0"}}
+
+
+async def test_run_saas_ingest_backfill_does_not_touch_the_persisted_cursor(monkeypatch):
+    """A --since/--until backfill re-collects a window independent of the
+    incremental position (mirrors Collector.backfill_sync's own docstring) -
+    it must neither read nor overwrite the persisted cursor."""
+    client = _FakeClient()
+    monkeypatch.setattr(
+        "knowledge_forge.ingest.get_extractor", lambda model=None: ClaudeExtractor(client=client)
+    )
+    collector = _FakeSaaSCollector(client=object())
+    monkeypatch.setitem(factory.SAAS_COLLECTOR_BUILDERS, "slack", lambda: collector)
+    store = _FakeCursorStore(initial_cursor_data={"channels": {"c": "1.0"}})
+
+    await run_saas_ingest(
+        "slack", max_tokens=4000, model=None, store=store, since=datetime.now(timezone.utc) - timedelta(hours=1)
+    )
+
+    assert collector.sync_calls == []  # backfill_sync was used instead of sync()
+    assert store.saved_cursor_data is None  # untouched - still whatever it started as
 
 
 async def test_run_local_ingest_returns_object_and_relation_counts(tmp_path, monkeypatch):

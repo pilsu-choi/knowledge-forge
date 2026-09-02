@@ -5,6 +5,7 @@ so every write here is an idempotent upsert - re-running the pipeline on
 unchanged input is safe to repeat.
 """
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -492,4 +493,27 @@ class PostgresStore:
                     created_at = EXCLUDED.created_at
                 """,
                 rows,
+            )
+
+    async def get_sync_cursor(self, source: str) -> dict[str, Any] | None:
+        """Returns the persisted `Cursor.data` for `source` (e.g. "slack"),
+        or None when this source has never completed an incremental-sync run
+        (ingest.py's run_saas_ingest then does a full initial_sync, same as
+        before this table existed)."""
+        async with self.conn.cursor() as cur:
+            await cur.execute("SELECT cursor_data FROM sync_cursors WHERE source = %s", (source,))
+            row = await cur.fetchone()
+        return row[0] if row is not None else None
+
+    async def save_sync_cursor(self, source: str, cursor_data: dict[str, Any], updated_at: datetime) -> None:
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO sync_cursors (source, cursor_data, updated_at)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (source) DO UPDATE SET
+                    cursor_data = EXCLUDED.cursor_data,
+                    updated_at = EXCLUDED.updated_at
+                """,
+                (source, Jsonb(cursor_data), updated_at),
             )

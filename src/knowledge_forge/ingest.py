@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from knowledge_forge.chunking import AdaptiveChunker
-from knowledge_forge.collectors.base import Collector
+from knowledge_forge.collectors.base import Collector, Cursor
 from knowledge_forge.collectors.local_file import LocalFileCollector
 from knowledge_forge.collectors.saas.factory import SAAS_COLLECTOR_BUILDERS
 from knowledge_forge.extraction.factory import get_extractor
@@ -37,6 +37,7 @@ async def _run_collector(
     okf_writer: "OKFWriter | None" = None,
     since: datetime | None = None,
     until: datetime | None = None,
+    cursor: Cursor | None = None,
 ) -> dict:
     registry = default_registry()
     chunker = AdaptiveChunker(max_tokens_per_chunk=max_tokens)
@@ -49,6 +50,7 @@ async def _run_collector(
         registry,
         chunker,
         extractor,
+        cursor=cursor,
         store=store,
         okf_writer=okf_writer,
         project_id=project_id,
@@ -100,6 +102,31 @@ async def run_saas_ingest(
     unknown `source` (worker._dispatch validates it against the same mapping
     before calling this, so that should not happen in practice) and whatever
     RuntimeError the matching build_*_collector() raises for missing KF_*
-    config."""
+    config.
+
+    Unlike run_local_ingest, this persists an incremental-sync cursor across
+    calls (`store.get_sync_cursor`/`save_sync_cursor`, one row per `source`
+    - see schema.sql's sync_cursors table): without it, every job-queue
+    ingest of the same source called `Collector.sync(cursor=None)` ->
+    `initial_sync()` (collectors/base.py), re-collecting and re-extracting a
+    SaaS source's *entire* history on every single run - fine for a one-off
+    `extract`/`schedule` CLI invocation, ruinous for KF_SCHEDULED_SOURCES
+    firing every few minutes forever. `since` (a backfill request, see
+    run_pipeline's docstring) is mutually exclusive with the persisted
+    cursor by design - a backfill re-collects a specific window without
+    touching or being affected by the normal incremental position.
+    """
     collector = SAAS_COLLECTOR_BUILDERS[source]()
-    return await _run_collector(collector, max_tokens, model, store, project_id, okf_writer, since, until)
+
+    cursor = None
+    if store is not None and since is None:
+        cursor_data = await store.get_sync_cursor(source)
+        if cursor_data is not None:
+            cursor = Cursor(data=cursor_data)
+
+    result = await _run_collector(collector, max_tokens, model, store, project_id, okf_writer, since, until, cursor)
+
+    if store is not None and since is None:
+        await store.save_sync_cursor(source, collector.get_cursor().data)
+
+    return result

@@ -102,6 +102,13 @@ class SlackCollector(SaaSCollector):
 
     def incremental_sync(self, cursor: Cursor) -> Iterator[RawItem]:
         channel_cursors: dict[str, str] = cursor.data.get("channels", {})
+        # Seed _latest_ts from the incoming cursor before syncing - a
+        # channel with zero new messages this round never calls
+        # _track_latest, so without this its prior position would silently
+        # drop out of get_cursor()'s result (and a persisted cursor save,
+        # see ingest.py's run_saas_ingest, would then forget it - the next
+        # sync would re-pull that channel's entire history from scratch).
+        self._latest_ts = dict(channel_cursors)
         for channel in self._channels:
             oldest = channel_cursors.get(channel, "0")
             yield from self._sync_channel(channel, oldest=oldest)
