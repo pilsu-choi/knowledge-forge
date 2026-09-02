@@ -30,7 +30,7 @@ class LinkType(str, Enum):
 
 class LinkEndpoint(BaseModel):
     """Points at one resource - the same (Source, Document) pair
-    `OKFWriter.write_resource()` files under `resources/{source_id}.yaml`."""
+    `OKFWriter.write_resource()` files under `resources/{slug}-{source_id8}.md`."""
 
     source_id: str
     document_id: str

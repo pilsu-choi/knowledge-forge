@@ -155,13 +155,15 @@ KnowledgeObject는 1:1이 아니다" 참고.
 ### OKF — 파일 기반 Knowledge Base (`src/knowledge_forge/okf/`) — 선택적
 
 - `OKFWriter`가 `PipelineStore`와는 독립적인 두 번째 옵션 출력 경로다: 같은 `Source`/`Document`/
-  `KnowledgeObject`/`Relation`을 `manifest.yaml` + `resources/`/`objects/{type}/`/`relations/`
-  디렉터리 트리로 기록한다 — 데이터베이스 없이도 사람이 읽고 git으로 diff할 수 있는 Knowledge
-  Base 형태다. `manifest.yaml`은 knowledge 자체를 담지 않는 카탈로그(각 레코드의 id/type/경로
+  `KnowledgeObject`/`Relation`을 실제 [OKF v0.2 스펙](open-knowledge-format.md)을 따르는
+  markdown+frontmatter 트리(`resources/`/`objects/{type}/` 아래 concept 파일 하나당 파일 하나,
+  `index.md`/`log.md`로 progressive disclosure)로 기록한다 — 데이터베이스 없이도 사람이 읽고
+  git으로 diff할 수 있고, 그 상태로 에이전트가 검색/컨텍스트 구성에 바로 쓸 수 있는 Knowledge
+  Base 형태다. `Relation`/`Link`는 별도 엣지 파일이 아니라 양쪽 endpoint concept의 frontmatter에
+  인라인된다. `manifest.yaml`은 knowledge 자체를 담지 않는 카탈로그(각 레코드의 id/type/경로
   목록)로, 트리를 스캔해 재생성되므로 여러 번의 파이프라인 실행(증분 동기화 등)에 걸쳐 안전하게
-  누적된다. `write_views()`가 같은 스캔 방식으로 `views/by_topic.yaml`/`by_document.yaml`/
-  `timeline.yaml`(타입별 view 외의 Topic/Document/Timeline 조회 관점, 레코드 파일 자체는
-  건드리지 않는 인덱스)을 만든다. 자세한 설계는 [`okf.md`](okf.md) 참고.
+  누적된다. `write_views()`가 같은 스캔 방식으로 `views/by-topic.md`와 프로젝트 루트 `log.md`를
+  만든다. 자세한 설계는 [`okf.md`](okf.md) 참고.
 
 ### Scheduling (`src/knowledge_forge/scheduling/`) — 선택적
 
@@ -252,10 +254,10 @@ Document 파싱/청킹 단계(`Document → Chapter → Section → Paragraph �
 - `KnowledgeObject`끼리는 `Relation`이라는 그래프 구조로 연결된다 — 계층이 아니라 typed edge다.
 - `OKFWriter`가 만드는 파일 트리(`objects/{type}/...`)는 여러 조회 관점(view) 중 파일시스템에
   자연스럽게 얹을 수 있는 "타입별" 하나일 뿐, 유일한 organization view는 아니다 —
-  `write_views()`가 `manifest.yaml`의 카탈로그(id + type + path) 위에 Topic/Document(Project의
-  대용 — 스키마에 별도 Project 개념은 없다)/Timeline 세 view를 별도 인덱스 파일로 추가한다
-  ([`okf.md`](okf.md) 참고). 레코드 파일 포맷 자체는 바뀌지 않는다 — view는 항상 기존
-  `objects/`를 다시 읽어 만드는 파생 인덱스다.
+  `write_views()`가 `manifest.yaml`의 카탈로그(id + type + path) 위에 Topic(`views/by-topic.md`)/
+  Document(각 리소스 concept의 body — Project의 대용, 스키마에 별도 Project 개념은 없다)/
+  Timeline(프로젝트 루트 `log.md`) 세 view를 추가한다([`okf.md`](okf.md) 참고). 레코드 파일
+  포맷 자체는 바뀌지 않는다 — view는 항상 기존 `objects/`를 다시 읽어 만드는 파생 인덱스다.
 
 ## 설계 결정: 중복 제거와 재추출 버전 관리는 같은 유사도 원리를 공유한다
 

@@ -149,7 +149,8 @@ async def test_tick_writes_and_refreshes_okf_tree(tmp_path, caplog):
     # rebuilding by scanning the tree on every tick, not tracking in memory.
     assert second_manifest != first_manifest
     resources_dir = okf_dir / "default" / "resources"
-    assert len(list(resources_dir.glob("*.yaml"))) == 2
+    resource_files = [p for p in resources_dir.glob("*.md") if p.name != "index.md"]
+    assert len(resource_files) == 2
 
 
 async def test_tick_swallows_exceptions_and_logs_instead_of_raising(tmp_path, caplog):

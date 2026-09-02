@@ -9,6 +9,7 @@ from knowledge_forge.models.link import Link, LinkEndpoint, LinkType
 from knowledge_forge.models.relation import Relation, RelationType
 from knowledge_forge.models.source import Source, SourceRef, SourceType
 from knowledge_forge.okf import OKFWriter
+from knowledge_forge.okf.writer import _parse_markdown
 
 
 def _sample_source_and_document():
@@ -28,7 +29,7 @@ def _sample_source_and_document():
     return src, doc
 
 
-def _sample_object(ko_id: str, ko_type: KnowledgeObjectType) -> KnowledgeObject:
+def _sample_object(ko_id: str, ko_type: KnowledgeObjectType, title: str = "s") -> KnowledgeObject:
     return KnowledgeObject(
         knowledge_object_id=ko_id,
         type=ko_type,
@@ -36,7 +37,7 @@ def _sample_object(ko_id: str, ko_type: KnowledgeObjectType) -> KnowledgeObject:
         document=DocumentRef(document_id="d1", title="T"),
         evidence=[Evidence(chunk_id="c1", document_id="d1", hierarchy_level=HierarchyLevel.PARAGRAPH, sequence_index=0)],
         summary="s",
-        content={"statement": "s"},
+        content={"statement": title} if ko_type != KnowledgeObjectType.ENTITY else {"name": title, "entity_type": "조직"},
         topics=["t"],
         document_type="report",
         extracted_at=datetime.now(timezone.utc),
@@ -46,13 +47,51 @@ def _sample_object(ko_id: str, ko_type: KnowledgeObjectType) -> KnowledgeObject:
     )
 
 
-def test_writer_produces_manifest_indexing_resources_objects_and_relations(tmp_path):
+def _find(root, subdir, glob="*.md"):
+    matches = [p for p in (root / subdir).rglob(glob) if p.name != "index.md"]
+    assert len(matches) == 1, f"expected exactly one match under {subdir}, got {matches}"
+    return matches[0]
+
+
+def test_writer_produces_conformant_markdown_concepts(tmp_path):
     writer = OKFWriter(tmp_path)
     src, doc = _sample_source_and_document()
     writer.write_resource(src, doc)
 
-    fact = _sample_object("ko1", KnowledgeObjectType.FACT)
-    entity = _sample_object("ko2", KnowledgeObjectType.ENTITY)
+    fact = _sample_object("ko1", KnowledgeObjectType.FACT, title="fact statement")
+    entity = _sample_object("ko2", KnowledgeObjectType.ENTITY, title="농협은행")
+    writer.write_objects([fact, entity])
+
+    root = tmp_path / "default"
+    resource_path = _find(root, "resources")
+    fact_path = _find(root, "objects/fact")
+    entity_path = _find(root, "objects/entity")
+
+    resource_fm, _ = _parse_markdown(resource_path.read_text(encoding="utf-8"))
+    assert resource_fm["type"] == "Local File Source"
+    assert resource_fm["source_id"] == "s1"
+
+    fact_fm, fact_body = _parse_markdown(fact_path.read_text(encoding="utf-8"))
+    assert fact_fm["type"] == "Fact"
+    assert fact_fm["knowledge_object_id"] == "ko1"
+    assert fact_fm["title"] == "fact statement"
+    assert fact_fm["tags"] == ["t"]
+    assert fact_fm["sources"][0]["resource"] == f"../../resources/{resource_path.name}"
+    assert "fact statement" in fact_body
+
+    entity_fm, entity_body = _parse_markdown(entity_path.read_text(encoding="utf-8"))
+    assert entity_fm["type"] == "Entity"
+    assert entity_fm["title"] == "농협은행"
+    assert "유형" in entity_body
+
+
+def test_write_relations_inlines_edge_on_both_endpoint_concepts(tmp_path):
+    writer = OKFWriter(tmp_path)
+    src, doc = _sample_source_and_document()
+    writer.write_resource(src, doc)
+
+    fact = _sample_object("ko1", KnowledgeObjectType.FACT, title="fact statement")
+    entity = _sample_object("ko2", KnowledgeObjectType.ENTITY, title="농협은행")
     writer.write_objects([fact, entity])
 
     relation = Relation(
@@ -65,6 +104,70 @@ def test_writer_produces_manifest_indexing_resources_objects_and_relations(tmp_p
     )
     writer.write_relations([relation])
 
+    root = tmp_path / "default"
+    fact_path = _find(root, "objects/fact")
+    entity_path = _find(root, "objects/entity")
+    fact_fm, fact_body = _parse_markdown(fact_path.read_text(encoding="utf-8"))
+    entity_fm, entity_body = _parse_markdown(entity_path.read_text(encoding="utf-8"))
+
+    # A real relative link (../entity/x.md), not a leading-slash
+    # "bundle-relative absolute" one - a plain file browser/IDE has no
+    # notion of the project subtree as a root, so only a genuine relative
+    # path resolves when the link is actually followed.
+    assert fact_fm["relations"] == [
+        {
+            "relation_id": "rel1",
+            "type": "mentions",
+            "direction": "out",
+            "peer": f"../entity/{entity_path.name}",
+            "peer_title": "농협은행",
+            "label": None,
+            "confidence": None,
+        }
+    ]
+    assert "## Relations" in fact_body
+    assert f"mentions → [농협은행](../entity/{entity_path.name})" in fact_body
+
+    assert entity_fm["relations"][0]["direction"] == "in"
+    assert entity_fm["relations"][0]["peer_title"] == "fact statement"
+    assert entity_fm["relations"][0]["peer"] == f"../fact/{fact_path.name}"
+    assert f"mentions ← [fact statement](../fact/{fact_path.name})" in entity_body
+
+    # No separate relation record was created - the edge was fully inlined.
+    assert list((root / "relations").glob("*.md")) == []
+
+    # Re-running the same relation must not duplicate the section (idempotent).
+    writer.write_relations([relation])
+    fact_fm2, fact_body2 = _parse_markdown(_find(root, "objects/fact").read_text(encoding="utf-8"))
+    assert len(fact_fm2["relations"]) == 1
+    assert fact_body2.count("## Relations") == 1
+
+
+def test_write_relations_falls_back_to_orphan_file_when_endpoints_unresolved(tmp_path):
+    writer = OKFWriter(tmp_path)
+    relation = Relation(
+        relation_id="rel-a",
+        type=RelationType.MENTIONS,
+        subject_id="ko-a",
+        object_id="ko-a2",
+        evidence=["c1"],
+        created_at=datetime.now(timezone.utc),
+    )
+    writer.write_relations([relation], "PRJ-A")
+
+    orphan = tmp_path / "PRJ-A" / "relations" / "rel-a.md"
+    assert orphan.exists()
+    fm, _ = _parse_markdown(orphan.read_text(encoding="utf-8"))
+    assert fm["type"] == "Relation"
+    assert fm["subject_id"] == "ko-a"
+    assert not (tmp_path / "default" / "relations" / "rel-a.md").exists()
+
+
+def test_write_links_inlines_edge_and_falls_back_when_unresolved(tmp_path):
+    writer = OKFWriter(tmp_path)
+    src, doc = _sample_source_and_document()
+    writer.write_resource(src, doc)
+
     link = Link(
         link_id="lnk1",
         type=LinkType.THREAD_REPLY,
@@ -74,56 +177,49 @@ def test_writer_produces_manifest_indexing_resources_objects_and_relations(tmp_p
     )
     writer.write_links([link])
 
-    manifest_path = writer.write_manifest()["default"]
-    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    root = tmp_path / "default"
+    resource_fm, resource_body = _parse_markdown(_find(root, "resources").read_text(encoding="utf-8"))
+    assert {e["direction"] for e in resource_fm["links"]} == {"out", "in"}
+    assert "## Links" in resource_body
 
-    assert manifest["resources"] == [{"id": "s1", "type": "local_file", "path": "resources/s1.yaml"}]
-    assert {o["id"] for o in manifest["objects"]} == {"ko1", "ko2"}
-    fact_entry = next(o for o in manifest["objects"] if o["id"] == "ko1")
-    assert fact_entry["type"] == "fact"
-    assert fact_entry["path"] == "objects/fact/ko1.yaml"
-    assert manifest["relations"] == [{"id": "rel1", "type": "mentions", "path": "relations/rel1.yaml"}]
-    assert manifest["links"] == [{"id": "lnk1", "type": "thread_reply", "path": "links/lnk1.yaml"}]
-    assert manifest["pipeline_version"]
-    assert manifest["generated_at"]
-
-    # Files on disk are readable, self-contained records (not just index entries),
-    # written under the default project_id's subfolder.
-    fact_payload = yaml.safe_load((tmp_path / "default" / "objects/fact/ko1.yaml").read_text(encoding="utf-8"))
-    assert fact_payload["knowledge_object_id"] == "ko1"
-    assert fact_payload["content"]["statement"] == "s"
+    unresolved = Link(
+        link_id="lnk-a",
+        type=LinkType.SAME_CHANNEL_SEQUENCE,
+        source_ref=LinkEndpoint(source_id="sa", document_id="da"),
+        target_ref=LinkEndpoint(source_id="sa2", document_id="da2"),
+        created_at=datetime.now(timezone.utc),
+    )
+    writer.write_links([unresolved], "PRJ-A")
+    orphan = tmp_path / "PRJ-A" / "links" / "lnk-a.md"
+    assert orphan.exists()
+    assert not (tmp_path / "default" / "links" / "lnk-a.md").exists()
 
 
-def test_write_views_indexes_objects_by_topic_document_and_timeline(tmp_path):
+def test_writer_produces_manifest_indexing_resources_and_objects(tmp_path):
     writer = OKFWriter(tmp_path)
     src, doc = _sample_source_and_document()
     writer.write_resource(src, doc)
 
     fact = _sample_object("ko1", KnowledgeObjectType.FACT)
-    fact = fact.model_copy(update={"topics": ["alpha", "beta"], "extracted_at": datetime(2026, 1, 2, tzinfo=timezone.utc)})
-    entity = _sample_object("ko2", KnowledgeObjectType.ENTITY)
-    entity = entity.model_copy(update={"topics": ["alpha"], "extracted_at": datetime(2026, 1, 1, tzinfo=timezone.utc)})
+    entity = _sample_object("ko2", KnowledgeObjectType.ENTITY, title="농협은행")
     writer.write_objects([fact, entity])
 
-    paths = writer.write_views()["default"]
-    assert {p.name for p in paths} == {"by_topic.yaml", "by_document.yaml", "timeline.yaml"}
+    manifest_path = writer.write_manifest()["default"]
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
 
-    by_topic = yaml.safe_load((tmp_path / "default" / "views/by_topic.yaml").read_text(encoding="utf-8"))
-    assert {e["id"] for e in by_topic["alpha"]} == {"ko1", "ko2"}
-    assert {e["id"] for e in by_topic["beta"]} == {"ko1"}
-
-    by_document = yaml.safe_load((tmp_path / "default" / "views/by_document.yaml").read_text(encoding="utf-8"))
-    assert by_document["d1"]["title"] == "T"
-    assert {e["id"] for e in by_document["d1"]["objects"]} == {"ko1", "ko2"}
-
-    timeline = yaml.safe_load((tmp_path / "default" / "views/timeline.yaml").read_text(encoding="utf-8"))["timeline"]
-    assert [e["id"] for e in timeline] == ["ko2", "ko1"]  # chronological (ko2 extracted first)
+    assert [r["id"] for r in manifest["resources"]] == ["s1"]
+    assert manifest["resources"][0]["path"].endswith(".md")
+    assert {o["id"] for o in manifest["objects"]} == {"ko1", "ko2"}
+    fact_entry = next(o for o in manifest["objects"] if o["id"] == "ko1")
+    assert fact_entry["type"] == "fact"
+    assert fact_entry["path"].startswith("objects/fact/") and fact_entry["path"].endswith(".md")
+    assert manifest["relations"] == []
+    assert manifest["links"] == []
+    assert manifest["pipeline_version"]
+    assert manifest["generated_at"]
 
 
 def test_manifest_reflects_objects_written_across_multiple_writer_instances(tmp_path):
-    """Simulates an incremental sync: a second pipeline run reuses the same
-    root dir with a fresh OKFWriter - the manifest must include both runs'
-    objects, not just the most recent one."""
     OKFWriter(tmp_path).write_objects([_sample_object("ko1", KnowledgeObjectType.FACT)])
     second_writer = OKFWriter(tmp_path)
     second_writer.write_objects([_sample_object("ko2", KnowledgeObjectType.EVENT)])
@@ -133,11 +229,44 @@ def test_manifest_reflects_objects_written_across_multiple_writer_instances(tmp_
     assert {o["id"] for o in manifest["objects"]} == {"ko1", "ko2"}
 
 
+def test_write_views_builds_by_topic_log_and_indexes(tmp_path):
+    writer = OKFWriter(tmp_path)
+    src, doc = _sample_source_and_document()
+    writer.write_resource(src, doc)
+
+    fact = _sample_object("ko1", KnowledgeObjectType.FACT, title="fact statement")
+    fact = fact.model_copy(update={"topics": ["alpha", "beta"], "extracted_at": datetime(2026, 1, 2, tzinfo=timezone.utc)})
+    entity = _sample_object("ko2", KnowledgeObjectType.ENTITY, title="농협은행")
+    entity = entity.model_copy(update={"topics": ["alpha"], "extracted_at": datetime(2026, 1, 1, tzinfo=timezone.utc)})
+    writer.write_objects([fact, entity])
+
+    paths = writer.write_views()["default"]
+    names = {p.name for p in paths}
+    assert "index.md" in names
+
+    root = tmp_path / "default"
+    by_topic = (root / "views" / "by-topic.md").read_text(encoding="utf-8")
+    assert "## alpha" in by_topic and "## beta" in by_topic
+    assert "fact statement" in by_topic and "농협은행" in by_topic
+
+    log = (root / "log.md").read_text(encoding="utf-8")
+    assert "## 2026-01-01" in log and "## 2026-01-02" in log
+    assert log.index("2026-01-02") < log.index("2026-01-01")  # newest first
+
+    bundle_index = (root / "index.md").read_text(encoding="utf-8")
+    fm, _ = _parse_markdown(bundle_index)
+    assert fm["okf_version"] == "0.2"
+    assert "objects/fact/index.md" in bundle_index
+    assert "objects/entity/index.md" in bundle_index
+
+    fact_type_index = (root / "objects" / "fact" / "index.md").read_text(encoding="utf-8")
+    assert "fact statement" in fact_type_index
+
+    resource_body = (_find(root, "resources")).read_text(encoding="utf-8")
+    assert "fact statement" in resource_body and "농협은행" in resource_body
+
+
 def test_writer_routes_each_item_to_its_own_project_subtree(tmp_path):
-    """One OKFWriter instance can be handed items from several projects in
-    the same run (e.g. a Slack collector spanning several projects' channels,
-    RawItem.project_id) - each must land under its own <root>/{project_id}/,
-    not get mixed into the writer's construction-time default."""
     src_a = Source(
         source_id="sa",
         source_type=SourceType.SLACK,
@@ -171,21 +300,14 @@ def test_writer_routes_each_item_to_its_own_project_subtree(tmp_path):
     writer.write_resource(src_a, doc_a)
     writer.write_resource(src_b, doc_b)
 
-    ko_a = _sample_object("ko-a", KnowledgeObjectType.FACT).model_copy(
-        update={"source": SourceRef.from_source(src_a)}
-    )
-    ko_b = _sample_object("ko-b", KnowledgeObjectType.FACT).model_copy(
-        update={"source": SourceRef.from_source(src_b)}
-    )
+    ko_a = _sample_object("ko-a", KnowledgeObjectType.FACT).model_copy(update={"source": SourceRef.from_source(src_a)})
+    ko_b = _sample_object("ko-b", KnowledgeObjectType.FACT).model_copy(update={"source": SourceRef.from_source(src_b)})
     writer.write_objects([ko_a, ko_b])
 
-    assert (tmp_path / "PRJ-A" / "resources" / "sa.yaml").exists()
-    assert (tmp_path / "PRJ-B" / "resources" / "sb.yaml").exists()
-    assert (tmp_path / "PRJ-A" / "objects" / "fact" / "ko-a.yaml").exists()
-    assert (tmp_path / "PRJ-B" / "objects" / "fact" / "ko-b.yaml").exists()
-    # never cross-written into the other project's subtree
-    assert not (tmp_path / "PRJ-A" / "resources" / "sb.yaml").exists()
-    assert not (tmp_path / "PRJ-B" / "resources" / "sa.yaml").exists()
+    assert _find(tmp_path / "PRJ-A", "resources").exists()
+    assert _find(tmp_path / "PRJ-B", "resources").exists()
+    assert _find(tmp_path / "PRJ-A", "objects/fact").exists()
+    assert _find(tmp_path / "PRJ-B", "objects/fact").exists()
 
     manifests = writer.write_manifest()
     assert set(manifests) == {"default", "PRJ-A", "PRJ-B"}
@@ -195,32 +317,19 @@ def test_writer_routes_each_item_to_its_own_project_subtree(tmp_path):
     assert {o["id"] for o in manifest_b["objects"]} == {"ko-b"}
 
 
-def test_write_relations_routes_by_explicit_project_id_argument(tmp_path):
+def test_supersedes_deprecates_the_prior_object(tmp_path):
     writer = OKFWriter(tmp_path)
-    relation = Relation(
-        relation_id="rel-a",
-        type=RelationType.MENTIONS,
-        subject_id="ko-a",
-        object_id="ko-a2",
-        evidence=["c1"],
-        created_at=datetime.now(timezone.utc),
+    old = _sample_object("ko1", KnowledgeObjectType.FACT, title="old statement")
+    writer.write_objects([old])
+
+    new = _sample_object("ko1v2", KnowledgeObjectType.FACT, title="new statement").model_copy(
+        update={"supersedes": "ko1", "version": 2}
     )
-    writer.write_relations([relation], "PRJ-A")
+    writer.write_objects([new])
 
-    assert (tmp_path / "PRJ-A" / "relations" / "rel-a.yaml").exists()
-    assert not (tmp_path / "default" / "relations" / "rel-a.yaml").exists()
-
-
-def test_write_links_routes_by_explicit_project_id_argument(tmp_path):
-    writer = OKFWriter(tmp_path)
-    link = Link(
-        link_id="lnk-a",
-        type=LinkType.SAME_CHANNEL_SEQUENCE,
-        source_ref=LinkEndpoint(source_id="sa", document_id="da"),
-        target_ref=LinkEndpoint(source_id="sa2", document_id="da2"),
-        created_at=datetime.now(timezone.utc),
-    )
-    writer.write_links([link], "PRJ-A")
-
-    assert (tmp_path / "PRJ-A" / "links" / "lnk-a.yaml").exists()
-    assert not (tmp_path / "default" / "links" / "lnk-a.yaml").exists()
+    root = tmp_path / "default"
+    old_path = next(p for p in (root / "objects" / "fact").glob("*.md") if p.name != "index.md" and "old" in p.name)
+    fm, body = _parse_markdown(old_path.read_text(encoding="utf-8"))
+    assert fm["status"] == "deprecated"
+    assert "Deprecated" in body
+    assert "new statement" in body

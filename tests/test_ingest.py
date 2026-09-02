@@ -236,4 +236,5 @@ async def test_run_local_ingest_writes_okf_tree_and_manifest_once(tmp_path, monk
     assert result["object_count"] >= 1
     manifest_path = okf_dir / "PRJ-X" / "manifest.yaml"
     assert manifest_path.exists()
-    assert len(list((okf_dir / "PRJ-X" / "resources").glob("*.yaml"))) == 1
+    resource_files = [p for p in (okf_dir / "PRJ-X" / "resources").glob("*.md") if p.name != "index.md"]
+    assert len(resource_files) == 1

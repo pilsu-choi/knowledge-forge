@@ -16,6 +16,7 @@ from knowledge_forge.extraction.claude_extractor import ClaudeExtractor
 from knowledge_forge.extraction.schemas import ExtractionItem, ExtractionResult
 from knowledge_forge.models.source import SourceType
 from knowledge_forge.okf import OKFWriter
+from knowledge_forge.okf.writer import _parse_markdown
 from knowledge_forge.parsers.registry import default_registry
 from knowledge_forge.pipeline import run_pipeline
 
@@ -123,8 +124,10 @@ async def test_slack_messages_are_merged_into_fewer_knowledge_objects_by_convers
 async def test_consecutive_slack_episodes_produce_a_same_channel_sequence_link(tmp_path):
     """wiki/okf.md's "그래프 뷰어 대비" decision: the 2 episodes above are
     separate resources Relation can't connect (it only links KnowledgeObjects
-    within one document) - OKFWriter should end up with a links/*.yaml
-    record joining them, resolvable purely by parsing the file tree."""
+    within one document) - OKFWriter resolves both resources on disk and
+    inlines the edge onto each resource concept's `links` frontmatter (see
+    writer.py's module docstring), so no separate links/*.md record is
+    needed and the manifest's `links` catalog (orphans only) stays empty."""
     collector = _FakeSlackCollector()
     registry = default_registry()
     chunker = AdaptiveChunker(max_tokens_per_chunk=4000)
@@ -139,17 +142,19 @@ async def test_consecutive_slack_episodes_produce_a_same_channel_sequence_link(t
     writer.write_manifest()
 
     manifest = yaml.safe_load((tmp_path / "default" / "manifest.yaml").read_text(encoding="utf-8"))
-    assert len(manifest["links"]) == 1
-    link_entry = manifest["links"][0]
-    assert link_entry["type"] == "same_channel_sequence"
+    assert manifest["links"] == []  # fully inlined - no orphan link file
 
-    link_payload = yaml.safe_load((tmp_path / "default" / link_entry["path"]).read_text(encoding="utf-8"))
-    resource_files = sorted((tmp_path / "default" / "resources").glob("*.yaml"))
+    resource_files = sorted(
+        p for p in (tmp_path / "default" / "resources").glob("*.md") if p.name != "index.md"
+    )
     assert len(resource_files) == 2
-    resource_ids = {f.stem for f in resource_files}
-    assert link_payload["source_ref"]["source_id"] in resource_ids
-    assert link_payload["target_ref"]["source_id"] in resource_ids
-    assert link_payload["source_ref"]["source_id"] != link_payload["target_ref"]["source_id"]
+
+    frontmatters = [_parse_markdown(f.read_text(encoding="utf-8"))[0] for f in resource_files]
+    linked = [fm for fm in frontmatters if fm.get("links")]
+    assert len(linked) == 2  # both endpoints carry the inlined edge
+    directions = {entry["direction"] for fm in linked for entry in fm["links"]}
+    assert directions == {"out", "in"}
+    assert all(entry["type"] == "same_channel_sequence" for fm in linked for entry in fm["links"])
 
 
 async def test_consecutive_gmail_threads_produce_a_thread_sequence_link(tmp_path):
@@ -167,5 +172,9 @@ async def test_consecutive_gmail_threads_produce_a_thread_sequence_link(tmp_path
     writer.write_manifest()
 
     manifest = yaml.safe_load((tmp_path / "default" / "manifest.yaml").read_text(encoding="utf-8"))
-    assert len(manifest["links"]) == 1
-    assert manifest["links"][0]["type"] == "thread_sequence"
+    assert manifest["links"] == []  # fully inlined - no orphan link file
+
+    resource_files = [p for p in (tmp_path / "default" / "resources").glob("*.md") if p.name != "index.md"]
+    frontmatters = [_parse_markdown(f.read_text(encoding="utf-8"))[0] for f in resource_files]
+    linked_types = {entry["type"] for fm in frontmatters for entry in fm.get("links") or []}
+    assert linked_types == {"thread_sequence"}
