@@ -78,4 +78,10 @@ class GmailThreadReconstructor(ContextReconstructor):
             modified_at=max(m.modified_at for m in ordered),
             metadata=metadata,
             deleted=False,
+            # Propagate the thread's messages' project_id (same fix as
+            # context/slack.py's _merge) - GmailCollector doesn't set this
+            # today, but a merged RawItem silently dropping it to None would
+            # defeat any future per-item tenancy tagging the same way it did
+            # for Slack's channel_project_map.
+            project_id=ordered[0].project_id,
         )

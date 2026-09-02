@@ -4,7 +4,7 @@ from knowledge_forge.collectors.base import RawItem
 from knowledge_forge.context.gmail import GmailThreadReconstructor
 
 
-def _message(msg_id, thread_id, text, minute, from_="a@example.com", subject="Deploy?"):
+def _message(msg_id, thread_id, text, minute, from_="a@example.com", subject="Deploy?", project_id=None):
     return RawItem(
         uri=f"gmail://{msg_id}",
         content=text.encode("utf-8"),
@@ -17,6 +17,7 @@ def _message(msg_id, thread_id, text, minute, from_="a@example.com", subject="De
             "from": from_,
             "date": f"2026-09-01T10:{minute:02d}:00Z",
         },
+        project_id=project_id,
     )
 
 
@@ -66,6 +67,17 @@ def test_single_thread_has_no_links():
     merged = list(GmailThreadReconstructor().reconstruct(iter(items)))
 
     assert "links" not in merged[0].metadata
+
+
+def test_merged_thread_propagates_the_messages_project_id():
+    items = [
+        _message("m1", "t1", "first message", minute=0, project_id="PRJ-A"),
+        _message("m2", "t1", "second reply", minute=5, project_id="PRJ-A"),
+    ]
+
+    merged = list(GmailThreadReconstructor().reconstruct(iter(items)))
+
+    assert merged[0].project_id == "PRJ-A"
 
 
 def test_deleted_items_pass_through_unmerged():

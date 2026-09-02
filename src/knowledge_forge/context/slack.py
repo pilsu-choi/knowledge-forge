@@ -133,4 +133,11 @@ class SlackConversationReconstructor(ContextReconstructor):
             modified_at=max(m.modified_at for m in episode),
             metadata=metadata,
             deleted=False,
+            # All of an episode's messages come from the same `channel`, so
+            # they carry the same per-channel project_id (SlackCollector's
+            # channel_project_map) - propagate it, or the merged item
+            # defaults to None and pipeline.py silently falls back to the
+            # run-level project_id for every Slack source, regardless of
+            # KF_SLACK_CHANNEL_PROJECT_MAP.
+            project_id=episode[0].project_id,
         )
