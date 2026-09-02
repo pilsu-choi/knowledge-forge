@@ -149,8 +149,9 @@ uv run knowledge-forge serve
 `schedule`의 `build_tick`(위 절)은 매 tick마다 `run_pipeline`을 직접 실행한다 — 파이프라인을
 실행하는 코드 경로가 그 프로세스 안에 하나 더 생기는 셈이다. `auto_enqueue.py`는 대신 매
 tick마다 **`POST /ingest`가 하는 것과 정확히 같은 일**, 즉 `JobStore.enqueue()`로 `jobs`
-테이블에 job 하나를 넣기만 한다(`_build_tick`, `job_type_for_source()`로 job_type 결정) —
-실제 파이프라인 실행은 여전히 `worker.py`의 `_dispatch()` 하나뿐이다. 그 덕에:
+테이블에 job 하나를 넣고 `run_ingest_job.apply_async()`로 Celery에 넘기기만 한다(`_build_tick`,
+`job_type_for_source()`로 job_type 결정) — 실제 파이프라인 실행은 여전히 `worker.py`의
+`_dispatch()` 하나뿐이다. 그 덕에:
 
 - **새 진입점이 새 실행 경로를 만들지 않는다** — OKF 연결, 실패 격리, `project_id` 태깅 등
   `_dispatch()`에 이미 있는 동작을 자동 스케줄링도 그대로 물려받는다. `_dispatch()`를 고치면

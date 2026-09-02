@@ -7,22 +7,25 @@
 ```text
 클라이언트 → POST /ingest ──► FastAPI(serve) ──► jobs 테이블(Postgres, pending)
                                   │                        │
-                                  │ 202 + job_id (즉시)      │ SELECT ... FOR UPDATE SKIP LOCKED
+                                  │ 202 + job_id (즉시)      │ Celery task 전송 (Redis)
                                   ▼                        ▼
-                              GET /jobs/{id}          knowledge-forge worker (별도 프로세스)
+                              GET /jobs/{id}          knowledge-forge worker (별도 프로세스, Celery)
                               GET /knowledge-objects        │ run_pipeline(...) 실행
                                   ▲                          ▼
                                   └──────── 결과 저장 (KnowledgeObject/Relation) + jobs.status=succeeded/failed
+
+                              Flower(:5555) ◄── Redis broker 관찰 (task/워커 모니터링 GUI)
 ```
 
-## 왜 Postgres job table인가
+## 왜 `jobs` 테이블 + Celery/Redis인가
 
-이미 docker-compose에 Postgres가 떠 있다(`storage.md`). Redis/Celery 같은 새 인프라를 추가하지
-않고 `jobs` 테이블 하나(`storage/schema.sql`)와 `SELECT ... FOR UPDATE SKIP LOCKED` 폴링으로
-큐를 구현한다 — 여러 워커가 동시에 `claim_next()`를 호출해도 서로 다른 job을 가져가는 것을
-`tests/storage/test_job_store.py::test_claim_next_is_concurrency_safe_across_connections`가
-검증한다. 처리량이 실제로 문제가 되면 그때 Redis/전용 큐로 옮기면 된다 — 지금 규모에서는
-과설계다.
+job의 생애주기(상태/결과/에러/타임스탬프, `project_id` 기반 조회)는 여전히 `jobs`
+테이블(`storage/schema.sql`)이 진실 소스다 — `POST /ingest`가 이 테이블에 pending row를 쓰고,
+`GET /jobs`가 여기서 읽는다. 처음엔 이 테이블 하나와 `SELECT ... FOR UPDATE SKIP LOCKED` 폴링만으로
+큐까지 구현했었다(새 인프라를 안 늘리는 게 지금 규모에는 맞다고 판단해서). 이후 운영 중
+**GUI 기반 job 모니터링(Flower)**이 필요해지면서, "누가 언제 job을 실행하는가"라는 전송
+계층만 Celery+Redis로 옮겼다 — Flower가 들여다볼 브로커/워커가 있어야 하기 때문이다. `jobs`
+테이블/`/ingest`/`/jobs` API 계약 자체는 바뀌지 않았다.
 
 ## job type: `local_file_ingest` + `{source}_ingest`
 
@@ -44,9 +47,8 @@ Postgres 저장과 별개로 파일 기반 OKF Knowledge Base도 그 디렉터�
 `worker.py`의 `_dispatch()`가 `job_type`을 보고 `local_file_ingest`는 `ingest.run_local_ingest()`,
 `{source}_ingest`는 `ingest.run_saas_ingest(source, ...)`를 호출한다 — 새 SaaS 커넥터가
 `SAAS_COLLECTOR_BUILDERS`에 추가되면 `_dispatch`는 자동으로 그 job_type도 처리한다(하드코딩된
-매핑을 늘릴 필요 없음). 큐/워커 인프라 자체(`FOR UPDATE SKIP LOCKED` 폴링, 실패 격리)는
-`local_file_ingest` 하나였을 때 그대로다 — 새 job_type 추가가 재설계를 요구하지 않는다는
-설계 의도가 그대로 맞아떨어졌다.
+매핑을 늘릴 필요 없음). 큐/워커 인프라 자체(전송 계층, 실패 격리)는 `local_file_ingest` 하나였을
+때 그대로다 — 새 job_type 추가가 재설계를 요구하지 않는다는 설계 의도가 그대로 맞아떨어졌다.
 
 ## 실행
 
@@ -54,23 +56,29 @@ Postgres 저장과 별개로 파일 기반 OKF Knowledge Base도 그 디렉터�
 # API 서버 - LLM을 호출하지 않으므로 Anthropic 자격증명 불필요
 uv run knowledge-forge serve [--host 0.0.0.0] [--port 8000]
 
-# 워커 - 실제 pipeline을 실행하므로 extract/schedule과 동일하게 Anthropic 자격증명 필요
-uv run knowledge-forge worker [--poll-interval-seconds 2.0]
+# 워커(Celery) - 실제 pipeline을 실행하므로 extract/schedule과 동일하게 Anthropic 자격증명 필요
+uv run knowledge-forge worker [--concurrency 4] [--loglevel info]
+
+# 모니터링 GUI (선택) - http://localhost:5555
+uv run --extra flower celery -A knowledge_forge.celery_app flower
 ```
 
-둘 다 `KF_DATABASE_URL`이 필수다(`extract`의 `--store`처럼 opt-in이 아님 - 큐/조회가 이 서버의
-핵심 기능이라 DB 없이는 의미가 없다). `serve`는 `KF_DATABASE_URL`이 없어도 뜨지만(`GET /health`만
-정상), `/ingest`/`/jobs`/`/knowledge-objects`/`/relations`는 503을 반환한다. `worker`는
-`KF_DATABASE_URL`이 없으면 즉시 에러 종료한다.
+`serve`/`worker` 모두 `KF_DATABASE_URL`이 필수다(`extract`의 `--store`처럼 opt-in이 아님 -
+큐/조회가 이 서버의 핵심 기능이라 DB 없이는 의미가 없다). `serve`는 `KF_DATABASE_URL`이 없어도
+뜨지만(`GET /health`만 정상), `/ingest`/`/jobs`/`/knowledge-objects`/`/relations`는 503을
+반환한다. `worker`는 `KF_DATABASE_URL`이 없으면 즉시 에러 종료한다. 둘 다 `KF_REDIS_URL`(기본
+`redis://localhost:6379/0`)로 Celery 브로커/결과 백엔드를 가리킨다 - `POST /ingest`가 job을
+실제로 워커에 전달하려면 Redis가 떠 있어야 한다.
 
-docker-compose에는 `api`/`worker` 서비스가 각각 있다(`app`처럼 `build: .`/`depends_on:
-postgres(healthy)`):
+docker-compose에는 `redis`/`api`/`worker`/`flower` 서비스가 있다(`app`처럼 `build: .`/`depends_on:
+postgres(healthy)`, `api`/`worker`는 `redis(healthy)`도 추가):
 
 ```bash
-docker compose up -d postgres api worker
+docker compose up -d postgres redis api worker flower
 curl -X POST localhost:8000/ingest -H 'Content-Type: application/json' -d '{"path": "/app/input/sample.md"}'
 curl localhost:8000/jobs/<job_id>
 curl localhost:8000/knowledge-objects
+open http://localhost:5555  # Flower - task/워커 상태 GUI
 ```
 
 ## 자동 스케줄링 (`KF_SCHEDULED_SOURCES`)
@@ -130,21 +138,24 @@ Objects/Relations)가 붙어 있어 Swagger UI에서 리소스별로 묶여 보�
 ## Job 상태 전이
 
 ```text
-pending --(worker가 claim_next())--> running --(성공)--> succeeded
+pending --(Celery worker가 _execute_job에서 mark_running)--> running --(성공)--> succeeded
                                          │
-                                         └──(예외)──> failed (jobs.error에 메시지 기록)
+                                         └──(예외)──> failed (jobs.error에 메시지 기록, 예외 재raise로 Celery/Flower에도 실패로 표시)
 ```
 
 `worker.py`의 실패 격리는 `scheduling/scheduler.py`의 tick과 같은 철학이다: 한 job의 예외는 그
-job을 `failed`로 표시할 뿐 워커 프로세스 자체를 죽이지 않는다 - 다음 job이 정상적으로 폴링된다.
+job을 `failed`로 표시할 뿐 워커 프로세스 자체를 죽이지 않는다 - 다음 job이 정상적으로 처리된다.
+재시도(retry)는 아직 없다 - 처리 도중 워커가 죽으면 job은 `running`에 멈춘 채 남는다(이전
+poll 기반 구현과 동일한 한계).
 
 ## 알려진 한계 (다음 후속 과제)
 
 - **요청당 새 연결, 커넥션 풀 없음** (`api/deps.py`) — `scheduling/scheduler.py`의 "tick마다 새
   연결" 원칙을 그대로 따른 선택이라 단순하고 연결 끊김에 자동 복구되지만, 동시 요청이 많아지면
   처리량이 문제될 수 있다. `psycopg_pool`로 옮기는 건 실제 병목이 확인된 뒤의 후속 과제.
-- **워커는 poll 기반**(`--poll-interval-seconds`, 기본 2초) — job이 없을 때 최대 poll 간격만큼
-  지연될 수 있다. `LISTEN`/`NOTIFY`로 즉시 깨우는 건 지연이 실제 문제가 될 때의 후속 과제.
+- **재시도 없음** — 실패한 job은 `failed`로 끝나고 자동 재큐잉되지 않는다(Celery 자체는 재시도
+  기능이 있지만 아직 켜지 않았다). 워커가 처리 도중 죽는 경우도 마찬가지로 job이 `running`에
+  멈춘 채 남는다.
 - **`/ingest`의 경로 존재 검증은 enqueue 시점 스냅샷** — 워커가 실제로 job을 집어들 때 파일이
   사라졌으면(레이스) job은 `failed`로 끝난다(정상적인 실패 격리 경로, 별도 처리 불필요).
 - **SaaS ingest job은 실제 계정으로 라이브 검증되지 않았다** — CLI `--source`와 마찬가지로

@@ -434,25 +434,23 @@ def serve(
 
 @app.command()
 def worker(
-    poll_interval_seconds: float = typer.Option(2.0, "--poll-interval-seconds", help="Delay between empty polls of the job queue."),
+    concurrency: int = typer.Option(4, "--concurrency", help="Number of concurrent Celery worker processes."),
+    loglevel: str = typer.Option("info", "--loglevel", help="Celery worker log level."),
 ) -> None:
-    """Run the job-queue worker: polls `jobs` (populated by `POST /ingest`)
-    and runs the pipeline for each claimed job (see wiki/api.md). A
-    long-running process, deployed separately from `serve` (Ctrl-C to stop)."""
+    """Run the Celery worker that consumes `jobs` (populated by `POST /ingest`,
+    dispatched over Redis) and runs the pipeline for each job (see
+    wiki/api.md). A long-running process, deployed separately from `serve`
+    (Ctrl-C to stop). Monitor it with Flower (`celery -A
+    knowledge_forge.celery_app flower`, or the `flower` docker-compose
+    service)."""
     _ensure_authenticated()
     if not settings.database_url:
         typer.echo("KF_DATABASE_URL이 설정되지 않았습니다 - worker는 job queue가 필수입니다.", err=True)
         raise typer.Exit(1)
 
-    from knowledge_forge.worker import run_worker
+    from knowledge_forge.celery_app import celery_app
 
-    asyncio.run(
-        run_worker(
-            database_url=settings.database_url,
-            data_dir=settings.data_dir,
-            poll_interval_seconds=poll_interval_seconds,
-        )
-    )
+    celery_app.worker_main(["worker", f"--loglevel={loglevel}", f"--concurrency={concurrency}"])
 
 
 @db_app.command("init")

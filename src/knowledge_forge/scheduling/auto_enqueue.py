@@ -7,11 +7,11 @@ then enough to also start periodic sync, with no separate
 Deliberately enqueues rather than running the pipeline itself, unlike
 `scheduling/scheduler.py`'s `schedule` CLI (which drives run_pipeline
 directly, in-process): every ingest - scheduled or on-demand - goes through
-the exact same `jobs` table -> worker.py `_dispatch()` path, so there is
-exactly one place that knows how to actually turn a source into Knowledge
-Objects. Workers scale horizontally (wiki/api.md) independently of how many
-sources are scheduled here, and adding a new scheduled source is a config
-change, not a new process to deploy.
+the exact same `jobs` table -> Celery -> worker.py `_dispatch()` path, so
+there is exactly one place that knows how to actually turn a source into
+Knowledge Objects. Workers scale horizontally (wiki/api.md) independently of
+how many sources are scheduled here, and adding a new scheduled source is a
+config change, not a new process to deploy.
 """
 
 import json
@@ -23,6 +23,7 @@ from typing import Optional
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from pydantic import BaseModel, model_validator
 
+from knowledge_forge.celery_app import run_ingest_job
 from knowledge_forge.collectors.saas.factory import SAAS_COLLECTOR_BUILDERS, job_type_for_source
 from knowledge_forge.storage.job_store import JobStore
 
@@ -113,6 +114,7 @@ def _build_tick(dsn: str, source: ScheduledSource):
         try:
             async with JobStore(dsn) as job_store:
                 job = await job_store.enqueue(job_type, payload, project_id=source.project_id)
+            run_ingest_job.apply_async(args=[job.job_id], task_id=job.job_id)
             logger.info(
                 "auto-scheduled enqueue: job_type=%s project_id=%s job_id=%s",
                 job_type,
