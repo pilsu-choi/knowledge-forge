@@ -84,7 +84,10 @@ uv run knowledge-forge extract <path> [--source local|slack|notion|gdrive|gmail]
 - `--store`(기본값): `KF_DATABASE_URL`이 설정되어 있으면 Postgres+디스크에 저장([`storage.md`](storage.md)).
   없으면 경고만 출력하고 출력 전용으로 계속 진행한다.
 - `--okf-dir`: 지정하면 `--store`와 별개로, manifest.yaml + resources/objects/relations로
-  된 파일 기반 Knowledge Base도 그 디렉터리에 기록한다([`okf.md`](okf.md)).
+  된 파일 기반 Knowledge Base도 그 디렉터리에 기록한다([`okf.md`](okf.md)). **주의**: OKFWriter는
+  생성 시점의 `--project-id` 하나로 고정된 `{root}/{project_id}/` 아래에만 쓴다 — Slack의
+  `KF_SLACK_CHANNEL_PROJECT_MAP`으로 한 실행이 여러 프로젝트에 걸쳐 있어도 OKF 출력은 전부 이
+  단일 폴더에 섞여 들어간다(Postgres `--store` 경로만 아이템별 `project_id`를 올바르게 반영함).
 
 예시:
 
@@ -196,7 +199,8 @@ async for outcome in run_pipeline(collector, registry, chunker, extractor):
 | 환경변수 | 대상 커넥터 | 설명 |
 |---|---|---|
 | `KF_SLACK_BOT_TOKEN` | Slack | Bot Token (`xoxb-...`) |
-| `KF_SLACK_CHANNELS` | Slack | 동기화할 채널 ID, 콤마 구분 (예: `C0123,C0456`) |
+| `KF_SLACK_CHANNELS` | Slack | 동기화할 채널 ID, 콤마 구분 (예: `C0123,C0456`). `KF_SLACK_CHANNEL_PROJECT_MAP`이 있으면 생략 가능(그 맵의 키가 채널 목록이 된다) |
+| `KF_SLACK_CHANNEL_PROJECT_MAP` | Slack | 선택: 채널 ID → project_id JSON(인라인 또는 파일 경로), 예: `{"C0123":"PRJ-A","C0456":"PRJ-B"}`. 봇 하나가 여러 프로젝트의 채널을 동시에 수집할 때, 채널별로 올바른 `project_id`를 태깅한다(맵에 없는 채널은 `--project-id`로 넘긴 값으로 폴백). `run_pipeline`은 `RawItem.project_id`가 있으면 그걸, 없으면 실행 전체에 붙는 `--project-id`를 쓴다 |
 | `KF_NOTION_TOKEN` | Notion | Integration 토큰 |
 | `KF_NOTION_DATABASE_ID` | Notion | 특정 데이터베이스로 범위를 좁힐 때만 설정 (없으면 `search()`로 접근 가능한 모든 페이지) |
 | `KF_GDRIVE_CREDENTIALS_JSON` | Google Drive | 서비스 계정 JSON — 인라인 값 또는 파일 경로 둘 다 허용(`json.loads` 실패 시 경로로 재시도) |

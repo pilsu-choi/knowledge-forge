@@ -25,6 +25,11 @@ class RawItem:
     modified_at: datetime
     metadata: dict[str, Any] = field(default_factory=dict)
     deleted: bool = False
+    # Per-item tenancy override - lets a single collector instance that spans
+    # several projects (e.g. one SlackCollector polling channels that belong
+    # to different projects) tag each item correctly. None (the default)
+    # falls back to the run-level project_id passed to run_pipeline().
+    project_id: str | None = None
 
 
 class Cursor(BaseModel):

@@ -84,3 +84,29 @@ def test_slack_never_yields_deleted_items():
     items = list(collector.initial_sync())
 
     assert all(not item.deleted for item in items)
+
+
+def test_channel_project_map_tags_items_per_channel():
+    client = _FakeSlackClient()
+    client.history_pages["general"] = [[{"ts": "1.0", "text": "hi", "user": "U1"}]]
+    client.history_pages["random"] = [[{"ts": "2.0", "text": "yo", "user": "U2"}]]
+
+    collector = SlackCollector(
+        client=client,
+        channels=["general", "random"],
+        channel_project_map={"general": "PRJ-A"},
+    )
+    items = {item.metadata["channel"]: item for item in collector.initial_sync()}
+
+    assert items["general"].project_id == "PRJ-A"
+    assert items["random"].project_id is None  # not in the map - falls back to run-level project_id
+
+
+def test_no_channel_project_map_leaves_project_id_unset():
+    client = _FakeSlackClient()
+    client.history_pages["general"] = [[{"ts": "1.0", "text": "hi", "user": "U1"}]]
+
+    collector = SlackCollector(client=client, channels=["general"])
+    items = list(collector.initial_sync())
+
+    assert items[0].project_id is None

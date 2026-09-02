@@ -29,14 +29,30 @@ def _load_json_config(value: str) -> dict:
 def build_slack_collector() -> SlackCollector:
     if not settings.slack_bot_token:
         raise RuntimeError("KF_SLACK_BOT_TOKEN is not set.")
-    if not settings.slack_channels:
-        raise RuntimeError("KF_SLACK_CHANNELS is not set (comma-separated channel IDs).")
+
+    channel_project_map: dict[str, str] = {}
+    if settings.slack_channel_project_map:
+        channel_project_map = _load_json_config(settings.slack_channel_project_map)
+
+    if settings.slack_channels:
+        channels = [c.strip() for c in settings.slack_channels.split(",") if c.strip()]
+    elif channel_project_map:
+        channels = list(channel_project_map)
+    else:
+        raise RuntimeError(
+            "Neither KF_SLACK_CHANNELS nor KF_SLACK_CHANNEL_PROJECT_MAP is set "
+            "(comma-separated channel IDs, or a channel-id -> project-id JSON map)."
+        )
 
     from slack_sdk import WebClient
 
-    channels = [c.strip() for c in settings.slack_channels.split(",") if c.strip()]
     client = WebClient(token=settings.slack_bot_token)
-    return SlackCollector(client=client, channels=channels, auth_config=SaaSAuthConfig(token=settings.slack_bot_token))
+    return SlackCollector(
+        client=client,
+        channels=channels,
+        auth_config=SaaSAuthConfig(token=settings.slack_bot_token),
+        channel_project_map=channel_project_map or None,
+    )
 
 
 def build_notion_collector() -> NotionCollector:

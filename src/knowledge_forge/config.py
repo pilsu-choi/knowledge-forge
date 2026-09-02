@@ -57,8 +57,17 @@ class Settings(BaseSettings):
     # be set; the corresponding build_*_collector() raises a clear error if
     # a required one is missing.
     slack_bot_token: str | None = None
-    # Comma-separated channel IDs to sync, e.g. "C0123,C0456".
+    # Comma-separated channel IDs to sync, e.g. "C0123,C0456". Optional when
+    # slack_channel_project_map is set - the map's keys are used as the
+    # channel list in that case, so the two don't need to be kept in sync.
     slack_channels: str | None = None
+    # Per-channel tenancy: inline JSON object or a path to one, e.g.
+    # '{"C0123": "PRJ-A", "C0456": "PRJ-B"}'. Lets one Slack collector run
+    # span several projects - each channel's items are tagged with its own
+    # project_id (RawItem.project_id) instead of the run's single
+    # --project-id. A channel not present in the map falls back to that
+    # run-level --project-id.
+    slack_channel_project_map: str | None = None
 
     notion_token: str | None = None
     notion_database_id: str | None = None

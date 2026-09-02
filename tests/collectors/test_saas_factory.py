@@ -60,6 +60,43 @@ def test_build_slack_collector_builds_client_from_settings(monkeypatch):
     assert created_with["token"] == "xoxb-fake"
 
 
+def test_build_slack_collector_derives_channels_from_project_map_when_channels_unset(monkeypatch):
+    _patch_settings(
+        monkeypatch,
+        slack_bot_token="xoxb-fake",
+        slack_channel_project_map=json.dumps({"C1": "PRJ-A", "C2": "PRJ-B"}),
+    )
+    monkeypatch.setitem(sys.modules, "slack_sdk", _fake_slack_sdk_module())
+
+    collector = factory.build_slack_collector()
+    assert sorted(collector._channels) == ["C1", "C2"]
+    assert collector._channel_project_map == {"C1": "PRJ-A", "C2": "PRJ-B"}
+
+
+def test_build_slack_collector_passes_channel_project_map_alongside_explicit_channels(monkeypatch):
+    _patch_settings(
+        monkeypatch,
+        slack_bot_token="xoxb-fake",
+        slack_channels="C1,C2,C3",
+        slack_channel_project_map=json.dumps({"C1": "PRJ-A"}),
+    )
+    monkeypatch.setitem(sys.modules, "slack_sdk", _fake_slack_sdk_module())
+
+    collector = factory.build_slack_collector()
+    assert collector._channels == ["C1", "C2", "C3"]
+    assert collector._channel_project_map == {"C1": "PRJ-A"}
+
+
+def _fake_slack_sdk_module():
+    class _FakeWebClient:
+        def __init__(self, token):
+            self.token = token
+
+    module = types.ModuleType("slack_sdk")
+    module.WebClient = _FakeWebClient
+    return module
+
+
 # ─── Notion ──────────────────────────────────────────────────────────────
 
 

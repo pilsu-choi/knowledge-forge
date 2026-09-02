@@ -32,9 +32,18 @@ class SlackCollector(SaaSCollector):
         client: Any,
         channels: list[str],
         auth_config: SaaSAuthConfig | None = None,
+        channel_project_map: dict[str, str] | None = None,
     ):
+        """`channel_project_map` (channel id -> project_id) is optional - when
+        given, it lets one SlackCollector instance poll channels that belong
+        to different projects and still tag each RawItem with the right
+        project_id (see RawItem.project_id / pipeline.run_pipeline). A
+        channel missing from the map falls back to the run-level project_id,
+        same as when no map is given at all.
+        """
         super().__init__(client=client, auth_config=auth_config)
         self._channels = channels
+        self._channel_project_map = channel_project_map or {}
         self._latest_ts: dict[str, str] = {}
 
     def _track_latest(self, channel: str, ts: str) -> None:
@@ -58,6 +67,7 @@ class SlackCollector(SaaSCollector):
                 "thread_ts": message.get("thread_ts"),
             },
             deleted=False,
+            project_id=self._channel_project_map.get(channel),
         )
 
     def _sync_channel(self, channel: str, oldest: str | None) -> Iterator[RawItem]:

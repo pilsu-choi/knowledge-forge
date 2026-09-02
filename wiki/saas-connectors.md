@@ -26,6 +26,12 @@ channels=[...])`처럼 **호출자가 클라이언트를 직접 만들어서 넘
 `schedule`의 `--source {slack,notion,gdrive,gmail}`가 이 factory를 호출해 CLI에서 바로
 실행한다(`src/knowledge_forge/cli.py`의 `_build_collector()`).
 
+Slack은 추가로 `channel_project_map`(채널 ID → project_id)을 받을 수 있다 — 봇 하나가 여러
+프로젝트의 채널을 동시에 수집할 때, 채널별로 `RawItem.project_id`를 다르게 태깅해서 파이프라인
+전체에 붙는 단일 `--project-id`로는 표현할 수 없는 다대다 귀속을 표현한다
+(`KF_SLACK_CHANNEL_PROJECT_MAP`, [`dev-guide.md`](dev-guide.md#saas-커넥터-자격-증명-kf_) 참고).
+맵에 없는 채널은 `--project-id`로 폴백한다.
+
 ## 커넥터별 요약
 
 | 커넥터 | 초기 동기화 | 증분 동기화 | 삭제 감지 | 커서(`Cursor.data`) |

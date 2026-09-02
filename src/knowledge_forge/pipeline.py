@@ -40,7 +40,7 @@ def _make_source(collector: Collector, item: RawItem, project_id: str) -> Source
         collected_at=datetime.now(timezone.utc),
         modified_at=item.modified_at,
         metadata=item.metadata,
-        project_id=project_id,
+        project_id=item.project_id or project_id,
     )
 
 
@@ -88,9 +88,14 @@ async def run_pipeline(
     Defaults to `default_reconstructor_for(collector.source_type)`, which is
     a no-op for File/Notion/Google Drive sources.
 
-    `project_id` (default "default") tags every Source this run collects -
-    the tenancy key `sources`/`documents` are filtered by in the read API
-    (wiki/api.md) and job queue (`jobs.project_id`).
+    `project_id` (default "default") tags every Source this run collects,
+    unless the RawItem itself carries a `project_id` (e.g. SlackCollector's
+    per-channel `channel_project_map`, see collectors/saas/slack.py), which
+    takes precedence - this is what lets one collector instance spanning
+    several projects (several Slack channels, each owned by a different
+    project) still tag each item correctly. The tenancy key `sources`/
+    `documents` are filtered by in the read API (wiki/api.md) and job queue
+    (`jobs.project_id`).
 
     Within one document: chunks are bundled into groups of
     `settings.extraction_chunk_group_size` before extraction (see

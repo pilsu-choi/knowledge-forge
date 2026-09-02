@@ -24,6 +24,9 @@
   `--source {slack,notion,gdrive,gmail}`이 이걸 호출한다(`cli.py`의 `_build_collector()`) —
   호출자가 더 이상 직접 SDK 클라이언트를 만들어 생성자에 주입하거나, factory가 만든 커넥터를
   직접 `run_pipeline()`에 넘길 필요가 없다([`dev-guide.md`](dev-guide.md#saas-커넥터-사용하기)).
+  Slack은 추가로 `KF_SLACK_CHANNEL_PROJECT_MAP`(채널 ID → project_id)으로 한 봇이 여러
+  프로젝트의 채널을 수집할 때도 `RawItem.project_id`를 채널별로 올바르게 태깅할 수 있다 —
+  맵에 없는 채널은 `--project-id`로 폴백([`saas-connectors.md`](saas-connectors.md)).
   Gmail은 사전 발급된 user OAuth 토큰(`KF_GMAIL_TOKEN_PATH`)의 만료 갱신까지만 자동화했고,
   최초 토큰 발급(브라우저 동의 플로우)은 아직 없다 — 아래 1단계 참고.
 - **Context Reconstruction**: Collector와 Parser 사이에 신설된 단계 — Slack은 스레드 그룹핑 +
@@ -140,6 +143,11 @@ Dashboard / Chat UI다. 이들을 지금 만들지 않는 이유는 스코프 �
 경로는 `LocalFileCollector`의 `state_path`(디스크 영속 커서)에 대응하는 게 없어서, 커서가
 프로세스 생애주기 동안만 메모리에 있다(`schedule` 재시작 시 SaaS 소스는 처음부터 다시 돈다).
 
+Slack은 추가로 `channel_project_map`(`KF_SLACK_CHANNEL_PROJECT_MAP`)을 지원한다 — 봇 하나가
+여러 프로젝트의 채널을 동시에 수집하는 구성(ProjectIntel의 `project_mapping` 테이블과 같은
+문제의식)에서, 파이프라인 전체에 붙는 단일 `--project-id`로는 표현할 수 없는 채널별 프로젝트
+귀속을 `RawItem.project_id`(신설, `pipeline._make_source`가 있으면 우선 사용)로 표현한다.
+
 다음이 남아 있다:
 
 - Gmail의 **최초** user OAuth 토큰 발급(브라우저 동의 화면을 띄우는 `InstalledAppFlow` 등) —
@@ -152,6 +160,11 @@ Dashboard / Chat UI다. 이들을 지금 만들지 않는 이유는 스코프 �
   `tests/collectors/test_saas_factory.py`). 특히 파서→청커→LLM 추출까지 이어지는 실제 실행은
   아직 어떤 SaaS 소스로도 검증되지 않았다 — 실제 계정 데이터를 LLM에 보내는 비용/데이터 민감성
   문제가 있어 신중한 확인 후 진행할 것.
+- Slack의 `KF_SLACK_CHANNEL_PROJECT_MAP`처럼 여러 프로젝트에 걸친 채널별 귀속은 Postgres
+  `--store` 경로에서만 올바르게 반영된다 — `--okf-dir`(OKFWriter)는 여전히 실행 시점의 단일
+  `--project-id` 폴더에 전부 쓴다(`OKFWriter.__init__`이 `project_id`로 루트를 고정).
+  다중 프로젝트 Slack 수집과 OKF 출력을 같이 쓰려면 OKFWriter도 아이템별 project_id를
+  인식하도록 확장이 필요하다 — 아직 미구현.
 
 ### 2단계 — 시각 자료 처리 고도화
 
