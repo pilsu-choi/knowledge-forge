@@ -31,10 +31,13 @@
 ```
 src/knowledge_forge/search/
     service.py            # file_search() - OKF 파일 트리 키워드/frontmatter 검색, Postgres 불필요
+src/knowledge_forge/okf/
+    fs_service.py          # read_file/write_file/edit_file/list_dir() - OKF 루트 트리로 스코프된 FS 도구
 src/knowledge_forge/agent/
     auth.py                # 프로바이더별 자격 증명 preflight 체크 (extraction/auth.py와 같은 역할, 별도 키)
-    tools.py                # search.service를 ToolSpec으로 감싸는 얇은 어댑터 + write_plan 조립
+    tools.py                # search/fs_service/memory를 ToolSpec으로 감싸는 얇은 어댑터 + write_plan/delegate_task 조립
     plan.py                 # PlanState/write_plan 도구 - 에이전트가 스스로 세우는 다단계 작업 계획
+    memory.py                # read_memory/write_memory() - OKF 트리 바깥의 세션 간 기억 (write_memory 도구)
     loop.py                 # run_agent() - 벤더 중립 도구 호출 루프 (모든 모드가 공유)
     prompts.py               # 시스템 프롬프트 템플릿
     runtime.py                # run_query()(1회성) / AgentSession(--interactive REPL) - 둘 다 loop.py 그대로 사용
@@ -44,6 +47,9 @@ src/knowledge_forge/agent/
         openai_compatible.py # OpenAICompatibleChatProvider (OpenRouter 기본, base_url로 전환 가능)
         factory.py            # get_chat_provider() - KF_AGENT_PROVIDER로 선택
 ```
+
+(`delegate_task`(SubAgents)는 새 파일이 아니라 `agent/tools.py::default_tools`가 `agent/loop.py::run_agent`를
+재귀적으로 호출해 만드는 도구 - 아래 Phase 2 절 참고.)
 
 CLI: `knowledge-forge agent "질문" [--project-id ID] [--provider anthropic|openai_compatible]
 [--model ...] [--interactive]` (`cli.py`).
@@ -88,20 +94,67 @@ TodoWrite와 같은 설계: 호출할 때마다 `PlanState.steps` 전체를 통�
 ## 설정 (config.py, `.env.example`)
 
 `KF_AGENT_PROVIDER`(anthropic 기본) / `KF_AGENT_MODEL` / `KF_AGENT_OPENAI_COMPATIBLE_MODEL` /
-`KF_AGENT_OPENAI_COMPATIBLE_BASE_URL` / `KF_AGENT_MAX_ITERATIONS`. `llm_provider`(Knowledge
-Extraction용)와 별도 키로 뒀다 - 두 관심사가 다른 백엔드를 가리켜도 되게. 자격 증명은
-`ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY`/`OPENAI_API_KEY`를 그대로 재사용(새 env var 없음).
+`KF_AGENT_OPENAI_COMPATIBLE_BASE_URL` / `KF_AGENT_MAX_ITERATIONS` / `KF_AGENT_MEMORY_DIR`
+(`agent/memory.py` 참고). `llm_provider`(Knowledge Extraction용)와 별도 키로 뒀다 - 두 관심사가 다른
+백엔드를 가리켜도 되게. 자격 증명은 `ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY`/`OPENAI_API_KEY`를 그대로
+재사용(새 env var 없음).
 
-## 알려진 제약 (Phase 1 스코프)
+## Phase 2 — FileSystem / SubAgents / Memory (`refs/hermes-agent` 구조 참고)
+
+Phase 1의 read-only `file_search` 위에, `refs/hermes-agent`의 파일 도구/`delegate_task`/
+`MemoryManager` **구조만** 참고해 훨씬 얇게 이식했다 - hermes는 플러그인 provider·워커 스레드·
+승인 콜백까지 갖춘 프로덕션 계층이지만, 이 harness는 여전히 "서비스 함수 + 얇은 `ToolSpec` 어댑터"
+원칙(agent-search.md/이 문서의 "계층 설계")을 그대로 지킨다.
+
+### `okf/fs_service.py` — FileSystem 도구 (`read_file`/`write_file`/`edit_file`/`list_dir`)
+
+`search/service.py`와 나란한 서비스 레이어. 모든 `path`는 **OKF 루트 기준 상대 경로**이고,
+`okf/reader.py::_resolve_rel_path`(기존에 `read_markdown_file`이 쓰던 그 경로 탈출 방지 가드)를
+그대로 재사용해 OKF 루트 트리를 벗어나는 경로는 무조건 거부한다 - 로컬 파일시스템 전체가 아니라
+OKF 트리 내부로만 쓰기 권한을 좁힌 것. `file_search`가 반환하는 `path`와 같은 값을 그대로
+`read_file`에 넘길 수 있어 "검색 → 스니펫만으로 부족하면 전체 읽기" 흐름이 자연스럽다. `edit_file`은
+Claude Code의 Edit 도구와 같은 계약: `old_text`가 파일 안에서 정확히 한 번만 일치해야 하고,
+0번/2번 이상이면 에러(모호한 교체를 절대 추측하지 않음).
+
+### `agent/memory.py` — Memory 도구 (`write_memory`)
+
+세션이 끝나도 남을 기억을 `settings.agent_memory_dir`(기본
+`./.knowledge-forge-state/agent-memory/<project_id>.md`, `project_id` 없으면 `_global.md`) 아래
+평범한 마크다운 파일로 저장한다. **OKF 트리 바깥**에 두는 게 핵심 설계 결정 - 에이전트가 남긴 메모가
+지식 베이스 자체에 섞이거나 `file_search`/`OKFWriter`에 걸리면 안 되기 때문. `.knowledge-forge-state/`
+는 `collectors/local_file.py`가 이미 쓰던 로컬 전용 상태 디렉터리 컨벤션을 재사용한 것(이미
+`.gitignore`에 있음). `write_plan`과 달리 기본 동작은 전체 대체가 아니라 **`mode="append"`**(기존
+기억을 지우지 않고 덧붙임) - 메모리는 세션 간 누적되는 것이 목적이라 실수로 지우는 게 더 위험하다고
+판단했다. 정리가 필요할 때만 `mode="replace"`. 매 세션 시작 시 `read_memory(project_id)`가
+`prompts.py::build_system_prompt`의 "이전 세션 기억" 섹션으로 자동 주입된다(도구 호출 없이도 이미
+아는 상태로 시작).
+
+### `agent/tools.py::default_tools` 확장 — `delegate_task` (SubAgents)
+
+hermes의 `tools/delegate_tool.py` 패턴(자식은 새 대화로 시작 + 부모 toolset 상속 + 재귀 delegate
+금지 + 부모는 자식의 중간 과정을 못 보고 최종 요약만 받음)을 그대로 따르되, hermes가 추가로 자식에게
+막는 `memory`/`clarify`/`send_message` 등 별도 차단 목록은 두지 않았다 - **부모와 동일한 도구 집합에서
+`delegate_task` 자신만 빠진다**. 재귀 위임은 자식의 `default_tools(..., include_delegate=False)` 호출
+자체가 `delegate_task`를 아예 만들지 않아 구조적으로 차단된다(깊이 카운터 불필요). `delegate_task`는
+`provider`와 `system`이 둘 다 주어졌을 때만 도구 목록에 추가된다 - 자식 턴을 실제로 돌리려면 둘 다
+필요하기 때문(`agent/runtime.py`의 `run_query`/`AgentSession` 둘 다 이제 시스템 프롬프트를 먼저 만든
+뒤 `default_tools()`에 넘긴다).
+
+## 알려진 제약
 
 - 스트리밍 미지원 - 한 턴이 끝나야 출력.
-- 도구 호출이 여러 개 와도 순차 실행 - 읽기 전용 도구뿐이라 안전, 지연 시간만 손해.
+- 도구 호출이 여러 개 와도 순차 실행 - 지연 시간만 손해(FileSystem 쓰기 도구가 추가된 뒤에도 동일한
+  단일 세션 실행 전제라 동시 쓰기 경합은 없음).
 - failover 없음 - 선택한 프로바이더가 실패하면 그대로 에러.
-- `/search/*` 계열과 마찬가지로 접근 제어 없음 - 로컬/단일 사용자 실행 전제.
+- `/search/*` 계열과 마찬가지로 접근 제어 없음 - 로컬/단일 사용자 실행 전제. FileSystem 도구는 OKF
+  루트 트리 내부로 범위가 좁혀져 있지만, 그 트리 안에서는 별도 permission mode 없이 즉시 쓴다.
+- `delegate_task`는 부모와 동일한 `max_iterations`를 쓰고 부모 턴 안에서 동기적으로 완료를 기다린다 -
+  병렬 실행/백그라운드 위임(hermes의 배치 모드) 없음.
 
 ## 다음 단계
 
 1. `vector_search`/`graph_search`를 `search/service.py`·`agent/tools.py`에 추가 (embeddings.md의
    파이프라인이 이미 있으므로 `POST /search/vector` 등 API 경로만 마저 구현하면 됨).
 2. `knowledge-forge mcp-server`(stdio) - 외부 host(Claude Code/Claude Desktop 등) 노출.
-3. 범용화(파일 생성/편집 도구, permission mode, Skills 연동) - 별도 설계 문서.
+3. permission mode(쓰기 도구 승인 흐름) / Skills 연동 - 별도 설계 문서.
+

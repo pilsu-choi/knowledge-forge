@@ -133,6 +133,13 @@ class Settings(BaseSettings):
     # tuning knob so much as a safety net against a model that keeps calling
     # tools without ever producing a final answer.
     agent_max_iterations: int = 8
+    # Cross-session agent memory (agent/memory.py) - plain markdown files,
+    # one per project_id (plus a "_global" file), stored OUTSIDE the OKF
+    # tree on purpose: agent-authored notes must never get mixed into the
+    # knowledge base itself or picked up by file_search/OKFWriter.
+    # Reuses the ".knowledge-forge-state/" convention `collectors/local_file.py`
+    # already put in .gitignore - one root for this-machine-only runtime state.
+    agent_memory_dir: str = "./.knowledge-forge-state/agent-memory"
 
     # SaaS collector credentials (KF_-prefixed, see collectors/saas/factory.py
     # for how these turn into an authenticated SDK client + Collector). All

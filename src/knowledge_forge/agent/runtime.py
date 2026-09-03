@@ -10,6 +10,7 @@ path - both call the exact same `run_agent`, per wiki/agent-runtime.md's
 from __future__ import annotations
 
 from knowledge_forge.agent.loop import run_agent
+from knowledge_forge.agent.memory import read_memory
 from knowledge_forge.agent.plan import PlanState
 from knowledge_forge.agent.prompts import build_system_prompt
 from knowledge_forge.agent.providers.base import Message
@@ -26,8 +27,8 @@ async def run_query(
 ) -> str:
     """One-shot: ask a single question, get a single answer, no retained history."""
     chat_provider = get_chat_provider(provider=provider, model=model)
-    tools = default_tools()
-    system = build_system_prompt(project_id=project_id)
+    system = build_system_prompt(project_id=project_id, memory=read_memory(project_id))
+    tools = default_tools(project_id=project_id, provider=chat_provider, system=system)
     answer, _ = await run_agent(
         question, tools, system, chat_provider, max_iterations=settings.agent_max_iterations
     )
@@ -47,8 +48,10 @@ class AgentSession:
     ):
         self._provider = get_chat_provider(provider=provider, model=model)
         self._plan_state = PlanState()
-        self._tools = default_tools(plan_state=self._plan_state)
-        self._system = build_system_prompt(project_id=project_id)
+        self._system = build_system_prompt(project_id=project_id, memory=read_memory(project_id))
+        self._tools = default_tools(
+            plan_state=self._plan_state, project_id=project_id, provider=self._provider, system=self._system
+        )
         self._history: list[Message] = []
 
     @property
