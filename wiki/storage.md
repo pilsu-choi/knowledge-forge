@@ -53,6 +53,7 @@ Postgres 컨테이너(`docker run postgres:16-alpine`)로 스키마 생성·저�
 | `chunks` | `chunk_id` | `hierarchy_level`, `sequence_index`, `text`, `token_count`, `element_ids`(JSONB), `page_start`/`page_end` | → `documents`, `sources` |
 | `knowledge_objects` | `knowledge_object_id` | `type`, `evidence`(JSONB, 이 객체를 뒷받침하는 청크 목록), `summary`, `content`(JSONB, 타입별 payload), `topics`(JSONB), `document_type`, `model_used`, `version`/`pipeline_version`/`source_hash`/`supersedes`(재처리 이력) | → `sources`, `documents` |
 | `relations` | `relation_id` | `type`, `subject_id`/`object_id`(둘 다 `knowledge_object_id`를 가리키는 typed edge), `label`, `confidence`, `evidence`(JSONB, chunk_id 목록) | → `knowledge_objects`(양쪽) |
+| `knowledge_object_embeddings` | `(knowledge_object_id, embedding_model)` 복합키 | `embedding`(`vector(1536)`, HNSW/cosine 인덱스), `embedded_text`, `embedded_text_hash`, `project_id` | → `knowledge_objects` |
 
 `knowledge_objects`는 예전처럼 `chunk_id` 단일 FK를 갖지 않는다 — 하나의 `KnowledgeObject`가
 여러 청크에 걸쳐 근거를 가질 수 있어(`evidence`가 리스트) 단일 FK로는 표현이 안 되기
@@ -61,6 +62,13 @@ Postgres 컨테이너(`docker run postgres:16-alpine`)로 스키마 생성·저�
 
 중첩 구조(리스트, 딕셔너리)는 전부 JSONB로 저장한다 — psycopg3가 JSONB ↔ Python
 dict/list를 자동 변환해줘서 애플리케이션 코드에서 별도 직렬화가 필요 없다.
+
+**`knowledge_object_embeddings`**: `KnowledgeObject`를 임베딩한 벡터를 담는 별도 테이블 —
+`knowledge_objects`에 컬럼으로 얹지 않고 `(knowledge_object_id, embedding_model)` 복합 PK로
+분리한 이유, HNSW/cosine 인덱스를 고른 이유, 임베딩을 생성/백필하는 방법은
+[`embeddings.md`](embeddings.md)에 있다. `docker-compose.yml`의 `postgres` 서비스 이미지는
+`pgvector/pgvector:pg16`으로 pgvector 확장이 포함되어 있어야 한다 — 일반 `postgres:16` 이미지로는
+`CREATE EXTENSION vector`가 실패한다.
 
 **`project_id`(멀티테넌시 키)**: `sources`/`documents`는 각각 `project_id TEXT NOT NULL
 DEFAULT 'default'` 컬럼을 갖는다. `Source`가 만들어질 때(`pipeline._make_source`) 한 번

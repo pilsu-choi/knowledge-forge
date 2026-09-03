@@ -25,6 +25,10 @@ dependencies = [
     "mdit-py-plugins>=0.4",
     "tenacity>=9.0",
     "psycopg[binary]>=3.2",
+    # pgvector column type adapter for psycopg3 (knowledge_object_embeddings,
+    # wiki/embeddings.md) - openai (above) already covers the embedding API
+    # client, no new dependency needed there.
+    "pgvector>=0.3",
     "apscheduler>=3.10",
     "pyyaml>=6.0",
     "fastapi>=0.115",

@@ -4,11 +4,20 @@ dedup.py (same-run near-duplicate merging) and extraction/versioning.py
 to "are these two KnowledgeObjects' texts close enough to be the same
 underlying thing", so the comparison itself lives here once.
 
-Uses difflib.SequenceMatcher rather than embeddings/a vector index on
-purpose - Vector DB is explicitly out of scope (see wiki/roadmap.md's
-excluded-scope table), and a KnowledgeObject's `summary`/`content.statement`
-is short enough (one sentence/claim) that character-level ratio is a
-reasonable proxy for near-duplication without a model call.
+Uses difflib.SequenceMatcher rather than embeddings on purpose - this stays
+a character-level diff tool, not a semantic-similarity one, even though
+embeddings are no longer out of scope (see wiki/embeddings.md: a
+KnowledgeObject's summary/content/topics are now embedded into pgvector's
+`knowledge_object_embeddings`). The two solve different problems: dedup/
+supersedes need "is this near-identical text, from a re-run or an adjacent
+chunk" (character-level ratio is a fast, model-free proxy for that, and a
+KnowledgeObject's `summary`/`content.statement` is short enough - one
+sentence/claim - for it to work well), while embeddings target "is this
+semantically related text" for meaning-based search (still design-only past
+generation - see wiki/agent-search.md). Swapping this module's comparison
+for an embedding-based one would change what dedup/supersedes actually
+matches (paraphrases would start merging, not just near-identical text),
+which isn't the goal here.
 """
 
 from difflib import SequenceMatcher

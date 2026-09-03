@@ -12,6 +12,7 @@ from knowledge_forge.collectors.base import Collector, ensure_utc
 from knowledge_forge.collectors.local_file import LocalFileCollector
 from knowledge_forge.collectors.saas.factory import SAAS_COLLECTOR_BUILDERS
 from knowledge_forge.config import settings
+from knowledge_forge.embedding.factory import get_embedding_provider
 from knowledge_forge.extraction.auth import credential_hint_ko, has_resolvable_credentials
 from knowledge_forge.extraction.factory import get_extractor
 from knowledge_forge.okf import OKFWriter
@@ -131,6 +132,13 @@ def extract(
     project_id: str = typer.Option(
         "default", "--project-id", help="Tenancy key tagged on every Source/Document this run persists."
     ),
+    embed: bool = typer.Option(
+        settings.embedding_enabled,
+        "--embed/--no-embed",
+        help="Embed each document's KnowledgeObjects into knowledge_object_embeddings right after storing them "
+        "(default from KF_EMBEDDING_ENABLED, see wiki/embeddings.md). Requires --store - ignored with a warning "
+        "otherwise, since there is nowhere to persist embeddings without a database.",
+    ),
 ) -> None:
     """Run a local file/directory (or a SaaS source, via --source) through the full pipeline and emit Knowledge Objects."""
     _ensure_authenticated()
@@ -140,6 +148,9 @@ def extract(
     extractor = get_extractor(model=model)
     pipeline_store = _open_store() if store else None
     okf_writer = OKFWriter(okf_dir, project_id=project_id) if okf_dir else None
+    if embed and pipeline_store is None:
+        typer.echo("--embed는 --store(및 KF_DATABASE_URL)가 있어야 동작합니다 - 임베딩을 건너뜁니다.", err=True)
+    embedder = get_embedding_provider() if embed and pipeline_store is not None else None
 
     async def _run():
         if pipeline_store is not None:
@@ -155,6 +166,7 @@ def extract(
                         store=pipeline_store,
                         okf_writer=okf_writer,
                         project_id=project_id,
+                        embedder=embedder,
                     )
                 ]
         return [
@@ -451,6 +463,47 @@ def worker(
     from knowledge_forge.celery_app import celery_app
 
     celery_app.worker_main(["worker", f"--loglevel={loglevel}", f"--concurrency={concurrency}"])
+
+
+@app.command()
+def embed(
+    project_id: Optional[str] = typer.Option(
+        None, "--project-id", help="Only embed this project's KnowledgeObjects. Omit to scan every project."
+    ),
+    batch_size: int = typer.Option(64, "--batch-size", help="KnowledgeObjects fetched/embedded per API call."),
+    model: Optional[str] = typer.Option(
+        None, "--model", help="Embedding model. Defaults to KF_EMBEDDING_MODEL (text-embedding-3-small)."
+    ),
+) -> None:
+    """Backfill embeddings for KnowledgeObjects already in Postgres that have none yet for the
+    active embedding model (see wiki/embeddings.md) - e.g. after turning on KF_EMBEDDING_ENABLED
+    for the first time, or after `extract --no-embed` runs. Does NOT re-embed KnowledgeObjects
+    that already have an embedding for this model, even if their summary/content has since
+    changed (see wiki/embeddings.md's staleness section) - only fills in what's missing."""
+    if not settings.database_url:
+        typer.echo("KF_DATABASE_URL이 설정되지 않았습니다 - embed는 Postgres가 필수입니다.", err=True)
+        raise typer.Exit(1)
+
+    embedding_model = model or settings.embedding_model
+    embedder = get_embedding_provider(model=embedding_model)
+
+    async def _run() -> int:
+        total = 0
+        async with PipelineStore(settings.database_url, settings.data_dir) as store:
+            await store.init_schema()
+            while True:
+                batch = await store.list_knowledge_objects_missing_embedding(
+                    embedding_model, project_id=project_id, limit=batch_size
+                )
+                if not batch:
+                    break
+                await store.record_embeddings(batch, embedder, embedding_model)
+                total += len(batch)
+                typer.echo(f"{total}개 임베딩 완료...", err=True)
+        return total
+
+    total = asyncio.run(_run())
+    typer.echo(f"{total}개의 KnowledgeObject 임베딩 완료 (모델: {embedding_model})", err=True)
 
 
 @db_app.command("init")

@@ -1,6 +1,9 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    # pgvector 확장이 포함된 이미지 - 표준 postgres:16 이미지 위에 `vector` 확장만
+    # 얹은 것이라 env/ports/volumes/healthcheck는 전부 그대로 호환된다
+    # (wiki/embeddings.md, knowledge_object_embeddings 테이블용).
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: kf
       POSTGRES_PASSWORD: kf

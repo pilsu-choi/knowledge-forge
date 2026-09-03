@@ -84,6 +84,8 @@ class _FakeStore:
         self._prior_objects = prior_objects
         self.saved_objects: list[KnowledgeObject] = []
         self.saved_relations = []
+        self.embedded_objects: list[KnowledgeObject] | None = None
+        self.embedded_model: str | None = None
 
     async def record_source(self, source, item):
         pass
@@ -102,6 +104,10 @@ class _FakeStore:
 
     async def list_prior_knowledge_objects(self, source_id):
         return self._prior_objects
+
+    async def record_embeddings(self, objects, embedder, embedding_model):
+        self.embedded_objects = objects
+        self.embedded_model = embedding_model
 
 
 async def test_reextraction_against_a_prior_store_autofills_supersedes(tmp_path):
@@ -138,3 +144,52 @@ async def test_reextraction_against_a_prior_store_autofills_supersedes(tmp_path)
     assert new_ko.supersedes == "ko-prior"
     assert new_ko.version == 2
     assert new_ko in store.saved_objects
+
+
+class _FakeEmbedder:
+    """Minimal stand-in for EmbeddingProvider - only run_pipeline's call site
+    (whether/with-what it's called) is under test here, not the embedding
+    math itself (see tests/embedding/ for that)."""
+
+    async def embed(self, texts):
+        return [[0.0] for _ in texts]
+
+
+async def test_embedder_given_embeds_final_merged_objects_after_storing(tmp_path):
+    """embedder is only meaningful together with store (nowhere to persist
+    embeddings otherwise) - record_embeddings() must see the same final,
+    deduped/supersede-resolved object set that was just passed to
+    record_knowledge_objects(), not the pre-merge per-group objects."""
+    doc_path = tmp_path / "doc.txt"
+    doc_path.write_text("A short note about Acme.\n")
+
+    collector = LocalFileCollector(root=doc_path)
+    registry = default_registry()
+    chunker = AdaptiveChunker(max_tokens_per_chunk=4000)
+    extractor = _RepeatingFactExtractor()
+    store = _FakeStore(prior_objects=[])
+    embedder = _FakeEmbedder()
+
+    outcomes = [
+        outcome
+        async for outcome in run_pipeline(collector, registry, chunker, extractor, store=store, embedder=embedder)
+    ]
+
+    assert len(outcomes) == 1
+    assert store.embedded_objects == outcomes[0].objects
+    assert store.embedded_model is not None
+
+
+async def test_embedder_omitted_skips_embedding_even_with_store(tmp_path):
+    doc_path = tmp_path / "doc.txt"
+    doc_path.write_text("A short note about Acme.\n")
+
+    collector = LocalFileCollector(root=doc_path)
+    registry = default_registry()
+    chunker = AdaptiveChunker(max_tokens_per_chunk=4000)
+    extractor = _RepeatingFactExtractor()
+    store = _FakeStore(prior_objects=[])
+
+    [outcome async for outcome in run_pipeline(collector, registry, chunker, extractor, store=store)]
+
+    assert store.embedded_objects is None

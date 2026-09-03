@@ -16,6 +16,7 @@ from knowledge_forge.config import settings
 from knowledge_forge.context.base import ContextReconstructor
 from knowledge_forge.context.registry import default_reconstructor_for
 from knowledge_forge.dedup import merge_duplicates
+from knowledge_forge.embedding.base import EmbeddingProvider
 from knowledge_forge.exceptions import KnowledgeExtractionError
 from knowledge_forge.extraction.base import ExtractionOutcome, Extractor
 from knowledge_forge.extraction.grouping import group_chunks
@@ -84,6 +85,7 @@ async def run_pipeline(
     project_id: str = "default",
     since: datetime | None = None,
     until: datetime | None = None,
+    embedder: EmbeddingProvider | None = None,
 ) -> AsyncIterator[ExtractionOutcome]:
     """Run the full pipeline over everything a Collector yields.
 
@@ -104,6 +106,13 @@ async def run_pipeline(
     Chunks, then each document's merged KnowledgeObjects/Relations) -
     `store=None` (the default) runs exactly as before, print-only, with no
     persistence side effects.
+
+    When `embedder` is also given (requires `store` - there is nowhere to
+    write embeddings otherwise), each document's merged, deduped, final
+    KnowledgeObjects are embedded and stored to `knowledge_object_embeddings`
+    right after `store.record_knowledge_objects()` - see
+    `knowledge_forge.embedding` and wiki/embeddings.md. `embedder=None`
+    (the default) skips embedding entirely, same opt-in shape as `store`.
 
     When `okf_writer` is given, the same artifacts are additionally written
     into a file-based OKF Knowledge Base tree (see knowledge_forge.okf) -
@@ -230,6 +239,8 @@ async def run_pipeline(
             if store is not None:
                 await store.record_knowledge_objects(merged_outcome.objects)
                 await store.record_relations(merged_outcome.relations)
+                if embedder is not None:
+                    await store.record_embeddings(merged_outcome.objects, embedder, settings.embedding_model)
             if okf_writer is not None:
                 okf_writer.write_objects(merged_outcome.objects)
                 okf_writer.write_relations(merged_outcome.relations, source.project_id)

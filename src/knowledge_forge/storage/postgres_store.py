@@ -5,18 +5,25 @@ so every write here is an idempotent upsert - re-running the pipeline on
 unchanged input is safe to repeat.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import psycopg
 from psycopg.types.json import Jsonb
 
 from knowledge_forge.models.chunk import Chunk
 from knowledge_forge.models.document import Document
-from knowledge_forge.models.knowledge_object import DocumentRef, Evidence, KnowledgeObject
+from knowledge_forge.models.knowledge_object import (
+    DocumentRef,
+    Evidence,
+    KnowledgeObject,
+)
 from knowledge_forge.models.relation import Relation
 from knowledge_forge.models.source import Source, SourceRef
+
+if TYPE_CHECKING:
+    from knowledge_forge.embedding.base import EmbeddingRecord
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
@@ -28,6 +35,9 @@ class PostgresStore:
 
     async def connect(self) -> "PostgresStore":
         self._conn = await psycopg.AsyncConnection.connect(self._dsn, autocommit=True)
+        from pgvector.psycopg import register_vector_async
+
+        await register_vector_async(self._conn)
         return self
 
     async def close(self) -> None:
@@ -517,3 +527,84 @@ class PostgresStore:
                 """,
                 (source, Jsonb(cursor_data), updated_at),
             )
+
+    async def save_embeddings(self, records: list["EmbeddingRecord"]) -> None:
+        now = datetime.now(timezone.utc)
+        rows: list[tuple[Any, ...]] = [
+            (
+                rec.knowledge_object_id,
+                rec.embedding_model,
+                rec.embedding,
+                rec.embedded_text,
+                rec.embedded_text_hash,
+                rec.project_id,
+                now,
+            )
+            for rec in records
+        ]
+        if not rows:
+            return
+        async with self.conn.cursor() as cur:
+            await cur.executemany(
+                """
+                INSERT INTO knowledge_object_embeddings (knowledge_object_id, embedding_model,
+                                                           embedding, embedded_text, embedded_text_hash,
+                                                           project_id, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (knowledge_object_id, embedding_model) DO UPDATE SET
+                    embedding = EXCLUDED.embedding,
+                    embedded_text = EXCLUDED.embedded_text,
+                    embedded_text_hash = EXCLUDED.embedded_text_hash,
+                    project_id = EXCLUDED.project_id,
+                    created_at = EXCLUDED.created_at
+                """,
+                rows,
+            )
+
+    async def list_knowledge_objects_missing_embedding(
+        self, embedding_model: str, project_id: str | None, limit: int
+    ) -> list[KnowledgeObject]:
+        """KnowledgeObjects that have no row yet in `knowledge_object_embeddings`
+        for `embedding_model` - the backfill CLI command's work queue. Ordered
+        by `extracted_at` so a resumed/repeated backfill run makes steady
+        forward progress instead of re-scanning the same head of the table."""
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT ko.knowledge_object_id, ko.type, ko.document_id, ko.evidence, ko.summary,
+                       ko.content, ko.topics, ko.document_type, ko.extracted_at, ko.model_used,
+                       ko.version, ko.pipeline_version, ko.source_hash, ko.supersedes,
+                       s.source_id, s.source_type, s.uri, s.project_id
+                FROM knowledge_objects ko
+                JOIN sources s ON s.source_id = ko.source_id
+                LEFT JOIN knowledge_object_embeddings e
+                  ON e.knowledge_object_id = ko.knowledge_object_id AND e.embedding_model = %s
+                WHERE e.knowledge_object_id IS NULL
+                  AND (%s::text IS NULL OR s.project_id = %s)
+                ORDER BY ko.extracted_at
+                LIMIT %s
+                """,
+                (embedding_model, project_id, project_id, limit),
+            )
+            rows = await cur.fetchall()
+
+        return [
+            KnowledgeObject(
+                knowledge_object_id=row[0],
+                type=row[1],
+                source=SourceRef(source_id=row[14], source_type=row[15], uri=row[16], project_id=row[17]),
+                document=DocumentRef(document_id=row[2]),
+                evidence=[Evidence(**e) for e in row[3]],
+                summary=row[4],
+                content=row[5],
+                topics=row[6],
+                document_type=row[7],
+                extracted_at=row[8],
+                model_used=row[9],
+                version=row[10],
+                pipeline_version=row[11],
+                source_hash=row[12],
+                supersedes=row[13],
+            )
+            for row in rows
+        ]

@@ -6,6 +6,12 @@
 -- exception is `jobs` below: a job is a queue event, not content, so its id
 -- is a random uuid4 rather than a stable_id.
 
+-- pgvector extension for knowledge_object_embeddings below (wiki/embeddings.md).
+-- Requires a Postgres image that ships the extension (docker-compose.yml's
+-- postgres service uses pgvector/pgvector:pg16) - CREATE EXTENSION fails
+-- against a plain postgres image.
+CREATE EXTENSION IF NOT EXISTS vector;
+
 CREATE TABLE IF NOT EXISTS sources (
     source_id     TEXT PRIMARY KEY,
     source_type   TEXT NOT NULL,
@@ -92,6 +98,39 @@ CREATE TABLE IF NOT EXISTS relations (
 CREATE INDEX IF NOT EXISTS idx_relations_subject_id ON relations(subject_id);
 CREATE INDEX IF NOT EXISTS idx_relations_object_id ON relations(object_id);
 CREATE INDEX IF NOT EXISTS idx_relations_type ON relations(type);
+
+-- One embedding vector per (KnowledgeObject, embedding_model) - a separate
+-- table rather than a column on knowledge_objects so switching embedding
+-- models is a new row, not a schema migration (old vectors stay queryable
+-- side by side during a rollout). embedded_text/embedded_text_hash record
+-- exactly what was embedded, for reproducibility and (future) staleness
+-- detection when a re-extraction changes a KO's summary/content - see
+-- wiki/embeddings.md for why staleness re-embedding isn't automated yet.
+-- project_id is denormalized from the owning Source (same convention as
+-- documents.project_id) since a filtered ANN query can't join out to
+-- sources cheaply. Dimension (1536) matches the default embedding model,
+-- KF_EMBEDDING_MODEL=text-embedding-3-small - changing models to a
+-- different dimension requires a migration (see wiki/embeddings.md).
+CREATE TABLE IF NOT EXISTS knowledge_object_embeddings (
+    knowledge_object_id TEXT NOT NULL REFERENCES knowledge_objects(knowledge_object_id),
+    embedding_model    TEXT NOT NULL,
+    embedding          vector(1536) NOT NULL,
+    embedded_text      TEXT NOT NULL,
+    embedded_text_hash TEXT NOT NULL,
+    project_id         TEXT NOT NULL,
+    created_at         TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (knowledge_object_id, embedding_model)
+);
+-- HNSW over IVFFlat: knowledge_objects is an append-heavy incremental
+-- workload (pipeline/schedule/worker keep inserting), and HNSW doesn't need
+-- a `lists` parameter tuned to table size or periodic rebuilds the way
+-- IVFFlat does. Cosine distance matches how OpenAI-style embeddings are
+-- normally compared. No search endpoint reads this index yet
+-- (wiki/agent-search.md's vector_search is still design-only) - it's built
+-- alongside the table now to avoid a separate migration later.
+CREATE INDEX IF NOT EXISTS idx_koe_embedding_hnsw
+    ON knowledge_object_embeddings USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_koe_project_id ON knowledge_object_embeddings(project_id);
 
 -- Ingest job queue (wiki/api.md): the FastAPI `/ingest` endpoint enqueues a
 -- row here and returns immediately; `knowledge-forge worker` polls it with

@@ -123,7 +123,7 @@ Dashboard / Chat UI다. 이들을 지금 만들지 않는 이유는 스코프 �
 
 | 제외 항목 | 현재 설계가 막지 않는 이유 |
 |---|---|
-| Vector DB | `KnowledgeObject.summary`/`content`/`topics`는 이미 임베딩하기 좋은 평탄한 텍스트 필드로 분리되어 있다. 벡터 스토어에 넣을 때 `KnowledgeObject`를 그대로 소스 레코드로 사용하면 된다. |
+| Vector DB | **임베딩 생성까지는 구현 완료** — `KnowledgeObject.summary`/`content`/`topics`를 합친 텍스트를 OpenAI 임베딩 API로 벡터화해 pgvector(`knowledge_object_embeddings` 테이블, HNSW/cosine 인덱스)에 저장한다([`embeddings.md`](embeddings.md)). 다만 그 인덱스를 읽는 검색 엔드포인트(`/search/vector`)와 `knowledge-forge mcp-server`, Claude Code용 검색 skill은 여전히 설계만 있고 미착수다([`agent-search.md`](agent-search.md)). |
 | Graph DB | `KnowledgeObject`(노드)와 `Relation`(subject_id/object_id로 노드를 잇는 typed edge)이 이미 그래프 모델 그 자체다 — Phase 5에서 subject-predicate-object 텍스트 triple 대신 id 기반 edge로 바꿨다([`architecture.md`](architecture.md)). `relations` 테이블(PostgreSQL, [`storage.md`](storage.md)) 또는 OKF `relations/`([`okf.md`](okf.md))를 그대로 그래프 DB에 bulk-import하면 된다. |
 | Ontology/OWL | `Entity.type`/`document_type`이 자유 문자열이라, 추후 온톨로지 클래스 체계로 매핑하는 정규화 레이어를 얹기만 하면 된다. 지금 스키마를 바꿀 필요가 없다. |
 | Search/RAG | Knowledge Object 자체가 검색 인덱싱의 입력 단위로 설계되어 있다(청크 단위 + 요약 + 메타데이터). Vector DB/재순위 레이어를 앉힌 "정식" RAG는 여전히 스코프 밖이다. 다만 **DB 의존성 없이 OKF 파일 트리만으로 에이전트 컨텍스트를 구성하는 실험**([`okf.md`](okf.md))은 진행 중 스코프로 승격했다 - OKF가 이제 실제 [OKF v0.2 스펙](open-knowledge-format.md)을 따르는 markdown+frontmatter 트리라, grep + frontmatter 스캔 + `index.md`/`log.md`가 곧 검색 표면이다. |

@@ -16,3 +16,11 @@ class KnowledgeExtractionError(KnowledgeForgeError):
     def __init__(self, message: str, chunk_id: str | None = None):
         super().__init__(message)
         self.chunk_id = chunk_id
+
+
+class EmbeddingError(KnowledgeForgeError):
+    """Raised when the embedding API call fails for a batch of texts (non-retryable)."""
+
+    def __init__(self, message: str, knowledge_object_id: str | None = None):
+        super().__init__(message)
+        self.knowledge_object_id = knowledge_object_id

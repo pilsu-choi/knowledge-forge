@@ -8,15 +8,19 @@ class Settings(BaseSettings):
     itself (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or an `ant auth login`
     profile) - not duplicated here. Same principle for OpenRouter:
     OPENROUTER_API_KEY is read directly from the environment by the
-    OpenRouter provider classes at construction time, not stored here.
+    OpenRouter provider classes at construction time, not stored here. Same
+    again for OPENAI_API_KEY (embedding/openai_provider.py).
     """
 
     model_config = SettingsConfigDict(env_prefix="KF_", env_file=".env", extra="ignore")
 
     extraction_model: str = "claude-opus-5"
     max_tokens_per_chunk: int = 4000
-    # Caps in-flight Anthropic API calls (extraction + vision) so a large
-    # batch doesn't fan out unbounded concurrent requests.
+    # Caps in-flight Anthropic/OpenAI API calls (extraction + vision +
+    # embedding) so a large batch doesn't fan out unbounded concurrent
+    # requests. Embedding reuses this rather than getting its own knob -
+    # it's the same "don't fan out unbounded requests" concern, and a
+    # dedicated setting isn't justified until it's actually a bottleneck.
     max_concurrent_llm_requests: int = 5
     # How many consecutive chunks (see extraction/grouping.py) are bundled
     # into one Extractor.extract() call. 1 (default) reproduces the exact
@@ -73,6 +77,22 @@ class Settings(BaseSettings):
     claude_agent_sdk_extraction_model: str = "claude-haiku-4-5-20251001"
     # Only needed when `claude` isn't on PATH under that exact name.
     claude_agent_sdk_cli_path: str | None = None
+
+    # Whether `extract`/`schedule` embed each document's merged
+    # KnowledgeObjects into knowledge_object_embeddings right after storing
+    # them (opt-in, mirrors database_url's "off unless configured"
+    # convention) - see wiki/embeddings.md. Only takes effect when a store
+    # is configured (embedding needs somewhere to write to). `--embed`/
+    # `--no-embed` on `extract` overrides this per invocation.
+    embedding_enabled: bool = False
+    # Switch point for a future non-OpenAI embedding backend (mirrors
+    # llm_provider/get_extractor) - only "openai" is implemented so far.
+    embedding_provider: Literal["openai"] = "openai"
+    embedding_model: str = "text-embedding-3-small"
+    # Must match the `vector(N)` dimension in schema.sql's
+    # knowledge_object_embeddings table - changing embedding_model to one
+    # with a different output dimension requires updating both together.
+    embedding_dimensions: int = 1536
 
     # SaaS collector credentials (KF_-prefixed, see collectors/saas/factory.py
     # for how these turn into an authenticated SDK client + Collector). All

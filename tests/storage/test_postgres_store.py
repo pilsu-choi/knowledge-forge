@@ -15,7 +15,12 @@ import pytest_asyncio
 
 from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.document import Document, DocumentMetadata, TextBlock
-from knowledge_forge.models.knowledge_object import DocumentRef, Evidence, KnowledgeObject, KnowledgeObjectType
+from knowledge_forge.models.knowledge_object import (
+    DocumentRef,
+    Evidence,
+    KnowledgeObject,
+    KnowledgeObjectType,
+)
 from knowledge_forge.models.relation import Relation, RelationType
 from knowledge_forge.models.source import Source, SourceRef, SourceType
 from knowledge_forge.storage.postgres_store import PostgresStore
@@ -99,6 +104,7 @@ async def store():
         await db.init_schema()
         yield db
         await db.conn.execute("DELETE FROM relations WHERE relation_id LIKE 'test-%'")
+        await db.conn.execute("DELETE FROM knowledge_object_embeddings WHERE knowledge_object_id LIKE 'test-%'")
         await db.conn.execute("DELETE FROM knowledge_objects WHERE knowledge_object_id LIKE 'test-%'")
         await db.conn.execute("DELETE FROM chunks WHERE chunk_id LIKE 'test-%'")
         await db.conn.execute("DELETE FROM documents WHERE document_id LIKE 'test-%'")
@@ -255,3 +261,103 @@ async def test_sync_cursor_round_trips_and_upserts(store):
         "SELECT count(*) FROM sync_cursors WHERE source = %s", ("test-source",)
     )).fetchone()
     assert row[0] == 1
+
+
+async def test_save_embeddings_upsert_is_idempotent(store):
+    from knowledge_forge.embedding.base import EmbeddingRecord
+
+    src, doc, chunk, objects, _relation = _sample_records()
+    await store.save_source(src, raw_path=None)
+    await store.save_document(doc)
+    await store.save_chunks([chunk])
+    await store.save_knowledge_objects(objects)
+
+    ko_id = objects[0].knowledge_object_id
+    record = EmbeddingRecord(
+        knowledge_object_id=ko_id,
+        embedding_model="test-model",
+        embedding=[0.1] * 1536,
+        embedded_text="Acme",
+        embedded_text_hash="hash1",
+        project_id=src.project_id,
+    )
+    await store.save_embeddings([record])
+
+    updated = EmbeddingRecord(
+        knowledge_object_id=ko_id,
+        embedding_model="test-model",
+        embedding=[0.2] * 1536,
+        embedded_text="Acme v2",
+        embedded_text_hash="hash2",
+        project_id=src.project_id,
+    )
+    await store.save_embeddings([updated])
+
+    count_row = await (await store.conn.execute(
+        "SELECT count(*) FROM knowledge_object_embeddings WHERE knowledge_object_id = %s AND embedding_model = %s",
+        (ko_id, "test-model"),
+    )).fetchone()
+    assert count_row[0] == 1
+
+    row = await (await store.conn.execute(
+        "SELECT embedded_text, embedded_text_hash FROM knowledge_object_embeddings "
+        "WHERE knowledge_object_id = %s AND embedding_model = %s",
+        (ko_id, "test-model"),
+    )).fetchone()
+    assert row[0] == "Acme v2"
+    assert row[1] == "hash2"
+
+
+async def test_list_knowledge_objects_missing_embedding(store):
+    from knowledge_forge.embedding.base import EmbeddingRecord
+
+    src, doc, chunk, objects, _relation = _sample_records()
+    await store.save_source(src, raw_path=None)
+    await store.save_document(doc)
+    await store.save_chunks([chunk])
+    await store.save_knowledge_objects(objects)
+
+    entity_id = objects[0].knowledge_object_id
+    fact_id = objects[1].knowledge_object_id
+
+    # Neither KO has an embedding yet - both should show up as missing.
+    missing = await store.list_knowledge_objects_missing_embedding("test-model", None, 50)
+    missing_ids = {ko.knowledge_object_id for ko in missing}
+    assert entity_id in missing_ids
+    assert fact_id in missing_ids
+
+    # Embed one of them - it should drop out of the missing list.
+    await store.save_embeddings(
+        [
+            EmbeddingRecord(
+                knowledge_object_id=entity_id,
+                embedding_model="test-model",
+                embedding=[0.1] * 1536,
+                embedded_text="Acme",
+                embedded_text_hash="hash1",
+                project_id=src.project_id,
+            )
+        ]
+    )
+
+    missing = await store.list_knowledge_objects_missing_embedding("test-model", None, 50)
+    missing_ids = {ko.knowledge_object_id for ko in missing}
+    assert entity_id not in missing_ids
+    assert fact_id in missing_ids
+
+    # A different embedding_model doesn't count as "embedded" for this model.
+    missing_other_model = await store.list_knowledge_objects_missing_embedding("other-model", None, 50)
+    missing_other_ids = {ko.knowledge_object_id for ko in missing_other_model}
+    assert entity_id in missing_other_ids
+    assert fact_id in missing_other_ids
+
+    # project_id filter excludes KOs from other projects.
+    missing_wrong_project = await store.list_knowledge_objects_missing_embedding(
+        "test-model", "no-such-project", 50
+    )
+    assert fact_id not in {ko.knowledge_object_id for ko in missing_wrong_project}
+
+    missing_right_project = await store.list_knowledge_objects_missing_embedding(
+        "test-model", src.project_id, 50
+    )
+    assert fact_id in {ko.knowledge_object_id for ko in missing_right_project}
