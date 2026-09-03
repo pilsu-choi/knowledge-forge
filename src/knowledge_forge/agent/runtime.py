@@ -10,6 +10,7 @@ path - both call the exact same `run_agent`, per wiki/agent-runtime.md's
 from __future__ import annotations
 
 from knowledge_forge.agent.loop import run_agent
+from knowledge_forge.agent.plan import PlanState
 from knowledge_forge.agent.prompts import build_system_prompt
 from knowledge_forge.agent.providers.base import Message
 from knowledge_forge.agent.providers.factory import get_chat_provider
@@ -45,9 +46,19 @@ class AgentSession:
         model: str | None = None,
     ):
         self._provider = get_chat_provider(provider=provider, model=model)
-        self._tools = default_tools()
+        self._plan_state = PlanState()
+        self._tools = default_tools(plan_state=self._plan_state)
         self._system = build_system_prompt(project_id=project_id)
         self._history: list[Message] = []
+
+    @property
+    def plan(self) -> PlanState:
+        """Current plan, as last written by the `write_plan` tool - empty
+        until the agent decides a task warrants one. Exposed so callers
+        (e.g. the `--interactive` CLI loop) can show it without reaching
+        into `run_agent()`'s return value, which only ever carries the
+        answer and message history."""
+        return self._plan_state
 
     async def ask(self, question: str) -> str:
         answer, self._history = await run_agent(

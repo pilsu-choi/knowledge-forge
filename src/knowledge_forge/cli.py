@@ -550,6 +550,8 @@ def agent(
                     continue
                 answer = await session.ask(line)
                 typer.echo(answer)
+                if session.plan.steps:
+                    typer.echo(f"\n[계획]\n{session.plan.render()}\n", err=True)
 
         asyncio.run(_repl())
         return

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from knowledge_forge.agent.plan import PlanState, make_plan_tool
 from knowledge_forge.agent.providers.base import ToolSpec
 from knowledge_forge.search.service import file_search
 
@@ -40,10 +41,17 @@ async def _file_search_handler(args: dict[str, Any]) -> list[dict[str, Any]]:
     )
 
 
-def default_tools() -> list[ToolSpec]:
-    """Phase 1 tool set - file_search only (Postgres 불필요). vector_search/
-    graph_search는 agent-search.md의 pgvector 후속 작업이 API 경로까지
-    끝난 뒤 여기에 같은 패턴으로 추가된다 (wiki/agent-runtime.md Phase 2)."""
+def default_tools(plan_state: PlanState | None = None) -> list[ToolSpec]:
+    """Phase 1 tool set - file_search + write_plan (둘 다 Postgres 불필요).
+    vector_search/graph_search는 agent-search.md의 pgvector 후속 작업이 API
+    경로까지 끝난 뒤 여기에 같은 패턴으로 추가된다 (wiki/agent-runtime.md
+    Phase 2).
+
+    `plan_state`를 넘기지 않으면 이 호출 하나에서만 쓰이고 버려지는 새
+    `PlanState()`가 생긴다(run_query 같은 1회성 경로에 충분). `--interactive`
+    REPL(agent/runtime.py::AgentSession)은 세션당 하나의 `PlanState`를 만들어
+    넘겨서 turn 사이에 계획이 유지되게 한다 - `history`가 유지되는 것과 같은
+    이유."""
     return [
         ToolSpec(
             name="file_search",
@@ -53,5 +61,6 @@ def default_tools() -> list[ToolSpec]:
             ),
             input_schema=FILE_SEARCH_INPUT_SCHEMA,
             handler=_file_search_handler,
-        )
+        ),
+        make_plan_tool(plan_state if plan_state is not None else PlanState()),
     ]

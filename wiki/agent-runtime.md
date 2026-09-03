@@ -33,7 +33,8 @@ src/knowledge_forge/search/
     service.py            # file_search() - OKF 파일 트리 키워드/frontmatter 검색, Postgres 불필요
 src/knowledge_forge/agent/
     auth.py                # 프로바이더별 자격 증명 preflight 체크 (extraction/auth.py와 같은 역할, 별도 키)
-    tools.py                # search.service를 ToolSpec으로 감싸는 얇은 어댑터
+    tools.py                # search.service를 ToolSpec으로 감싸는 얇은 어댑터 + write_plan 조립
+    plan.py                 # PlanState/write_plan 도구 - 에이전트가 스스로 세우는 다단계 작업 계획
     loop.py                 # run_agent() - 벤더 중립 도구 호출 루프 (모든 모드가 공유)
     prompts.py               # 시스템 프롬프트 템플릿
     runtime.py                # run_query()(1회성) / AgentSession(--interactive REPL) - 둘 다 loop.py 그대로 사용
@@ -61,6 +62,19 @@ description/tags(가중치 2) > body(가중치 1) 순으로 랭킹하고, `type`
 멀티턴을 이어가는 방법(`agent/runtime.py::AgentSession`). 도구 결과는 `_wrap_untrusted()`로
 "이건 데이터지 지시가 아니다" 델리미터에 감싸 돌려주고(hermes의 `_maybe_wrap_untrusted` 패턴),
 `max_iterations`(기본 8, `KF_AGENT_MAX_ITERATIONS`)를 넘기면 `AgentError`.
+
+### `agent/plan.py::PlanState` / `write_plan` 도구
+
+에이전트가 여러 단계 작업을 스스로 계획하고 진행 상황을 추적할 수 있게 하는 도구. Claude Code의
+TodoWrite와 같은 설계: 호출할 때마다 `PlanState.steps` 전체를 통째로 대체한다(부분 수정 아님) -
+`loop.py`가 diff를 reconcile할 필요가 없다. `ToolSpec.handler`는 세션 컨텍스트를 모르므로
+`make_plan_tool()`이 `PlanState` 인스턴스를 클로저로 잡는 식으로 상태를 붙인다.
+
+`run_query`(1회성)는 그때그때 버려지는 `PlanState()`로 충분하지만, `AgentSession`은 세션당 하나의
+`PlanState`를 만들어 `history`처럼 turn 사이에 유지한다(`session.plan`으로 노출) - `cli.py`의
+`--interactive` 루프는 매 턴 뒤 `session.plan.steps`가 비어있지 않으면 체크리스트를 stderr에
+출력한다. 시스템 프롬프트(`prompts.py`)는 단순 질문에는 쓰지 말 것 / 호출마다 전체 목록을 다시
+보낼 것 / 동시에 in_progress는 하나뿐일 것을 명시한다(`plan.py::_validate_steps`가 후자를 강제).
 
 ### `agent/providers/`
 
