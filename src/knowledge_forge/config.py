@@ -9,7 +9,9 @@ class Settings(BaseSettings):
     profile) - not duplicated here. Same principle for OpenRouter:
     OPENROUTER_API_KEY is read directly from the environment by the
     OpenRouter provider classes at construction time, not stored here. Same
-    again for OPENAI_API_KEY (embedding/openai_provider.py).
+    again for OPENAI_API_KEY (embedding/openai_provider.py). The agent
+    runtime (agent/providers/) reuses ANTHROPIC_API_KEY/OPENROUTER_API_KEY
+    rather than minting its own env var names, for the same reason.
     """
 
     model_config = SettingsConfigDict(env_prefix="KF_", env_file=".env", extra="ignore")
@@ -93,6 +95,44 @@ class Settings(BaseSettings):
     # knowledge_object_embeddings table - changing embedding_model to one
     # with a different output dimension requires updating both together.
     embedding_dimensions: int = 1536
+    # Which text gets embedded for a KnowledgeObject (wiki/embeddings.md's
+    # "청크 기반 vs KnowledgeObject 기반" comparison) - "knowledge_object"
+    # (default) embeds the LLM's summary/content/topics (higher retrieval
+    # precision, dedup'd, but only as good as the extraction and unavailable
+    # until extraction finishes); "chunk" embeds the raw evidence chunk text
+    # instead (no extraction-quality ceiling, embeddable as soon as chunking
+    # finishes, but noisier and not deduped). Same knowledge_object_embeddings
+    # table/schema either way - this only changes which text is sent to the
+    # embedding provider, not the storage grain. Switch per run with `--embed`
+    # or `knowledge-forge embed`'s `--embedding-source` if the choice needs
+    # to differ from this default (e.g. speed problems -> "chunk", precision
+    # problems -> "knowledge_object").
+    embedding_source: Literal["knowledge_object", "chunk"] = "knowledge_object"
+
+    # Agent runtime (harness, wiki/agent-runtime.md) - a separate switch from
+    # `llm_provider` above, deliberately: `llm_provider` picks Knowledge
+    # Extraction's backend, `agent_provider` picks the multi-turn tool-calling
+    # harness's backend, and the two concerns can legitimately point at
+    # different backends (e.g. extraction on Anthropic, agent chat routed
+    # through OpenRouter to a different model). "claude_agent_sdk" is
+    # deliberately NOT a valid value here - see agent-runtime.md's
+    # "claude_agent_sdk는 harness의 어떤 모드에도 들어오지 않는다": that SDK
+    # owns its own tool-call loop internally, so it can't be plugged in as a
+    # stateless "send one turn" adapter alongside the two below without the
+    # harness's own loop (agent/loop.py) duplicating it.
+    agent_provider: Literal["anthropic", "openai_compatible"] = "anthropic"
+    agent_model: str = "claude-sonnet-5"
+    agent_openai_compatible_model: str = "anthropic/claude-sonnet-5"
+    # Reuses the same default as openrouter_base_url (both are "point an
+    # OpenAI-compatible client somewhere") - kept as a separate key so a
+    # deployment can run extraction against OpenRouter and the agent against
+    # a different OpenAI-compatible endpoint (e.g. a local vLLM server)
+    # without the two colliding.
+    agent_openai_compatible_base_url: str = "https://openrouter.ai/api/v1"
+    # Hard cap on tool-call round trips in agent/loop.py::run_agent() - not a
+    # tuning knob so much as a safety net against a model that keeps calling
+    # tools without ever producing a final answer.
+    agent_max_iterations: int = 8
 
     # SaaS collector credentials (KF_-prefixed, see collectors/saas/factory.py
     # for how these turn into an authenticated SDK client + Collector). All

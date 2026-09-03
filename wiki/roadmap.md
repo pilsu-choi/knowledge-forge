@@ -327,6 +327,19 @@ Knowledge가 나온다.
 - **설정**: `document_summary_enabled: bool = False` 같은 `KF_*` 옵트인 플래그로 시작(기존
   `KF_DEDUP_SIMILARITY_THRESHOLD` 등과 같은 관례).
 
+### 7단계 — Agent Runtime, 모델 벤더 중립 harness (검색 전용 MVP) — Phase 1 구현됨
+
+`agent-search.md`의 `file_search`를 실제로 들고 도는 에이전트 프로세스를
+[`agent-runtime.md`](agent-runtime.md)에 구현했다 — `knowledge-forge agent "질문"` /
+`knowledge-forge agent --interactive`. 핵심 요구사항은 모델 벤더 중립성: 1회성 쿼리든 대화형이든
+예외 없이 자체 `ChatProvider` 추상화(Anthropic 네이티브 + OpenAI-호환, `agent/providers/`) 위에서
+돈다 — `claude_agent_sdk`(Anthropic 전용 완결 루프)는 harness의 어떤 모드에도 들어오지 않는다.
+검색 로직은 `search/service.py::file_search()`라는 프레임워크·벤더 독립 함수로 두고
+(Postgres 불필요, OKF 파일 트리만 있으면 동작), `agent/tools.py`가 이를 `ToolSpec`으로 감싸
+`agent/loop.py::run_agent()`(도구 호출 루프, untrusted-output wrapping, max_iterations 상한)에
+등록한다. `vector_search`/`graph_search`는 `embeddings.md`의 pgvector 파이프라인이 API 경로
+(`POST /search/vector`, `GET /relations/expand`)까지 이어진 뒤 같은 패턴으로 추가할 후속 작업.
+
 **한 줄 정의(향후 아키텍처 문서화 시 재사용)**: "Multi-source SaaS 및 File 데이터를 수집하고,
 source별 semantic context를 복원한 뒤 adaptive chunking과 knowledge extraction을 수행하여
 Knowledge Base를 구축하는 ingestion pipeline."

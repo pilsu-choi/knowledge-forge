@@ -24,3 +24,9 @@ class EmbeddingError(KnowledgeForgeError):
     def __init__(self, message: str, knowledge_object_id: str | None = None):
         super().__init__(message)
         self.knowledge_object_id = knowledge_object_id
+
+
+class AgentError(KnowledgeForgeError):
+    """Raised when the agent runtime (harness) fails - a provider call that
+    exhausted retries, or the tool-call loop hitting its iteration cap
+    (see wiki/agent-runtime.md, agent/loop.py)."""

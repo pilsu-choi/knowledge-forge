@@ -7,6 +7,8 @@ from typing import Optional
 
 import typer
 
+from knowledge_forge.agent.auth import agent_credential_hint_ko, has_resolvable_agent_credentials
+from knowledge_forge.agent.runtime import AgentSession, run_query
 from knowledge_forge.chunking import AdaptiveChunker
 from knowledge_forge.collectors.base import Collector, ensure_utc
 from knowledge_forge.collectors.local_file import LocalFileCollector
@@ -504,6 +506,56 @@ def embed(
 
     total = asyncio.run(_run())
     typer.echo(f"{total}개의 KnowledgeObject 임베딩 완료 (모델: {embedding_model})", err=True)
+
+
+@app.command()
+def agent(
+    question: Optional[str] = typer.Argument(
+        None, help="One-shot question to ask the agent. Omit and pass --interactive for a REPL instead."
+    ),
+    project_id: Optional[str] = typer.Option(
+        None, "--project-id", help="Default project_id hint for file_search (the agent can still search other projects)."
+    ),
+    provider: Optional[str] = typer.Option(
+        None, "--provider", help="anthropic (default) or openai_compatible. Defaults to KF_AGENT_PROVIDER."
+    ),
+    model: Optional[str] = typer.Option(None, "--model", help="Overrides the active provider's default model."),
+    interactive: bool = typer.Option(False, "--interactive", help="REPL mode instead of a single one-shot question."),
+) -> None:
+    """OKF 지식 베이스를 file_search로 검색해 답하는 에이전트(wiki/agent-runtime.md) - 1회성
+    쿼리든 --interactive든 동일한 벤더 중립 harness(agent/loop.py) 위에서 돈다. 두
+    --provider(anthropic/openai_compatible) 모두 동일하게 동작한다."""
+    if not settings.okf_dir:
+        typer.echo("KF_OKF_DIR이 설정되지 않았습니다 - agent는 OKF 파일 트리가 필수입니다.", err=True)
+        raise typer.Exit(1)
+    if not interactive and not question:
+        typer.echo("질문을 인자로 주거나 --interactive를 쓰세요.", err=True)
+        raise typer.Exit(1)
+    if not has_resolvable_agent_credentials():
+        typer.echo(agent_credential_hint_ko(), err=True)
+        raise typer.Exit(1)
+
+    if interactive:
+        session = AgentSession(project_id=project_id, provider=provider, model=model)
+
+        async def _repl() -> None:
+            typer.echo("knowledge-forge agent - 종료하려면 Ctrl+D", err=True)
+            while True:
+                try:
+                    line = input("> ")
+                except EOFError:
+                    typer.echo("", err=True)
+                    break
+                if not line.strip():
+                    continue
+                answer = await session.ask(line)
+                typer.echo(answer)
+
+        asyncio.run(_repl())
+        return
+
+    answer = asyncio.run(run_query(question, project_id=project_id, provider=provider, model=model))
+    typer.echo(answer)
 
 
 @db_app.command("init")

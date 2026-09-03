@@ -33,6 +33,7 @@
 | [`storage.md`](storage.md) | `PipelineStore`(디스크 원본 + PostgreSQL 구조화 레코드) 스키마와 opt-in 동작 |
 | [`embeddings.md`](embeddings.md) | `KnowledgeObject`를 pgvector에 임베딩하는 파이프라인 — `EmbeddingProvider` 추상화, `knowledge_object_embeddings` 스키마, `--embed`/`knowledge-forge embed`, staleness 미자동화 |
 | [`agent-search.md`](agent-search.md) | 에이전트 검색 설계 — pgvector/임베딩(구현됨)과 검색 엔드포인트/MCP 서버/검색 skill(설계만, 미구현) |
+| [`agent-runtime.md`](agent-runtime.md) | 모델 벤더 중립 Agent Runtime(harness) — `file_search` 도구를 실제로 쥐고 도는 `knowledge-forge agent` CLI(구현됨, Phase 1), 자체 `ChatProvider` 추상화(Anthropic 네이티브 + OpenAI-호환) |
 | [`okf.md`](okf.md) | `OKFWriter` — manifest.yaml + resources/objects/relations 파일 트리로 된 Knowledge Base, Postgres와 독립적인 opt-in 출력 |
 | [`ui.md`](ui.md) | `/ui` — React+Vite 기반 OKF 뷰어(마크다운+그래프). Tailwind+shadcn/ui 기반 Obsidian풍 비주얼, 디렉터리 구조, 알려진 CSS/타입 함정 |
 | [`scheduling.md`](scheduling.md) | `knowledge-forge schedule`의 tick/interval 모델, 실패 격리 |
