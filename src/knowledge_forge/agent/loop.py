@@ -8,7 +8,10 @@ Modeled on hermes-agent's `handle_max_iterations` (a hard cap on tool-call
 round trips) and `_maybe_wrap_untrusted`/`_neutralize_delimiters` (tool
 results are data, not instructions) - see wiki/agent-runtime.md's
 "hermes-agent에서 가져오는 것 / 안 가져오는 것" for what was and wasn't
-carried over.
+carried over. Context compaction (agent/compaction.py, ported from hermes's
+`trajectory_compressor.py`) runs here too, once per iteration right before
+`provider.send()` - this is the one place `messages` is about to leave the
+loop, so it's also the one place to keep it under budget.
 """
 
 from __future__ import annotations
@@ -16,7 +19,9 @@ from __future__ import annotations
 import json
 import logging
 
+from knowledge_forge.agent.compaction import compact_messages
 from knowledge_forge.agent.providers.base import AssistantTurn, ChatProvider, Message, ToolCall, ToolSpec
+from knowledge_forge.config import settings
 from knowledge_forge.exceptions import AgentError
 
 logger = logging.getLogger(__name__)
@@ -65,6 +70,13 @@ async def run_agent(
     messages.append(Message(role="user", content=user_message))
 
     for _ in range(max_iterations):
+        if settings.agent_context_compaction_enabled:
+            messages = await compact_messages(
+                messages,
+                provider,
+                max_tokens=settings.agent_context_compaction_max_tokens,
+                protect_tail=settings.agent_context_compaction_protect_tail,
+            )
         turn: AssistantTurn = await provider.send(messages, tools, system)
 
         if not turn.tool_calls:

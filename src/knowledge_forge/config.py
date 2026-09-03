@@ -133,6 +133,18 @@ class Settings(BaseSettings):
     # tuning knob so much as a safety net against a model that keeps calling
     # tools without ever producing a final answer.
     agent_max_iterations: int = 8
+    # Runtime context compaction (agent/compaction.py, ported from
+    # refs/hermes-agent's trajectory_compressor.py) - once `messages` in
+    # agent/loop.py::run_agent crosses this token budget, the oldest
+    # compressible middle turns get replaced by one summary message
+    # generated via the SAME ChatProvider already driving the session (no
+    # separate summarization model/API key, unlike hermes's dedicated
+    # OpenRouter client). `protect_tail` is how many of the most recent
+    # messages are kept verbatim no matter what, so the model never loses
+    # the round trip it just did.
+    agent_context_compaction_enabled: bool = True
+    agent_context_compaction_max_tokens: int = 100_000
+    agent_context_compaction_protect_tail: int = 8
     # Cross-session agent memory (agent/memory.py) - plain markdown files,
     # one per project_id (plus a "_global" file), stored OUTSIDE the OKF
     # tree on purpose: agent-authored notes must never get mixed into the
