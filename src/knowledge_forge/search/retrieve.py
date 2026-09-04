@@ -326,7 +326,6 @@ def _filter_row_to_hit(row: tuple[Any, ...]) -> dict[str, Any]:
     }
 
 
-
 def _coverage_threshold(n_terms: int) -> int:
     """term 단위 fallback에서 후보로 남기려면 질의의 term을 몇 개나 담아야 하는가.
 
@@ -339,6 +338,75 @@ def _coverage_threshold(n_terms: int) -> int:
     ratio = max(0.0, settings.term_coverage_ratio)
     floor = max(1, settings.term_coverage_min)
     return min(n_terms, max(floor, math.ceil(n_terms * ratio)))
+
+
+def _term_document_frequency_sql(
+    terms: list[str], *, project_id: str | None, since: datetime | None, until: datetime | None
+) -> str:
+    """term별 문서 빈도(df)를 **한 번의 읽기 전용 질의**로 세는 SQL - `_required_terms`의 입력.
+
+    term당 `lexical_search`를 이미 부르고 있으니 그 히트에서 df를 세면 추가 질의가 0회지만,
+    그 값은 못 쓴다: `search_chunks_lexical`은 `LIMIT`(여기서는 `_TERM_FETCH_LIMIT`=20)을
+    `is_substring DESC, sim DESC, document_id` 순으로 자르기 때문에, 흔한 term일수록 상위 20
+    청크가 **같은 문서 몇 개에 몰려** df가 극단적으로 과소평가된다(실측: "인터뷰" 절단 df=3 /
+    실제 37, "OCR" 1 / 34, "risk-agent" 4 / 51). v0 골든셋의 per_term 질의 26개 중 7개에서
+    "가장 희귀한 term"의 신원이 뒤집혔다 - 판정 자체가 바뀌므로 별도 count가 필요하다.
+
+    substring(ILIKE) 티어만 센다. `search_chunks_lexical`의 3티어(substring/전 토큰/
+    word_similarity)를 여기서 복제하면 `storage/`의 매칭 규칙을 두 곳에 두게 되고, df는
+    "이 term이 코퍼스에서 얼마나 흔한가"의 척도라 가장 정확하고 인덱스로 답할 수 있는 티어면
+    충분하다. fuzzy 티어로만 걸린 문서는 호출부에서 실측 df(그 term의 히트에 실제로 등장한
+    문서 수)와 `max`를 취해 메운다 - 그래야 "히트는 있는데 df=0" 같은 모순이 생기지 않는다."""
+    where: list[str] = []
+    joins = ""
+    if project_id:
+        joins += "\n  JOIN documents d ON d.document_id = c.document_id"
+        where.append(f"d.project_id = {_sql_literal(project_id)}")
+    if since is not None or until is not None:
+        if not project_id:
+            joins += "\n  JOIN documents d ON d.document_id = c.document_id"
+        joins += "\n  JOIN sources s ON s.source_id = d.source_id"
+        if since is not None:
+            where.append(f"COALESCE(s.modified_at, s.collected_at) >= {_timestamp_literal(since)}")
+        if until is not None:
+            where.append(f"COALESCE(s.modified_at, s.collected_at) < {_timestamp_literal(until)}")
+    scope = ("\n  AND " + "\n  AND ".join(where)) if where else ""
+    branches = [
+        f"SELECT {index} AS term_index, COUNT(DISTINCT c.document_id) AS df\n"
+        f"  FROM chunks c{joins}\n"
+        f"  WHERE c.text ILIKE {_like_literal(term)}{scope}"
+        for index, term in enumerate(terms)
+    ]
+    return "\nUNION ALL\n".join(branches)
+
+
+def _required_terms(terms: list[str], df: dict[str, int]) -> set[str]:
+    """coverage 판정에서 **반드시** 담고 있어야 하는 term들 - 질의에서 가장 변별력 있는 것들.
+
+    왜 개수만으로는 안 되나: `_coverage_threshold`는 매칭된 term의 **개수**만 센다. 그래서
+    "Kubernetes 클러스터 구성 가이드"(negative)에서 흔한 term 세 개("클러스터/구성/가이드")가
+    우연히 한 문서에 겹치면 임계값을 넘어 버린다. 개수 기준은 코퍼스가 커질수록 필연적으로
+    나빠진다 - 흔한 term끼리 우연히 겹치는 문서는 코퍼스에 비례해 늘어나기 때문이다(실측:
+    코드 변경 없이 263 → 326 문서에서 none_correct 1.000 → 0.667).
+
+    그래서 "질의에서 가장 희귀한 term(들)을 그 문서가 담고 있어야 한다"를 AND 조건으로 건다.
+    df가 최소인 term이 여럿이면(동점) **전부** 요구한다 - negative-001이 정확히 그 경우다
+    (Kubernetes df=1, 클러스터 df=1이 서로 **다른** 문서에 있어, 하나만 요구하면 노이즈
+    문서가 살아남는다). `term_rare_df_max`는 최소 df 위에 얹는 절대 하한이다(0이면 순수하게
+    "가장 희귀한 term"만, 값을 올리면 df가 그 이하인 term을 전부 요구해 더 조인다).
+
+    df=0인 term(코퍼스에 아예 없는 개념: "연말정산", "블록체인")은 어떤 문서도 담을 수 없으므로
+    이 규칙에서는 **전부 기각**이 된다 - 의도한 동작이다. 코퍼스에 없는 것을 물었으면 "없다"가
+    정답이다. 재현율 쪽 위험(오타/동의어로 df=0이 되는 질의)은 호출부에서 실측 df와 `max`를
+    취해 완화한다: fuzzy 티어로라도 걸린 문서가 있으면 df ≥ 1이 되어 veto가 아니라 "그 문서를
+    요구"로 바뀐다."""
+    cap = settings.term_rare_df_max
+    if cap < 0:
+        return set()
+    floor = min(df.get(term, 0) for term in terms)
+    limit = max(floor, cap)
+    return {term for term in terms if df.get(term, 0) <= limit}
+
 
 # --- 실행기 ----------------------------------------------------------------------
 
@@ -583,10 +651,14 @@ class _Run:
         limit = min(self.fetch_limit, _TERM_FETCH_LIMIT)
         hits_by_term: dict[str, list[dict[str, Any]]] = {}
         coverage: dict[str, set[str]] = {}
+        observed_df: dict[str, int] = {}
         for term in terms:
             hits = await lexical_search(
                 term, self.store, project_id=self.project_id, limit=limit, since=self.since, until=self.until
             )
+            # df는 코퍼스의 성질이라 anchor 좁히기 **전**에 센다 - 좁힌 뒤 세면 anchor가 잡힌
+            # 질의에서 모든 term의 df가 1로 붙어 변별력 판정이 무의미해진다.
+            observed_df[term] = len({hit.get("document_id") for hit in hits if hit.get("document_id")})
             hits, _ = _narrow_to_anchor(hits, self.anchor)
             hits_by_term[term] = hits
             for hit in hits:
@@ -594,8 +666,13 @@ class _Run:
                 if document_id:
                     coverage.setdefault(document_id, set()).add(term)
 
+        df = await self._term_document_frequency(terms, observed_df)
+        required = _required_terms(terms, df)
         threshold = _coverage_threshold(len(terms))
-        kept_documents = {d for d, matched in coverage.items() if len(matched) >= threshold}
+        kept_documents = {
+            d for d, matched in coverage.items() if len(matched) >= threshold and required <= matched
+        }
+        by_count = {d for d, matched in coverage.items() if len(matched) >= threshold}
         total = 0
         for term, hits in hits_by_term.items():
             kept = [hit for hit in hits if hit.get("document_id") in kept_documents]
@@ -608,13 +685,40 @@ class _Run:
             total,
             terms=terms,
             per_term={term: len(hits) for term, hits in hits_by_term.items()},
+            document_frequency=df,
+            required_terms=sorted(required),
             limit=limit,
             coverage_threshold=threshold,
             kept_documents=len(kept_documents),
             dropped_documents=len(coverage) - len(kept_documents),
+            dropped_by_rare_gate=len(by_count - kept_documents),
             fallback_from=STRATEGY_VECTOR,
             mode="per_term",
         )
+
+    async def _term_document_frequency(self, terms: list[str], observed: dict[str, int]) -> dict[str, int]:
+        """term별 df - `_term_document_frequency_sql`(정확, 추가 질의 1회) 결과와 실측
+        히트에서 센 df의 `max`. `max`인 이유는 두 값이 재는 게 다르기 때문이다: SQL은
+        substring 티어만 세므로 fuzzy 티어로만 걸린 term이 0으로 나오고, 실측은 `LIMIT`에
+        잘려 흔한 term을 과소평가한다. 각자 **과소평가만** 하므로 큰 쪽이 진실에 가깝고,
+        무엇보다 "히트가 있는데 df=0이라 전부 기각" 같은 모순이 생기지 않는다.
+
+        질의가 실패하면(권한/스키마) 실측 df로 조용히 물러난다 - 변별력 판정의 품질은
+        떨어지지만 검색 자체가 죽는 것보다 낫다."""
+        if settings.term_rare_df_max < 0:
+            return dict(observed)
+        df = dict(observed)
+        try:
+            sql = _term_document_frequency_sql(
+                terms, project_id=self.project_id, since=self.since, until=self.until
+            )
+            rows, _columns = await self.store.execute_readonly_query(sql, len(terms))
+            for index, count in rows:
+                term = terms[int(index)]
+                df[term] = max(int(count), observed.get(term, 0))
+        except Exception as exc:  # noqa: BLE001 - df는 보조 신호다, 실패해도 검색은 계속
+            logger.warning("term document frequency query failed, using observed df: %s", exc)
+        return df
 
     async def comparison(self) -> None:
         collected: list[dict[str, Any]] = []

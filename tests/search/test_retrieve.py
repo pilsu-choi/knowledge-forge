@@ -61,8 +61,11 @@ class _FakeStore:
     """Answers each store call from canned tables. `title_hits`/`chunk_hits`
     map a query string to its hit list (`None` key = default for any query).
     `execute_readonly_query` dispatches on the SQL shape the executor
-    writes: COUNT(*) -> `count_value`, the version-family lookup ->
-    `version_rows`, anything else -> `filter_rows`."""
+    writes: COUNT(*) -> `count_value`, the term-df UNION -> `term_df`,
+    the version-family lookup -> `version_rows`, anything else ->
+    `filter_rows`. `term_df` maps a term to its corpus document frequency
+    (`_required_terms`의 입력); 비워 두면 df 질의가 빈손으로 돌아와 실행기가
+    실측 df(그 term의 히트에 등장한 문서 수)로 물러난다."""
 
     def __init__(
         self,
@@ -72,6 +75,7 @@ class _FakeStore:
         filter_rows: list[tuple] | None = None,
         version_rows: list[tuple] | None = None,
         count_value: int = 0,
+        term_df: dict[str, int] | None = None,
         documents: dict[str, tuple[Document, Source, list[Chunk]]] | None = None,
     ) -> None:
         self.title_hits = title_hits or {}
@@ -79,6 +83,7 @@ class _FakeStore:
         self.filter_rows = filter_rows or []
         self.version_rows = version_rows or []
         self.count_value = count_value
+        self.term_df = term_df or {}
         self.documents = documents or {}
         self.title_calls: list[tuple[str, int]] = []
         self.chunk_calls: list[tuple[str, int]] = []
@@ -101,6 +106,15 @@ class _FakeStore:
         self.sql_calls.append((sql, limit))
         if sql.startswith("SELECT COUNT(*)"):
             return [(self.count_value,)], ["n"]
+        if "AS term_index" in sql:
+            # `_term_document_frequency_sql`은 term마다 `ILIKE '%<term>%'` 브랜치를 UNION
+            # ALL 한다 - 그 리터럴에서 term을 되짚어 `term_df`를 돌려준다.
+            rows = []
+            for index, line in enumerate(part for part in sql.splitlines() if "ILIKE" in part):
+                term = line.split("ILIKE '%", 1)[1].rsplit("%'", 1)[0]
+                if term in self.term_df:
+                    rows.append((index, self.term_df[term]))
+            return rows, ["term_index", "df"]
         if "version_family" in sql:
             return list(self.version_rows), ["document_id", "project_id", "family", "label", "number", "is_final"]
         return list(self.filter_rows[:limit]), ["document_id", "title", "source_type", "uri", "modified_at", "content_at", "project_id"]
@@ -326,14 +340,19 @@ async def test_term_fallback_is_skipped_when_the_whole_query_already_matched(mon
 
 async def test_term_fallback_splits_the_query_and_ranks_by_term_coverage(monkeypatch):
     """자연어 질의는 전체 문자열로는 pg_trgm에 안 걸린다(히트 0) - term별로 나눠 찾고, 여러
-    term이 겹친 문서가 RRF로 위에 온다. v0 baseline의 conversation_thread/sequence 실패 형태."""
+    term이 겹친 문서가 RRF로 위에 온다. v0 baseline의 conversation_thread/sequence 실패 형태.
+
+    `term_df`가 붙은 이유: 개수 임계값 위에 변별력 게이트(`_required_terms`)가 하나 더 걸려서,
+    "가장 희귀한 term"이 어느 것인지가 판정에 들어온다. 여기서는 가장 희귀한 "명함"(df=2)을
+    thread가 담고 있어 통과한다."""
     store = _FakeStore(
         chunk_hits={
             "명함": [_chunk_hit("thread", "c1", 0.5)],
             "제작": [_chunk_hit("thread", "c1", 0.5), _chunk_hit("other", "c9", 0.5)],
             "논의": [_chunk_hit("thread", "c1", 0.5)],
             "농협": [_chunk_hit("elsewhere", "c7", 0.5)],
-        }
+        },
+        term_df={"농협": 40, "명함": 2, "제작": 9, "논의": 30},
     )
     _patch_vector(monkeypatch, [])
 
@@ -344,13 +363,131 @@ async def test_term_fallback_splits_the_query_and_ranks_by_term_coverage(monkeyp
     assert step.detail["per_term"] == {"농협": 1, "명함": 1, "제작": 2, "논의": 1}
     # thread만 term 3개(term 4개 × 2/3 → threshold 3) - 하나만 스친 elsewhere/other는 떨어진다.
     assert step.detail["coverage_threshold"] == 3
+    assert step.detail["required_terms"] == ["명함"]
     assert (step.detail["kept_documents"], step.detail["dropped_documents"]) == (1, 2)
     assert result.document_ids == ["thread"]
 
 
+async def test_term_fallback_drops_a_document_that_only_shares_common_terms(monkeypatch):
+    """이번 수정의 요점 - 개수 임계값은 넘겼지만 **흔한 term끼리만** 겹친 문서는 떨어진다.
+
+    v0-negative-001("Kubernetes 클러스터 구성 가이드")의 실제 모양이다: 흔한 "구성/가이드"에
+    희귀한 "클러스터"가 한 문서에서 겹쳐 threshold(=3)를 넘겼지만, 질의에서 df가 가장 낮은
+    term은 **다른** 문서에 있는 "Kubernetes"였다. 개수만 세면 코퍼스가 커질수록 이런 우연이
+    늘어나 "관련 문서 없음"이 정답인 질의가 계속 무너진다(263 → 326 문서만으로 none_correct
+    1.000 → 0.667). df가 최소인 term이 여럿이면 전부 요구하는 것도 계약이다 - 하나만
+    요구하면 여기서 noise가 살아남는다."""
+    store = _FakeStore(
+        chunk_hits={
+            "Kubernetes": [_chunk_hit("k8s-doc", "c1", 0.9)],
+            "클러스터": [_chunk_hit("noise", "c2", 1.0)],
+            "구성": [_chunk_hit("noise", "c3", 1.0)],
+            "가이드": [_chunk_hit("noise", "c4", 1.0)],
+        },
+        term_df={"Kubernetes": 1, "클러스터": 1, "구성": 26, "가이드": 25},
+    )
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("Kubernetes 클러스터 구성 가이드", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.detail.get("mode") == "per_term")
+    assert step.detail["coverage_threshold"] == 3
+    assert step.detail["required_terms"] == ["Kubernetes", "클러스터"]
+    # noise는 term 3개로 개수 임계값은 넘지만 "Kubernetes"가 없어 게이트에서 떨어진다.
+    assert step.detail["dropped_by_rare_gate"] == 1
+    assert result.document_ids == []
+
+
+async def test_term_fallback_drops_everything_when_a_term_is_absent_from_the_corpus(monkeypatch):
+    """df=0인 term("연말정산")은 어떤 문서도 담을 수 없으므로 전부 기각 - v0-null-001의 모양.
+    코퍼스에 없는 개념을 물었으면 "없다"가 정답이라는 판단이고, 오타/동의어로 df가 0이 되는
+    재현율 위험은 `_term_document_frequency`가 실측 df와 max를 취해 완화한다(아래 테스트)."""
+    store = _FakeStore(
+        chunk_hits={
+            "서류": [_chunk_hit("oa-manual", "c1", 1.0)],
+            "제출": [_chunk_hit("oa-manual", "c2", 1.0)],
+            "안내": [_chunk_hit("oa-manual", "c3", 1.0)],
+        },
+        term_df={"연말정산": 0, "서류": 7, "제출": 6, "안내": 13},
+    )
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("연말정산 서류 제출 안내", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.detail.get("mode") == "per_term")
+    assert step.detail["required_terms"] == ["연말정산"]
+    assert step.detail["dropped_by_rare_gate"] == 1
+    assert result.document_ids == []
+
+
+async def test_term_document_frequency_takes_the_max_of_sql_and_observed(monkeypatch):
+    """df는 SQL(substring 티어만)과 실측 히트 수의 max다. 둘 다 **과소평가만** 하기 때문이다:
+    SQL은 fuzzy 티어로만 걸린 term을 0으로 보고, 실측은 `_TERM_FETCH_LIMIT`에 잘려 흔한 term을
+    낮게 본다. max가 아니면 "히트는 있는데 df=0이라 전부 기각"이라는 모순이 생긴다 - 오타/동의어
+    질의가 통째로 빈손이 되는 경로다."""
+    store = _FakeStore(
+        chunk_hits={
+            "Kubernets": [_chunk_hit("k8s-doc", "c1", 0.6)],  # 오타 - substring df=0, fuzzy로만 히트
+            "가이드": [_chunk_hit("k8s-doc", "c2", 1.0), _chunk_hit("other", "c3", 1.0)],
+        },
+        term_df={"Kubernets": 0, "가이드": 25},
+    )
+    _patch_vector(monkeypatch, [])
+    monkeypatch.setattr(retrieve_module.settings, "term_coverage_min", 1)
+    monkeypatch.setattr(retrieve_module.settings, "term_coverage_ratio", 0.0)
+
+    result = await retrieve("Kubernets 가이드", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.detail.get("mode") == "per_term")
+    # SQL이 0이라고 해도 실측 1이 이긴다 - veto가 아니라 "그 문서를 요구"로 바뀐다.
+    assert step.detail["document_frequency"]["Kubernets"] == 1
+    assert step.detail["required_terms"] == ["Kubernets"]
+    assert result.document_ids == ["k8s-doc"]
+
+
+async def test_rare_term_gate_can_be_turned_off(monkeypatch):
+    """음수면 게이트가 꺼져 개수 전용(옛 동작)으로 돌아간다 - A/B와 비상 스위치."""
+    store = _FakeStore(
+        chunk_hits={
+            "Kubernetes": [_chunk_hit("k8s-doc", "c1", 0.9)],
+            "클러스터": [_chunk_hit("noise", "c2", 1.0)],
+            "구성": [_chunk_hit("noise", "c3", 1.0)],
+            "가이드": [_chunk_hit("noise", "c4", 1.0)],
+        },
+        term_df={"Kubernetes": 1, "클러스터": 1, "구성": 26, "가이드": 25},
+    )
+    _patch_vector(monkeypatch, [])
+    monkeypatch.setattr(retrieve_module.settings, "term_rare_df_max", -1)
+
+    result = await retrieve("Kubernetes 클러스터 구성 가이드", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.detail.get("mode") == "per_term")
+    assert step.detail["required_terms"] == []
+    assert result.document_ids == ["noise"]
+    # 게이트가 꺼지면 df 질의도 돌지 않는다(추가 왕복 0회).
+    assert not [sql for sql, _limit in store.sql_calls if "AS term_index" in sql]
+
+
+def test_required_terms_uses_the_minimum_df_and_the_absolute_floor(monkeypatch):
+    """요구 집합 = df가 `max(최소 df, term_rare_df_max)` 이하인 term 전부. 하한이 0이면 순수하게
+    최소 df만 따라가므로 코퍼스가 커져도 "가장 희귀한 term"이라는 의미가 유지된다."""
+    terms = ["a", "b", "c"]
+    df = {"a": 2, "b": 2, "c": 30}
+    monkeypatch.setattr(retrieve_module.settings, "term_rare_df_max", 0)
+    assert retrieve_module._required_terms(terms, df) == {"a", "b"}
+    monkeypatch.setattr(retrieve_module.settings, "term_rare_df_max", 30)
+    assert retrieve_module._required_terms(terms, df) == {"a", "b", "c"}
+    monkeypatch.setattr(retrieve_module.settings, "term_rare_df_max", -1)
+    assert retrieve_module._required_terms(terms, df) == set()
+
+
 async def test_term_coverage_threshold_keeps_recall_when_the_setting_is_off(monkeypatch):
-    """`term_coverage_ratio`/`term_coverage_min`을 0으로 내리면 필터가 꺼지고 term 하나만
-    겹친 문서도 후보로 남는다 - 재현율/정밀도 트레이드오프를 A/B로 재기 위한 노브."""
+    """`term_coverage_ratio`/`term_coverage_min`을 0으로 내리면 개수 필터가 꺼지고 term 하나만
+    겹친 문서도 후보로 남는다 - 재현율/정밀도 트레이드오프를 A/B로 재기 위한 노브.
+
+    `term_rare_df_max`도 함께 끈다: 변별력 게이트가 개수 필터와 **AND**로 걸리는 독립 조건이라
+    (`_required_terms`), 개수 쪽만 0으로 내려도 "가장 희귀한 term이 없는 문서"는 여전히 떨어진다.
+    "필터를 전부 끈 상태"를 재는 테스트라 계약이 바뀐 만큼 두 노브를 같이 내리도록 고쳤다."""
     store = _FakeStore(
         chunk_hits={
             "명함": [_chunk_hit("thread", "c1", 0.5)],
@@ -362,6 +499,7 @@ async def test_term_coverage_threshold_keeps_recall_when_the_setting_is_off(monk
     _patch_vector(monkeypatch, [])
     monkeypatch.setattr(retrieve_module.settings, "term_coverage_ratio", 0.0)
     monkeypatch.setattr(retrieve_module.settings, "term_coverage_min", 0)
+    monkeypatch.setattr(retrieve_module.settings, "term_rare_df_max", -1)
 
     result = await retrieve("농협 명함 제작 논의", store=store, now=_NOW)
 
