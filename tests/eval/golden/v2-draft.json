@@ -1,0 +1,1016 @@
+{
+  "golden_version": "v2-draft",
+  "created_at": "2026-09-04T12:10:16.997747Z",
+  "project_id": null,
+  "index_snapshot": {
+    "documents": 263,
+    "chunks": 936,
+    "knowledge_objects": 5107,
+    "sources_by_type": {
+      "gmail": 59,
+      "google_drive": 246,
+      "slack": 197
+    }
+  },
+  "queries": [
+    {
+      "id": "v2-draft-parent_child-001",
+      "query": "Dashboard 화면 수정 후 빌드 확인을 위해 실행해야 하는 명령어는?",
+      "primary_type": "parent_child",
+      "types": [
+        "parent_child",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "2056402cb121b138c39886ae64aa4cf1"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 2056402cb121b138c39886ae64aa4cf1 (google_drive). 정답: cd apps/dashboard && bun run tsc && bun run build / 'Dashboard 화면 수정' 섹션 4번 항목 자동 검증 rank=2.",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-parent_child-002",
+      "query": "서버 장애 1차 대응 시 SSH 접속 후 확인해야 할 명령어 순서는?",
+      "primary_type": "parent_child",
+      "types": [
+        "parent_child",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "2056402cb121b138c39886ae64aa4cf1"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 2056402cb121b138c39886ae64aa4cf1 (google_drive). 정답: ssh projectintel-server 후 cd /home/agilesoda/project_intel, git status --short, docker compose --env-file .env -f infra/docker/docker-compose.yml ps 순으로 확인한다 / '서버 장애 1차 대응' 섹션 1~2번 항목 자동 검증 rank=2.",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-factoid-001",
+      "query": "ProjectIntel Codex 작업 시 기준 브랜치는 무엇인가요?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "2a7d07c11b19924444643d21a9467d5b"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 2a7d07c11b19924444643d21a9467d5b (google_drive). 정답: deploy-main / 코드/문서 수정, 커밋, 푸시, 배포 모두 deploy-main에서 진행 자동 검증 rank=1.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-factoid-002",
+      "query": "ProjectIntel Codex 프로젝트의 커밋 메시지 작성 규칙은 어떻게 되나요?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "exact_match"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "2a7d07c11b19924444643d21a9467d5b"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 2a7d07c11b19924444643d21a9467d5b (google_drive). 정답: 한국어 Conventional Commits 형식을 사용하며, 제목은 type(scope): 한국어 요약 또는 type: 한국어 요약 형식이고 type은 feat, fix, docs, chore, ci, test, refactor, style, perf, build, revert 중 하나이며 설명부에 한글이 포함되어야 함(merge/revert/fixup/squash 커밋은 예외) 자동 검증 rank=1.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-factoid-003",
+      "query": "사업관리 원장이나 프로젝트 투입관리 통합 작업을 시작할 때 먼저 읽어야 하는 문서는 무엇인가",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "exact_match"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "fbe632a07c9a68659d97085ea4873a18"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 fbe632a07c9a68659d97085ea4873a18 (google_drive). 정답: .codex/active-context/project-ledger-reconciliation.md / 코드·원본 탐색 전에 먼저 읽어야 하는 활성 컨텍스트 파일 자동 검증 rank=1.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-parent_child-003",
+      "query": "ProjectIntel Agent Loop에서 복잡한 구현이나 배포/운영 변경이 따르는 작업 절차 순서는 어떻게 되는가",
+      "primary_type": "parent_child",
+      "types": [
+        "parent_child",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "fbe632a07c9a68659d97085ea4873a18"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 fbe632a07c9a68659d97085ea4873a18 (google_drive). 정답: 기획 → 설계 → 개발 → 검증 → 리뷰/수정 → 운영기록 / ProjectIntel Agent Loop 섹션에 명시된 루프 단계 자동 검증 rank=2.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-factoid-004",
+      "query": "dashboard 502 에러 발생 시 처음 확인해야 할 3가지는?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "exact_match"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "c74586d8fd1e08b21dd95ba64f767495"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 c74586d8fd1e08b21dd95ba64f767495 (google_drive). 정답: docker compose --env-file .env -f infra/docker/docker-compose.yml ps, docker logs caddy --tail=80, curl -fsSI http://localhost:3000 / 빠른 장애 지도 표 기준 자동 검증 rank=2.",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-factoid-005",
+      "query": "Slack 이벤트가 수집되지 않을 때 참고해야 할 문서는 무엇인가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "navigational"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "c74586d8fd1e08b21dd95ba64f767495"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 c74586d8fd1e08b21dd95ba64f767495 (google_drive). 정답: project-channel-management-runbook.md / 빠른 장애 지도 표에서 Slack 이벤트 미수집 항목 참고 [review:hard] 자동 검증: 정답 문서가 상위 10에 없음(전략=metadata_filter,vector).",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-factoid-006",
+      "query": "LOG.md에 기록하면 안 되는 민감 정보는 어떤 것들인가",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "exact_match"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "9593136ba4b899b3e45b60799d8fed40"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 9593136ba4b899b3e45b60799d8fed40 (google_drive). 정답: 민감 데이터, 고객사 원문, Slack token, API key, .env 값, 원본 로그 전문 자동 검증 rank=1.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-entity_centric-001",
+      "query": "LOG.md는 어떤 용도의 문서인지 설명해줘",
+      "primary_type": "entity_centric",
+      "types": [
+        "entity_centric",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "9593136ba4b899b3e45b60799d8fed40"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 9593136ba4b899b3e45b60799d8fed40 (google_drive). 정답: LOG.md는 사람이 읽는 단일 운영 로그로, 에이전트 루프의 긴 실행 흔적이나 원본 터미널 출력, JSONL, tool trace, 내부 추론 로그는 남기지 않고 날짜별로 목표, 변경 요약, 검증 결과, 실패/재시도 요약, 남은 리스크, 다음 액션만 짧게 기록한다. 자동 검증 rank=2.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-factoid-007",
+      "query": "ProjectIntel에서 Slack Socket Mode와 프로젝트 채널 프로비저닝을 담당하는 서비스 경로는 어디인가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "23cd2609c0bb7cea045718fc0887305b"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 23cd2609c0bb7cea045718fc0887305b (google_drive). 정답: services/slack-agent/ / 표에서 역할이 'Slack Socket Mode, project channel/provisioning, Slack Q&A'인 경로 [review:hard] 자동 검증: 정답 문서가 상위 10에 없음(전략=metadata_filter,vector).",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-parent_child-004",
+      "query": "ProjectIntel 아키텍처에서 second-brain/ 디렉토리의 역할은 무엇인가?",
+      "primary_type": "parent_child",
+      "types": [
+        "parent_child",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "23cd2609c0bb7cea045718fc0887305b"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 23cd2609c0bb7cea045718fc0887305b (google_drive). 정답: Go collector/search API, chunks, embeddings, source collectors 역할을 하며 cmd/api, cmd/collector, internal/api, internal/collector, internal/search, internal/store를 먼저 봐야 한다. / 서비스 구조 표의 second-brain/ 행 내용 자동 검증 rank=1.",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-parent_child-005",
+      "query": "ProjectIntel 신규 담당자가 서버 권한이 없을 때 첫날에 해야 할 행동은?",
+      "primary_type": "parent_child",
+      "types": [
+        "parent_child",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "4beb3a075d6e48ab2fa825757236e693"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 4beb3a075d6e48ab2fa825757236e693 (google_drive). 정답: 로컬 repo에서 git branch --show-current, git status --short 확인 후 Slack workflow thread에 서버 권한/운영 확인 요청을 남기고, local-only 검증 가능한 범위만 작업한다. / 1. 첫날 30분 루트 표의 '서버 권한 없음' 행 기준 자동 검증 rank=1.",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-factoid-008",
+      "query": "ProjectIntel 신규 담당자가 첫날에 하지 말아야 할 것은 무엇인가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "4beb3a075d6e48ab2fa825757236e693"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 4beb3a075d6e48ab2fa825757236e693 (google_drive). 정답: .env 값 출력/공유 금지, 운영 서버에서 직접 docker compose up 실행 금지, 승인 없이 DB write·Drive/Gmail/Slack write·배포·commit/push/PR 금지, 개인 Google Drive/Gmail connector 결과를 ProjectIntel 운영 source로 판정하지 않기 / 첫날에 하지 말아야 할 것 목록 자동 검증 rank=2.",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-factoid-009",
+      "query": "services/risk-agent/ 디렉토리는 어떤 역할을 하나요?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "exact_match"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "5aed8aa1ecaa6fa78c583a489632ad09"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 5aed8aa1ecaa6fa78c583a489632ad09 (google_drive). 정답: risk/project API와 RAG/second-brain 연동을 담당 / Project Structure 섹션의 주요 실행 경계 항목 중 하나 자동 검증 rank=2.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-parent_child-006",
+      "query": "Project Structure 문서에서 정의한 주요 실행 경계 디렉토리 목록은 무엇인가요?",
+      "primary_type": "parent_child",
+      "types": [
+        "parent_child",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "5aed8aa1ecaa6fa78c583a489632ad09"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 5aed8aa1ecaa6fa78c583a489632ad09 (google_drive). 정답: apps/dashboard/(Next.js dashboard), services/risk-agent/(risk/project API와 RAG/second-brain 연동), services/slack-agent/(Slack 채널 에이전트), second-brain/(second-brain/RAG 관련 구성), infra/(Docker, compose, infra wiring) / Project Structure 섹션 전체 목록 자동 검증 rank=1.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-specific_document_qa-001",
+      "query": "project-intel Codex 기준 가이드 파일의 Scope는 무엇인가요?",
+      "primary_type": "specific_document_qa",
+      "types": [
+        "specific_document_qa",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "c8d4b4183e33300095ea76324953ee29"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 c8d4b4183e33300095ea76324953ee29 (google_drive). 정답: 프로젝트/업무-소스-통합-리포트/project-intel/** 작업에 대한 Codex 기준 가이드 자동 검증 rank=1.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-factoid-010",
+      "query": "바이브 코딩에서 사람과 Codex의 역할 분담은 어떻게 되나요?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "7f30ecf41ccd666f24c00b463f875774"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "ec288844dd6c00d3cd0b121002429670"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 ec288844dd6c00d3cd0b121002429670 (google_drive). 정답: 사람은 방향·경계·승인을 잡고, Codex는 탐색·수정·검증을 빠르게 반복한다. / 바이브 코딩 개념 설명 청크 기반 자동 검증 rank=2.",
+      "source_hash": "044e1ae91ea10984597d7def2a12376a9d69c6ba8b733e0281a551a196d8c88f",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-factoid-011",
+      "query": "바이브 코딩은 AI에게 크게 맡기는 방식인가요?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "7f30ecf41ccd666f24c00b463f875774"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "ec288844dd6c00d3cd0b121002429670"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 ec288844dd6c00d3cd0b121002429670 (google_drive). 정답: 아니다. 작은 작업 계약을 빠르게 돌리는 방식이다. / 청크의 핵심 정의를 묻는 질문 자동 검증 rank=1.",
+      "source_hash": "044e1ae91ea10984597d7def2a12376a9d69c6ba8b733e0281a551a196d8c88f",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-parent_child-007",
+      "query": "검증(Verification) 단계는 어떤 순서로 실행해야 하나요?",
+      "primary_type": "parent_child",
+      "types": [
+        "parent_child",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "d473f98e6bc128862e81ed29a205a36f"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 d473f98e6bc128862e81ed29a205a36f (google_drive). 정답: 가장 가까운 검증부터 실행한다. / Verification 섹션의 실행 순서 원칙 자동 검증 rank=3.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-factoid-012",
+      "query": "ProjectIntel 개발 인수인계 패키지의 기준 repo 경로와 branch는 무엇인가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "dc47d7f7302682c52da6ac6aa5aa3b4c"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "182660e8c6b9e82549b79da21124bd3f"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 182660e8c6b9e82549b79da21124bd3f (google_drive). 정답: 기준 repo는 /home/agilesoda/project_intel, 기준 branch는 deploy-main 자동 검증 rank=1.",
+      "source_hash": "5d92ef1c07f3d7f26ab3501ac1626de7f20ca03fd8b54ffeef23688229b26ecd",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-factoid-013",
+      "query": "ProjectIntel 개발 인수인계 패키지에서 제외되는 파일이나 자료는 어떤 것들인가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "specific_document_qa"
+      ],
+      "expected": {
+        "document_ids": [
+          "dc47d7f7302682c52da6ac6aa5aa3b4c"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "182660e8c6b9e82549b79da21124bd3f"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 182660e8c6b9e82549b79da21124bd3f (google_drive). 정답: .env, .env.jobs, .env.readiness 실제 운영본, .secrets/*, OAuth token, service account JSON, Slack/Gmail/Drive 원문, 고객사 원문, 견적/계약/금액/개인정보 자료 자동 검증 rank=2.",
+      "source_hash": "5d92ef1c07f3d7f26ab3501ac1626de7f20ca03fd8b54ffeef23688229b26ecd",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-factoid-014",
+      "query": "ProjectIntel에서 scope=project 검색을 실행할 때 project_id가 없으면 어떻게 되나요?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "d02eaee476e58f84e07fa3908ff61ee3"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 d02eaee476e58f84e07fa3908ff61ee3 (google_drive). 정답: project_id 없이는 검색이 실패해야 한다 / canonical id 규칙 표 중 project search 항목 자동 검증 rank=1.",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-entity_centric-002",
+      "query": "ProjectIntel의 Gmail 데이터 수집은 어떤 계정과 기준으로 이루어지나요?",
+      "primary_type": "entity_centric",
+      "types": [
+        "entity_centric",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "d02eaee476e58f84e07fa3908ff61ee3"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 d02eaee476e58f84e07fa3908ff61ee3 (google_drive). 정답: projectintel@agilesoda.ai 계정을 사용하며 label/query allowlist 기준으로 read-only 수집한다 / 안전한 source/RAG 개발 기준 표 중 Gmail 항목 [review:hard] 자동 검증: 정답 문서가 상위 10에 없음(전략=metadata_filter,vector).",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-factoid-015",
+      "query": "ProjectIntel Codex agent 설정에서 active TOML 파일과 inactive 파일 개수는 각각 몇 개인가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "e67879714f82001bd0d094c5da94de5e"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 e67879714f82001bd0d094c5da94de5e (google_drive). 정답: active 38개(Claude mirror 30개 + ProjectIntel Codex-only specialist 8개), inactive 20개, 총 58개 / .codex/agents 관련 설명 자동 검증 rank=2.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-specific_document_qa-002",
+      "query": ".claude/hooks/hooks.json 설정은 Codex 환경에서 어떻게 처리되는가?",
+      "primary_type": "specific_document_qa",
+      "types": [
+        "specific_document_qa",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "e67879714f82001bd0d094c5da94de5e"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 e67879714f82001bd0d094c5da94de5e (google_drive). 정답: Codex에서 자동 실행하지 않고, 대신 파괴적 명령 차단, dev server 로그 접근성 확보, push 전 diff/status 확인, 무분별한 문서 생성 억제, schema/reference 검증 등 안전 의도만 수동 규칙으로 반영한다 / .claude/ Reflection Map 표 내용 자동 검증 rank=1.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-exact_match-001",
+      "query": "ProjectIntel 개발 인수인계 패키지가 업로드된 Google Drive 폴더 URL은 무엇인가?",
+      "primary_type": "exact_match",
+      "types": [
+        "exact_match",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "eb41c306a7359b09d2c96684ecb4347d"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "2a51ae4f0902adbe505bbb9cdb8d1a91"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 2a51ae4f0902adbe505bbb9cdb8d1a91 (google_drive). 정답: https://drive.google.com/drive/folders/1wEpG6WtR_wcXQi7mCnRlMfOXe3c7rK_p / 2026-07-20 업로드 기록에 명시된 Drive folder URL [review:hard] 자동 검증: 정답 문서가 상위 10에 없음(전략=metadata_filter,vector).",
+      "source_hash": "dfcad395da2dc605c028402a56a5bce7d9466a1f2453fcdb57f2127080bf5227",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-factoid-016",
+      "query": "risk-agent API 작업을 시작할 때 대표 검증 명령은 무엇인가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "eb41c306a7359b09d2c96684ecb4347d"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "2a51ae4f0902adbe505bbb9cdb8d1a91"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 2a51ae4f0902adbe505bbb9cdb8d1a91 (google_drive). 정답: cd services/risk-agent && uv run pytest / 작업 유형별 파일/검증 표의 risk-agent API 행에 명시됨 [review:hard] 자동 검증: 정답 문서가 상위 10에 없음(전략=document_lookup,lexical,vector).",
+      "source_hash": "dfcad395da2dc605c028402a56a5bce7d9466a1f2453fcdb57f2127080bf5227",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-factoid-017",
+      "query": "apps/dashboard의 tokens.json과 globals.css 값이 다를 때 어느 것을 기준으로 삼아야 하나요?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "7f27758cc334dc9a6fbc1282d581e32e"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 7f27758cc334dc9a6fbc1282d581e32e (google_drive). 정답: globals.css가 최신 SoT(Source of Truth)이므로 tokens.json이 아니라 globals.css가 우선한다. / ui-craft Alignment 섹션 내용 자동 검증 rank=1.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-exact_match-002",
+      "query": "대시보드 Playwright e2e 테스트에서 로컬 포트가 겹칠 때 사용하는 환경변수는 무엇인가?",
+      "primary_type": "exact_match",
+      "types": [
+        "exact_match",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "7f27758cc334dc9a6fbc1282d581e32e"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 7f27758cc334dc9a6fbc1282d581e32e (google_drive). 정답: DASHBOARD_E2E_PORT=<port> npm run e2e / Verification 섹션에 명시된 포트 충돌 해결 방법 자동 검증 rank=1.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-factoid-018",
+      "query": "MR/PR 제목과 본문은 어떤 언어로 작성해야 하나요?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "4cb4ba815a745a263540654c47a86a95"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 4cb4ba815a745a263540654c47a86a95 (google_drive). 정답: 한국어로 작성한다. / MR / PR Upload Rule 문서 기반 자동 검증 rank=1.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-parent_child-008",
+      "query": "시안/화면 확인 목적의 MR에서 Overview 본문은 무엇을 기준으로 작성해야 하나요?",
+      "primary_type": "parent_child",
+      "types": [
+        "parent_child",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "4cb4ba815a745a263540654c47a86a95"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 4cb4ba815a745a263540654c47a86a95 (google_drive). 정답: PRD 기준으로 작성하고, 코드 구현 설명은 최소화한다. / MR / PR Upload Rule 문서 내 시안 MR 관련 규칙 자동 검증 rank=1.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-factoid-019",
+      "query": "PRD/설계/운영 기준 변경 작업 전에 확인해야 할 문서 순서는 무엇인가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "parent_child"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "fbe73506d5b30c0db2571695023e546c"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 fbe73506d5b30c0db2571695023e546c (google_drive). 정답: 1) docs/README.md, 2) docs/00-index/document-system-and-folder-structure.md, 3) 작업 성격별 기준 문서 순으로 확인한다. / Documentation System Gate 섹션의 확인 순서를 묻는 질문 자동 검증 rank=1.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-exact_match-003",
+      "query": "기존 문서를 대체할 때 삭제하는 대신 어떤 표시를 우선해야 하는가?",
+      "primary_type": "exact_match",
+      "types": [
+        "exact_match",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "fbe73506d5b30c0db2571695023e546c"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 fbe73506d5b30c0db2571695023e546c (google_drive). 정답: status: superseded와 superseded_by 표시를 우선한다. / 문서 대체 시 처리 방식에 대한 질문 자동 검증 rank=1.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-factoid-020",
+      "query": "docker compose 실행 시 --env-file .env를 빼먹으면 어떤 문제가 발생하나요?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "488468fb6fc72fb7747ddd472031db80"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 488468fb6fc72fb7747ddd472031db80 (google_drive). 정답: DB 비밀번호와 포트 값이 기본값/누락값으로 돌아가 risk-agent stub mode, second-brain-api 재시작 루프, dashboard/RAG 빈 화면이 재발할 수 있음 / Deploy/Env Rules 문서 내용 자동 검증 rank=2.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-exact_match-004",
+      "query": "projectintel 서버 배포의 기준 진입점 명령어는 무엇인가요?",
+      "primary_type": "exact_match",
+      "types": [
+        "exact_match",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "488468fb6fc72fb7747ddd472031db80"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 488468fb6fc72fb7747ddd472031db80 (google_drive). 정답: make deploy (내부적으로 scripts/deploy-server.sh가 docker compose --env-file <runtime temp file> 실행) / Deploy/Env Rules 섹션 자동 검증 rank=3.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-exact_match-005",
+      "query": "ProjectIntel 운영 서버 접속용 SSH alias 이름이 뭐야?",
+      "primary_type": "exact_match",
+      "types": [
+        "exact_match",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "56723090a5cb90df7de7e0ed8cb5e332"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 56723090a5cb90df7de7e0ed8cb5e332 (google_drive). 정답: projectintel-server / SSH alias | projectintel-server 자동 검증 rank=2.",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-temporal-001",
+      "query": "ProjectIntel 개발 인수인계 Drive 패키지는 언제 업로드됐어?",
+      "primary_type": "temporal",
+      "types": [
+        "temporal",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "56723090a5cb90df7de7e0ed8cb5e332"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 56723090a5cb90df7de7e0ed8cb5e332 (google_drive). 정답: 2026-07-20 / 업로드 일자 | 2026-07-20 자동 검증 rank=4.",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-specific_document_qa-003",
+      "query": "ProjectIntel handover 문서는 어떤 목적으로 작성되었나?",
+      "primary_type": "specific_document_qa",
+      "types": [
+        "specific_document_qa",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "625263f8e604972420773e332b906a89"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 625263f8e604972420773e332b906a89 (google_drive). 정답: ProjectIntel 신규 담당자가 SSH 운영 서버, agent 구조, 개발 흐름을 한 번에 파악하고 첫 작업을 안전하게 시작하기 위한 통합 handover 문서 / 문서 맥락 섹션의 목적 설명 자동 검증 rank=1.",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null
+    },
+    {
+      "id": "v2-draft-factoid-021",
+      "query": "ProjectIntel handover 문서에는 secret 원문이 포함되어 있는가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "specific_document_qa"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "625263f8e604972420773e332b906a89"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 625263f8e604972420773e332b906a89 (google_drive). 정답: 포함되지 않는다. .env, OAuth token, service account JSON, DB password, Slack/Gmail/Drive 원문, 고객사 원문은 문서·로그·채팅에 붙이지 않는다. / 문서 맥락 마지막 문단 자동 검증 rank=2.",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null
+    }
+  ]
+}
