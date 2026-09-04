@@ -286,15 +286,20 @@ KnowledgeObject가 아니라 여전히 `None` - 매칭 대상이 될 수 없으�
 `wiki/search-architecture.md`의 "⑥ Temporal Search" 구현 - "어제"/"지난주"/"이번 분기"/
 "2025년 Q3"/"최근 3일" 같은 자연어 시간 표현을 명시적 `[since, until)` UTC 범위로 바꿔
 `file_search`/`vector_search`의 결과를 좁힌다. `search/router.py`와 같은 이유로 정규식 +
-달력 산술이지 LLM 호출이 아니다(`now`가 고정되면 완전히 기계적인 계산). 항상 UTC 기준 -
-`KnowledgeObject.extracted_at`이 항상 UTC로 저장되므로(`extraction/outcome.py`) 데이터와
-일관성을 맞춘 선택이고, 월요일을 주의 시작으로 본다.
+달력 산술이지 LLM 호출이 아니다(`now`가 고정되면 완전히 기계적인 계산). 항상 UTC 기준(이
+시스템의 모든 타임스탬프가 UTC라 데이터와 일관성을 맞춘 선택)이고, 월요일을 주의 시작으로 본다.
 
-필터 적용 지점: `file_search`는 frontmatter의 `generated.at`(`okf/writer.py`가 모든
-resources/objects 파일에 이미 쓰고 있던 필드 - 새 필드 추가 없이 재사용)을,
-`vector_search`(→ `postgres_store.py::search_knowledge_objects_by_embedding`)는
-`knowledge_objects.extracted_at`을 기준으로 필터링한다 - 둘 다 "언제 처리했는지"이지
-"실제로 언제 있었던 일인지"의 근사치라는 한계는 `search-architecture.md`에 명시.
+**필터 적용 지점(`KnowledgeObject.extracted_at` 기준이 아니다)**: 처음엔 `extracted_at`
+(파이프라인이 그 KO를 처리한 시각)으로 구현했었는데, 실측 중 배치 추출된 실데이터로 블라인드
+텍스트-투-SQL 테스트를 해보니 에이전트가 그 컬럼으로 "지난달"을 걸었다가 0건을 받고
+"파이프라인 처리 시각이지 실제 메시지 시각이 아니다"라고 스스로 진단해 소스의
+`modified_at`으로 바꿔 재시도하는 걸 목격했다(`search-architecture.md`의 "실측으로 발견한
+버그" 참고) - 실데이터가 몇 주치 이력을 하루 배치로 추출한 것이라 `extracted_at`이 전부 그
+하루로 뭉쳐 있었기 때문. 그래서 `file_search`/`vector_search` 둘 다 소스의 실제 시각 기준으로
+고쳤다: `file_search`는 frontmatter의 `content_at`(오브젝트, `okf/writer.py::write_objects()`
+가 새로 찍음)/`modified_at`(리소스, 기존 필드) - 둘 다 없는 옛날 파일만 `generated.at`으로
+폴백 - 을, `vector_search`(→ `postgres_store.py::search_knowledge_objects_by_embedding`)는
+`COALESCE(sources.modified_at, sources.collected_at)`을 기준으로 필터링한다.
 
 자동 적용 지점 두 곳:
 - `search/planner.py::_execute_subquery`가 각 하위 질의 문장 자체를 `parse_temporal_expression()`

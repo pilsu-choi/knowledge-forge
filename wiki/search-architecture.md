@@ -186,22 +186,32 @@ Message→Chunk 요약→Document 요약→Project 요약처럼 계층적으로 
 - **LLM 호출이 아니라 정규식 + 달력 산술**이다 - `search/router.py`와 같은 이유: "어제"를 explicit
   range로 바꾸는 건 `now`가 고정되면 완전히 기계적인 계산이라, 여기에 LLM 라운드트립을 쓰면
   정확도 개선 없이 지연/비용만 늘어난다.
-- **필터 적용 지점**: `file_search`는 frontmatter의 `generated.at`(리소스는 `Source.collected_at`,
-  오브젝트는 `KnowledgeObject.extracted_at`이 그 값)을, `vector_search`는
-  `knowledge_objects.extracted_at`을 기준으로 `[since, until)` 필터를 건다 - 방문/파이프라인
-  처리 시각이지 "그 일이 실제로 일어난 시각"(예: Slack 메시지의 실제 작성 시각)은 아니다.
-  이 저장소에서 KnowledgeObject 레벨에 저장된 유일한 타임스탬프가 이것이라 어쩔 수 없이 쓰는
-  근사치 - Slack collector 등이 실시간에 가깝게 수집한다면 오차가 작겠지만, 배치로 오래된
-  데이터를 한꺼번에 넣으면 "지난주"가 실제 사건 시점과 어긋날 수 있다.
+- **필터 적용 지점**: **`KnowledgeObject.extracted_at`(파이프라인이 그 KO를 처리한 시각) 기준이
+  아니다** - 처음엔 그렇게 구현했다가 실측 중 실제로 잘못된 결과(아래 "실측으로 발견한 버그"
+  참고)를 내는 걸 확인하고 **소스의 실제 시각**으로 바꿨다. `file_search`는 frontmatter의
+  `content_at`(오브젝트) 또는 `modified_at`(리소스) - 둘 다 없는 옛날 파일만 `generated.at`으로
+  폴백(`search/service.py::_content_at`) - 를, `vector_search`는
+  `COALESCE(sources.modified_at, sources.collected_at)`을 기준으로 `[since, until)` 필터를
+  건다. `okf/writer.py::write_objects()`가 오브젝트를 쓸 때 그 오브젝트가 속한 리소스의
+  `modified_at`(없으면 `collected_at`)을 찾아 `content_at`으로 같이 찍어준다.
+- **실측으로 발견한 버그**: 스키마 설명만 보고 SQL을 직접 짜게 한 블라인드 테스트에서, 에이전트가
+  처음엔 (당시 구현대로) `extracted_at`으로 "지난달"을 필터링했다가 0건을 받고, "이건 파이프라인
+  처리 시각이지 실제 메시지 시각이 아니다"라고 스스로 진단해 `sources.modified_at`으로 바꿔
+  재시도한 뒤에야 정확한 결과를 얻었다 - 실제 데이터가 몇 주치 Gmail/Slack 이력을 한 번에
+  배치로 추출한 것이라 `extracted_at`이 전부 그 배치를 돌린 하루로 뭉쳐 있었기 때문. 이 발견을
+  반영해 `file_search`/`vector_search` 둘 다 소스의 실제 시각 기준으로 고쳤다 - `modified_at`이
+  없는 소스는 `collected_at`(그래도 "우리가 언제 수집했는지"라 "실제로 언제 있었던 일인지"의
+  근사치이긴 하지만 `extracted_at`보다는 훨씬 낫다)으로 폴백한다.
 - **어디서 자동으로 쓰이는가**: (1) `plan_search`(`search/planner.py::_execute_subquery`)가 각
   하위 질의 문장 자체를 스캔해 시간 표현을 찾으면 자동으로 그 하위 질의의 검색에 적용한다 -
   모델이 별도 인자를 신경 쓸 필요가 없다. (2) `file_search`/`vector_search` 도구 자체도
   선택적 `time_range`(자연어 문자열) 인자를 받는다 - 모델이 직접 이 두 도구를 호출할 때도
   "어제" 같은 표현을 그대로 넘기면 되고, 날짜 계산은 여기(`search/temporal.py`)가 대신한다.
   인식하지 못하는 표현은 에러 없이 그냥 무시된다(필터 없이 검색).
-- **타임존**: 항상 UTC 기준(`KnowledgeObject.extracted_at`이 항상 UTC로 저장되므로 데이터와
-  일관성을 맞춘 것) - 호출자가 UTC와 먼 타임존에 있으면 "오늘"/"어제"의 자정 경계가 그 호출자의
-  체감과 최대 하루 정도 어긋날 수 있다. 월요일을 주의 시작으로 본다(ISO, 한국 관례와 일치).
+- **타임존**: 항상 UTC 기준(이 시스템의 모든 타임스탬프-`extracted_at`/`collected_at`/
+  `modified_at` 전부-가 UTC로 저장되므로 데이터와 일관성을 맞춘 것) - 호출자가 UTC와 먼
+  타임존에 있으면 "오늘"/"어제"의 자정 경계가 그 호출자의 체감과 최대 하루 정도 어긋날 수
+  있다. 월요일을 주의 시작으로 본다(ISO, 한국 관례와 일치).
 
 ### Text-to-SQL (`sql_search` 도구, `search/sql.py`) — Temporal Join과 속성/entity 필터의 실제 해법
 

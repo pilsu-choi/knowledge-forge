@@ -50,10 +50,16 @@ YAML frontmatter, `index.md`/`log.md`를 통한 progressive disclosure, 사람�
 - **`objects/{type}/`**: `KnowledgeObject.type`별 하위 디렉터리에 concept 파일을 하나씩
   저장한다. frontmatter는 스펙 필드(`type`/`title`/`description`/`resource`/`tags`/
   `generated`/`status`/`sources`)와 knowledge-forge 전용 확장 필드
-  (`knowledge_object_id`/`evidence`/`model_used`/`version`/`supersedes`/`source_hash`)를
-  같이 담는다(스펙 S4.1이 producer-defined 키를 명시적으로 허용). body는 `content`를 그대로
-  덤프하지 않고 사람이 읽는 문장으로 렌더링한다 - grep 재현율은 `key: value` YAML보다
-  자연어 문장에서 훨씬 좋다.
+  (`knowledge_object_id`/`evidence`/`model_used`/`version`/`supersedes`/`source_hash`/
+  `content_at`)를 같이 담는다(스펙 S4.1이 producer-defined 키를 명시적으로 허용). body는
+  `content`를 그대로 덤프하지 않고 사람이 읽는 문장으로 렌더링한다 - grep 재현율은
+  `key: value` YAML보다 자연어 문장에서 훨씬 좋다.
+  - `content_at`은 `generated.at`(이 파일을 파이프라인이 만든 시각)과 다르다 - 그 KO가 속한
+    리소스의 `modified_at`(없으면 `collected_at`)을 그대로 옮겨 적은, "실제로 언제 있었던
+    일인지"에 가까운 시각이다. `search/service.py`의 `file_search` 시간 필터(`time_range`,
+    wiki/search-architecture.md "⑥ Temporal Search")가 이 필드를 우선으로 본다 - 배치로 오래된
+    이력을 한꺼번에 추출하면 `generated.at`은 전부 그 배치를 돌린 하루로 뭉치기 때문에, "지난달"
+    같은 질문에는 `generated.at`이 아니라 `content_at`이 맞는 기준이다.
 - **`views/`**: `by-topic.md`만 남았다. `by_document.yaml`은 리소스 concept의 body로,
   `timeline.yaml`은 프로젝트 루트 `log.md`(스펙이 이미 이 용도로 정의해 둔 파일)로
   대체됐다. `by-topic.md`도 스펙 S3.1이 "별도 포맷 없이 tags를 스캔해 즉석 합성하라"고
