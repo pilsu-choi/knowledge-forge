@@ -157,6 +157,14 @@ async def file_search(
                         "tags": tags if isinstance(tags, list) else [],
                         "snippet": _snippet(frontmatter, body, query_lower),
                         "project_id": pid,
+                        # Only present for objects/{type}/*.md files (okf/writer.py
+                        # always writes this for a KnowledgeObject-derived file) -
+                        # None for resources/*.md (source-level, no KO). Lets a
+                        # caller that also has vector_search hits (which are
+                        # keyed by knowledge_object_id) recognize "this is the
+                        # same KnowledgeObject the other source also found"
+                        # (search/rerank.py's cross-source dedup).
+                        "knowledge_object_id": frontmatter.get("knowledge_object_id"),
                     },
                 )
             )

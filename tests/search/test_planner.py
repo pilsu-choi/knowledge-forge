@@ -1,6 +1,6 @@
 import json
 
-from knowledge_forge.agent.providers.base import AssistantTurn, ChatProvider
+from knowledge_forge.chat_provider import AssistantTurn, ChatProvider
 from knowledge_forge.search.planner import (
     SubQuery,
     _parse_subqueries,
@@ -190,7 +190,7 @@ async def test_plan_and_search_executes_independent_subqueries_and_collects_evid
     assert [sq["query"] for sq in result["subqueries"]] == ["지난달 AI 프로젝트 목록", "각 프로젝트 성과"]
     assert len(result["evidence"]) == 2
     for item in result["evidence"]:
-        assert item["results"][0]["retrieval_source"] == "file_search"
+        assert item["results"][0]["retrieval_sources"] == ["file_search"]
         assert item["results"][0]["path"] == f"p-{item['subquery']}"
 
 
@@ -261,5 +261,32 @@ async def test_plan_and_search_uses_vector_search_when_store_is_given(monkeypatc
         "김철수가 참여한 프로젝트가 왜 실패했는지 이유를 설명해줘", provider, store=store
     )
 
-    sources = {hit["retrieval_source"] for hit in result["evidence"][0]["results"]}
+    sources: set[str] = set()
+    for hit in result["evidence"][0]["results"]:
+        sources.update(hit["retrieval_sources"])
     assert sources == {"file_search", "vector_search"}
+
+
+async def test_plan_and_search_deduplicates_a_knowledge_object_both_sources_find(monkeypatch):
+    provider = _ScriptedProvider(
+        json.dumps([{"query": "김철수가 참여한 프로젝트가 왜 실패했는지 이유를 설명해줘", "depends_on": []}])
+    )
+
+    async def _fake_file_search(query, project_id=None, type=None, limit=20):
+        return [{"path": "objects/decision/p1.md", "title": "실패 원인", "knowledge_object_id": "ko-shared"}]
+
+    async def _fake_vector_search(query, store, project_id=None, type=None, limit=10):
+        return [{"knowledge_object_id": "ko-shared", "score": 0.9}]
+
+    monkeypatch.setattr("knowledge_forge.search.planner.file_search", _fake_file_search)
+    monkeypatch.setattr("knowledge_forge.search.planner.vector_search", _fake_vector_search)
+
+    result = await plan_and_search(
+        "김철수가 참여한 프로젝트가 왜 실패했는지 이유를 설명해줘", provider, store=_FakeStore()
+    )
+
+    results = result["evidence"][0]["results"]
+    assert len(results) == 1
+    assert sorted(results[0]["retrieval_sources"]) == ["file_search", "vector_search"]
+    assert results[0]["title"] == "실패 원인"
+    assert results[0]["score"] == 0.9

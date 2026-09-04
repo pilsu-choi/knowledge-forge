@@ -54,6 +54,16 @@ async def test_matches_object_body_and_includes_frontmatter_fields(tmp_path):
     assert hit["tags"] == ["auth", "security"]
     assert hit["project_id"] == "default"
     assert "OAuth2" in hit["snippet"]
+    assert hit["knowledge_object_id"] == "ko-abc123"
+
+
+async def test_knowledge_object_id_is_none_for_resource_hits(tmp_path):
+    _seed_project(tmp_path)
+
+    results = await file_search("아키텍처", okf_root=tmp_path)
+
+    assert len(results) == 1
+    assert results[0]["knowledge_object_id"] is None
 
 
 async def test_type_filter_excludes_resources_and_other_types(tmp_path):

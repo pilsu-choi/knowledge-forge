@@ -22,6 +22,11 @@ here) - it gets the top few evidence snippets of what it depends on appended
 as inline context, then is searched as ordinary text. This is enough for the
 "Q2's result narrows Q4's search" shape from wiki/agent-search.md without
 building a query-rewriting DSL for it.
+
+Per sub-query, a route that names both sources gets its two hit lists merged
+through `search/rerank.py::merge_and_rerank` (Reciprocal Rank Fusion) rather
+than just concatenated - see that module for why RRF and not a raw score
+merge.
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from knowledge_forge.chat_provider import ChatProvider, Message
+from knowledge_forge.search.rerank import merge_and_rerank
 from knowledge_forge.search.router import FILE_SEARCH, VECTOR_SEARCH, route_query
 from knowledge_forge.search.service import file_search, vector_search
 
@@ -163,14 +169,12 @@ async def _execute_subquery(
     augmented_query = _augment_with_dependencies(subquery, results_by_id)
     decision = route_query(augmented_query, available_sources)
 
-    results: list[dict[str, Any]] = []
+    results_by_source: dict[str, list[dict[str, Any]]] = {}
     if FILE_SEARCH in decision.sources:
-        hits = await file_search(augmented_query, project_id=project_id, limit=limit)
-        results.extend({**hit, "retrieval_source": FILE_SEARCH} for hit in hits)
+        results_by_source[FILE_SEARCH] = await file_search(augmented_query, project_id=project_id, limit=limit)
     if VECTOR_SEARCH in decision.sources and store is not None:
-        hits = await vector_search(augmented_query, store, project_id=project_id, limit=limit)
-        results.extend({**hit, "retrieval_source": VECTOR_SEARCH} for hit in hits)
-    return results
+        results_by_source[VECTOR_SEARCH] = await vector_search(augmented_query, store, project_id=project_id, limit=limit)
+    return merge_and_rerank(results_by_source)
 
 
 async def plan_and_search(
