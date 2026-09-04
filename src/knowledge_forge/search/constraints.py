@@ -47,7 +47,12 @@ from datetime import datetime, timezone
 from typing import Any
 
 from knowledge_forge.chat_provider import ChatProvider, Message
-from knowledge_forge.search.temporal import TimeRange, parse_temporal_expression
+from knowledge_forge.search.temporal import (
+    RECENT_QUANTITY_PATTERN,
+    RECENT_SPAN_PATTERN,
+    TimeRange,
+    parse_temporal_expression,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +80,10 @@ STRATEGY_MULTIHOP = "multihop"
 LATEST_MARKERS: tuple[str, ...] = (
     r"가장\s*최근",
     r"제일\s*최근",
-    # "최근 3개월"은 temporal(범위)이지 latest(정렬)가 아니므로 숫자가 뒤따르는 경우는 제외
-    r"최근(?!\s*\d)",
+    # "최근 3개월"/"최근 일주일"은 temporal(범위)이지 latest(정렬)가 아니므로 수량이 뒤따르는
+    # 경우는 제외한다. 예전엔 아라비아 숫자만 제외해서 "최근 일주일"이 latest로도 잡혔다 -
+    # 정렬로 상위 몇 건만 남기면 set query(v0-relative_temporal-003)가 깨진다.
+    rf"최근(?!\s*(?:{RECENT_QUANTITY_PATTERN}))",
     r"최신",
     r"마지막",
     r"\blatest\b",
@@ -98,7 +105,11 @@ EXHAUSTIVE_MARKERS: tuple[str, ...] = (
     r"\blist\b",
 )
 COUNT_MARKERS: tuple[str, ...] = (
-    r"몇\s*(?:개|건|명|번|회|종류)",
+    # 한국어는 세는 대상마다 분류사가 달라진다 - "메일 몇 통"(v0-aggregation-002)을 놓쳐
+    # count 전략이 아예 안 뽑혔다(predicted_count=None). 넣지 않은 것도 실측 근거가 있다:
+    # 시간 단위(년/달/주/일)는 "몇 년 전"처럼 시점 표현이고, "팀"/"가지"는 코퍼스 개수가 아니라
+    # 문서 안에 적힌 사실을 묻는 쪽이 많다(`v0-factoid-004` "총 몇 팀으로 구성되어 있나?").
+    r"몇\s*(?:개|건|명|번|회|종류|통|장|부|곳|군데|권|편)",
     r"개수",
     r"건수",
     r"수량",
@@ -191,7 +202,11 @@ DOCUMENT_TYPE_MARKERS: tuple[tuple[str, str], ...] = (
 _TEMPORAL_SPAN_RE = re.compile(
     r"\d{4}\s?년\s?\d{1,2}\s?월(?:\s?\d{1,2}\s?일)?(?:에|의|부터|까지)?"
     r"|\d{4}\s?(?:년)?\s*(?:[Qq]\d|\d\s?분기)(?:에|의)?"
-    r"|최근\s*\d+\s*(?:일|주|개?월)(?:간|동안)?"
+    # 수량 표면형은 temporal.py가 단일 출처 - 숫자/한글 수사 목록이 두 곳으로 갈라지면
+    # semantic_query에 "일주일"만 남는 식으로 반드시 어긋난다.
+    # 뒤따르는 "간/동안"은 붙여 쓰고 "내/이내/사이"는 띄어 쓴다. 뒤에 한글이 이어지면
+    # 후자는 제외 - "최근 3일 내용"의 "내용"을 "내"+"용"으로 자르지 않기 위해서.
+    rf"|{RECENT_SPAN_PATTERN}(?:간|동안)?(?:\s*(?:이내|내|사이)(?![가-힣]))?"
     r"|(?:이번|지난|저번)\s?(?:주|달|분기)(?:에|의)?"
     r"|[Qq]\d|\d\s?분기"
     r"|\d{4}\s?년(?:도)?(?:에|의)?"
@@ -225,6 +240,28 @@ _JOINED_TOKEN_RE = re.compile(r"(?<![\w가-힣])[A-Za-z0-9가-힣]+(?:[_-][A-Za-
 _DIGITS_ONLY_RE = re.compile(r"^[\d_-]+$")
 _TRAILING_PARTICLE_RE = re.compile(r"(?<=[가-힣A-Za-z0-9])(?:으로|에서|에게|께서|이랑|부터|까지|와|과|랑|을|를|이|가|은|는|의|에|로|도)$")
 
+# 이메일 주소 / 도메인 - `sources.metadata.participants`가 gmail에서 ["이름 <주소>", ...] 형태라
+# 주소도 도메인도 그 JSON 텍스트에 그대로 들어 있다. `search/retrieve.py::_metadata_filter_where`가
+# participants에 ILIKE '%값%'을 거는 계약이라, 여기서 participants에 실어 주기만 하면 된다.
+# v0-metadata_filter-001("nonghyup.com 도메인 발신자가 보낸 메일")은 도메인이 어느 필드에도 안
+# 실려 필터가 이름 하나(오탐)뿐이었다.
+# 뒤 경계를 `[\w-]`가 아니라 주소에 쓰이는 문자로만 막는 이유: 한국어 조사가 바로 붙는다
+# ("...com이 보낸") - `\w`는 한글도 포함해서 매치가 통째로 실패한다.
+_EMAIL_RE = re.compile(r"(?<![\w.@+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?![A-Za-z0-9._%+-])")
+# 도메인은 (a) TLD 화이트리스트, (b) 등록 가능 도메인 형태(label + TLD)로만 인정한다.
+# (a) `[A-Za-z]{2,}`로 열어 두면 "보고서.내용" 같은 한글 어절 사이의 마침표나 낯선 확장자까지
+#     도메인으로 오인한다. 다단 TLD(co.kr)를 먼저 시도해야 "nonghyup.co.kr"이 잘리지 않는다.
+# (b) 서브도메인까지 붙은 호스트명은 v0 실측상 발신 도메인이 아니라 URL이다 -
+#     `v0-exact_match-002`("git.sparklingsoda.ai:8443/..."), `v0-exact_match-003`
+#     ("prepay-docs.168-107-13-173.sslip.io")는 정확 일치로 찾아야 할 문자열인데, 이걸
+#     participants로 빨아들이면 identifiers/lexical이 통째로 사라진다. 앞뒤에 `/`나 `:`가
+#     붙은 URL 문맥도 같은 이유로 제외.
+_TLD_ALT = r"co\.kr|or\.kr|ne\.kr|go\.kr|re\.kr|com|net|org|edu|gov|biz|info|io|ai|dev|app|kr|jp|cn|us|uk|de|fr"
+_DOMAIN_RE = re.compile(
+    rf"(?<![\w.@+:/-])[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.(?:{_TLD_ALT})(?![A-Za-z0-9.:/-])",
+    re.IGNORECASE,
+)
+
 _NAME = r"[가-힣]{2,4}|[A-Z][a-z]+(?:\s[A-Z][a-z]+)?"
 # "김철수가 (2025년 3월에) 작성한" - 이름과 동사 사이에 시간 표현 등이 끼어도 잡히도록 짧은 임의
 # 구간을 허용한다.
@@ -241,7 +278,15 @@ _PROJECT_RE = re.compile(r"(?<![\w가-힣])(?P<name>[A-Za-z0-9가-힣]{1,20})\s?
 # 이름 자리에 올 수 있지만 사람 이름이 아닌 일반명사 - "담당자가 작성한"은 작성자 필터가 아니라
 # multi-hop("담당자가 누구인지 먼저 찾아야 함") 신호다.
 _NAME_STOPWORDS = frozenset(
-    {"담당자", "담당", "누군가", "누가", "사람", "팀", "팀원", "개발자", "고객", "상대방", "회사", "부서", "본인", "저희", "우리"}
+    {
+        "담당자", "담당", "누군가", "누가", "사람", "팀", "팀원", "개발자", "고객", "상대방", "회사",
+        "부서", "본인", "저희", "우리",
+        # 메일/메시지의 역할 명사. "발신자가 보낸 메일"(v0-metadata_filter-001)에서
+        # authors=["발신자"]가 실려 ILIKE '%발신자%'가 0행 → 필터가 통째로 무시됐다
+        # (applied="filter_empty_ignored"). 역할이지 사람을 특정하는 이름이 아니다.
+        "발신자", "수신자", "참조", "보낸사람", "보낸이", "받는사람", "받는이", "발신인", "수신인",
+        "작성자", "관리자", "책임자", "참석자", "참여자",
+    }
 )
 _PROJECT_STOPWORDS = frozenset(
     {"올해", "작년", "이번", "지난", "그", "이", "저", "그런", "이런", "모든", "전체", "관련", "새", "신규", "각", "해당", "어떤", "무슨"}
@@ -256,7 +301,10 @@ _COMPARISON_TAIL_RE = re.compile(
 )
 # semantic_query 정리용 - 검색어로서 정보량이 없는 지시/보조 표현.
 _FILLER_RE = re.compile(
-    r"관련(?:된|해서|하여|한)?|문서(?:들)?|자료(?:들)?|파일(?:들)?|알려\s*줘|보여\s*줘|찾아\s*줘|해\s*줘|해줄래|해주세요|주세요|해\s*봐"
+    # "발신자"/"도메인" 같은 역할·메타 명사는 `_NAME_STOPWORDS`가 작성자 오탐은 막아 주지만
+    # (v0-metadata_filter-001) semantic_query에는 그대로 남아 벡터 검색어를 흐린다.
+    r"발신자|수신자|발신인|수신인|보낸\s*사람|받는\s*사람|도메인"
+    r"|관련(?:된|해서|하여|한)?|문서(?:들)?|자료(?:들)?|파일(?:들)?|알려\s*줘|보여\s*줘|찾아\s*줘|해\s*줘|해줄래|해주세요|주세요|해\s*봐"
     r"|뭐야|뭐였(?:지|어)|무엇(?:이야|인가요?)?|있(?:어|나요|었어|었나요)|좀|해서|대해(?:서)?|대한|에\s*대해"
     r"|\bplease\b|\bshow\s+me\b|\btell\s+me\b|\bfind\b|\bsearch\b|\bdocuments?\b|\babout\b|\brelated\b"
 )
@@ -402,7 +450,14 @@ def extract_constraints_rules(query: str, *, now: datetime | None = None) -> Que
     c.quoted_phrases = _dedupe(_QUOTED_RE.findall(working))
     working = _QUOTED_RE.sub(" ", working)
 
-    # 2) 파일명 / 코드형 식별자 / 연결 토큰(문서 참조)
+    # 2) 이메일 주소 / 도메인 - 식별자 추출보다 먼저 걷어내야 한다. "hong_gil@nonghyup.com"의
+    # 로컬 파트는 `_CODE_ID_RE`가 코드형 식별자로 오인해 엉뚱한 document_lookup을 켠다.
+    contact_handles = _dedupe(_EMAIL_RE.findall(working))
+    working = _EMAIL_RE.sub(" ", working)
+    contact_handles += _dedupe(_DOMAIN_RE.findall(working))
+    working = _DOMAIN_RE.sub(" ", working)
+
+    # 3) 파일명 / 코드형 식별자 / 연결 토큰(문서 참조)
     filenames = _dedupe(_FILENAME_RE.findall(working))
     working = _FILENAME_RE.sub(" ", working)
     code_ids = _dedupe([_strip_particle(t) for t in _CODE_ID_RE.findall(working)])
@@ -426,10 +481,10 @@ def extract_constraints_rules(query: str, *, now: datetime | None = None) -> Que
     # "담당자가 작성한" 같은 multi-hop 신호가 같이 사라진다).
     marker_text = working
 
-    # 3) 시간 범위 - 원문 기준(작성자 구절 안의 "2025년 3월"도 잡아야 하므로 working이 아니라 query)
+    # 4) 시간 범위 - 원문 기준(작성자 구절 안의 "2025년 3월"도 잡아야 하므로 working이 아니라 query)
     c.time_range = _resolve_time_range(query, now)
 
-    # 4) 작성자 / 참여자 / 프로젝트 힌트
+    # 5) 작성자 / 참여자 / 프로젝트 힌트
     for regex in (_AUTHOR_KO_RE, _AUTHOR_EN_RE):
         for m in regex.finditer(working):
             if m.group("name") in _NAME_STOPWORDS:
@@ -441,7 +496,8 @@ def extract_constraints_rules(query: str, *, now: datetime | None = None) -> Que
         for m in regex.finditer(working):
             if m.group("name") not in _NAME_STOPWORDS:
                 c.participants.append(m.group("name"))
-    c.participants = _dedupe(c.participants)
+    # 주소/도메인이 앞 - 이름보다 특정력이 강한 신호다(participants는 AND라 순서 자체는 무관).
+    c.participants = _dedupe(contact_handles + c.participants)
     for m in _PROJECT_RE.finditer(working):
         name = m.group("name")
         if name not in _PROJECT_STOPWORDS and not _TEMPORAL_SPAN_RE.fullmatch(name):
@@ -449,13 +505,13 @@ def extract_constraints_rules(query: str, *, now: datetime | None = None) -> Que
     c.project_hints = _dedupe(c.project_hints)
     c.entities = _dedupe(c.authors + c.participants + c.project_hints)
 
-    # 5) 소스 / 문서 타입 힌트
+    # 6) 소스 / 문서 타입 힌트
     c.source_types = _dedupe([label for pattern, label in SOURCE_TYPE_MARKERS if re.search(pattern, working, re.IGNORECASE)])
     c.document_types = _dedupe(
         [label for pattern, label in DOCUMENT_TYPE_MARKERS if re.search(pattern, working, re.IGNORECASE)]
     )
 
-    # 6) 의도 플래그
+    # 7) 의도 플래그
     c.wants_latest = _any_marker(LATEST_MARKERS, marker_text)
     c.wants_exhaustive = _any_marker(EXHAUSTIVE_MARKERS, marker_text)
     c.wants_count = _any_marker(COUNT_MARKERS, marker_text)
@@ -477,7 +533,7 @@ def extract_constraints_rules(query: str, *, now: datetime | None = None) -> Que
         if len(labels) > 1:
             c.time_range = None
 
-    # 7) semantic_query - 제약 표현을 걷어낸 나머지
+    # 8) semantic_query - 제약 표현을 걷어낸 나머지
     semantic = _TEMPORAL_SPAN_RE.sub(" ", working)
     for pattern, _label in SOURCE_TYPE_MARKERS:
         semantic = re.sub(pattern, " ", semantic, flags=re.IGNORECASE)

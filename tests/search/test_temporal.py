@@ -116,3 +116,75 @@ def test_year_month_takes_priority_over_bare_year():
 def test_label_is_human_readable():
     result = parse_temporal_expression("어제 무슨 일 있었어?", now=NOW)
     assert result.label == "어제"
+
+
+# --- 한글 수사 수량 ("최근 일주일") --------------------------------------------
+# v0 골든셋 실측: `v0-relative_temporal-003`("최근 일주일 내 받은 Google Drive 공유 요청 메일")이
+# 시간 조건을 전혀 못 뽑아 SQL에 since가 안 붙었다(steps에서 since=null 확인). 숫자만 받던
+# `_RECENT_RE`가 원인이라, 한국어에서 더 자연스러운 수사 표기를 아래에 못 박는다.
+
+
+def test_recent_one_week_written_as_korean_word():
+    """골든셋 v0-relative_temporal-003의 실제 표현. 숫자 없이 '일주일'만 나온다."""
+    result = parse_temporal_expression("최근 일주일 내 받은 Google Drive 공유 요청 메일", now=NOW)
+    assert result is not None
+    assert result.start == NOW - timedelta(weeks=1)
+    assert result.end is None
+
+
+def test_recent_native_numeral_month():
+    """'한 달'/'한달' - 띄어쓰기 유무 둘 다. 월 단위는 기존 '최근 N개월'과 같은 월초 절단."""
+    for text in ("최근 한 달 이슈", "최근 한달 이슈"):
+        result = parse_temporal_expression(text, now=NOW)
+        assert result is not None, text
+        assert (result.start, result.end) == (_utc(2026, 8, 1), None), text
+
+
+def test_recent_fused_day_words():
+    """수사와 단위가 한 낱말로 굳은 형태 - 분해가 안 되므로 별도 표에서 (수, 단위)로 편다."""
+    assert parse_temporal_expression("최근 하루 동안", now=NOW).start == NOW - timedelta(days=1)
+    assert parse_temporal_expression("최근 이틀 이슈", now=NOW).start == NOW - timedelta(days=2)
+    assert parse_temporal_expression("최근 사흘 이슈", now=NOW).start == NOW - timedelta(days=3)
+
+
+def test_recent_few_days_is_a_recall_first_window():
+    """'며칠'은 정확한 수가 없다. 규칙 단계는 recall 우선이라 7일로 넉넉히 잡는다."""
+    result = parse_temporal_expression("최근 며칠 사이 장애", now=NOW)
+    assert result.start == NOW - timedelta(days=7)
+
+
+def test_recent_year_written_as_korean_word():
+    result = parse_temporal_expression("최근 일 년간 매출 추이", now=NOW)
+    assert (result.start, result.end) == (_utc(2025, 9, 1), None)
+    assert parse_temporal_expression("최근 한 해 동안", now=NOW).start == _utc(2025, 9, 1)
+
+
+def test_recent_sino_numeral_with_month_unit():
+    result = parse_temporal_expression("최근 삼개월 실적", now=NOW)
+    assert (result.start, result.end) == (_utc(2026, 6, 1), None)
+
+
+def test_recent_digit_with_month_word_unit():
+    """'개월'뿐 아니라 '달'도 월 단위로 받는다 - '최근 3달'."""
+    result = parse_temporal_expression("최근 3달 트렌드", now=NOW)
+    assert (result.start, result.end) == (_utc(2026, 6, 1), None)
+
+
+def test_last_prefix_also_forms_a_relative_span():
+    """'지난 일주일'은 달력 주(지난주)가 아니라 now 기준 롤링 7일이다."""
+    result = parse_temporal_expression("지난 일주일 배포 내역", now=NOW)
+    assert result.start == NOW - timedelta(weeks=1)
+    assert result.end is None
+
+
+def test_last_week_still_means_the_calendar_week():
+    """회귀 방지: '지난 주'는 수량 표현이 없으므로 기존 달력 주 경계를 그대로 유지해야 한다."""
+    result = parse_temporal_expression("지난 주에 결정된 사항", now=NOW)
+    assert (result.start, result.end) == (_utc(2026, 8, 24), _utc(2026, 8, 31))
+
+
+def test_recent_without_quantity_is_not_a_time_range():
+    """회귀 방지: '최근'만 있는 건 정렬(latest) 신호지 범위가 아니다. 한자어 수사가 명사의
+    첫 음절과 겹쳐 오탐 나는 경우('최근 이슈'의 '이', '최근 오해'의 '오')도 여기서 막는다."""
+    for text in ("최근 이슈 정리", "최근 오해가 있었던 건", "최근 사고 보고서", "최근 자료"):
+        assert parse_temporal_expression(text, now=NOW) is None, text
