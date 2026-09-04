@@ -1245,3 +1245,62 @@ agent_groundedness_gate_max_retries: int = 2
   지금 범위 밖.
 - **Graph/SQL search가 라우팅에 추가될 때의 스키마 변경** — `evidence`/`tool_calls`가 이미
   JSONB라 소스 종류가 늘어도 컬럼 추가 없이 흡수된다.
+
+## 부록: 제목 토큰 집합 tier 측정 (2026-09-05, v0 / documents 358)
+
+`storage/title_match.py`(설계 근거는 `search-architecture.md`) 도입 전후를 **같은 worktree
+에서 연달아** 돌린 페어드 비교. 코퍼스가 263→358로 바뀌었으므로 그 이전 run과는 비교하지
+않았다.
+
+| run_id | 라벨 | ndcg@10 | hit@1 |
+|---|---|---|---|
+| `0ae2d4e99ad04fbda15e0db7f1944f4c` | baseline (토큰 tier 없음) | 0.852 | 0.729 |
+| `5b73394e8e014767a9218440a5ae4d57` | treatment (집합 1.0 + 부분집합 0.8 + 부분일치) | 0.859 | 0.743 |
+| `e8849c6dc0b541a0866b45a0c50ee903` | ablation (부분일치 tier 끔) | 0.863 | 0.757 |
+| `6e79054e7ada45daa52c9742c85eec56` | baseline 재실행 (코드 동일) | 0.850 | 0.771 |
+| `03dc9150838e4e37abba1aba0952b2d6` | treatment 재실행 (커밋 4b842b2, dirty 아님) | 0.856 | 0.743 |
+
+`--compare A B`: delta +0.0071, 95% CI [+0.0000, +0.0214], **win/loss/tie = 1/0/69**.
+움직인 질의는 `v0-navigational-004`(`"Dev Handover README 파일"`) 하나뿐: **0.500 → 1.000**.
+집계 delta는 노이즈 바닥(±0.056) 안이라 "지표가 올랐다"고 주장하지 않는다 - 주장하는 것은
+"의도한 질의 하나가 결정적으로 고쳐졌고 나머지 69개는 그대로다"이다.
+
+score 1.0 판정 개수도 직접 셌다. 골든셋 76개 질의가 실제로 제목 검색에 던지는 문자열
+94개(제약 추출의 `document_reference`/`identifiers`/`quoted_phrases`/`semantic_query`)에
+대해 **1.0 히트 22건 → 23건**. 늘어난 딱 한 건이 위의 `README_ProjectIntel_Dev_Handover.md`다.
+`v0-ambiguous-002`(`"README"`)는 1.0이 두 건 그대로라 여전히 ambiguous로 남는다(anchor
+안 잡힘) - 이게 이 설계에서 가장 지키고 싶었던 성질이다.
+
+다섯 run의 질의별 ndcg@10을 세로로 보면 "코드가 바꾼 것"과 "그냥 흔들린 것"이 갈린다:
+
+| 질의 | base | treat | ablation | base 재실행 | treat 재실행 |
+|---|---|---|---|---|---|
+| `v0-navigational-004` | 0.500 | **1.000** | **1.000** | 0.500 | **1.000** |
+| `v0-ambiguous-002` | 0.651 | 0.651 | 0.651 | 0.651 | 0.651 |
+| `v0-sequence-001` | 0.177 | 0.177 | 0.501 | 0.501 | 0.000 |
+
+첫 줄은 코드를 따라 움직이고(주장할 수 있는 것), 둘째 줄은 지키려던 성질이 지켜졌다는 증거,
+셋째 줄은 코드와 무관한 churn이다(아래).
+
+### 부수 발견: `eval-ir`은 결정적이지 않다
+
+위 표의 마지막 행이 그 증거다 - **코드가 완전히 같은 두 baseline run이 8개 질의에서
+갈렸다**(최대 ±0.63; `v0-whole_document_summary-003` 0.631→0.000, `v0-multihop-002`
+1.000→0.613, `v0-exact_match-001/002` 0.631→1.000). 질의 임베딩은 결정적임을 확인했으므로
+(같은 문자열 두 번 호출 → 벡터 완전 일치), 원인은 그쪽이 아니라 **동점 처리**로 보인다:
+코퍼스에 제목·본문이 사실상 같은 문서가 여럿 있어(`"…에 대한 공유 요청"` 계열) 거리/점수가
+정확히 같은 행들이 나오는데, `ORDER BY`에 결정적인 마지막 tiebreak가 없으면 어느 행이
+먼저 나올지가 실행마다 달라진다.
+
+측정 규칙에 주는 함의:
+
+- **단일 run 페어드 비교에서 8/76 정도의 질의 churn은 코드와 무관하게 생길 수 있다.**
+  집계 delta뿐 아니라 **어떤 질의가 왜 바뀌었는지**를 반드시 같이 봐야 한다.
+- 확인 방법은 싸다: 같은 코드로 baseline을 두 번 돌려 그 사이의 win/loss를 세면 그 시점의
+  churn 바닥이 나온다. 위 비교에서 `v0-navigational-004`가 두 baseline에서 모두 0.500,
+  두 treatment에서 모두 1.000이었던 것이 "이건 노이즈가 아니다"의 근거다.
+- 근본 처방은 랭킹 SQL의 `ORDER BY` 끝에 결정적 tiebreak(`document_id` 등)를 붙이는 것이다.
+  `search_documents_by_title`(`d.title, d.document_id`)과 `search_chunks_lexical`
+  (`c.document_id, c.sequence_index`)에는 이미 있는데, **`search_by_embedding`은
+  `ORDER BY e.embedding <=> %s`뿐이라 거리가 같은 행들의 순서가 정해져 있지 않다**
+  (postgres_store.py:1097). 이 파일은 지금 다른 작업자가 잡고 있어 손대지 않았다.

@@ -29,6 +29,7 @@ from knowledge_forge.models.link import DocumentLink
 from knowledge_forge.models.relation import Relation
 from knowledge_forge.models.source import Source, SourceRef
 from knowledge_forge.storage.document_title import derive_document_title, first_heading_text
+from knowledge_forge.storage.title_match import match_titles
 from knowledge_forge.text_normalize import to_nfc
 
 if TYPE_CHECKING:
@@ -1286,11 +1287,19 @@ class PostgresStore:
         """Title/file-name lookup over `documents.title` (search/service.py::
         document_search) for navigational/ambiguous queries - "2025_SH_업무_
         보고서 찾아줘", "SH 보고서" - that need string matching, not an
-        embedding. Three match tiers, ranked in this order and each a
-        pg_trgm-backed predicate on the one indexed column:
+        embedding. Match tiers, ranked in this order - the three SQL ones are
+        each a pg_trgm-backed predicate on the one indexed column, and the
+        token-set tier re-scores the rows they fetched:
 
         1. whole-query substring (`title ILIKE '%q%'`) - the user typed (part
            of) the exact name;
+        1'. **토큰 집합 일치**(`title_match.match_titles`) - 구분자와 순서를 무시하고
+           질의/제목을 토큰 집합으로 접어 비교한다. substring tier가 순서에 묶여 있어
+           `"Dev Handover README"`가 `README_ProjectIntel_Dev_Handover.md`를 못 맞추던
+           구멍을 메운다. 집합이 같거나(질의 == 제목), 후보 중 유일하게 질의 집합을 통째로
+           담고 있으면 substring과 같은 1.0. 그런 문서가 여럿이면 0.8에 묶어 둔다 -
+           `_claim_anchor`가 1.0 하나를 anchor로 확정해 다른 전략까지 그 문서로 좁히므로
+           가짜 1.0의 대가가 크다(설계 근거 전부는 `storage/title_match.py` docstring);
         2. every whitespace token a substring (`ILIKE ALL(...)`) - "SH 보고서"
            against "2025_SH_업무_보고서.pdf", where the tokens are present but
            not adjacent;
@@ -1302,8 +1311,12 @@ class PostgresStore:
            question a title search is actually asking.
 
         `score` is 1.0 for tier 1, `0.5 + sim/2` for tier 2 and the raw
-        similarity for tier 3, so it stays in [0, 1] and monotonic with the
-        tiers. `since`/`until` filter on `COALESCE(s.modified_at,
+        similarity for tier 3, and the token-set tier only ever **raises** a
+        row's score (`max`), never lowers it - 점수를 내리면 anchor 격차 판정
+        (`_ANCHOR_MIN_GAP`)이 넓어져 없던 anchor가 생긴다. 토큰 tier가 주는 1.0 미만
+        점수의 상한이 0.8인 것도 같은 이유다: 1위가 1.0일 때 2위를 0.8 위로 올리지
+        않으므로 이 tier는 있던 anchor를 깨뜨릴 수 없다. 정렬은 tier -> 점수 순이라
+        토큰 tier가 아무것도 올리지 못한 질의의 결과는 이 tier가 없던 때와 동일하다. `since`/`until` filter on `COALESCE(s.modified_at,
         s.collected_at)` - the same real-content timestamp `search_by_embedding`
         uses (its docstring explains why not a pipeline timestamp).
 
@@ -1314,6 +1327,9 @@ class PostgresStore:
         query = to_nfc(query)
         pattern = _like_pattern(query)
         token_patterns = _token_patterns(query)
+        # 토큰 tier가 순위를 뒤집을 수 있으므로 SQL 순서만 믿고 자르면 안 된다 - 넉넉히 받아
+        # 재채점한 뒤 파이썬에서 자른다(`_TITLE_TOKEN_OVERFETCH`).
+        fetch_limit = min(limit * _TITLE_TOKEN_OVERFETCH, _TITLE_TOKEN_MAX_FETCH)
         async with self._read_conn() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
@@ -1349,13 +1365,16 @@ class PostgresStore:
                     since,
                     until,
                     until,
-                    limit,
+                    fetch_limit,
                 ),
             )
             rows = await cur.fetchall()
 
+        # 토큰 집합 tier는 후보 전체를 봐야 판정된다("질의 토큰을 통째로 담은 문서가 하나뿐인가").
+        # `match_titles`가 그 유일성까지 여기서 계산한다.
+        token_matches = match_titles(query, [row[1] for row in rows], [bool(row[8]) for row in rows])
         hits: list[dict[str, Any]] = []
-        for row in rows:
+        for row, token_match in zip(rows, token_matches, strict=True):
             is_substring, all_tokens, sim = bool(row[8]), bool(row[9]), float(row[10])
             if is_substring:
                 score = 1.0
@@ -1363,8 +1382,18 @@ class PostgresStore:
                 score = 0.5 + sim / 2
             else:
                 score = sim
+            # 토큰 tier는 **올리기만** 한다 - 기존 tier의 점수를 내리면 anchor 격차
+            # (`_ANCHOR_MIN_GAP`)가 넓어져 없던 anchor가 생기는데, 그건 이 변경의 의도가 아니다.
+            score = max(score, token_match.score)
+            # 정렬용 tier - 점수만으로 정렬하면 기존 tier들 사이의 순서가 바뀐다(퍼지 tier의
+            # 점수 `sim`은 all-tokens tier의 `0.5 + sim/2`보다 클 수 있는데, 지금 `ORDER BY`는
+            # tier를 먼저 본다). tier를 1차 키로 두면 **토큰 tier가 아무것도 올리지 못한
+            # 질의에서는 결과 순서가 이 변경 전과 정확히 같다** - 공유 DB에서 페어드 비교를
+            # 할 때 움직인 질의가 이 변경 때문인지 아닌지를 구분할 수 있어야 한다.
+            tier = 0 if score >= 1.0 else (1 if all_tokens or token_match.score > 0 else 2)
             hits.append(
                 {
+                    "_tier": tier,
                     "target_kind": "document",
                     "document_id": row[0],
                     "title": row[1],
@@ -1377,7 +1406,10 @@ class PostgresStore:
                     "score": score,
                 }
             )
-        return hits
+        hits.sort(key=lambda hit: (hit["_tier"], -hit["score"]))
+        for hit in hits:
+            del hit["_tier"]
+        return hits[:limit]
 
     async def search_chunks_lexical(
         self,
@@ -1711,6 +1743,13 @@ _CHUNK_SIMILARITY_THRESHOLD = 0.5
 # Cap on how many whitespace tokens the all-tokens tier ANDs together - past
 # this a query is a sentence, not a name, and belongs to vector_search.
 _MAX_QUERY_TOKENS = 8
+# 제목 조회는 `limit`보다 이만큼 더 받아 와서 토큰 집합 tier로 재채점한 뒤 자른다. 토큰
+# tier는 SQL의 `ORDER BY`가 뒤로 보낸 행을 1.0까지 끌어올릴 수 있어서(순서가 다른 파일명이
+# `word_similarity`만으로 걸린 경우), SQL이 자른 뒤에 채점하면 그 행이 애초에 없다.
+# 유일성 판정(`title_match.match_titles`)도 후보를 넓게 봐야 정확해진다. 상한을 둔 이유는
+# exhaustive 질의의 limit이 200이라 곱하면 조회가 커지기 때문.
+_TITLE_TOKEN_OVERFETCH = 4
+_TITLE_TOKEN_MAX_FETCH = 200
 
 
 def _like_pattern(text: str) -> str:
