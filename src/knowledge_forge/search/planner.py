@@ -32,7 +32,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from knowledge_forge.agent.providers.base import ChatProvider, Message
+from knowledge_forge.chat_provider import ChatProvider, Message
 from knowledge_forge.search.router import FILE_SEARCH, VECTOR_SEARCH, route_query
 from knowledge_forge.search.service import file_search, vector_search
 
