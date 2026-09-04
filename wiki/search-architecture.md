@@ -21,7 +21,7 @@ Grounding까지)을 레이어별로 정리한다. 실제 프로덕션 엔터프�
 | ⑥ Temporal Search (자연어 시간 표현 → 범위 필터 / Text-to-SQL) | **구현됨** — `search/temporal.py`(자연어→범위 필터)와 `search/sql.py`(Text-to-SQL, `sql_search` 도구)로 시간 범위와 속성값 조건을 SQL WHERE/JOIN 하나로 결합하는 temporal join까지 가능해졌다. 아래 절 참고 |
 | Query Routing 확장 (SQL/Web 소스) | **부분 구현** — SQL 소스는 `sql_search`로 추가됐다(단, `search/router.py::route_query`의 자동 라우팅 대상에는 아직 없음 - 모델이 직접 판단해서 호출). Web 소스는 여전히 미구현 |
 | Evidence Grounding / Citation | **약하게 구현** — 시스템 프롬프트가 path/knowledge_object_id 인용을 지시할 뿐, claim-level 매칭/인용 파이프라인은 없음 |
-| Search Evaluation / Feedback Loop | 설계만, 미구현 — [`search-evaluation.md`](search-evaluation.md)에 구체 설계 |
+| Search Evaluation / Feedback Loop | **부분 구현** — 로깅(`search_log`/`search_feedback`)과 LLM-judge 기반 groundedness/citation 자동 평가는 구현됨, 골드셋 필요한 Recall/Precision/MRR/NDCG와 온라인 groundedness gate는 설계만 — [`search-evaluation.md`](search-evaluation.md) 참고 |
 | Iterative / Agentic Retrieval | **이미 구현됨**(암묵적 판단) — 아래 절 참고. 명시적 groundedness gate로 강화하는 안은 [`search-evaluation.md`](search-evaluation.md) (D) |
 
 ---
@@ -258,14 +258,19 @@ WHERE e.content->>'name' = '유지희'
 claim을 추출해 evidence와 자동으로 매칭/인용하는 별도 단계(Claim extraction → Evidence matching
 → Citation)는 없다. 모델이 지시를 무시하면 인용 없는 답이 나올 수 있다.
 
-## Search Evaluation / Feedback Loop — 설계만, 미구현
+## Search Evaluation / Feedback Loop — 부분 구현
 
-Recall/Precision/MRR/NDCG, answer groundedness, citation accuracy 같은 지표도, 쿼리별 실패
-원인 추적도 없다 - 이 시스템에는 아직 "검색이 잘 됐는지" 평가할 방법이 코드로 존재하지 않는다.
-가장 먼저 필요해지는 시점은 실사용 트래픽이 쌓여 어떤 질의 유형이 자주 실패하는지 알아야 할 때.
-구체적인 설계(로깅 스키마, LLM-judge 기반 groundedness/citation 자동 평가, 골드셋이 필요한
-Recall/Precision/MRR/NDCG를 위한 별도 트랙, 위 Iterative Retrieval을 강화하는 온라인
-groundedness gate)는 [`search-evaluation.md`](search-evaluation.md) 참고.
+`storage/eval_store.py::EvalStore`가 모든 에이전트 턴을 `search_log`에 기록하고(질의/답변/
+근거/도구 호출 시퀀스/지연시간), `--interactive` REPL의 `/feedback`과 `knowledge-forge
+feedback` 커맨드로 사용자 평가(👍/👎 + 코멘트)를 붙일 수 있다. `evaluation/judge.py`가
+LLM-as-judge로 답변의 각 claim을 근거와 대조해 groundedness/citation 점수를 매기고
+(`knowledge-forge eval` 배치, 골드셋 불필요), `eval_score`에 저장한다 - 쿼리별 실패 원인
+추적의 최소 형태(사람이 `search_log`/`eval_score`를 직접 읽는 것)는 이제 가능하다.
+
+아직 없는 것: Recall/Precision/MRR/NDCG(relevance judgment 골드셋이 있어야 정의되는 지표라
+별도 사람 큐레이션이 선행돼야 함)와, 위 Iterative Retrieval을 강화하는 온라인 groundedness
+gate(judge를 답변 확정 전 실시간으로 돌려 재검색을 강제하는 것 - 지금은 오프라인 배치로만
+돈다). 둘 다 [`search-evaluation.md`](search-evaluation.md)의 (C)/(D)에 설계만 남아있다.
 
 ## 왜 지금 여기서 멈추는가
 

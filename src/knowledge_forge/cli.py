@@ -593,7 +593,9 @@ def _handle_feedback_command(line: str, log_id: Optional[str]) -> None:
 
 @db_app.command("init")
 def db_init() -> None:
-    """Create the PostgreSQL schema (sources/documents/chunks/knowledge_objects/relations)."""
+    """Create the PostgreSQL schema (sources/documents/chunks/knowledge_objects/relations/
+    search_log/search_feedback/eval_score/...) - the same schema.sql `agent`/`feedback`/`eval`
+    read and write through `EvalStore`, so this must run before any of them against a fresh DB."""
     if not settings.database_url:
         typer.echo("KF_DATABASE_URL이 설정되지 않았습니다.", err=True)
         raise typer.Exit(1)
