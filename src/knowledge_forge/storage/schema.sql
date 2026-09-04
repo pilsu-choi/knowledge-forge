@@ -168,3 +168,52 @@ CREATE TABLE IF NOT EXISTS sync_cursors (
     cursor_data  JSONB NOT NULL DEFAULT '{}'::jsonb,
     updated_at   TIMESTAMPTZ NOT NULL
 );
+
+-- Search Evaluation / Feedback Loop (wiki/search-evaluation.md (A)) - an
+-- event log, not Knowledge Graph content, so `log_id`/`feedback_id` are
+-- uuid4 like `jobs.job_id` rather than a stable_id (see file header).
+CREATE TABLE IF NOT EXISTS search_log (
+    log_id        TEXT PRIMARY KEY,
+    project_id    TEXT NOT NULL DEFAULT 'default',
+    query         TEXT NOT NULL,
+    answer        TEXT NOT NULL,
+    -- Raw tool-result payloads from every evidence-bearing tool call this
+    -- turn made (file_search/vector_search/sql_search/plan_search) -
+    -- [{tool, iteration, payload}, ...]. Kept as each tool's own native
+    -- return shape rather than normalized into one {path, rank, score}
+    -- schema - sql_search's {columns, rows} and plan_search's {subqueries,
+    -- evidence} don't share file_search/vector_search's hit shape, and the
+    -- LLM judge (search-evaluation.md (B)) reads this as free-form JSON
+    -- context rather than a fixed schema.
+    evidence      JSONB NOT NULL DEFAULT '[]'::jsonb,
+    tool_calls    JSONB NOT NULL DEFAULT '[]'::jsonb,
+    latency_ms    INT NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_search_log_project_id ON search_log(project_id);
+CREATE INDEX IF NOT EXISTS idx_search_log_created_at ON search_log(created_at);
+
+CREATE TABLE IF NOT EXISTS search_feedback (
+    feedback_id  TEXT PRIMARY KEY,
+    log_id       TEXT NOT NULL REFERENCES search_log(log_id),
+    rating       TEXT NOT NULL,
+    comment      TEXT,
+    created_at   TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_search_feedback_log_id ON search_feedback(log_id);
+
+-- LLM-judge output (wiki/search-evaluation.md (B)) - one row per scored
+-- search_log, produced by an offline `knowledge-forge eval` batch pass
+-- (embeddings.md's `--embed`/`knowledge-forge embed` pattern), never
+-- inline at answer time - no latency/cost added to the answer path.
+CREATE TABLE IF NOT EXISTS eval_score (
+    log_id              TEXT PRIMARY KEY REFERENCES search_log(log_id),
+    groundedness_score  DOUBLE PRECISION NOT NULL,
+    citation_precision  DOUBLE PRECISION,
+    -- [{text, verdict: "supported"|"unsupported"|"contradicted", reason}, ...]
+    -- - every claim, not just failing ones, so other aggregates (e.g. a
+    -- future "contradicted" rate) don't need a second judge pass.
+    claims              JSONB NOT NULL DEFAULT '[]'::jsonb,
+    judge_model         TEXT NOT NULL,
+    judged_at           TIMESTAMPTZ NOT NULL
+);

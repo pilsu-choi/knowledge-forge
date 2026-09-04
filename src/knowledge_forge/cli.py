@@ -8,6 +8,7 @@ from typing import Optional
 import typer
 
 from knowledge_forge.agent.auth import agent_credential_hint_ko, has_resolvable_agent_credentials
+from knowledge_forge.agent.providers.factory import get_chat_provider
 from knowledge_forge.agent.runtime import AgentSession, run_query
 from knowledge_forge.chunking import AdaptiveChunker
 from knowledge_forge.collectors.base import Collector, ensure_utc
@@ -15,6 +16,7 @@ from knowledge_forge.collectors.local_file import LocalFileCollector
 from knowledge_forge.collectors.saas.factory import SAAS_COLLECTOR_BUILDERS
 from knowledge_forge.config import settings
 from knowledge_forge.embedding.factory import get_embedding_provider
+from knowledge_forge.evaluation.judge import judge_search_log
 from knowledge_forge.extraction.auth import credential_hint_ko, has_resolvable_credentials
 from knowledge_forge.extraction.factory import get_extractor
 from knowledge_forge.okf import OKFWriter
@@ -26,6 +28,7 @@ from knowledge_forge.scheduling.scheduler import (
     DEFAULT_TRIGGER_API_PORT,
 )
 from knowledge_forge.storage import PipelineStore
+from knowledge_forge.storage.eval_store import EvalStore
 from knowledge_forge.storage.postgres_store import PostgresStore
 
 app = typer.Typer(help="Knowledge Forge: Collector -> Parser -> Adaptive Chunker -> Knowledge Extraction.")
@@ -548,16 +551,44 @@ def agent(
                     break
                 if not line.strip():
                     continue
+                if line.startswith("/feedback"):
+                    _handle_feedback_command(line, session.last_log_id)
+                    continue
                 answer = await session.ask(line)
                 typer.echo(answer)
+                if session.last_log_id:
+                    typer.echo(f"[log_id={session.last_log_id} - /feedback up|down [코멘트]로 평가 가능]", err=True)
                 if session.plan.steps:
                     typer.echo(f"\n[계획]\n{session.plan.render()}\n", err=True)
 
         asyncio.run(_repl())
         return
 
-    answer = asyncio.run(run_query(question, project_id=project_id, provider=provider, model=model))
+    answer, log_id = asyncio.run(run_query(question, project_id=project_id, provider=provider, model=model))
     typer.echo(answer)
+    if log_id:
+        typer.echo(f"[log_id={log_id} - `knowledge-forge feedback {log_id} up|down`로 평가 가능]", err=True)
+
+
+def _handle_feedback_command(line: str, log_id: Optional[str]) -> None:
+    """`--interactive` REPL의 `/feedback up|down [코멘트]` - 직전 턴의
+    `session.last_log_id`에 피드백을 붙인다 (wiki/search-evaluation.md (A))."""
+    if log_id is None:
+        typer.echo("아직 기록된 답변이 없거나 검색 로깅이 꺼져 있습니다(KF_DATABASE_URL 필요).", err=True)
+        return
+    parts = line.split(maxsplit=2)
+    if len(parts) < 2 or parts[1] not in ("up", "down"):
+        typer.echo("사용법: /feedback up|down [코멘트]", err=True)
+        return
+    rating = parts[1]
+    comment = parts[2] if len(parts) > 2 else None
+
+    async def _run() -> None:
+        async with EvalStore(settings.database_url) as store:
+            await store.add_feedback(log_id, rating, comment)
+
+    asyncio.run(_run())
+    typer.echo(f"피드백 기록됨: {rating}", err=True)
 
 
 @db_app.command("init")
@@ -665,6 +696,88 @@ def db_export_okf(
         f"OKF 백필 완료: 리소스 {resources}개, Knowledge Object {objects}개, Relation {relations}개 (OKF: {okf_dir})",
         err=True,
     )
+
+
+@app.command()
+def feedback(
+    log_id: str = typer.Argument(..., help="`knowledge-forge agent`/REPL이 답변과 함께 출력한 log_id."),
+    rating: str = typer.Argument(..., help="'up' 또는 'down'."),
+    comment: Optional[str] = typer.Option(None, "--comment", help="선택적 코멘트."),
+) -> None:
+    """일회성 `knowledge-forge agent <질문>` 답변에 사후 피드백을 붙인다
+    (wiki/search-evaluation.md (A)) - `--interactive` REPL은 대신 그 자리에서
+    `/feedback up|down [코멘트]`를 쓸 수 있다."""
+    if not settings.database_url:
+        typer.echo("KF_DATABASE_URL이 설정되지 않았습니다 - feedback은 Postgres가 필수입니다.", err=True)
+        raise typer.Exit(1)
+    if rating not in ("up", "down"):
+        typer.echo("rating은 'up' 또는 'down'이어야 합니다.", err=True)
+        raise typer.Exit(1)
+
+    async def _run() -> bool:
+        async with EvalStore(settings.database_url) as store:
+            if await store.get_search_log(log_id) is None:
+                return False
+            await store.add_feedback(log_id, rating, comment)
+            return True
+
+    if not asyncio.run(_run()):
+        typer.echo(f"log_id '{log_id}'를 찾을 수 없습니다.", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"피드백 기록됨: {rating}", err=True)
+
+
+@app.command()
+def eval(
+    project_id: Optional[str] = typer.Option(
+        None, "--project-id", help="이 프로젝트의 search_log만 채점. 생략하면 모든 프로젝트."
+    ),
+    batch_size: int = typer.Option(20, "--batch-size", help="한 번에 가져와 채점할 search_log 행 수."),
+    max_batches: Optional[int] = typer.Option(
+        None, "--max-batches", help="최대 몇 배치까지 돌지 제한(생략하면 미채점 행이 없어질 때까지)."
+    ),
+    provider: Optional[str] = typer.Option(
+        None, "--provider", help="채점에 쓸 ChatProvider. 생략하면 KF_AGENT_PROVIDER(에이전트와 동일)."
+    ),
+    model: Optional[str] = typer.Option(None, "--model", help="채점 모델. 생략하면 그 provider의 기본 모델."),
+) -> None:
+    """아직 채점되지 않은 `search_log` 행을 LLM-judge로 채점해 `eval_score`에 저장한다
+    (wiki/search-evaluation.md (B)) - Recall/Precision/MRR/NDCG(같은 문서 (C), 골드셋
+    필요)와 달리 골드 relevance judgment 없이 지금 바로 돌릴 수 있다. 답변 생성 경로와
+    분리된 오프라인 배치라 답변 지연시간에는 영향이 없다."""
+    if not settings.database_url:
+        typer.echo("KF_DATABASE_URL이 설정되지 않았습니다 - eval은 Postgres가 필수입니다.", err=True)
+        raise typer.Exit(1)
+
+    chat_provider = get_chat_provider(provider=provider, model=model)
+    # Mirrors get_chat_provider()'s own model resolution (agent/providers/factory.py)
+    # - recorded on eval_score.judge_model for "which model actually judged this".
+    active_provider = provider or settings.agent_provider
+    default_model = settings.agent_openai_compatible_model if active_provider == "openai_compatible" else settings.agent_model
+    judge_model = model or default_model
+
+    async def _run() -> tuple[int, int]:
+        scored = failed = 0
+        async with EvalStore(settings.database_url) as store:
+            batches_run = 0
+            while max_batches is None or batches_run < max_batches:
+                logs = await store.list_unscored_search_logs(project_id=project_id, limit=batch_size)
+                if not logs:
+                    break
+                for log in logs:
+                    result = await judge_search_log(log, chat_provider)
+                    if result is None:
+                        failed += 1
+                        continue
+                    await store.save_eval_score(
+                        log.log_id, result.groundedness_score, result.citation_precision, result.claims, judge_model
+                    )
+                    scored += 1
+                batches_run += 1
+        return scored, failed
+
+    scored, failed = asyncio.run(_run())
+    typer.echo(f"채점 완료: {scored}개 성공, {failed}개 실패(다음 실행에서 재시도)", err=True)
 
 
 if __name__ == "__main__":
