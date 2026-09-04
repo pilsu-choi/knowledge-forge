@@ -1,8 +1,9 @@
 import pytest
 
 from knowledge_forge.exceptions import UnsupportedFormatError
+from knowledge_forge.parsers.csv import CsvParser
 from knowledge_forge.parsers.markdown import MarkdownParser
-from knowledge_forge.parsers.registry import ParserRegistry
+from knowledge_forge.parsers.registry import ParserRegistry, default_registry
 from knowledge_forge.parsers.txt import TxtParser
 
 
@@ -34,3 +35,11 @@ def test_get_parser_for_raises_when_neither_uri_nor_filename_has_a_known_extensi
             "https://drive.google.com/file/d/abc123/view?usp=drivesdk",
             filename="Makefile",
         )
+
+
+def test_default_registry_resolves_csv_via_gdrive_filename_fallback():
+    parser = default_registry().get_parser_for(
+        "https://drive.google.com/file/d/abc123/view?usp=drivesdk",
+        filename="report.csv",
+    )
+    assert isinstance(parser, CsvParser)

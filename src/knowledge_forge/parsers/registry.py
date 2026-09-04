@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 from knowledge_forge.exceptions import UnsupportedFormatError
 from knowledge_forge.parsers.base import Parser
 from knowledge_forge.parsers.conversation import ConversationParser
+from knowledge_forge.parsers.csv import CsvParser
 from knowledge_forge.parsers.docx import DocxParser
 from knowledge_forge.parsers.html import HtmlParser
 from knowledge_forge.parsers.hwpx import HwpxParser
@@ -68,6 +69,7 @@ def default_registry() -> ParserRegistry:
         MarkdownParser(),
         TxtParser(),
         XlsxParser(),
+        CsvParser(),
         PptxParser(),
         ImageParser(),
         HwpxParser(),
