@@ -42,6 +42,36 @@ ALTER TABLE documents ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL D
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 CREATE INDEX IF NOT EXISTS idx_documents_source_id ON documents(source_id);
 CREATE INDEX IF NOT EXISTS idx_documents_project_id ON documents(project_id);
+-- documents.metadata->>'version_family' (models/document.py's DocumentMetadata.
+-- version_family, parsed by ingest_version.py) is what every "다른 버전
+-- 있어?" lookup and the PREVIOUS_VERSION relink (document_links.py) filter
+-- on - an expression index rather than a real column so the JSONB
+-- metadata blob stays the single place a Document's metadata lives.
+CREATE INDEX IF NOT EXISTS idx_documents_version_family
+    ON documents ((metadata->>'version_family'));
+
+-- Document-to-document typed edges (models/link.py's DocumentLink /
+-- LinkType, built by document_links.py). Distinct from `relations`, which
+-- only ever connects KnowledgeObjects, and from the OKF `links/*.yaml`
+-- view (pipeline._resolve_links) which is keyed by (source_id,
+-- document_id) for the file tree - this table is keyed by document_id so
+-- search/sql.py can JOIN it straight onto documents. link_id is
+-- stable_id('document_link', link_type, from, to) so a re-run upserts
+-- rather than duplicates. Both FKs are ON DELETE CASCADE: an edge without
+-- its endpoint is meaningless, and deleting a document shouldn't need to
+-- know about this table.
+CREATE TABLE IF NOT EXISTS document_links (
+    link_id           TEXT PRIMARY KEY,
+    from_document_id  TEXT NOT NULL REFERENCES documents(document_id) ON DELETE CASCADE,
+    to_document_id    TEXT NOT NULL REFERENCES documents(document_id) ON DELETE CASCADE,
+    link_type         TEXT NOT NULL,
+    confidence        DOUBLE PRECISION,
+    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at        TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_document_links_from ON document_links(from_document_id);
+CREATE INDEX IF NOT EXISTS idx_document_links_to ON document_links(to_document_id);
+CREATE INDEX IF NOT EXISTS idx_document_links_type ON document_links(link_type);
 
 CREATE TABLE IF NOT EXISTS chunks (
     chunk_id        TEXT PRIMARY KEY,

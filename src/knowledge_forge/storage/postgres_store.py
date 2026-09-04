@@ -20,6 +20,7 @@ from knowledge_forge.models.knowledge_object import (
     Evidence,
     KnowledgeObject,
 )
+from knowledge_forge.models.link import DocumentLink
 from knowledge_forge.models.relation import Relation
 from knowledge_forge.models.source import Source, SourceRef
 
@@ -873,3 +874,237 @@ class PostgresStore:
                 rows = await cur.fetchall()
                 columns = [d.name for d in cur.description] if cur.description else []
         return rows, columns
+
+    # --- document_links / version families (document_links.py) ---------
+
+    async def save_document_links(self, links: list[DocumentLink]) -> None:
+        rows: list[tuple[Any, ...]] = [
+            (
+                link.link_id,
+                link.from_document_id,
+                link.to_document_id,
+                link.link_type.value,
+                link.confidence,
+                Jsonb(link.metadata),
+                link.created_at,
+            )
+            for link in links
+        ]
+        if not rows:
+            return
+        async with self.conn.cursor() as cur:
+            await cur.executemany(
+                """
+                INSERT INTO document_links (link_id, from_document_id, to_document_id, link_type,
+                                            confidence, metadata, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (link_id) DO UPDATE SET
+                    from_document_id = EXCLUDED.from_document_id,
+                    to_document_id = EXCLUDED.to_document_id,
+                    link_type = EXCLUDED.link_type,
+                    confidence = EXCLUDED.confidence,
+                    metadata = EXCLUDED.metadata
+                """,
+                rows,
+            )
+
+    async def delete_document_links(self, document_ids: list[str], link_type: str) -> int:
+        """Removes every `link_type` edge that *starts* at one of
+        `document_ids` - the relink step (document_links.relink_version_family)
+        rebuilds a family's PREVIOUS_VERSION chain from scratch, and a stale
+        edge from an older run (a version ingested out of order) would
+        otherwise survive next to the new one, since stable link_ids only
+        dedupe identical edges."""
+        if not document_ids:
+            return 0
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM document_links WHERE link_type = %s AND from_document_id = ANY(%s)",
+                (link_type, document_ids),
+            )
+            return cur.rowcount
+
+    async def list_document_links(
+        self,
+        document_id: str,
+        *,
+        direction: str = "both",
+        link_type: str | None = None,
+    ) -> list[DocumentLink]:
+        """`direction`: "out" (edges starting at `document_id`), "in"
+        (edges pointing at it) or "both". Ordered by type then created_at
+        so the result is stable across calls."""
+        if direction not in ("out", "in", "both"):
+            raise ValueError(f"direction must be 'out', 'in' or 'both', not {direction!r}")
+        match_out = direction in ("out", "both")
+        match_in = direction in ("in", "both")
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT link_id, from_document_id, to_document_id, link_type, confidence, metadata, created_at
+                FROM document_links
+                WHERE ((%s AND from_document_id = %s) OR (%s AND to_document_id = %s))
+                  AND (%s::text IS NULL OR link_type = %s)
+                ORDER BY link_type, created_at, link_id
+                """,
+                (match_out, document_id, match_in, document_id, link_type, link_type),
+            )
+            rows = await cur.fetchall()
+        return [_document_link_from_row(row) for row in rows]
+
+    async def list_version_family(self, family_key: str, project_id: str) -> list[Document]:
+        """Every document in `project_id` whose metadata.version_family is
+        `family_key`, oldest version first / newest last - ordered in
+        Python by `ingest_version.version_sort_key` (초안 < unmarked < vN
+        < 수정본 < 최종) rather than a SQL ORDER BY, because that ranking
+        is a function of three metadata keys, not a single sortable
+        column. Ties (two unmarked `image.png` uploads) fall back to the
+        row's created_at, then document_id."""
+        from knowledge_forge.ingest_version import version_sort_key
+
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT d.document_id, d.elements, d.metadata, d.created_at, d.updated_at,
+                       s.source_id, s.source_type, s.uri, s.project_id
+                FROM documents d
+                JOIN sources s ON s.source_id = d.source_id
+                WHERE d.project_id = %s AND d.metadata->>'version_family' = %s
+                """,
+                (project_id, family_key),
+            )
+            rows = await cur.fetchall()
+        documents = [
+            Document(
+                document_id=row[0],
+                elements=row[1],
+                metadata=row[2],
+                created_at=row[3],
+                updated_at=row[4],
+                source=SourceRef(source_id=row[5], source_type=row[6], uri=row[7], project_id=row[8]),
+            )
+            for row in rows
+        ]
+        documents.sort(
+            key=lambda d: (
+                version_sort_key(d.metadata.version_label, d.metadata.version_number, d.metadata.is_final),
+                d.created_at or datetime.min.replace(tzinfo=timezone.utc),
+                d.document_id,
+            )
+        )
+        return documents
+
+    async def update_document_metadata(self, document_id: str, patch: dict[str, Any]) -> None:
+        """Merges `patch` into documents.metadata (`||`) instead of
+        replacing it - the backfill only owns the version_* keys and must
+        leave whatever else is already stored (title, page_count, keys
+        added by other code paths) untouched."""
+        await self.conn.execute(
+            "UPDATE documents SET metadata = metadata || %s, updated_at = %s WHERE document_id = %s",
+            (Jsonb(patch), datetime.now(timezone.utc), document_id),
+        )
+
+    async def find_document_ids_by_source_uris(self, uris: list[str], project_id: str) -> dict[str, str]:
+        """uri -> document_id for the sources (in `project_id`) that have a
+        parsed Document - how a `sources.metadata.links[].target_uri`
+        (context/slack.py, context/gmail.py) is turned into a
+        document_links endpoint. A uri whose source was never parsed
+        (skipped by the pipeline) is simply absent from the result."""
+        if not uris:
+            return {}
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT s.uri, d.document_id
+                FROM sources s
+                JOIN documents d ON d.source_id = s.source_id
+                WHERE s.project_id = %s AND s.uri = ANY(%s)
+                """,
+                (project_id, uris),
+            )
+            rows = await cur.fetchall()
+        return {row[0]: row[1] for row in rows}
+
+    async def find_slack_thread_parent_document(
+        self, project_id: str, channel: str, thread_ts: str, exclude_source_id: str
+    ) -> str | None:
+        """The document of the *other* Slack episode in `channel` whose
+        message_ts list contains `thread_ts` - i.e. the timeline episode
+        that already held the thread's parent message before the replies
+        arrived in a later sync (context/slack.py merges parent + replies
+        when they arrive together, in which case there is no separate
+        parent episode and this returns None)."""
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT d.document_id
+                FROM sources s
+                JOIN documents d ON d.source_id = s.source_id
+                WHERE s.project_id = %s AND s.source_type = 'slack' AND s.source_id <> %s
+                  AND s.metadata->>'channel' = %s AND s.metadata->'message_ts' ? %s
+                ORDER BY s.modified_at NULLS LAST, s.source_id
+                LIMIT 1
+                """,
+                (project_id, exclude_source_id, channel, thread_ts),
+            )
+            row = await cur.fetchone()
+        return row[0] if row is not None else None
+
+    async def list_documents_with_sources(
+        self, project_id: str | None = None, limit: int = 500, offset: int = 0
+    ) -> list[tuple[Document, Source]]:
+        """Backfill input (document_links.backfill_document_versions_and_links):
+        each Document paired with its full Source (the version parser needs
+        `sources.metadata.name`/`subject`, the linker needs `metadata.links`/
+        `thread_ts`). `elements` is not loaded - the Document comes back
+        with an empty element list, which is all the backfill needs and
+        keeps a whole-table pass cheap."""
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT d.document_id, d.metadata, d.created_at, d.updated_at,
+                       s.source_id, s.source_type, s.uri, s.content_hash, s.collected_at,
+                       s.modified_at, s.metadata, s.project_id
+                FROM documents d
+                JOIN sources s ON s.source_id = d.source_id
+                WHERE (%s::text IS NULL OR d.project_id = %s)
+                ORDER BY d.created_at, d.document_id
+                LIMIT %s OFFSET %s
+                """,
+                (project_id, project_id, limit, offset),
+            )
+            rows = await cur.fetchall()
+        pairs: list[tuple[Document, Source]] = []
+        for row in rows:
+            source = Source(
+                source_id=row[4],
+                source_type=row[5],
+                uri=row[6],
+                content_hash=row[7],
+                collected_at=row[8],
+                modified_at=row[9],
+                metadata=row[10],
+                project_id=row[11],
+            )
+            document = Document(
+                document_id=row[0],
+                source=SourceRef.from_source(source),
+                elements=[],
+                metadata=row[1],
+                created_at=row[2],
+                updated_at=row[3],
+            )
+            pairs.append((document, source))
+        return pairs
+
+
+def _document_link_from_row(row: tuple[Any, ...]) -> DocumentLink:
+    return DocumentLink(
+        link_id=row[0],
+        from_document_id=row[1],
+        to_document_id=row[2],
+        link_type=row[3],
+        confidence=row[4],
+        metadata=row[5],
+        created_at=row[6],
+    )

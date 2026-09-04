@@ -91,6 +91,27 @@ knowledge_object_embeddings(embedding_id TEXT PK, target_kind TEXT ('knowledge_o
   "이 KO/청크가 임베딩되어 있는지" 존재 여부 확인 용도로만 쓸 것. target_kind에 따라
   knowledge_object_id 또는 chunk_id 중 하나만 채워져 있고 document_id는 항상 있다.
 
+문서 버전 메타데이터 - documents.metadata JSONB 안의 키(파일명/메일 제목에서 인제스트 시
+규칙 기반으로 파싱, 없으면 NULL):
+  metadata->>'version_family'          같은 문서의 여러 버전을 묶는 정규화된 이름 키
+  (metadata->>'version_number')::float  v2.1 -> 2.1, "3차 수정본" -> 3, "(1)" 복사본 -> 1, 초안 -> 0
+  metadata->>'version_label'            표기 원문("v2", "3차 수정본", "최종", "20260824" 날짜 접미)
+  (metadata->>'is_final')::boolean      최종/final/확정 표기 여부
+  "최종본/최신 버전" 질문: 이름으로 후보 문서를 찾은 뒤 그 문서의 version_family로 같은 family를
+  묶고, is_final = true인 행을 우선, 없으면 version_number DESC(NULL은 뒤로), 그래도 없으면
+  created_at DESC로 고를 것. "3차 수정본"은 version_number = 3 또는 version_label ILIKE '%3차%'.
+
+document_links(link_id TEXT PK, from_document_id TEXT REFERENCES documents,
+               to_document_id TEXT REFERENCES documents, link_type TEXT,
+               confidence DOUBLE PRECISION, metadata JSONB, created_at TIMESTAMPTZ)
+  문서 사이의 typed edge (from -> to). link_type:
+  previous_version  from = 최신 쪽, to = 바로 이전 버전 (같은 version_family 안에서만 생성)
+  thread_parent     from = Slack 스레드 에피소드, to = 그 부모 메시지가 들어 있는 채널 에피소드
+  same_channel_sequence / thread_sequence  from = 앞선 에피소드/스레드, to = 바로 다음 것
+  attachment_of / parent_folder  스키마상 정의만 있고 아직 생성되지 않는다.
+  "이 문서의 이전 버전" = document_links WHERE from_document_id = X AND link_type =
+  'previous_version'; 전체 이력은 previous_version 체인을 따라가거나 version_family로 묶을 것.
+
 규칙:
 - SELECT 또는 WITH ... SELECT만 허용된다 - INSERT/UPDATE/DELETE/DDL은 전부 거부된다.
 - 세미콜론으로 이어붙인 여러 문장은 허용되지 않는다 - 한 번에 하나의 조회만.

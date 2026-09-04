@@ -17,6 +17,7 @@ from knowledge_forge.config import settings
 from knowledge_forge.context.base import ContextReconstructor
 from knowledge_forge.context.registry import default_reconstructor_for
 from knowledge_forge.dedup import merge_duplicates
+from knowledge_forge.document_links import apply_version_metadata
 from knowledge_forge.embedding.base import EmbeddingProvider
 from knowledge_forge.exceptions import KnowledgeExtractionError
 from knowledge_forge.extraction.base import ExtractionOutcome, Extractor
@@ -207,8 +208,14 @@ async def run_pipeline(
         except Exception as exc:  # noqa: BLE001 - a bad file must not abort the run
             logger.error("failed to parse %s, skipping: %s", item.uri, exc)
             continue
+        # Version metadata is parsed from the name before the row is
+        # written so documents.metadata carries it; the links are built
+        # after, since they read the family / uri->document map back from
+        # the store (document_links.py).
+        apply_version_metadata(document, source)
         if store is not None:
             await store.record_document(document)
+            await store.link_document(source, document)
         if okf_writer is not None:
             okf_writer.write_resource(source, document)
 

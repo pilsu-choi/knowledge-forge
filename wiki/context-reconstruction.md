@@ -109,3 +109,27 @@ Chapter/Section 단위 분할 로직이 그대로 적용된다. 즉 Context Reco
   없다. 실제로 이 재구성 단계가 실행되려면 1단계(CLI/인증 연동)가 먼저 필요하다.
 
 자세한 잔여 범위는 [`roadmap.md`](roadmap.md) 참고.
+
+## 문서 간 링크: `sources.metadata.links` → `document_links` 테이블
+
+재구성 단계가 `metadata["links"] = [{"type", "target_uri"}]`로 남기는 에피소드/스레드 간
+관계(`SAME_CHANNEL_SEQUENCE`, `THREAD_SEQUENCE`)는 원래 OKF `links/*.yaml`
+(`pipeline._resolve_links`, [`okf.md`](okf.md))에만 적재됐다. 이제 같은 항목을 Postgres
+`document_links` 테이블에도 적재한다(`document_links.build_source_links`, 설계는
+[`storage.md`](storage.md)의 "문서 버전 메타데이터와 document_links" 절):
+
+- `target_uri`는 스토어에서 `sources.uri → documents.document_id`로 해석한다
+  (`PostgresStore.find_document_ids_by_source_uris`). 같은 런의 in-memory uri 맵만 보는
+  `_resolve_links`와 달리 **이전 런에서 적재된 대상**도 해석되고, 파싱에 실패해 Document가 없는
+  대상은 조용히 건너뛴다(연결할 끝점이 없으므로).
+- 방향은 `_resolve_links`와 동일: `from` = 앞선 에피소드(`target_uri`), `to` = 그 다음 것.
+- **`THREAD_PARENT`**(Slack 전용): 재구성이 부모 메시지와 답글을 한 에피소드로 합치므로 보통은
+  스레드 안에 부모가 이미 들어 있다. 하지만 증분 동기화에서 부모는 앞선 런의 타임라인 에피소드로,
+  답글은 다음 런의 스레드 에피소드로 따로 적재될 수 있다. 이 경우 같은 채널에서 `message_ts`에
+  `thread_ts`를 포함하는 *다른* 에피소드 문서를 찾아 `스레드 → 부모 에피소드` 링크를 만든다
+  (`find_slack_thread_parent_document`). 개발 DB에는 이런 쌍이 0건이라 실제 생성된 건 없다.
+- Gmail 스레드는 재구성이 이미 답글을 한 문서로 합치므로 스레드 내부의 reply→첫 메일 링크는
+  문서 단위에서 표현할 것이 없다 — `THREAD_PARENT`는 Gmail에 만들지 않는다.
+- Slack 에피소드에는 **버전 family를 부여하지 않는다**(`document_links.display_name`이 None을
+  반환). 채널 타임라인은 한 문서의 개정 이력이 아니다. Gmail은 제목(`Re:`/`Fwd:` 접두 제거)으로
+  family를 만든다 — "주간보고 v2 보냈습니다" 같은 메일이 같은 이름의 Drive 파일과 묶일 수 있게.
