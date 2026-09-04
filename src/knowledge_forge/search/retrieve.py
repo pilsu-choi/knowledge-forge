@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 import time
 from collections.abc import Coroutine
 from dataclasses import asdict, dataclass, field
@@ -66,7 +67,7 @@ from knowledge_forge.search.constraints import (
 )
 from knowledge_forge.search.document import read_document
 from knowledge_forge.search.planner import plan_and_search
-from knowledge_forge.search.rerank import merge_and_rerank
+from knowledge_forge.search.rerank import DEFAULT_RRF_K, merge_and_rerank
 from knowledge_forge.search.service import document_search, lexical_search, vector_search
 from knowledge_forge.search.temporal import parse_temporal_expression
 
@@ -90,6 +91,14 @@ SOURCE_SQL_SEARCH = "sql_search"
 SOURCE_PLAN_SEARCH = "plan_search"
 SOURCE_READ_DOCUMENT = "read_document"
 SOURCE_VERSION_FAMILY = "version_family"
+# `_Run.link_cohesion`이 `document_links` 테이블에서 만든 투표자의 이름. 검색이 아니라
+# **이미 있는 후보들 사이의 관계**를 읽은 것이라 조회 소스가 아니지만, RRF에 한 표로
+# 들어가므로 다른 소스와 같은 이름 공간을 쓴다.
+SOURCE_DOCUMENT_LINKS = "document_links"
+# `steps`에만 쓰는 이름 - `constraints.py`의 `STRATEGY_*`와 달리 라우팅되는 전략이 아니다.
+# 링크 응집도는 후보 생성 단계가 아니라 병합 **뒤**에 얹는 재정렬이라 `suggest_strategies`가
+# 고를 대상이 아니고, `strategies_override`로 켜고 끄는 대상도 아니다.
+STRATEGY_LINK_COHESION = "link_cohesion"
 
 # exhaustive/negative/count에서 "전부"를 대신하는 상한 - top-k 절단은 없애되 한 질의가 테이블
 # 전체를 끌어오지는 못하게(`search/sql.py::DEFAULT_MAX_ROWS`와 같은 200).
@@ -117,6 +126,40 @@ _HIT_SUMMARY_CHARS = 500
 # comparison 대상별로 실을 문서 수 - "대상별 최상위 문서"를 하나만 고르면 제목 조회의 tie에서
 # 정답이 2위로 밀렸을 때 비교 자체가 무너지므로 약간 여유를 둔다.
 _COMPARISON_PER_TARGET = 2
+# --- document_links 응집도(`_Run.link_cohesion`) ---------------------------------
+# 씨앗으로 삼을 병합 랭킹 상위 문서 수. "관련도 상위 몇 건이 같은 대화에 속하는가"를 묻는
+# 것이므로 최종 limit(기본 10)과 같은 자릿수로 둔다 - 더 늘리면 관련도가 낮은 문서의
+# 이웃까지 표를 받아 신호가 희석되고, 더 줄이면 대화가 상위 2~3건에 몰린 질의에서만 돈다.
+_LINK_SEED_TOP_N = 10
+# 따라갈 링크 종류 - **"같은 대화에 속한다"가 참인 것만.** 링크 이름만 보고 고르면 안 된다:
+# - `same_channel_sequence`(145행, `context/slack.py`)는 한 **채널 안에서** 인접한 에피소드를
+#   잇는다. 채널은 실제 묶음이라 이 신호는 참이다.
+# - `thread_sequence`(58행)는 이름과 달리 대화가 아니다. `context/gmail.py`
+#   `GmailThreadReconstructor`는 **메일함의 모든 스레드를 도착 시각 순으로 한 줄로** 잇는다
+#   (`ordered_threads`의 `previous_uri`) - gmail 문서 하나가 이미 스레드 하나라서, 이 간선이
+#   말하는 것은 "이 스레드가 저 스레드 다음에 왔다"뿐이고 내용은 아무 상관이 없다. 실제로
+#   이걸 켜고 재면 서로 무관한 "공유 요청" 메일 두 건이 서로를 밀어 올려 정답을 3위로
+#   떨어뜨렸다(v0-factoid-001/-ambiguous-001 1.000 → 0.500/0.571,
+#   v0-long_range_context-001 1.000 → 0.500). 그래서 뺀다.
+# - `previous_version`은 버전 사슬이고, `latest` 후처리(`version_family` 압축)가 이미
+#   **반대 방향으로** 다룬다(구버전을 뒤로 내린다) - 여기서 표를 주면 그 압축을 되돌린다.
+# - `attachment_of`/`parent_folder`는 오늘 코퍼스에 0행이다.
+_LINK_TYPES = ("same_channel_sequence", "thread_parent", "thread_reply")
+# 링크 응집도를 **켜는 조건**. `constraints.py`에는 "순서를 묻는 질의"라는 플래그가 없어
+# (그 파일은 다른 소유자다) 여기서 직접 본다 - 이 실행기 안에서만 쓰는 판정이라 제약 추출
+# 계약을 넓히지 않는다.
+#
+# 왜 게이트가 필요한가(실측): 게이트 없이 모든 질의에 응집도 표를 주면 채널 클러스터가
+# 무관한 질의의 상위를 통째로 가져간다. v0-whole_document_summary-003("AGENTS.md 전체 내용을
+# 요약해줘")에서 슬랙 에피소드가 14위/62위에서 4위/9위로 올라와 정답을 밀어냈고(0.631 → 0.000),
+# v0-factoid-003에서는 같은 채널 6건이 몰려 올라와 1위 정답이 밀렸다(1.000 → 0.289). 후보가
+# 많을수록 나빠지는, `_Run.latest`가 예전에 밟았던 그 붕괴와 같은 종류다.
+#
+# 왜 어휘 게이트를 써도 되는가: `_is_source_hint_only_filter`가 못 믿는 `source_type` 힌트는
+# "정답이 **어디에** 있는지"에 대한 추측이라 틀리면 정답을 잘라낸다. 여기서 보는 것은 "사용자가
+# **무엇을** 원하는지"(순서)이고, 오탐이어도 결과는 한 채널 안의 재정렬뿐이라 손실이 갇혀 있다.
+_SEQUENCE_INTENT_RE = re.compile(r"순서|순으로|차례|흐름|타임라인|시간순|순차")
+
 # document_types 라벨 중 실제로는 문서 제목이 아니라 소스 종류를 뜻하는 것 - 메일 제목에 "메일"이
 # 들어 있을 리 없으니 title ILIKE로 걸면 전부 사라진다.
 _DOCUMENT_TYPE_AS_SOURCE: dict[str, str] = {"메일": "gmail"}
@@ -340,6 +383,27 @@ def _metadata_filter_sql(where: list[str]) -> str:
 def _metadata_count_sql(where: list[str]) -> str:
     clause = " AND ".join(where) if where else "TRUE"
     return f"SELECT COUNT(*) AS n\n{_FILTER_FROM}\nWHERE {clause}"
+
+
+# --- document_links SQL -----------------------------------------------------------
+
+
+def _document_links_sql(document_ids: list[str]) -> str:
+    """씨앗 문서들에 걸린 `_LINK_TYPES` 링크를 양방향으로 한 번에 읽는다.
+
+    방향을 무시하는 이유: `same_channel_sequence`/`thread_sequence`의 방향은 "누가 먼저였나"
+    (시간 순서)이지 "누가 누구에 속하나"가 아니다. 여기서 쓰는 신호는 **같은 대화에 속한다**는
+    무방향 사실 하나뿐이고, 시간 순서는 이미 모든 히트가 싣고 있는 `content_at`이 더 정확하게
+    준다(링크는 인접한 두 건만 잇지만 `content_at`은 전순서를 준다). 그래서 링크에서 정렬을
+    다시 꺼내려 하지 않는다 - 링크가 timestamp보다 더 아는 것은 오직 "묶음"이다."""
+    values = ", ".join(_sql_literal(i) for i in document_ids)
+    types = ", ".join(_sql_literal(t) for t in _LINK_TYPES)
+    return (
+        "SELECT from_document_id, to_document_id, link_type\n"
+        "FROM document_links\n"
+        f"WHERE link_type IN ({types})\n"
+        f"  AND (from_document_id IN ({values}) OR to_document_id IN ({values}))"
+    )
 
 
 def _filter_row_to_hit(row: tuple[Any, ...]) -> dict[str, Any]:
@@ -894,19 +958,131 @@ class _Run:
 
     # -- 병합 -----------------------------------------------------------------
 
-    def merge(self) -> list[dict[str, Any]]:
+    async def link_cohesion(self, merged: list[dict[str, Any]]) -> None:
+        """`document_links`를 RRF의 **한 표**로 얹는다 - 병합 랭킹 상위(`_LINK_SEED_TOP_N`)와
+        같은 대화에 묶여 있는 **이미 후보인** 문서를 조금 위로 올린다.
+
+        왜 링크가 필요한가 / 무엇에는 필요 없는가:
+        `same_channel_sequence`(145행)와 `thread_sequence`(58행)는 "채널/메일함 안에서 시간상
+        인접한 두 건"이다. 그중 **시간 순서**는 링크의 고유 정보가 아니다 - 모든 히트가 이미
+        `content_at`을 싣고 있고 그쪽이 전순서를 준다(`latest` 후처리가 그걸 쓴다). 링크가
+        timestamp보다 더 아는 것은 **묶음** 하나뿐이다: 두 문서가 같은 채널/스레드에 속한다는
+        사실은 타임스탬프만 봐서는 알 수 없다. 그래서 이 함수는 정렬이 아니라 **응집도**만
+        신호로 쓴다.
+
+        설계에서 일부러 하지 않은 것 - **링크로 새 문서를 데려오지 않는다.** 이웃이 후보
+        집합(`merged`)에 이미 있어야 표를 받는다. `_Run.latest`가 밟았던 붕괴("관련도와 무관한
+        문서를 위로 올리자 후보가 늘수록 나빠짐")가 링크 확장에서 재발하기 가장 쉬운 지점이
+        정확히 여기다. v0 골든셋으로 실측한 근거도 있다: 랭킹에서 빠져 있는 정답 문서 중
+        **상위 10건에서 링크 한 홉으로 닿는 것은 0건**이었다(v0-latest-003의 b2bf0036,
+        v0-multihop-003의 54e9f0ab/b2bf0036 둘 다 document_links가 아예 없다). 즉 이 코퍼스에서
+        링크 확장의 재현율 상한은 0이고, 얻을 수 있는 것은 **순서**뿐이다.
+
+        또한 **고정(pin)이 아니라 표**다. anchor/comparison처럼 최상위로 끌어올리면 관련도
+        랭킹을 덮어쓰게 된다. RRF 한 표(`1/(k+rank)`)는 "다른 arm 하나가 더 찾아준 것"과 같은
+        크기라, 관련도가 낮은 이웃이 정답을 밀어내지 못한다.
+
+        게이트는 질의 어휘가 아니라 **데이터**다: 후보 둘 이상이 실제로 한 대화에 묶여 있을
+        때만 표가 나간다("순서/스레드" 같은 말이 질의에 있는지는 보지 않는다). 어휘 게이트를
+        쓰지 않는 이유는 `_is_source_hint_only_filter`가 `source_type` 힌트를 못 믿는 이유와
+        같다 - 질의 표면 어휘로 찍은 추측이고, 여기서는 그 추측 없이도 코퍼스가 직접
+        "이 후보들은 한 대화다"라고 말해 준다."""
+        if not _SEQUENCE_INTENT_RE.search(self.c.query):
+            return
+        ranked_documents, _ = _dedupe_documents(merged)
+        if len(ranked_documents) < 2:
+            return
+        seeds = ranked_documents[:_LINK_SEED_TOP_N]
+        seed_rank = {document_id: rank for rank, document_id in enumerate(seeds)}
+        candidates = set(ranked_documents)
+        try:
+            sql = _document_links_sql(seeds)
+            rows, _columns = await self.store.execute_readonly_query(sql, _FILTER_MAX_ROWS)
+        except Exception as exc:  # noqa: BLE001 - 보조 신호다, 실패해도 랭킹은 그대로 나간다
+            logger.warning("document_links query failed, ranking without link cohesion: %s", exc)
+            self.step(STRATEGY_LINK_COHESION, SOURCE_DOCUMENT_LINKS, 0, error=f"{type(exc).__name__}: {exc}")
+            return
+        # 문서 -> 그 문서가 붙어 있는 씨앗들의 순위. 자기 자신(씨앗이 씨앗에 붙은 경우)도
+        # 센다 - "상위 두 건이 같은 채널"이라는 사실 자체가 그 채널을 지지하는 신호다.
+        neighbors: dict[str, set[int]] = {}
+        types_seen: dict[str, set[str]] = {}
+        for from_id, to_id, link_type in rows:
+            for document_id, other in ((from_id, to_id), (to_id, from_id)):
+                if document_id not in candidates or other not in seed_rank or other == document_id:
+                    continue
+                neighbors.setdefault(document_id, set()).add(seed_rank[other])
+                types_seen.setdefault(document_id, set()).add(str(link_type))
+        if not neighbors:
+            self.step(STRATEGY_LINK_COHESION, SOURCE_DOCUMENT_LINKS, 0, sql=sql, seeds=len(seeds), reason="no_cluster")
+            return
+        merged_rank = {document_id: rank for rank, document_id in enumerate(ranked_documents)}
+        # 정렬 키는 전부 결정론적이다: 붙은 씨앗 수(많을수록 대화의 중심) → 가장 높은 씨앗의
+        # 순위 → 원래 병합 순위. 마지막 항이 tie를 완전히 깨므로 같은 입력이면 같은 순서다.
+        voted = sorted(
+            neighbors,
+            key=lambda d: (-len(neighbors[d]), min(neighbors[d]), merged_rank[d]),
+        )
+        boost = {document_id: 1.0 / (DEFAULT_RRF_K + rank) for rank, document_id in enumerate(voted, start=1)}
+        for hit in merged:
+            delta = boost.get(hit["document_id"])
+            if delta is not None:
+                hit["rerank_score"] = float(hit.get("rerank_score") or 0.0) + delta
+                hit.setdefault("retrieval_sources", []).append(SOURCE_DOCUMENT_LINKS)
+        before = list(ranked_documents)
+        # `sort`는 안정 정렬이라 점수가 같은 히트끼리는 병합 순서를 그대로 지킨다.
+        merged.sort(key=lambda hit: -float(hit.get("rerank_score") or 0.0))
+        after, _ = _dedupe_documents(merged)
+        self.step(
+            STRATEGY_LINK_COHESION,
+            SOURCE_DOCUMENT_LINKS,
+            len(voted),
+            sql=sql,
+            seeds=len(seeds),
+            link_types=sorted({t for types in types_seen.values() for t in types}),
+            promoted=[
+                {"document_id": d, "from": before.index(d) + 1, "to": after.index(d) + 1, "seeds": len(neighbors[d])}
+                for d in voted
+                if after.index(d) < before.index(d)
+            ],
+        )
+
+    async def merge(self) -> list[dict[str, Any]]:
         """관련도 랭킹(`merged`)에 메타데이터 필터(`filter_ids`)를 겹쳐 최종 순위를 만든다.
 
         **필터는 관련도 랭킹을 좁히는 도구지 대체하는 도구가 아니다.** 아래 분기들은 전부 그
         원칙과, "이 필터를 얼마나 믿을 수 있나"(`_is_source_hint_only_filter`)의 조합이다."""
         candidate_sources = {k: _with_document_id(v) for k, v in self.results_by_source.items() if v}
         merged = merge_and_rerank(candidate_sources)
+        # 링크 응집도는 **필터/anchor 앞**이다. 이 단계는 후보 집합을 바꾸지 않고 순서만
+        # 바꾸므로 아래 교집합(`filter_ids`)의 결과 집합은 그대로고, anchor 고정은 어차피
+        # 순서와 무관하게 맨 앞으로 옮기는 partition이라 영향을 받지 않는다.
+        if merged:
+            await self.link_cohesion(merged)
 
         filter_note: str | None = None
         if self.filter_ids is not None:
             if not self.filter_ids:
                 filter_note = "filter_empty_ignored"
             elif not candidate_sources:
+                # **주의: 이 분기는 오늘 도달 불가능하다.** `keyword_arm`이 상시화된 뒤로
+                # semantic_query가 있는 질의는 제목/본문 조회가 최소 한 건은 물어오므로
+                # `candidate_sources`가 비지 않는다 - v0 76질의에서 metadata_filter가 돈 30건 중
+                # `filter_only`는 **0건**이다(예전 baseline 5건).
+                #
+                # 그런데도 지우지 않고 남겨 두는 이유: 이 분기의 **의도**("질의가 제약 말고는
+                # 아무 내용이 없으니 필터 집합이 곧 답이다")는 지금 아래 두 분기가 이미 커버하고
+                # 있고, 그 커버가 v0에서 손실을 내지 않는다. 실측(run ff9c6393): 구조적 술어가
+                # 있는 8건(temporal 3, relative_temporal 3, metadata_filter-001, aggregation-003)은
+                # 전부 `intersected`/`no_overlap_fallback_to_filter`로 가서 **ndcg@10 1.000**이다.
+                # 즉 교집합을 무조건 하는 것이 오늘 코퍼스에서 아무것도 깨뜨리지 않는다.
+                # 반대로 조건을 "관련도 arm에 독립 신호가 없다" 같은 것으로 되살리면, 어휘 arm이
+                # 정답을 제대로 찾은 질의에서까지 랭킹을 버리고 최신순 필터 집합을 답으로 내는
+                # 회귀 위험만 생긴다(이득 0, 위험 > 0).
+                #
+                # 남기는 값어치는 안전망이다: 임베딩이 없거나 `strategies_override`로 arm을
+                # 끈 실행에서는 여전히 도달하고, 그때 답이 통째로 비는 것을 막는다.
+                # 판단 기준 전체는 wiki/search-architecture.md "metadata_filter를 언제 믿는가".
+                #
                 # 필터 단독 - 최신순 정렬된 필터 집합 자체가 결과. 여기에는 "관련도 랭킹을 버렸다"는
                 # 문제가 없다: 버릴 관련도 랭킹 자체가 없다(document/lexical/vector 전부 0건).
                 # "작년 3분기에 김민수가 보낸 메일" 같은 순수 메타데이터 질의는 검색어로 쓸 내용어가
@@ -1142,7 +1318,7 @@ async def retrieve(
     if STRATEGY_MULTIHOP in strategies:
         await run.multihop(provider)
 
-    hits = run.merge()
+    hits = await run.merge()
 
     # 후처리
     if STRATEGY_LATEST in strategies:

@@ -74,6 +74,7 @@ class _FakeStore:
         chunk_hits: dict[str | None, list[dict]] | None = None,
         filter_rows: list[tuple] | None = None,
         version_rows: list[tuple] | None = None,
+        link_rows: list[tuple] | None = None,
         count_value: int = 0,
         term_df: dict[str, int] | None = None,
         documents: dict[str, tuple[Document, Source, list[Chunk]]] | None = None,
@@ -82,6 +83,7 @@ class _FakeStore:
         self.chunk_hits = chunk_hits or {}
         self.filter_rows = filter_rows or []
         self.version_rows = version_rows or []
+        self.link_rows = link_rows or []
         self.count_value = count_value
         self.term_df = term_df or {}
         self.documents = documents or {}
@@ -115,6 +117,11 @@ class _FakeStore:
                 if term in self.term_df:
                     rows.append((index, self.term_df[term]))
             return rows, ["term_index", "df"]
+        if "FROM document_links" in sql:
+            # 실제 SQL은 `link_type IN (...)`으로 거르므로 페이크도 같이 걸러야 한다 -
+            # 안 그러면 `_LINK_TYPES`에서 뺀 종류가 테스트에서만 살아난다.
+            rows = [row for row in self.link_rows if f"'{row[2]}'" in sql]
+            return rows, ["from_document_id", "to_document_id", "link_type"]
         if "version_family" in sql:
             return list(self.version_rows), ["document_id", "project_id", "family", "label", "number", "is_final"]
         return list(self.filter_rows[:limit]), ["document_id", "title", "source_type", "uri", "modified_at", "content_at", "project_id"]
@@ -988,3 +995,72 @@ class TestAgainstPostgres:
         result = await retrieve("김철수가 보낸 자료", store=store, project_id=_PROJECT, now=_NOW)
 
         assert result.document_ids == ["test-rt-d1"]
+
+
+# --- document_links 응집도 (`_Run.link_cohesion`) ---------------------------------
+
+
+def _link_row(from_id: str, to_id: str, link_type: str = "same_channel_sequence") -> tuple:
+    return (from_id, to_id, link_type)
+
+
+@pytest.mark.asyncio
+async def test_link_cohesion_is_off_unless_the_query_asks_for_an_order(monkeypatch):
+    """순서를 묻지 않는 질의에는 링크 응집도가 아예 돌지 않는다.
+
+    게이트가 없으면 채널 클러스터가 무관한 질의의 상위를 가져간다 - 실측으로
+    v0-whole_document_summary-003이 0.631 → 0.000, v0-factoid-003이 1.000 → 0.289로
+    무너졌다(`_SEQUENCE_INTENT_RE` 주석)."""
+    store = _FakeStore(link_rows=[_link_row("d2", "d3")])
+    _patch_vector(monkeypatch, [_chunk_hit("d1", "c1", 0.9), _chunk_hit("d2", "c2", 0.8), _chunk_hit("d3", "c3", 0.7)])
+
+    result = await retrieve("배포 일정 정리", store=store, now=_NOW)
+
+    assert not [s for s in result.steps if s.strategy == "link_cohesion"]
+    assert "FROM document_links" not in "".join(sql for sql, _ in store.sql_calls)
+    assert result.document_ids == ["d1", "d2", "d3"]
+
+
+@pytest.mark.asyncio
+async def test_link_cohesion_lifts_a_candidate_that_shares_a_channel_with_a_top_hit(monkeypatch):
+    """"순서"를 묻는 질의에서, 상위 히트와 같은 채널에 묶인 **이미 후보인** 문서가 위로 온다."""
+    store = _FakeStore(link_rows=[_link_row("d1", "d4")])
+    _patch_vector(
+        monkeypatch,
+        [_chunk_hit(f"d{i}", f"c{i}", 1.0 - i / 10) for i in range(1, 6)],
+    )
+
+    result = await retrieve("알림이 올라온 순서", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.strategy == "link_cohesion")
+    assert step.detail["link_types"] == ["same_channel_sequence"]
+    assert result.document_ids.index("d4") < result.document_ids.index("d2")
+    # 표 한 장이지 고정이 아니다 - 1위(=링크 상대)를 밀어내지는 못한다.
+    assert result.document_ids[0] == "d1"
+
+
+@pytest.mark.asyncio
+async def test_link_cohesion_never_introduces_a_document_that_was_not_a_candidate(monkeypatch):
+    """링크로 **새 문서를 데려오지 않는다.** `_Run.latest`가 예전에 밟은 붕괴("관련도와 무관한
+    문서를 위로") 가 링크 확장에서 재발하기 가장 쉬운 지점이다. v0 실측으로도 랭킹에서 빠진
+    정답 중 상위 10건에서 한 홉으로 닿는 것은 0건이라, 데려와서 얻을 재현율도 없다."""
+    store = _FakeStore(link_rows=[_link_row("d1", "outsider")])
+    _patch_vector(monkeypatch, [_chunk_hit("d1", "c1", 0.9), _chunk_hit("d2", "c2", 0.8)])
+
+    result = await retrieve("연결/해제 알림 순서", store=store, now=_NOW)
+
+    assert "outsider" not in result.document_ids
+    assert next(s for s in result.steps if s.strategy == "link_cohesion").n_hits == 0
+
+
+@pytest.mark.asyncio
+async def test_link_cohesion_ignores_thread_sequence_which_is_a_mailbox_timeline(monkeypatch):
+    """`thread_sequence`는 대화가 아니다 - `context/gmail.py`가 메일함의 **모든** 스레드를
+    도착 시각 순으로 한 줄로 잇는 간선이라, 내용이 무관한 두 메일을 서로 밀어 올린다."""
+    store = _FakeStore(link_rows=[_link_row("d1", "d4", "thread_sequence")])
+    _patch_vector(monkeypatch, [_chunk_hit(f"d{i}", f"c{i}", 1.0 - i / 10) for i in range(1, 6)])
+
+    result = await retrieve("메일이 온 순서", store=store, now=_NOW)
+
+    assert next(s for s in result.steps if s.strategy == "link_cohesion").detail["reason"] == "no_cluster"
+    assert result.document_ids == ["d1", "d2", "d3", "d4", "d5"]
