@@ -1,6 +1,9 @@
+import pytest
+
 from knowledge_forge.agent.plan import PlanState
 from knowledge_forge.agent.providers.base import AssistantTurn, ChatProvider, Message
 from knowledge_forge.agent.tools import default_tools
+from knowledge_forge.config import settings
 
 _EXPECTED_BASE_TOOL_NAMES = [
     "file_search",
@@ -11,6 +14,16 @@ _EXPECTED_BASE_TOOL_NAMES = [
     "write_memory",
     "write_plan",
 ]
+
+
+@pytest.fixture(autouse=True)
+def _no_database_url(monkeypatch):
+    """`default_tools()` now adds `vector_search` whenever
+    `settings.database_url` is truthy - force it to None by default so this
+    file's tool-list assertions don't depend on whether a real `.env` (e.g. a
+    developer's local `KF_DATABASE_URL`) happens to be loaded. Tests that
+    actually exercise `vector_search` override it back with monkeypatch."""
+    monkeypatch.setattr(settings, "database_url", None)
 
 
 async def test_default_tools_wraps_file_search_and_forwards_arguments(monkeypatch):
@@ -173,7 +186,9 @@ class _FakeProvider(ChatProvider):
 async def test_default_tools_includes_delegate_task_when_provider_and_system_given():
     tools = default_tools(provider=_FakeProvider(), system="system prompt")
 
-    assert [t.name for t in tools] == _EXPECTED_BASE_TOOL_NAMES + ["delegate_task"]
+    assert [t.name for t in tools] == ["file_search", "plan_search"] + _EXPECTED_BASE_TOOL_NAMES[1:] + [
+        "delegate_task"
+    ]
 
 
 async def test_default_tools_include_delegate_false_omits_it_even_with_provider():
@@ -203,3 +218,159 @@ async def test_delegate_task_runs_a_child_agent_and_returns_only_its_final_answe
     # of the parent's history.
     assert len(provider.calls[0]) == 1
     assert provider.calls[0][0].content == "investigate project X"
+
+
+async def test_default_tools_omits_vector_search_without_database_url():
+    tools = default_tools()
+
+    assert [t.name for t in tools] == _EXPECTED_BASE_TOOL_NAMES
+
+
+async def test_default_tools_includes_vector_search_right_after_file_search_when_database_url_set(monkeypatch):
+    monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
+
+    tools = default_tools()
+
+    assert [t.name for t in tools] == ["file_search", "vector_search"] + _EXPECTED_BASE_TOOL_NAMES[1:]
+
+
+class _FakeConnectedStore:
+    def __init__(self, sentinel):
+        self._sentinel = sentinel
+
+    async def __aenter__(self):
+        return self._sentinel
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+
+async def test_default_tools_vector_search_opens_a_store_and_forwards_arguments(monkeypatch):
+    captured = {}
+    sentinel_store = object()
+
+    def _fake_pipeline_store(database_url, data_dir):
+        captured["database_url"] = database_url
+        captured["data_dir"] = data_dir
+        return _FakeConnectedStore(sentinel_store)
+
+    async def _fake_vector_search(query, store, project_id=None, type=None, limit=10):
+        captured.update(query=query, store=store, project_id=project_id, type=type, limit=limit)
+        return [{"knowledge_object_id": "ko1"}]
+
+    monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
+    monkeypatch.setattr("knowledge_forge.storage.store.PipelineStore", _fake_pipeline_store)
+    monkeypatch.setattr("knowledge_forge.agent.tools.vector_search", _fake_vector_search)
+
+    tool = next(t for t in default_tools() if t.name == "vector_search")
+    result = await tool.handler({"query": "배포 일정", "project_id": "proj", "type": "decision", "limit": 3})
+
+    assert result == [{"knowledge_object_id": "ko1"}]
+    assert captured["database_url"] == "postgresql://kf:kf@localhost/kf"
+    assert captured["store"] is sentinel_store
+    assert captured["query"] == "배포 일정"
+    assert captured["project_id"] == "proj"
+    assert captured["type"] == "decision"
+    assert captured["limit"] == 3
+
+
+async def test_default_tools_vector_search_handler_uses_defaults_for_optional_arguments(monkeypatch):
+    captured = {}
+
+    async def _fake_vector_search(query, store, project_id=None, type=None, limit=10):
+        captured.update(query=query, project_id=project_id, type=type, limit=limit)
+        return []
+
+    monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
+    monkeypatch.setattr(
+        "knowledge_forge.storage.store.PipelineStore", lambda *a, **k: _FakeConnectedStore(object())
+    )
+    monkeypatch.setattr("knowledge_forge.agent.tools.vector_search", _fake_vector_search)
+
+    tool = next(t for t in default_tools() if t.name == "vector_search")
+    await tool.handler({"query": "auth"})
+
+    assert captured == {"query": "auth", "project_id": None, "type": None, "limit": 10}
+
+
+async def test_default_tools_omits_plan_search_without_provider():
+    tools = default_tools()
+
+    assert "plan_search" not in [t.name for t in tools]
+
+
+async def test_default_tools_includes_plan_search_right_after_file_search_when_provider_given():
+    tools = default_tools(provider=_FakeProvider())
+
+    assert [t.name for t in tools] == ["file_search", "plan_search"] + _EXPECTED_BASE_TOOL_NAMES[1:]
+
+
+async def test_default_tools_orders_vector_search_before_plan_search(monkeypatch):
+    monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
+
+    tools = default_tools(provider=_FakeProvider())
+
+    assert [t.name for t in tools] == ["file_search", "vector_search", "plan_search"] + _EXPECTED_BASE_TOOL_NAMES[1:]
+
+
+async def test_default_tools_plan_search_forwards_arguments_without_database_url(monkeypatch):
+    captured = {}
+    provider = _FakeProvider()
+
+    async def _fake_plan_and_search(query, given_provider, *, store=None, project_id=None, limit_per_subquery=5):
+        captured.update(
+            query=query, provider=given_provider, store=store, project_id=project_id, limit_per_subquery=limit_per_subquery
+        )
+        return {"subqueries": [], "evidence": []}
+
+    monkeypatch.setattr("knowledge_forge.agent.tools.plan_and_search", _fake_plan_and_search)
+
+    tool = next(t for t in default_tools(project_id="proj-a", provider=provider) if t.name == "plan_search")
+    result = await tool.handler({"query": "복합 질문", "limit_per_subquery": 3})
+
+    assert result == {"subqueries": [], "evidence": []}
+    assert captured == {
+        "query": "복합 질문",
+        "provider": provider,
+        "store": None,
+        "project_id": "proj-a",
+        "limit_per_subquery": 3,
+    }
+
+
+async def test_default_tools_plan_search_opens_a_store_when_database_url_configured(monkeypatch):
+    captured = {}
+    sentinel_store = object()
+
+    def _fake_pipeline_store(database_url, data_dir):
+        captured["database_url"] = database_url
+        return _FakeConnectedStore(sentinel_store)
+
+    async def _fake_plan_and_search(query, provider, *, store=None, project_id=None, limit_per_subquery=5):
+        captured["store"] = store
+        return {"subqueries": [], "evidence": []}
+
+    monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
+    monkeypatch.setattr("knowledge_forge.storage.store.PipelineStore", _fake_pipeline_store)
+    monkeypatch.setattr("knowledge_forge.agent.tools.plan_and_search", _fake_plan_and_search)
+
+    tool = next(t for t in default_tools(provider=_FakeProvider()) if t.name == "plan_search")
+    await tool.handler({"query": "복합 질문"})
+
+    assert captured["database_url"] == "postgresql://kf:kf@localhost/kf"
+    assert captured["store"] is sentinel_store
+
+
+async def test_default_tools_plan_search_query_project_id_overrides_default(monkeypatch):
+    captured = {}
+
+    async def _fake_plan_and_search(query, provider, *, store=None, project_id=None, limit_per_subquery=5):
+        captured["project_id"] = project_id
+        return {"subqueries": [], "evidence": []}
+
+    monkeypatch.setattr("knowledge_forge.agent.tools.plan_and_search", _fake_plan_and_search)
+
+    tool = next(t for t in default_tools(project_id="default-proj", provider=_FakeProvider()) if t.name == "plan_search")
+    await tool.handler({"query": "q", "project_id": "override-proj"})
+
+    assert captured["project_id"] == "override-proj"
