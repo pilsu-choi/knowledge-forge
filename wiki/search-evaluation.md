@@ -2,7 +2,7 @@
 
 `search-architecture.md`가 "Search Evaluation / Feedback Loop — 설계만, 미구현"과
 "Iterative / Agentic Retrieval — 이미 구현됨(암묵적 판단에 의존)"으로 남겨둔 두 항목을 채우는
-네 조각 - (A)/(B)는 구현됨, (C)/(D)는 여전히 설계만이다. (A)가 나머지 전부의 전제조건이다.
+네 조각 - (A)/(B)는 구현됨, (C)는 골든셋·지표 모듈까지 구현되고 CLI 배선이 남았으며, (D)는 여전히 설계만이다. (A)가 나머지 전부의 전제조건이다.
 
 ## 스코프: 독립적인 네 조각
 
@@ -10,7 +10,7 @@
 |---|---|---|---|
 | (A) 로깅 인프라 | query/answer/evidence를 Postgres에 기록 | 불필요 | **구현됨** |
 | (B) Groundedness/Citation 자동 평가 | LLM-as-judge로 claim-evidence 매칭, 비동기 배치 | 불필요 | **구현됨** |
-| (C) Recall/Precision/MRR/NDCG | relevance judgment 필요 | **필요** | 설계만, 미구현 |
+| (C) Recall/Precision/MRR/NDCG | relevance judgment 필요 | **필요** | 골든셋 스키마·v0·지표 모듈 **구현됨**, `eval-ir` CLI 미구현 |
 | (D) 명시적 Groundedness Gate | (B)의 판정기를 온라인 게이트로 재사용, iterative retrieval 강화 | 불필요 | 설계만, 미구현 |
 
 ## (A) 로깅 인프라 — **구현됨**, `storage/eval_store.py::EvalStore`
@@ -132,35 +132,137 @@ groundedness_score=1.0으로 정상 채점된다 - 이 둘을 구분하지 않�
 저비용 근사치(RAG 평가에서 표준적인 완화책)다. `eval_score.claims`(실패한 것만이 아니라 전부)를
 사람이 주기적으로 샘플링해 judge 정확도 자체를 검증하는 루틴이 있어야 신뢰도를 유지한다.
 
-## (C) Recall / Precision / MRR / NDCG — relevance judgment 필요, 별도 트랙
+## (C) Recall / Precision / MRR / NDCG — 골든셋 스키마·지표 모듈 구현됨, `eval-ir` CLI는 다음 단계
 
 **왜 로그만으로 계산 불가능한가**: 이 지표들은 "이 질의에 어떤 문서가 관련 있는가"라는 정답이
 있어야 정의된다. 실 트래픽 로그에는 이 정답이 없다 — 사용자가 본 적 없는 관련 문서를 놓친
 경우(false negative)가 로그에 아예 나타나지 않으므로, 검색이 놓친 것과 애초에 관련 문서가
-없던 것을 로그만으로 구분할 수 없다.
+없던 것을 로그만으로 구분할 수 없다. 그래서 정답(골든셋)을 별도 파일로 고정하고, 그 파일로
+검색 결과를 채점한다.
 
-**제안 경로**:
-1. **소규모 큐레이션 회귀 셋** — 대표 질의 30~50개 + 사람이 미리 표시한 relevant
-   `knowledge_object_id` 목록을 fixture로 고정(예: `tests/eval/golden_queries.json`).
-   `search/rerank.py`(RRF 파라미터)나 `search/router.py`(라우팅 휴리스틱), 임베딩 모델 교체처럼
-   검색 품질에 영향을 주는 변경마다 이 셋으로 Recall@k/MRR/NDCG를 계산해 회귀를 잡는다 — CI성
-   오프라인 평가, 실사용 트래픽과 무관하게 언제든 돌릴 수 있다.
-2. **실 트래픽 근사(보조 신호)** — `search_feedback.rating = 'up'`이 달린 로그의 `evidence`를
-   "관련 있음"으로 잠정 채택해 골드셋을 점진적으로 불린다. 노이즈가 크다(사용자는 최종 답변만
-   보고 평가하지, 근거 하나하나의 관련성을 판단하지 않는다) — 트래픽이 충분히 쌓인 뒤의 보조
-   신호로만 쓰고, 1)의 큐레이션 셋을 대체하지 않는다.
+### 구현된 조각
 
-사람 노동(큐레이션)이 선행돼야 해서 (A)/(B)보다 뒤 순위 — 하지만 (A)가 로그 스키마를 이미
-`evidence` JSONB로 잡아두므로, (C)를 시작할 때 스키마 변경은 필요 없다.
+| 파일 | 역할 |
+|---|---|
+| `evaluation/golden.py` | 골든셋 pydantic 모델(`GoldenSet`/`GoldenQuery`/`GoldenExpected`), `QUERY_TYPES`, `load_golden`/`save_golden`, `compute_source_hash`, `check_staleness` |
+| `evaluation/ir_metrics.py` | 순수 함수 지표(DB/LLM/numpy 없음): `recall_at_k`/`precision_at_k`/`hit_at_k`/`mrr`/`ndcg_at_k`/`exhaustive_recall`/`count_match`/`none_correct`, 유형별 묶음 `score_query`, 전체·유형별 평균 `aggregate`, A/B용 `paired_delta`/`bootstrap_ci` |
+| `tests/eval/golden/v0.json` | 손으로 쓴 v0 골든셋(76개, 아래 참고) |
+| `tests/eval/golden/validate_v0.py` | 실 DB 대조 검증 스크립트(id 존재·소속, `source_hash` 일치) — DB가 필요하므로 pytest 밖 |
+| `tests/evaluation/test_golden.py`, `test_ir_metrics.py` | 로더 불변식·지표 손계산·집계·bootstrap 결정론 (DB 불필요, v0.json 로딩 포함) |
 
-**채점 단위는 `document_id`** — `knowledge_object_embeddings`가 KO grain과 청크 grain
-(`KF_EMBEDDING_SOURCE`, [`embeddings.md`](embeddings.md)) 두 모드를 담게 되면서, 골든셋의 정답을
-`knowledge_object_id`로만 잡으면 청크 모드 검색은 채점할 수 없다(히트에 KO id가 없다). 두 grain이
-공유하는 `document_id`를 정답의 기본 단위로 두고, 모드가 지원할 때만 `chunk_id`/`knowledge_object_id`로
-엄격 채점을 덧붙이는 게 맞다 — 그래야 "KO 임베딩 vs 청크 임베딩" 자체를 같은 골든셋으로 A/B할 수
-있다. `vector_search(target_kind=...)`가 한 grain만 따로 재기 위한 파라미터다. 골든셋 자동 생성은
-청크 원문(`chunks.text`)에서 질의를 만들면 추출 품질 상한도 피한다 — 정답 저장 모양은
-`{chunk_id, document_id, knowledge_object_ids: [...]}`.
+### 골든셋 스키마
+
+```json
+{
+  "golden_version": "v0",
+  "created_at": "2026-09-04T00:00:00Z",
+  "project_id": null,
+  "index_snapshot": {"documents": 263, "chunks": 936, "knowledge_objects": 5107,
+                     "sources_by_type": {"gmail": 59, "google_drive": 246, "slack": 197}},
+  "queries": [
+    {
+      "id": "v0-factoid-002",
+      "query": "MLOps 개발계 보안취약점 패치 작업의 전체 예상 소요 시간은?",
+      "primary_type": "factoid",
+      "types": ["factoid"],
+      "expected": {"document_ids": ["51a30b62..."], "exhaustive": false, "count": null, "none": false,
+                   "chunk_ids": ["9b34d176..."], "knowledge_object_ids": ["9e091eb8..."]},
+      "origin": "manual",
+      "notes": "정답: 3시간 이상(MinIO 패치가 데이터 양에 비례).",
+      "source_hash": "sha256(...)",
+      "as_of": null
+    }
+  ]
+}
+```
+
+- **유형은 multi-label** (`types`) + 하나의 `primary_type`. "최근 세아제강 메일"은
+  relative_temporal이면서 entity_centric이다 — 단일 라벨을 강제하면 유형별 집계가 거짓말을 한다.
+  `primary_type`은 단일 라벨 뷰가 필요할 때(유형별 개수 표 등) 정확히 한 버킷에 넣기 위한 것.
+- **채점 단위는 `document_id`** — KO grain과 청크 grain(`KF_EMBEDDING_SOURCE`,
+  [`embeddings.md`](embeddings.md))이 공유하는 유일한 키라서, KO id로 정답을 잡으면 청크 모드는
+  채점이 불가능하다. `chunk_ids`/`knowledge_object_ids`는 모드가 그 id를 노출할 때만 덧붙이는
+  엄격 채점(`score_query(..., ranked_chunk_ids=)` → `chunk_hit@k`/`chunk_mrr`).
+- **정답 모양은 유형마다 다르다** — `exhaustive=true`는 "이 목록이 관련 문서 전부"(@k가 아니라
+  전체 결과 대비 recall), `count`는 집계 정답, `none=true`는 "관련 문서 없음"이 정답.
+  로더가 유형별 불변식을 거부한다: null/negative ↔ `none=true`, aggregation → `count` 필수,
+  set_query → `exhaustive` 필수, relative_temporal/latest → `as_of` 필수, ambiguous → 정답 2개 이상,
+  `none=true`면 id 목록 비어야 함, `exhaustive`면 id ≥ 1.
+- **`as_of`**: 상대 날짜("지난주", "가장 최근")는 평가 시점에 따라 답이 바뀌므로 기준 시점을
+  항목에 박는다. `eval-ir`는 검색 호출 시 이 값을 "지금"으로 넘겨야 한다.
+- **`source_hash`**: 정답 문서들의 `sources.content_hash`를 정렬·중복 제거해 이어 sha256한 값.
+  파일을 고치지 않고도 `check_staleness(golden, {document_id: content_hash})`로 인덱스 드리프트를
+  잡는다(`missing`/`changed`/`unhashed`). 순수 함수라 DB 연결은 호출자(CLI)가 갖는다.
+- **버전 고정**: `v0.json`은 불변. 수정은 새 버전 파일로 — 같은 파일을 제자리에서 고치면 과거
+  eval 결과와 비교가 조용히 깨진다. `project_id: null`은 "인덱스의 모든 프로젝트"(개발 DB에
+  13개 project_id가 섞여 있고 `search.service`도 None을 전체로 취급).
+
+### 유형 목록과 유형별 채점 방식
+
+`score_query`가 `expected`의 모양을 보고 필요한 지표만 묶는다(유형 이름을 직접 보지 않는다 —
+같은 유형이라도 정답 모양이 다를 수 있어서). 기본 `k_values=(1, 3, 5, 10)`.
+
+| 유형 | 정답 모양 | 주 지표 | 비고 |
+|---|---|---|---|
+| factoid | 문서 1 + `chunk_ids` | MRR, hit@k, (chunk_mrr) | 청크 텍스트로만 답할 수 있는 질문 |
+| navigational | 문서 1 | MRR, hit@1 | gdrive `name` 변형(확장자 제거·줄임) |
+| whole_document_summary | 문서 1 | hit@k, recall@k | 문서 단위 요약 |
+| specific_document_qa | 문서 1 (+chunk) | MRR, hit@k | 문서명 + 절 질문 |
+| temporal | 문서 n, 대개 exhaustive | recall@k, exhaustive_recall | 절대 날짜, `sources.modified_at` 기준 |
+| relative_temporal | 문서 n + `as_of` | recall@k, exhaustive_recall | "최근 3일", "이번 주" |
+| metadata_filter | 문서 n, exhaustive | exhaustive_recall/precision | 발신 도메인, mimeType, subject 접두 |
+| exact_match | 문서 1~n | MRR, hit@1 | 파일 id, repo URL, 호스트명 |
+| entity_centric | 문서 n, exhaustive | exhaustive_recall | 조직·프로젝트명(개인 이름 금지) |
+| multihop | 문서 정확히 2 | recall@k, exhaustive_complete | 두 문서 모두 있어야 정답 |
+| cross_document_comparison | 문서 정확히 2 | recall@k, exhaustive_complete | 비교 대상 둘 다 필요 |
+| aggregation | `count` (+문서 목록) | count_match (+exhaustive_recall) | `notes`에 센 SQL 기록 |
+| set_query | 문서 n, exhaustive | exhaustive_recall/precision/complete | 전체 목록 |
+| negative | `none: true` | none_correct | 언급된 적 없는 기술 |
+| null | `none: true` | none_correct | DB에 없는 주제 |
+| latest | 문서 1 + `as_of` | hit@1, MRR | 같은 계열 중 가장 최근 |
+| version | 문서 1~n | MRR, exhaustive_recall | 같은 공지/메일의 다른 버전 |
+| parent_child | 문서 1 + `chunk_ids` | hit@k, chunk_hit@k | 문서(부모) 안의 절(자식 청크) |
+| conversation_thread | 문서 1 | hit@k, MRR | slack `thread_ts`로 묶인 스레드 문서 |
+| sequence | 문서 n, exhaustive | exhaustive_recall | 시간순 연쇄 (순서 자체는 채점 안 함) |
+| long_range_context | 문서 1 (긴 문서) | hit@k, recall@k | 100+ 청크 문서 전체 맥락 |
+| ambiguous | 문서 ≥2, exhaustive | exhaustive_recall | 한 이름에 여러 문서 |
+
+`none_correct`는 결과가 비었으면 정답, 호출자가 `scores`+`threshold`를 주면 최고 점수가 임계
+이하일 때도 정답 — 임계는 retriever의 점수 스케일에 따라 다르므로 기본값이 없다.
+`aggregate(per_query, types_by_id)`는 전체/유형별 평균과 `n`을 내는데, multi-label이라 유형별
+`n`의 합은 전체 `n`보다 크고, 지표별 평균은 그 지표를 가진 질의 위에서만 계산된다(`metric_n`).
+
+### v0의 성격 — 손 작성·미검수·개발 DB 기준
+
+`tests/eval/golden/v0.json`은 개발 DB(`documents 263 / chunks 936 / knowledge_objects 5107`,
+2026-09-04)를 직접 조회해 **정답 document_id가 실제로 존재하는** 질의만 76개 손으로 썼다.
+사람 검수를 거치지 않은 스켈레톤이라 절대값 보고에 쓰기엔 이르고, 스키마·지표·CLI 배선을
+검증하는 회귀용이다. 개발 DB의 제약이 그대로 반영돼 있다:
+
+- gdrive 소스 246개 중 documents가 있는 건 7개(마크다운 6 + pptx 1)뿐이라 navigational/
+  whole_document_summary/ambiguous가 전부 그 7개 위에서 돈다.
+- `relations`에 문서 간 edge가 하나도 없어(6,993건 모두 문서 내부) multihop은 같은 엔티티를
+  공유하는 두 문서의 KO 쌍으로 구성했다(`notes`에 hop 경로 기록).
+- `chunks.parent_chunk_id`가 전부 NULL이라 parent_child는 "문서 안의 절 청크"로 해석했다.
+- 개인 이름은 질의에 넣지 않았다(역할·조직·채널·프로젝트명만) — 파일이 리포에 커밋되기 때문.
+
+유형별 개수(primary_type 기준): factoid 10, navigational 4, specific_document_qa 4,
+metadata_filter 4, 나머지 18개 유형 각 3 (negative/null 각 3 = "정답 없음" 6개, ~8%).
+
+### 다음 단계
+
+1. **`knowledge-forge eval-ir`** — `load_golden`으로 파일을 읽고 질의마다 `search/retrieve.py`
+   (또는 `search/service.py`, 에이전트 루프 없이 temperature 0)를 호출해 document_id 순서를
+   얻은 뒤 `score_query` → `aggregate`. 결과는 `eval_run`(golden_version, config_hash,
+   index_snapshot, per_query)로 기록. 실행 전 `check_staleness`로 드리프트를 경고.
+   `--compare <runA> <runB>`는 `paired_delta` + `bootstrap_ci`로 질의별 win/loss/tie와 CI를 낸다 —
+   같은 golden_version + 같은 index_snapshot인 두 run만 비교.
+2. **`knowledge-forge eval-gen`** — `chunks.text`에서 층화 샘플링(type/document_type/source) →
+   LLM 질의 생성 → 자동 필터 → `origin: "synthetic"`으로 **v1 발행**. v0는 그대로 두고 v1이
+   사람 검수(Tier A)를 거친 첫 절대값 기준이 된다.
+3. **`eval-gen --from-traffic`** — `search_feedback.rating='up' ∧ groundedness ≥ 0.9`인
+   `search_log`의 evidence를 `origin: "feedback"`으로 편입(Tier C). 노이즈가 크므로 큐레이션 셋을
+   대체하지 않는다.
 
 ## (D) 명시적 Groundedness Gate — Iterative Retrieval 강화, 옵션
 
@@ -212,8 +314,10 @@ agent_groundedness_gate_max_retries: int = 2
    실패 원인 추적"의 최소 형태(사람이 `search_log`를 직접 읽는 것)를 제공한다.
 2. **(B) Groundedness/Citation LLM-judge 배치 — 구현됨.** `knowledge-forge eval`을 주기적으로
    돌리기 시작하면 실패 유형 데이터가 쌓인다.
-3. **(C) 골드셋 기반 Recall/Precision/MRR/NDCG — 설계만.** 회귀 테스트로 먼저 도입, 실트래픽
-   근사는 그 다음 - 사람 큐레이션(대표 질의 30~50개 + relevant id 목록)이 선행돼야 한다.
+3. **(C) 골드셋 기반 Recall/Precision/MRR/NDCG — 스키마·v0·지표 모듈 구현됨, CLI 다음.**
+   `evaluation/golden.py`/`ir_metrics.py`와 `tests/eval/golden/v0.json`(손 작성 76개, 미검수)까지
+   있고, `eval-ir`가 `search/retrieve.py`를 호출해 이 파일로 채점하는 배선과 `eval-gen`의 v1
+   발행이 남았다.
 4. **(D) 온라인 Groundedness Gate — 설계만.** `knowledge-forge eval`을 몇 주 돌려 실사용
    hallucination/citation 오류 빈도가 실제로 문제 될 만큼 나오는지 (B)의 데이터로 먼저
    확인한 뒤 켜는 옵션 - 데이터 없이 미리 만들면 근거 없는 지연시간/비용 증가가 된다.
