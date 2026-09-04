@@ -141,6 +141,59 @@ async def test_run_queries_roundtrip_and_cascade():
         assert await store.list_eval_run_queries(run_id) == []
 
 
+async def test_dirty_files_roundtrip_and_distinguishes_same_commit_runs():
+    """같은 커밋에서 잰 두 run이 표 위에서 구분돼야 한다 - b470057 하나에
+    ndcg@10 0.736(ablate-vector)과 0.477(purity-vector-only)이 같은 git_commit으로
+    적혔던 사고가 이 컬럼과 `+dirty.` 표기의 이유다."""
+    sha = "b470057d93c004101fc983be26d8c06e050e47de"
+    clean_id, dirty_id = _rid(), _rid()
+    async with EvalStore(DSN) as store:
+        await store.save_eval_run(_run(clean_id, git_commit=sha, label="ablate-vector"))
+        await store.save_eval_run(
+            _run(
+                dirty_id,
+                git_commit=f"{sha}+dirty.0123456789ab",
+                dirty_files=[" M src/knowledge_forge/search/retrieve.py"],
+                label="purity-vector-only",
+            )
+        )
+
+        clean = await store.get_eval_run(clean_id)
+        dirty = await store.get_eval_run(dirty_id)
+        assert clean is not None and dirty is not None
+        assert clean.git_commit != dirty.git_commit
+        assert clean.dirty_files is None  # 깨끗한 run은 NULL
+        assert dirty.dirty_files == [" M src/knowledge_forge/search/retrieve.py"]
+        # 커밋이 접두사로 남아 있어 예전 조회 방식은 그대로 산다.
+        async with store.conn.cursor() as cur:
+            await cur.execute(
+                "SELECT count(*) FROM eval_run WHERE git_commit LIKE %s AND run_id LIKE %s",
+                (sha + "%", PREFIX + "%"),
+            )
+            row = await cur.fetchone()
+        assert row is not None and row[0] == 2
+
+
+async def test_pre_migration_rows_survive_as_null():
+    """dirty_files 이전에 쌓인 행(dev DB에 60개 이상)은 그대로 읽혀야 한다.
+    컬럼을 모르는 INSERT = 마이그레이션 이전 행."""
+    run_id = _rid()
+    async with EvalStore(DSN) as store:
+        await store.conn.execute(
+            """
+            INSERT INTO eval_run (run_id, golden_version, golden_path, config, config_hash, index_snapshot,
+                                  git_commit, label, started_at, summary)
+            VALUES (%s, 'vtest', 'v.json', %s, 'cfg', %s, 'deadbeef', 'legacy', %s, %s)
+            """,
+            (run_id, Jsonb({}), Jsonb({}), datetime(2026, 9, 4, tzinfo=timezone.utc), Jsonb({"overall": {"n": 1}})),
+        )
+        fetched = await store.get_eval_run(run_id)
+        assert fetched is not None
+        assert fetched.git_commit == "deadbeef"
+        assert fetched.dirty_files is None
+        assert fetched.summary == {"overall": {"n": 1}}
+
+
 async def test_list_runs_filters_by_golden_version_newest_first():
     older, newer, other = _rid(), _rid(), _rid()
     async with EvalStore(DSN) as store:

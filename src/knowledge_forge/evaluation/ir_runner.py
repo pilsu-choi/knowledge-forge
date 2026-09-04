@@ -30,6 +30,7 @@ import asyncio
 import dataclasses
 import hashlib
 import json
+import os
 import subprocess
 import time
 import traceback
@@ -93,14 +94,138 @@ def config_hash(config: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
 
 
-def current_git_commit() -> str | None:
+# --- 실행된 코드의 신원 (git_commit) ------------------------------------
+#
+# `git rev-parse HEAD`만 기록하면 "마지막 커밋"은 남지만 "실제로 돌아간 코드"는
+# 남지 않는다. 실제로 이 프로젝트의 기록이 그렇게 망가졌다: 커밋 b470057 하나에
+# ablate-vector(ndcg@10 0.736)와 purity-vector-only(0.477)가 같은 git_commit으로
+# 나란히 적혔고(그 중 후자는 나중에 97c0c50으로 커밋된 수정된 작업 트리였다),
+# eval_run 표만 봐서는 어느 숫자가 어느 코드의 것인지 알 방법이 없다. worktree로
+# 여러 에이전트가 병렬로 일하면 "측정 먼저, 커밋 나중"이 오히려 정상 경로라
+# 이 충돌은 예외가 아니라 기본값이다.
+#
+# 그래서 기록 값을 "커밋"이 아니라 **돌아간 코드의 식별자**로 바꾼다:
+#
+#   깨끗한 트리: "<40hex sha>"                     (예전과 완전히 동일)
+#   더러운 트리: "<40hex sha>+dirty.<12hex>"       (12hex = 작업 트리 diff 해시)
+#   git이 아님 : None                              (tarball 체크아웃도 죽지 않아야 함)
+#
+# 커밋 해시를 **접두사로** 유지하는 게 핵심이다. `git_commit LIKE 'b470057%'`,
+# `substring(git_commit, 1, 7)` 같은 기존 조회/그룹핑이 그대로 살아 있고, 새 컬럼을
+# 모르는 읽는 쪽(생 SQL, 예전 대시보드)도 두 dirty run을 절대 같은 값으로 보지
+# 않는다. dirty 여부만 기록하는 안(bool 한 칸)은 위 사고를 못 막는다 - 서로 다른
+# 두 dirty 상태가 여전히 같은 값으로 뭉개지기 때문에, 해시까지 넣어야 "다른
+# 파이프라인인데 기록이 같다"가 불가능해진다.
+DIRTY_MARKER = "+dirty."
+
+# untracked 파일 내용을 해시할 때 파일당 읽는 상한. .gitignore에 안 걸린 대용량
+# 산출물이 섞여 있어도 run 시작이 느려지지 않게 자르되, 잘린 파일은 크기를 같이
+# 섞어 넣어 "앞부분만 같은 서로 다른 파일"이 뭉개질 확률을 줄인다.
+UNTRACKED_READ_LIMIT = 1 << 20
+
+
+def _git(*args: str) -> str | None:
+    """git 호출 한 번. 실패(비-git 디렉터리, git 미설치, 타임아웃, 0 아닌 종료)는
+    전부 `None`으로 눌러서 프로버넌스 수집이 eval 실행 자체를 깨지 못하게 한다."""
     try:
-        out = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5, check=False)
+        out = subprocess.run(["git", *args], capture_output=True, text=True, timeout=5, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
     if out.returncode != 0:
         return None
-    return out.stdout.strip() or None
+    return out.stdout
+
+
+def current_git_commit() -> str | None:
+    """HEAD 커밋만. 작업 트리 상태는 보지 않는다 - 이걸 그대로 기록하는 게 위
+    주석의 사고였으므로, 기록에는 `current_code_provenance().identity`를 쓴다."""
+    out = _git("rev-parse", "HEAD")
+    return out.strip() if out and out.strip() else None
+
+
+def _hash_untracked(digest: hashlib._Hash) -> None:
+    """추적되지 않은(=아직 git이 모르는) 파일들의 내용을 해시에 섞는다.
+    `git diff HEAD`는 tracked 파일만 보기 때문에, 새로 만든 모듈 하나가 파이프라인을
+    바꿔 놓아도 diff 해시가 안 움직이는 구멍이 생긴다. `--exclude-standard`라 .gitignore
+    대상은 애초에 목록에 없다(= out/, .venv 같은 건 안 읽는다)."""
+    listing = _git("ls-files", "--others", "--exclude-standard", "--full-name", "-z")
+    root = (_git("rev-parse", "--show-toplevel") or "").strip()
+    if not listing or not root:
+        return
+    for rel in sorted(p for p in listing.split("\0") if p):
+        digest.update(b"\0U\0" + rel.encode("utf-8", "surrogateescape"))
+        path = os.path.join(root, rel)
+        try:
+            size = os.path.getsize(path)
+            with open(path, "rb") as fh:
+                blob = fh.read(UNTRACKED_READ_LIMIT)
+        except OSError:
+            # 읽을 수 없는 건 "읽을 수 없었다"로 기록. 조용히 건너뛰면 그 파일이
+            # 없는 트리와 같은 해시가 되어 버린다.
+            digest.update(b"\0unreadable")
+            continue
+        digest.update(f"\0{size}\0".encode())
+        digest.update(hashlib.sha256(blob).digest())
+
+
+@dataclasses.dataclass(frozen=True)
+class CodeProvenance:
+    """실행 시점의 코드 상태. `identity`가 `eval_run.git_commit`에 들어간다."""
+
+    commit: str | None
+    # `git status --porcelain` 줄 그대로(예: " M src/.../retrieve.py", "?? foo.py").
+    # 해시는 "달랐다"만 말해 주므로, 몇 달 뒤에 그 run을 읽는 사람이 *무엇이*
+    # 달랐는지 보려면 파일 목록이 필요하다. .gitignore를 존중하니 크기는 커밋
+    # 가능한 변경분 수준으로 제한된다.
+    dirty_files: list[str]
+    # sha256(status + `git diff HEAD` + untracked 내용)[:12]. 깨끗하면 None.
+    diff_hash: str | None
+
+    @property
+    def identity(self) -> str | None:
+        if self.diff_hash is None:
+            return self.commit
+        # 커밋이 없는 저장소(unborn branch)에서도 두 dirty 상태는 구분돼야 한다.
+        return f"{self.commit or 'nocommit'}{DIRTY_MARKER}{self.diff_hash}"
+
+
+def current_code_provenance() -> CodeProvenance:
+    commit = current_git_commit()
+    status = _git("status", "--porcelain")
+    if status is None:
+        # git 저장소가 아니다 - 예전과 동일하게 커밋 None, dirty 판정 없음.
+        return CodeProvenance(commit=commit, dirty_files=[], diff_hash=None)
+    entries = [line for line in status.splitlines() if line.strip()]
+    if not entries:
+        return CodeProvenance(commit=commit, dirty_files=[], diff_hash=None)
+    digest = hashlib.sha256()
+    digest.update(status.encode("utf-8", "surrogateescape"))  # 파일 목록 + 상태 코드
+    digest.update(b"\0D\0")
+    digest.update((_git("diff", "HEAD") or "").encode("utf-8", "surrogateescape"))  # tracked 내용(staged+unstaged)
+    _hash_untracked(digest)
+    return CodeProvenance(commit=commit, dirty_files=entries, diff_hash=digest.hexdigest()[:12])
+
+
+def base_commit(git_commit: str | None) -> str | None:
+    """기록된 코드 식별자에서 커밋 부분만 떼어 낸다(dirty 표식 제거)."""
+    if not git_commit:
+        return None
+    return git_commit.split(DIRTY_MARKER, 1)[0] or None
+
+
+def is_dirty_commit(git_commit: str | None) -> bool:
+    """이 run이 수정된 작업 트리에서 측정됐는가. False는 "깨끗했다"가 아니라
+    "깨끗했거나, 이 표기가 생기기 전의 옛 행이라 알 수 없다"에 가깝다 - 위 사고의
+    26개 행(전부 맨 b470057)이 정확히 그 후자다."""
+    return git_commit is not None and DIRTY_MARKER in git_commit
+
+
+def format_code_identity(git_commit: str | None, *, short: int = 7) -> str:
+    """사람이 읽는 짧은 표기: `b470057`, `b470057+dirty`, 없으면 `-`."""
+    commit = base_commit(git_commit)
+    if commit is None:
+        return "-"
+    return f"{commit[:short]}+dirty" if is_dirty_commit(git_commit) else commit[:short]
 
 
 def effective_limit(q: GoldenQuery, limit: int) -> int:
@@ -218,6 +343,7 @@ async def run_ir_eval(
     directly; otherwise it is fetched from `eval_store`, and skipped when
     there is no store at all."""
     fn = retrieve_fn if retrieve_fn is not None else default_retrieve_fn()
+    provenance = current_code_provenance()
     effective_project = golden.project_id or project_id
     queries = select_queries(golden, query_filter, type_filter)
     config = {
@@ -236,7 +362,8 @@ async def run_ir_eval(
         config=config,
         config_hash=config_hash(config),
         index_snapshot={},
-        git_commit=current_git_commit(),
+        git_commit=provenance.identity,
+        dirty_files=provenance.dirty_files or None,
         label=label,
         started_at=datetime.now(timezone.utc),
     )

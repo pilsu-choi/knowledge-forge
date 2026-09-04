@@ -282,6 +282,35 @@ async def test_run_to_dict_includes_queries_and_is_json_safe():
     assert "queries" not in run.model_dump()  # excluded from the DB-facing dump
 
 
+async def test_run_records_the_code_that_actually_ran(monkeypatch):
+    """`git_commit`은 HEAD가 아니라 "돌아간 코드"를 적는다. 커밋 b470057 하나 밑에
+    ndcg@10 0.736(ablate-vector)과 0.477(purity-vector-only)이 같은 값으로 쌓였던
+    사고가 이 컬럼의 의미를 바꾼 이유다. (git 자체를 태우는 검증은
+    tests/evaluation/test_code_provenance.py.)"""
+    import knowledge_forge.evaluation.ir_runner as ir_runner
+
+    prov = ir_runner.CodeProvenance(commit="b" * 40, dirty_files=[" M src/x.py"], diff_hash="0123456789ab")
+    monkeypatch.setattr(ir_runner, "current_code_provenance", lambda: prov)
+    retriever = RecordingRetriever({"nothing here": FakeResult([], [])})
+    run = await run_ir_eval(_golden([Q_NULL]), store=STORE, eval_store=None, retrieve_fn=retriever)  # type: ignore[arg-type]
+
+    assert run.git_commit == "b" * 40 + "+dirty.0123456789ab"
+    assert run.dirty_files == [" M src/x.py"]
+
+
+async def test_clean_run_leaves_dirty_files_null(monkeypatch):
+    import knowledge_forge.evaluation.ir_runner as ir_runner
+
+    prov = ir_runner.CodeProvenance(commit="c" * 40, dirty_files=[], diff_hash=None)
+    monkeypatch.setattr(ir_runner, "current_code_provenance", lambda: prov)
+    retriever = RecordingRetriever({"nothing here": FakeResult([], [])})
+    run = await run_ir_eval(_golden([Q_NULL]), store=STORE, eval_store=None, retrieve_fn=retriever)  # type: ignore[arg-type]
+
+    # 깨끗한 run은 예전과 똑같이 맨 sha만 남고, dirty_files는 NULL로 들어간다.
+    assert run.git_commit == "c" * 40
+    assert run.dirty_files is None
+
+
 async def test_missing_retriever_module_surfaces_as_import_error(monkeypatch):
     # With no retrieve_fn the runner resolves search.retrieve lazily; a
     # missing module must fail loudly at call time, not at import time.
