@@ -10,7 +10,7 @@
 |---|---|---|---|
 | (A) 로깅 인프라 | query/answer/evidence를 Postgres에 기록 | 불필요 | **구현됨** |
 | (B) Groundedness/Citation 자동 평가 | LLM-as-judge로 claim-evidence 매칭, 비동기 배치 | 불필요 | **구현됨** |
-| (C) Recall/Precision/MRR/NDCG | relevance judgment 필요 | **필요** | **구현됨**(골든셋 v0·지표 모듈·`eval-ir`/`eval-gen` CLI). v1은 사람 검수 대기 |
+| (C) Recall/Precision/MRR/NDCG | relevance judgment 필요 | **필요** | **구현됨**(골든셋 v0·지표 모듈·`eval-ir`/`eval-gen` CLI). v1-draft/v2-draft는 사람 검수 대기 |
 | (D) 명시적 Groundedness Gate | (B)의 판정기를 온라인 게이트로 재사용, iterative retrieval 강화 | 불필요 | 설계만, 미구현 |
 
 ## (A) 로깅 인프라 — **구현됨**, `storage/eval_store.py::EvalStore`
@@ -389,6 +389,100 @@ flag 비율이 높은 건 대체로 생성기 문제가 아니라 **검증 환�
   채우는데, 사람이 실제로 칠 질의는 아니다. 검수 때 이 부류를 걷어내거나
   `--source-type gdrive`로 소스를 좁히는 게 현실적이다.
 - 개인 이름은 실제로 들어가지 않았다(프롬프트 규칙이 지켜짐).
+
+### 두 번째 생성 결과 (2026-09-04, `tests/eval/golden/v2-draft.json`) — gdrive 한정 재생성
+
+1차의 최대 약점(짧은 slack 청크 → 채널 id로 때운 질의)이 소스 편향에서 온다는 가설을 검증하려고
+**`--source-type google_drive`로 좁혀 더 크게** 다시 뽑았다.
+
+```bash
+knowledge-forge eval-gen \
+  --source-type google_drive --chunks 30 --per-chunk 2 --max-queries 40 \
+  --max-per-document 13 --min-tokens 80 --seed 0 \
+  --provider openai_compatible --model anthropic/claude-sonnet-5 \
+  --golden-version v2-draft --out tests/eval/golden/v2-draft.json \
+  --stats-json out/gen-stats-v2.json
+```
+
+통계(`out/gen-stats-v2.json`, `out/`는 gitignore라 여기에 남긴다):
+
+```json
+{"candidates": 32, "sampled_chunks": 30, "sampled_by_source_type": {"google_drive": 30},
+ "llm_calls": 30, "llm_failures": 1, "raw_queries": 58,
+ "rejected": {"copied_from_chunk": 8}, "accepted": 40, "verified": 40, "flagged_hard": 5}
+```
+
+유형 분포: factoid 21 / parent_child 8 / exact_match 5 / specific_document_qa 3 /
+entity_centric 2 / temporal 1. 검증 rank 분포: rank1 19, rank2 13, rank3 2, rank4 1,
+미발견(`[review:hard]`) 5.
+
+#### provider를 `openai_compatible`(OpenRouter)로 바꿨다
+
+1차의 `claude_agent_sdk`는 그 시점에 API 키가 없어 로컬 `claude` CLI를 경유한 것이었다.
+지금은 `.env`에 `OPENROUTER_API_KEY`가 있으므로 `get_chat_provider(provider="openai_compatible")`
++ `anthropic/claude-sonnet-5`를 썼다. 서브프로세스로 CLI를 다시 부르지 않아 실패 모드가 단순하고,
+JSON을 코드펜스 없이 그대로 뱉어 `parse_generation_response`의 복구 경로를 탈 일이 없다
+(1차에서 CLI가 JSON 앞뒤에 설명을 붙이던 문제). 30회 호출 중 파싱 실패는 1회.
+
+**함정**: `.env`의 `OPENROUTER_API_KEY`는 pydantic-settings가 `os.environ`에 넣어주지 않는다
+(`Settings(env_prefix="KF_")`라 접두사 없는 키는 로드 대상이 아니고, `config.py` 주석대로
+"OpenRouter provider가 직접 환경에서 읽는다"는 전제). 그런데 `OpenAICompatibleChatProvider`는
+`os.environ.get("OPENROUTER_API_KEY")`로 읽으므로, `.env`에만 있으면 `api_key="unset"`으로
+401이 난다. 실행 셸에서 명시적으로 export해야 한다. 이건 알려진 구멍이고 여기서 고치지 않았다.
+
+#### 파라미터를 조정한 이유 — gdrive 코퍼스가 생각보다 얕다
+
+`--max-per-document 13`은 임의 값이 아니라 **어쩔 수 없이** 올린 값이다. 실측:
+
+| source_type | `min_tokens=80` 후보 청크 | 그 청크가 속한 문서 수 |
+|---|---|---|
+| google_drive | **32** | **7** |
+| slack | 124 | 124 |
+| gmail | 101 | 52 |
+
+`sources_by_type`의 google_drive 246은 *source* 행 수이지 청크를 가진 문서 수가 아니다.
+실제로 80토큰 이상 청크를 가진 gdrive 문서는 **7개뿐**이고, 32개 청크 중 **27개가 문서 2개**에
+몰려 있다(15개 + 12개). 기본값 `--max-per-document 2`로는 gdrive 전체에서 14개밖에 못 뽑아
+`--chunks 30`이 성립하지 않는다. 30을 채우려면 상한이 13이어야 한다(13+12+1×5=30).
+`--min-tokens`는 80을 유지했다 — 40으로 내리면 후보가 50개로 늘지만 문서 수는 그대로 7이고,
+"짧은 청크 → 앵커 없는 질의"가 1차의 실패 원인이었으므로 하한을 낮출 이유가 없다.
+
+#### 가설 검증: gdrive 한정은 **질의 문장 품질에서는 확실히 나았고, 골든셋 설계로는 나쁘다**
+
+*나아진 것 — 채널 id 문제는 완전히 사라졌다.* 40개 중 소스 내부 식별자로 때운 질의는 0개다.
+대부분이 사람이 실제로 검색창에 칠 법한 문장으로 나왔다. gdrive 문서가 제목·머리말·표를 갖춘
+기술 문서라 프롬프트 규칙 3("가리키는 말 대신 고유명사를 넣어라")을 지킬 재료가 실제로 있었다.
+
+- `ProjectIntel Codex 작업 시 기준 브랜치는 무엇인가요?` (factoid, 정답 `deploy-main`, rank=1)
+- `dashboard 502 에러 발생 시 처음 확인해야 할 3가지는?` (factoid, rank=1)
+- `대시보드 Playwright e2e 테스트에서 로컬 포트가 겹칠 때 사용하는 환경변수는 무엇인가?` (exact_match)
+
+*그대로 남은 것 — 앵커 없는 질의.* 청크가 규칙 목록이면 고유명사가 아예 안 나오는 문단이 있고,
+그럴 때 1차와 같은 실패가 형태만 바꿔 재발한다. 어느 문서를 묻는지 사람도 특정할 수 없다:
+
+- `기존 문서를 대체할 때 삭제하는 대신 어떤 표시를 우선해야 하는가?`
+- `MR/PR 제목과 본문은 어떤 언어로 작성해야 하나요?`
+- `바이브 코딩은 AI에게 크게 맡기는 방식인가요?` (청크 첫 문장을 그대로 뒤집은 예/아니오 질문)
+
+`copied_from_chunk`는 8건을 잡았고 남은 40개에 통문장 복사는 없다. 다만 위 3번째처럼
+**문장을 부정문/의문문으로 살짝 비틀면 최장 공통 부분 문자열 25자 기준을 빠져나간다** —
+필터가 잡는 건 복사지 "청크 문장 1개를 그대로 되묻는 것"이 아니다.
+
+*나쁜 것 — 정답 문서가 5개뿐이다.* 채택 40개의 정답 문서 분포는 20 / 14 / 2 / 2 / 2로,
+**34개가 문서 2개에 몰린다**. 문서 263개 코퍼스에서 40개 질의가 사실상 5-way 문제가 되므로,
+이 상태로 nDCG/MRR을 재면 "그 두 문서를 얼마나 잘 찾나"를 재는 것이지 검색 성능이 아니다.
+1차가 18개 질의로 소스 3종을 덮은 것보다 **평가셋으로서는 후퇴**다.
+
+*`[review:hard]` 5/40(12.5%)은 1차 12/18(67%)과 비교하면 안 된다.* 1차 때는 임베딩이 0행이라
+`vector` arm이 항상 비어 있었고, 지금은 청크 936개가 임베딩돼 있다. 조건이 다르다.
+게다가 정답 문서가 5개뿐이면 되돌려 검색이 쉬워지는 게 당연하다(rank1+rank2가 32/40).
+낮은 flag 비율을 생성 품질 개선의 증거로 읽으면 안 된다.
+
+**결론**: 소스를 gdrive로 좁히는 건 *질의 문장*을 고치는 데는 효과가 있었지만, 이 개발 DB의
+gdrive는 문서 7개짜리 얕은 코퍼스라 **골든셋 하나를 통째로 gdrive로 만들면 안 된다**.
+현실적인 다음 수는 (a) v2-draft에서 앵커 없는 질의를 검수로 걷어내 gdrive 파트로만 쓰고,
+(b) slack/gmail은 청크 길이 하한을 올리거나(`--min-tokens`를 150+로) 스레드 단위로 합친 뒤
+따로 생성해 합치는 것이다. gdrive 문서를 더 인제스트하기 전에는 gdrive 단독 확대는 의미가 없다.
 
 ### 다음 단계
 
