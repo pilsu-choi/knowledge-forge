@@ -57,8 +57,12 @@ class RetrievalResultLike(Protocol):
     scores: list[float]
     predicted_count: int | None
     strategies: list[str]
-    steps: Sequence[Any]
     elapsed_ms: float
+
+    # read-only: `RetrievalResult.steps` is `list[RetrievalStep]`, and a mutable
+    # protocol attribute would demand an invariant match with `Sequence[Any]`.
+    @property
+    def steps(self) -> Sequence[Any]: ...
 
 
 class RetrieveFn(Protocol):
