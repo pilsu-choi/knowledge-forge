@@ -3,6 +3,11 @@
 `extraction/claude_extractor.py`'s client construction/retry/error-wrapping
 pattern, but `send()` is stateless per call (see providers/base.py) rather
 than extraction's one-shot `extract()`.
+
+Prompt caching lives here rather than in the loop because the cache is a
+wire-format concern (`cache_control` blocks) and because `agent/loop.py` is
+provider-neutral by design - openai_compatible.py has no equivalent it can
+turn on unconditionally (see that module).
 """
 
 from __future__ import annotations
@@ -21,8 +26,44 @@ DEFAULT_MODEL = "claude-sonnet-5"
 DEFAULT_MAX_TOKENS = 4096
 
 
+# Anthropic prompt-caching breakpoint (5-minute TTL, the default). One
+# `run_agent` turn makes up to `agent_max_iterations` (8) calls that all
+# resend the same tools + system prompt, and an `--interactive` session
+# keeps doing that turn after turn, so this prefix is by far the most
+# reread part of every request. Cache reads bill at ~0.1x the input rate
+# and a 5-minute-TTL write at 1.25x, so two calls sharing a prefix already
+# pay for themselves - and agent iterations are seconds apart, with each
+# read refreshing the entry's timer, so the default TTL keeps the entry
+# warm for a whole session (a 1h TTL would only double the write price).
+_CACHE_BREAKPOINT = {"type": "ephemeral"}
+
+
 def _to_anthropic_tools(tools: list[ToolSpec]) -> list[dict]:
-    return [{"name": t.name, "description": t.description, "input_schema": t.input_schema} for t in tools]
+    """The tools block, with a cache breakpoint on the last definition.
+
+    Caching is a PREFIX match and the render order is tools -> system ->
+    messages, so this breakpoint caches exactly the tool schemas, and the
+    one on `system` below caches tools+system together. Two breakpoints
+    (of the 4 allowed per request) rather than one because the two prefixes
+    have different lifetimes: the tool set is identical for every session on
+    this machine, while `system` carries a per-project hint and the prior
+    session's memory (agent/prompts.py::build_system_prompt), so a different
+    project still reads the tools half of the cache. Callers must keep the
+    tool list in a stable order - reordering it invalidates everything."""
+    out = [{"name": t.name, "description": t.description, "input_schema": t.input_schema} for t in tools]
+    if out:
+        out[-1] = {**out[-1], "cache_control": _CACHE_BREAKPOINT}
+    return out
+
+
+def _to_anthropic_system(system: str) -> list[dict]:
+    """The system prompt as one cached text block. Nothing volatile may be
+    interpolated into it (no timestamps, no per-request ids) or the prefix
+    changes every call and the cache never reads - agent/prompts.py builds
+    it once per session from a static template, which is what makes this
+    work. A prefix under the model's minimum cacheable length simply isn't
+    cached: no error, `cache_creation_input_tokens` stays 0."""
+    return [{"type": "text", "text": system, "cache_control": _CACHE_BREAKPOINT}]
 
 
 def _to_anthropic_messages(messages: list[Message]) -> list[dict]:
@@ -80,7 +121,7 @@ class AnthropicChatProvider(ChatProvider):
         kwargs: dict = dict(
             model=self._model,
             max_tokens=self._max_tokens,
-            system=system,
+            system=_to_anthropic_system(system),
             messages=_to_anthropic_messages(messages),
         )
         if tools:

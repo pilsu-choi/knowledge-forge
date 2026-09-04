@@ -1,4 +1,4 @@
-from knowledge_forge.agent.compaction import compact_messages, count_messages_tokens
+from knowledge_forge.agent.compaction import _TOKEN_CACHE, compact_messages, count_messages_tokens
 from knowledge_forge.agent.providers.base import AssistantTurn, ChatProvider, Message, ToolCall
 
 
@@ -116,3 +116,29 @@ def test_count_messages_tokens_counts_tool_call_arguments_too():
     )
 
     assert count_messages_tokens([with_call]) > count_messages_tokens([empty])
+
+
+async def test_token_counts_are_cached_so_a_growing_transcript_is_not_retokenized(monkeypatch):
+    """`run_agent` calls `compact_messages` once per loop iteration on a
+    transcript that only grows at the tail - counting every message every
+    time made compaction quadratic in transcript length. Only the messages
+    that are new since the last call may reach the tokenizer."""
+    counted: list[str] = []
+
+    def _spy(text: str) -> int:
+        counted.append(text)
+        return len(text)
+
+    monkeypatch.setattr("knowledge_forge.agent.compaction.count_tokens", _spy)
+    _TOKEN_CACHE.clear()
+
+    messages = [Message(role="user", content="첫 질문")] + _round_trip(1, "결과 하나")
+    provider = _FakeSummarizer()
+    await compact_messages(messages, provider, max_tokens=100_000, protect_tail=8)
+    first_pass = len(counted)
+    assert first_pass == len(messages)
+
+    messages = messages + _round_trip(2, "결과 둘")
+    await compact_messages(messages, provider, max_tokens=100_000, protect_tail=8)
+
+    assert len(counted) - first_pass == 2  # only the two newly appended messages

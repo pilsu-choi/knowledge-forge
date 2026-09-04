@@ -64,7 +64,10 @@ async def test_plain_text_reply_has_no_tool_calls_and_end_turn():
     assert turn.text == "hello there"
     assert turn.tool_calls == []
     assert turn.stop_reason == "end_turn"
-    assert client.messages.calls[0]["system"] == "sys"
+    # The system prompt goes as a cached text block, not a bare string.
+    assert client.messages.calls[0]["system"] == [
+        {"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}
+    ]
     assert "tools" not in client.messages.calls[0]  # no tools passed -> omitted, not an empty list
 
 
@@ -78,7 +81,14 @@ async def test_tool_use_block_becomes_a_tool_call_with_stop_reason_tool_use():
     assert turn.tool_calls == [ToolCall(id="call_1", name="file_search", arguments={"query": "auth"})]
     assert turn.stop_reason == "tool_use"
     sent_tools = client.messages.calls[0]["tools"]
-    assert sent_tools == [{"name": "file_search", "description": "d", "input_schema": _tool().input_schema}]
+    assert sent_tools == [
+        {
+            "name": "file_search",
+            "description": "d",
+            "input_schema": _tool().input_schema,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
 
 
 async def test_max_tokens_stop_reason_is_surfaced_when_there_are_no_tool_calls():
@@ -96,3 +106,23 @@ async def test_non_retryable_api_error_is_wrapped_in_agent_error():
 
     with pytest.raises(AgentError):
         await provider.send([Message(role="user", content="hi")], [], "sys")
+
+
+async def test_cache_breakpoints_mark_only_the_end_of_the_stable_prefix():
+    """Prompt caching is a prefix match rendered as tools -> system ->
+    messages, so exactly two breakpoints are placed: the last tool (caches
+    the tool schemas) and the system block (caches tools+system). Marking
+    every tool would burn breakpoints (max 4 per request) for prefixes no
+    request ever reuses on its own."""
+    other = ToolSpec(name="read_file", description="d", input_schema={"type": "object"}, handler=None)
+    client = _FakeClient([_response([_text_block("hi")])])
+    provider = AnthropicChatProvider(client=client)
+
+    await provider.send([Message(role="user", content="hi")], [_tool(), other], "sys")
+
+    call = client.messages.calls[0]
+    assert "cache_control" not in call["tools"][0]
+    assert call["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert call["system"][-1]["cache_control"] == {"type": "ephemeral"}
+    breakpoints = sum("cache_control" in block for block in call["tools"] + call["system"])
+    assert breakpoints == 2

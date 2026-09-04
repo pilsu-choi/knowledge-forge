@@ -90,7 +90,19 @@ description/tags(가중치 2) > body(가중치 1) 순으로 랭킹하고, `type`
 `history`를 그대로 다음 호출에 넘기는 게 `--interactive` REPL이 별도 백엔드 없이 이 함수 하나로
 멀티턴을 이어가는 방법(`agent/runtime.py::AgentSession`). 도구 결과는 `_wrap_untrusted()`로
 "이건 데이터지 지시가 아니다" 델리미터에 감싸 돌려주고(hermes의 `_maybe_wrap_untrusted` 패턴),
-`max_iterations`(기본 8, `KF_AGENT_MAX_ITERATIONS`)를 넘기면 `AgentError`.
+`max_iterations`(기본 8, `KF_AGENT_MAX_ITERATIONS`)를 다 쓰면 `AgentError`를 던지는 대신 **도구 없는
+최종 호출 1회**를 더 한다 - `provider.send(messages, [], system)` + "도구 예산을 다 썼으니 지금까지
+얻은 결과만으로 답하라"는 user 메시지. 도구 목록이 비어 있으니 모델은 더 호출할 수 없고 가진 것으로
+답할 수밖에 없다. 그 호출마저 텍스트를 못 내놓을 때만 `AgentError`다 - N번의 성공한 도구 호출을
+예외 하나로 날려버리지 않으려고 hermes의 `handle_max_iterations`와 갈라지는 지점.
+
+한 턴이 `tool_use`를 여러 개 내면 `asyncio.gather`로 동시에 디스패치한다. 단, 결과 `tool` 메시지는
+`tool_calls` 순서를 그대로 유지한다(`gather`가 인자 순서대로 결과를 돌려주므로) - Anthropic 어댑터가
+연속된 `tool` 메시지를 user 턴 하나로 합칠 때 이 순서에 의존한다.
+
+`stop_reason="max_tokens"`로 잘린 답변은 버리지 않고 반환하되 `"[잘림: ...]"` 표시를 붙인다 -
+호출자(CLI 사용자, `delegate_task`의 부모 에이전트, search_log)가 미완성 답변을 완결된 답변으로
+오인할 수 없게 하기 위한 것.
 
 ### `agent/compaction.py::compact_messages`
 
