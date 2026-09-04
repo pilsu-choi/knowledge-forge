@@ -216,6 +216,65 @@ def test_format_ir_summary_lists_errors_and_stale():
     assert "hit@1" not in text and "count_match" not in text
 
 
+def _ir_run(**overrides):
+    from datetime import datetime, timezone
+
+    from knowledge_forge.storage.eval_store import EvalRun
+
+    base = dict(
+        run_id="r1",
+        golden_version="v0",
+        golden_path="v0.json",
+        config_hash="cfg",
+        started_at=datetime(2026, 9, 4, tzinfo=timezone.utc),
+    )
+    base.update(overrides)
+    return EvalRun(**base)
+
+
+def test_format_ir_summary_marks_a_dirty_run():
+    """사람이 점수를 읽는 바로 그 화면에 "이 숫자를 만든 코드"가 있어야 한다 -
+    b470057 하나에 0.736과 0.477이 같이 적힌 걸 아무도 못 알아챈 게 그 자리에
+    아무 표시도 없었기 때문이다."""
+    sha = "b470057d93c004101fc983be26d8c06e050e47de"
+    run = _ir_run(git_commit=f"{sha}+dirty.0123456789ab", dirty_files=[" M src/knowledge_forge/search/retrieve.py"])
+    text = cli._format_ir_summary({"overall": {"n": 1, "ndcg@10": 0.477}}, run)
+    assert text.splitlines()[0].startswith("code: b470057+dirty")
+    assert "수정된 작업 트리" in text
+    assert "src/knowledge_forge/search/retrieve.py" in text
+
+
+def test_format_ir_summary_clean_run_shows_plain_commit():
+    sha = "b470057d93c004101fc983be26d8c06e050e47de"
+    text = cli._format_ir_summary({"overall": {"n": 1, "ndcg@10": 0.736}}, _ir_run(git_commit=sha))
+    assert text.splitlines()[0] == "code: b470057"
+    assert "수정된 작업 트리" not in text
+    # run을 안 주면 예전과 동일한 출력(첫 줄이 overall)이어야 한다.
+    assert cli._format_ir_summary({"overall": {"n": 1}}).startswith("overall:")
+
+
+def test_format_ir_compare_prints_code_identity_and_warnings():
+    sha = "b470057d93c004101fc983be26d8c06e050e47de"
+    report = {
+        "metric": "ndcg@10",
+        "golden_version": "v0",
+        "n": 0,
+        "run_a": {"run_id": "a", "label": "ablate-vector", "config_hash": "cfg-a", "git_commit": sha, "dirty": False},
+        "run_b": {
+            "run_id": "b",
+            "label": "purity-vector-only",
+            "config_hash": "cfg-b",
+            "git_commit": f"{sha}+dirty.0123456789ab",
+            "dirty": True,
+        },
+        "warnings": ["두 run의 base commit은 같지만 실제로 돈 코드가 다르다"],
+    }
+    text = cli._format_ir_compare(report)
+    assert "code b470057)" in text
+    assert "code b470057+dirty)" in text
+    assert "경고: 두 run의 base commit은 같지만" in text
+
+
 # --- eval-gen --------------------------------------------------------------
 # 같은 방식의 스모크 테스트 - EvalStore/PipelineStore/ChatProvider를 전부 가짜로
 # 바꿔 Postgres도 LLM도 없이 CLI 배선(draft 강제, 파일 저장, 통계 출력)만 본다.

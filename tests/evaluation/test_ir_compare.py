@@ -96,6 +96,39 @@ def test_same_config_hash_warns_about_noise():
     assert any("config_hash" in w for w in report["warnings"])
 
 
+SHA = "b470057d93c004101fc983be26d8c06e050e47de"
+
+
+def test_dirty_run_is_flagged_in_the_comparison():
+    """수정된 작업 트리에서 잰 run은 기록된 커밋을 체크아웃해도 재현되지 않는다.
+    비교를 막지는 않되 조용히 넘어가지도 않는다."""
+    dirty = _run("b", config_hash="cfg-b").model_copy(
+        update={"git_commit": f"{SHA}+dirty.0123456789ab", "dirty_files": [" M src/x.py"]}
+    )
+    report = compare_runs(A.model_copy(update={"git_commit": SHA}), QA, dirty, QB)
+    assert report["run_b"]["dirty"] is True
+    assert report["run_a"]["dirty"] is False
+    assert any("작업 트리" in w for w in report["warnings"])
+
+
+def test_same_commit_different_code_is_flagged():
+    """b470057 아래에 0.736(깨끗)과 0.477(dirty)이 나란히 적혔던 그 짝짓기.
+    커밋 해시가 같다는 이유로 "같은 코드"로 읽히면 안 된다."""
+    clean = A.model_copy(update={"git_commit": SHA})
+    dirty = _run("b", config_hash="cfg-b").model_copy(update={"git_commit": f"{SHA}+dirty.0123456789ab"})
+    report = compare_runs(clean, QA, dirty, QB)
+    assert report["provenance_mismatch"] is True
+    assert any("base commit은 같지만" in w for w in report["warnings"])
+
+
+def test_identical_clean_provenance_is_not_flagged():
+    clean_a = A.model_copy(update={"git_commit": SHA})
+    clean_b = _run("b", config_hash="cfg-b").model_copy(update={"git_commit": SHA})
+    report = compare_runs(clean_a, QA, clean_b, QB)
+    assert report["provenance_mismatch"] is False
+    assert report["warnings"] == []
+
+
 def test_errored_queries_drop_out_of_the_pairing():
     qb = [*QB[:2], _q("b", "q3", {}, ["factoid"], error="boom"), QB[3]]
     report = compare_runs(A, QA, B, qb)

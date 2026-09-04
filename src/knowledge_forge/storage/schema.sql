@@ -355,6 +355,12 @@ CREATE TABLE IF NOT EXISTS eval_run (
     -- run's error/stale query lists.
     summary         JSONB NOT NULL DEFAULT '{}'::jsonb
 );
+-- `git_commit`이 dirty였던 run의 `git status --porcelain` 줄 목록. 해시는
+-- "달랐다"만 말해 주므로 *무엇이* 달랐는지는 여기서 읽는다. NULL은 두 가지
+-- 뜻이다 - (a) 깨끗한 트리에서 돈 run, (b) 이 컬럼이 생기기 전의 옛 행(그
+-- 26개 b470057 행처럼 dirty 여부 자체를 알 수 없다). (a)/(b)는 git_commit의
+-- `+dirty.` 표식으로 구분한다(evaluation/ir_runner.py 참고).
+ALTER TABLE eval_run ADD COLUMN IF NOT EXISTS dirty_files JSONB;
 CREATE INDEX IF NOT EXISTS idx_eval_run_golden_version ON eval_run(golden_version);
 CREATE INDEX IF NOT EXISTS idx_eval_run_started_at ON eval_run(started_at);
 

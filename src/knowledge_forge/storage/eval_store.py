@@ -101,7 +101,13 @@ class EvalRun(BaseModel):
     config: dict = Field(default_factory=dict)
     config_hash: str
     index_snapshot: dict = Field(default_factory=dict)
+    # 돌아간 코드의 식별자. 깨끗하면 커밋 sha 그대로, 수정된 작업 트리에서
+    # 측정했으면 `<sha>+dirty.<12hex>` (evaluation/ir_runner.py의 긴 주석 참고 -
+    # b470057 하나에 0.736과 0.477이 같이 적혀 버린 사고가 이 표기의 이유다).
     git_commit: str | None = None
+    # dirty였던 run의 변경 파일 목록(`git status --porcelain` 줄). 깨끗한 run과
+    # 이 컬럼 이전의 옛 행은 둘 다 None.
+    dirty_files: list[str] | None = None
     label: str | None = None
     started_at: datetime
     finished_at: datetime | None = None
@@ -112,9 +118,11 @@ class EvalRun(BaseModel):
 _LOG_COLUMNS = "log_id, project_id, query, answer, evidence, tool_calls, latency_ms, created_at"
 _FEEDBACK_COLUMNS = "feedback_id, log_id, rating, comment, created_at"
 _SCORE_COLUMNS = "log_id, groundedness_score, citation_precision, claims, judge_model, judged_at"
+# dirty_files는 나중에 ALTER로 붙은 컬럼이라 맨 뒤 - 기존 행 인덱스(row[0..11])를
+# 그대로 두려는 의도다.
 _RUN_COLUMNS = (
     "run_id, golden_version, golden_path, project_id, config, config_hash, index_snapshot, "
-    "git_commit, label, started_at, finished_at, summary"
+    "git_commit, label, started_at, finished_at, summary, dirty_files"
 )
 _RUN_QUERY_COLUMNS = (
     "run_id, query_id, query_text, primary_type, types, ranked_document_ids, scores, predicted_count, "
@@ -159,6 +167,7 @@ def _row_to_run(row: tuple) -> EvalRun:
         started_at=row[9],
         finished_at=row[10],
         summary=row[11],
+        dirty_files=row[12],
     )
 
 
@@ -339,12 +348,13 @@ class EvalStore:
             await cur.execute(
                 f"""
                 INSERT INTO eval_run ({_RUN_COLUMNS})
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (run_id) DO UPDATE SET
                     config = EXCLUDED.config,
                     config_hash = EXCLUDED.config_hash,
                     index_snapshot = EXCLUDED.index_snapshot,
                     git_commit = EXCLUDED.git_commit,
+                    dirty_files = EXCLUDED.dirty_files,
                     label = EXCLUDED.label,
                     finished_at = EXCLUDED.finished_at,
                     summary = EXCLUDED.summary
@@ -363,6 +373,7 @@ class EvalStore:
                     run.started_at,
                     run.finished_at,
                     Jsonb(run.summary),
+                    Jsonb(run.dirty_files) if run.dirty_files is not None else None,
                 ),
             )
             row = await cur.fetchone()

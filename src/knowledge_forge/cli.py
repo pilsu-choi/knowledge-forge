@@ -18,7 +18,7 @@ from knowledge_forge.embedding.factory import get_embedding_provider
 from knowledge_forge.evaluation.gen import GenStats, generate_golden
 from knowledge_forge.evaluation.golden import GoldenSet, IndexSnapshot, load_golden, save_golden
 from knowledge_forge.evaluation.ir_compare import compare_runs
-from knowledge_forge.evaluation.ir_runner import run_ir_eval, run_to_dict
+from knowledge_forge.evaluation.ir_runner import format_code_identity, is_dirty_commit, run_ir_eval, run_to_dict
 from knowledge_forge.evaluation.judge import judge_search_log
 from knowledge_forge.extraction.auth import credential_hint_ko, has_resolvable_credentials
 from knowledge_forge.extraction.factory import get_extractor
@@ -911,9 +911,13 @@ def _fmt_metric(value: float | None) -> str:
     return "-" if value is None else f"{value:.3f}"
 
 
-def _format_ir_summary(summary: dict) -> str:
+def _format_ir_summary(summary: dict, run: EvalRun | None = None) -> str:
     """Overall line + per-type table + failed/stale lists, as one string so
-    tests can assert on it without capturing stdout."""
+    tests can assert on it without capturing stdout.
+
+    `run`을 주면 맨 위에 "이 숫자를 만든 코드"를 한 줄 찍는다. 숫자만 보고
+    커밋을 유추하다 b470057 하나에 0.736/0.477이 같이 적히는 사고가 났으므로,
+    dirty였다는 사실은 사람이 점수를 읽는 바로 그 자리에 있어야 한다."""
     overall = summary.get("overall", {})
     by_type: dict[str, dict] = summary.get("by_type", {})
     cols = [m for m in _IR_TABLE_METRICS if any(m in row for row in by_type.values()) or m in overall]
@@ -926,6 +930,13 @@ def _format_ir_summary(summary: dict) -> str:
         lines.append(header)
         for t, row in by_type.items():
             lines.append(f"{t:<26}{row.get('n', 0):>4} " + " ".join(f"{_fmt_metric(row.get(m)):>17}" for m in cols))
+    if run is not None:
+        code = f"code: {format_code_identity(run.git_commit)}"
+        if is_dirty_commit(run.git_commit):
+            files = run.dirty_files or []
+            shown = ", ".join(f.strip() for f in files[:5]) + (f" 외 {len(files) - 5}개" if len(files) > 5 else "")
+            code += f" — 수정된 작업 트리에서 측정됨({run.git_commit}); 변경 {len(files)}개: {shown}"
+        lines.insert(0, code)
     errors = summary.get("errors", [])
     if errors:
         lines.append(f"실패한 질의 {len(errors)}개:")
@@ -942,8 +953,10 @@ def _format_ir_summary(summary: dict) -> str:
 def _format_ir_compare(report: dict) -> str:
     lines = [
         f"metric={report['metric']} golden_version={report['golden_version']} n={report['n']}",
-        f"A={report['run_a']['run_id']} ({report['run_a']['label'] or '-'}, cfg {report['run_a']['config_hash']})",
-        f"B={report['run_b']['run_id']} ({report['run_b']['label'] or '-'}, cfg {report['run_b']['config_hash']})",
+        f"A={report['run_a']['run_id']} ({report['run_a']['label'] or '-'}, cfg {report['run_a']['config_hash']}, "
+        f"code {format_code_identity(report['run_a'].get('git_commit'))})",
+        f"B={report['run_b']['run_id']} ({report['run_b']['label'] or '-'}, cfg {report['run_b']['config_hash']}, "
+        f"code {format_code_identity(report['run_b'].get('git_commit'))})",
     ]
     lines.extend(f"경고: {w}" for w in report.get("warnings", []))
     if report["n"] == 0:
@@ -1024,12 +1037,18 @@ def eval_ir(
             if not runs:
                 typer.echo("기록된 eval_run이 없습니다.", err=True)
                 return
-            typer.echo(f"{'run_id':<32} {'golden':<7} {'cfg':<12} {'started_at':<20} {'ndcg@10':>8} {'mrr':>6} label")
+            # `code` 열: 커밋 앞 7자리 + dirty 표식. 목록에서 두 run이 "같은
+            # 커밋"으로 보이는데 사실은 다른 코드였던 게 이 표의 원죄였다.
+            typer.echo(
+                f"{'run_id':<32} {'golden':<7} {'cfg':<12} {'code':<14} {'started_at':<20} "
+                f"{'ndcg@10':>8} {'mrr':>6} label"
+            )
             for r in runs:
                 overall = r.summary.get("overall", {})
                 started = r.started_at.strftime("%Y-%m-%d %H:%M:%S")
                 typer.echo(
-                    f"{r.run_id:<32} {r.golden_version:<7} {r.config_hash:<12} {started:<20} "
+                    f"{r.run_id:<32} {r.golden_version:<7} {r.config_hash:<12} "
+                    f"{format_code_identity(r.git_commit):<14} {started:<20} "
                     f"{_fmt_metric(overall.get('ndcg@10')):>8} {_fmt_metric(overall.get('mrr')):>6} {r.label or ''}"
                 )
 
@@ -1136,7 +1155,7 @@ def eval_ir(
                 )
 
     run = asyncio.run(_run())
-    typer.echo(_format_ir_summary(run.summary))
+    typer.echo(_format_ir_summary(run.summary, run))
     if json_path is not None:
         json_path.parent.mkdir(parents=True, exist_ok=True)
         json_path.write_text(json.dumps(run_to_dict(run), ensure_ascii=False, indent=2), encoding="utf-8")
