@@ -17,6 +17,7 @@ from knowledge_forge.search.constraints import (
     QueryConstraints,
     extract_constraints,
     extract_constraints_rules,
+    keyword_terms,
     merge_llm_enrichment,
     suggest_strategies,
 )
@@ -408,6 +409,41 @@ async def test_llm_exception_degrades_to_rules():
     query = "가장 최근 업무보고서"
     c = await extract_constraints(query, _RaisingProvider(), now=NOW)
     assert c.to_dict() == extract_constraints_rules(query, now=NOW).to_dict()
+
+
+# --- keyword_terms -----------------------------------------------------------------
+
+
+def test_keyword_terms_splits_a_natural_language_query():
+    c = extract_constraints_rules("농협 MVP 투입 인력 명함 제작 논의 스레드", now=NOW)
+    assert keyword_terms(c) == ["농협", "MVP", "투입", "인력", "명함", "제작", "논의"]
+
+
+def test_keyword_terms_puts_literals_first_and_dedupes():
+    """식별자/따옴표 구절이 semantic_query 토큰보다 정밀하므로 앞에 온다 - max_terms로 자를 때
+    살아남아야 하는 쪽이다."""
+    c = extract_constraints_rules('ERR_CONNECTION_RESET "재시도 정책" 문서에서 재시도 관련 부분', now=NOW)
+    terms = keyword_terms(c)
+    assert terms[0] == "ERR_CONNECTION_RESET"
+    assert "재시도 정책" in terms
+    assert len(terms) == len(set(terms))
+
+
+def test_keyword_terms_drops_single_character_and_generic_tokens():
+    c = extract_constraints_rules("배포 관련 내용 정보 A", now=NOW)
+    assert keyword_terms(c) == ["배포"]
+
+
+def test_keyword_terms_keeps_two_syllable_nouns_that_end_in_a_particle_letter():
+    """"논의"의 "의", "묻는"의 "는"을 조사로 떼면 1글자만 남아 term이 통째로 사라진다 -
+    `_clean_semantic_query`와 같이 3음절 이상 한글에만 조사를 뗀다."""
+    c = extract_constraints_rules("논의 회의 묻는 명함", now=NOW)
+    assert keyword_terms(c) == ["논의", "회의", "묻는", "명함"]
+
+
+def test_keyword_terms_respects_max_terms():
+    c = extract_constraints_rules("가 나 다 라 마 인터뷰 일정 예상 안내 확정 전달 시간 변경", now=NOW)
+    assert len(keyword_terms(c, max_terms=3)) == 3
 
 
 def test_constraints_module_imports_standalone_without_agent_or_storage():

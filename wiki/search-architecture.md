@@ -122,13 +122,50 @@ hits(각 hit에 document_id/target_kind/score 필수), document_ids(hits에서 �
 | `document_lookup` | `document_reference`/`identifiers`/`quoted_phrases` 각각 `document_search` | 문서 단위 최고 점수가 1.0(제목 substring)이고 2위와 0.2 이상 벌어지면 그 문서가 **anchor**. 2위도 1.0이면("AGENTS.md" vs "agents-skills-AGENTS.md") ambiguous - 후보 전부 히트로 |
 | `lexical` | `identifiers`/`quoted_phrases` 각각 `lexical_search` | anchor가 있으면 그 문서 히트만 남김(하나도 없으면 좁히지 않고 `anchor_narrowing="no_hits_in_anchor"` 기록) |
 | `metadata_filter` | authors/participants/source_types/document_types/time_range를 `sources`/`documents` WHERE로 - `execute_readonly_query`(READ ONLY + 강제 롤백) | 값은 `'`→`''` 이스케이프로 인라인(스토어가 문자열만 받음), SQL은 detail에. 작성자/참여자는 `sources.metadata->>'participants'` 텍스트 ILIKE + `documents.metadata->>'author'`(개발 DB의 gmail이 `participants`만 갖고 `from`이 없어서), 문서 타입은 `documents.title ILIKE`("메일"은 제목이 아니라 gmail 소스 타입으로 해석). 상한 500행 |
-| `vector` | `semantic_query`로 `vector_search`(since/until 전달) | 임베딩 0행/임베더 미구성이면 빈 결과 + `error` 기록(예외 아님). 비면 semantic_query로 `document_search`+`lexical_search`를 대신 돌린다(`fallback_from="vector"`) |
+| `vector` | `semantic_query`로 `vector_search`(since/until 전달) | 임베딩 0행/임베더 미구성이면 빈 결과 + `error` 기록(예외 아님). 비면 아래 **키워드 fallback**으로 내려간다(`fallback_from="vector"`) |
 | `comparison` | `comparison_targets` 각각 `document_search`(대상 안의 시간 표현은 그 대상에만 적용), 없으면 `lexical_search` | 대상별 최상위 문서를 anchor 다음으로 최상위 고정 |
 | `multihop` | provider 있으면 `plan_and_search` 근거를 한 소스로 RRF 합류 | 없으면 `skipped="no_provider"`. document_id 없는 히트(OKF file_search)는 채점 단위가 없어 버림 |
 | `latest` | 병합 결과를 `content_at` 내림차순, 같은 `version_family`는 `version_sort_key`로 최신 하나만 남기고 나머지는 뒤로 | family 안에서는 버전 표기(최종 > vN > 무표기 > 초안)가 시각보다 우선 - 구버전을 나중에 다시 올린 경우 때문 |
 | `exhaustive`/`negative` | 소스별 limit을 200으로, 최종 컷오프 없음 | 부재 판정은 LLM 몫 - 실행기는 후보만 |
 | `count` | `predicted_count` = 최종 문서 수. 필터 단독 결과면 같은 WHERE로 `SELECT COUNT(*)` | count도 exhaustive 수집을 함의 |
 | `whole_document` | anchor(없으면 상위 2개 문서)를 `read_document`로 읽어 `documents_read`에, 청크를 문서 순서대로 히트 맨 앞에 | 같은 청크를 가리키던 검색 히트는 중복이라 제거 |
+
+**키워드 fallback (vector가 빈손일 때)**:
+
+임베딩이 없는 배포/개발 DB에서 실행기가 "아무것도 못 찾음"이 되지 않게 하는 degrade 경로다.
+두 단계로 돈다.
+
+1. **전체 질의**: `semantic_query` 문자열 그대로 `document_search`(제목) + `lexical_search`(본문).
+2. **term 분해** (`_term_fallback`) — 1단계가 **양쪽 다 빈손일 때만**. `keyword_terms`가 질의를
+   term으로 쪼개 term마다 `lexical_search`를 부르고, 결과를 **소스를 나눠**
+   (`lexical_search#<term>`) RRF에 넣는다.
+
+왜 term으로 쪼개나: `lexical_search`/`document_search`의 매칭은 pg_trgm 위의 3단(전체 질의
+substring → 모든 토큰 substring → `word_similarity`)이다. "농협 MVP 투입 인력 명함 제작 논의"
+같은 자연어 질의는 세 단계가 전부 실패한다 — 그 문자열을 통째로 담은 청크도, 일곱 토큰을 전부
+담은 청크도 없고, 질의가 길어 `word_similarity`도 임계값 아래로 떨어진다. v0 baseline에서
+conversation_thread(0.250)/sequence(0.343)가 낮았던 실제 원인이 이것이고, `steps`에 `n_hits: 0`
+으로 남아 있었다(handoff가 짐작했던 `document_links` 미사용이 아니다).
+
+**소스를 term별로 나누는 것이 핵심**이다: RRF는 같은 히트가 여러 소스 리스트에 등장할수록 점수를
+더하므로, 나누면 "질의의 term을 더 많이 담은 문서"가 자동으로 위로 온다. 한 리스트에 몰아넣으면
+그 신호가 사라진다.
+
+두 개의 안전장치가 붙어 있다. 둘 다 실측으로 필요성이 확인된 것이다(수치는
+`search-evaluation.md`의 스윕 표):
+
+- **coverage 임계값** (`KF_TERM_COVERAGE_RATIO` 기본 2/3, `KF_TERM_COVERAGE_MIN` 기본 2):
+  질의의 term을 `ceil(term수 × ratio)`개 이상 담은 문서만 후보로 남긴다. 없으면 term 하나만 스친
+  문서까지 전부 후보가 되어, "관련 문서 없음"이 정답인 질의(null/negative)가 전부 무언가를
+  돌려주고(`none_correct` 1.000 → 0.000) 개수 질의가 부풀었다(`count_match` 0.500 → 0.000).
+- **1단계가 빈손일 때만 실행**: 질의 문자열이 통째로 걸렸으면 그게 term 하나하나보다 강한 신호다.
+  항상 돌리면 제목이 정확히 맞은 질의를 term 히트가 밀어낸다(`v0-navigational-002` "codex README":
+  ndcg@10 1.000 → 0.356).
+
+term당 조회는 `_TERM_FETCH_LIMIT`(20)으로 따로 막는다 — exhaustive/negative/count 질의는
+`fetch_limit`이 200이고 최종 컷오프도 없어서, term 열 개 × 200이 그대로 답에 실리면 재현율보다
+정밀도를 더 깎는다.
+
 
 **병합 결정과 이유**:
 
@@ -149,7 +186,9 @@ hits(각 hit에 document_id/target_kind/score 필수), document_ids(hits에서 �
 **한계**:
 
 - 임베딩이 없으면(개발 DB 기준 0행) `vector`는 항상 비고 키워드 fallback으로 돈다 - 패러프레이즈/
-  개념 질의(factoid/entity_centric)는 제목·본문에 그 단어가 그대로 있을 때만 잡힌다. 골든셋 v0
+  개념 질의는 제목·본문에 그 단어가 그대로 있을 때만 잡힌다. term 분해가 "질의의 단어를 여러 개
+  담은 문서"까지는 끌어올리지만(v0 factoid 0.497 → 0.969), 단어가 하나도 겹치지 않는 패러프레이즈는
+  여전히 못 푼다 - 그건 임베딩이 있어야 한다. 골든셋 v0
   스모크(provider=None, 임베딩 없음): navigational/whole_document_summary/exact_match 각 1건은
   1위, aggregation(`caddy-drift` 6건)은 6건 전부 상위 6 안이지만 predicted_count=8(본문에
   caddy-drift가 언급된 다른 메시지 2건 포함).

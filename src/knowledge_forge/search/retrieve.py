@@ -33,12 +33,14 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from knowledge_forge.chat_provider import ChatProvider
+from knowledge_forge.config import settings
 from knowledge_forge.ingest_version import version_sort_key
 from knowledge_forge.search.constraints import (
     STRATEGY_COMPARISON,
@@ -55,6 +57,7 @@ from knowledge_forge.search.constraints import (
     QueryConstraints,
     extract_constraints,
     extract_constraints_rules,
+    keyword_terms,
     suggest_strategies,
 )
 from knowledge_forge.search.document import read_document
@@ -85,6 +88,12 @@ EXHAUSTIVE_LIMIT = 200
 _FILTER_MAX_ROWS = 500
 # 소스별 over-fetch 배수 - RRF 병합/필터 교집합/anchor 좁히기 뒤에도 limit개 문서가 남게.
 _OVERFETCH = 3
+# term 단위 fallback(`_Run._term_fallback`)의 term당 조회 상한. `fetch_limit`을 그대로 쓰지
+# 않는다 - exhaustive/negative/count 질의는 `fetch_limit`이 EXHAUSTIVE_LIMIT(=200)이고 최종
+# 컷오프도 없어서, term 열 개 × 200이 그대로 답에 실리면 재현율보다 정밀도를 더 깎는다.
+_TERM_FETCH_LIMIT = 20
+# 한 질의에서 쪼개 쓸 term 개수 상한. term마다 DB 왕복 한 번이라 지연시간과 맞바꾼다.
+_MAX_FALLBACK_TERMS = 10
 # document_lookup이 후보 하나를 anchor로 확정하는 조건: 1위가 제목 substring 일치(1.0)이고
 # 2위와 이만큼 벌어져야 한다. 2위도 1.0이면("AGENTS.md" vs "agents-skills-AGENTS.md") ambiguous.
 _ANCHOR_MIN_SCORE = 1.0
@@ -289,6 +298,20 @@ def _filter_row_to_hit(row: tuple[Any, ...]) -> dict[str, Any]:
     }
 
 
+
+def _coverage_threshold(n_terms: int) -> int:
+    """term 단위 fallback에서 후보로 남기려면 질의의 term을 몇 개나 담아야 하는가.
+
+    필터가 없으면 term 하나만 스친 문서까지 전부 후보가 된다 - 재현율은 오르지만 "관련 문서
+    없음"이 정답인 질의(null/negative)가 전부 무언가를 돌려주고, 개수(count) 질의가 부풀고,
+    navigational 질의의 정답이 노이즈에 밀린다(첫 term-fallback 실측에서 none_correct
+    1.000 → 0.000, count_match 0.500 → 0.000). 비율 하나로는 term이 두세 개뿐인 짧은 질의에서
+    1개만 겹쳐도 통과하므로 `term_coverage_min`을 하한으로 둔다. 단, term 수 자체를 넘을 수는
+    없다 - 그러면 아무것도 통과하지 못한다."""
+    ratio = max(0.0, settings.term_coverage_ratio)
+    floor = max(1, settings.term_coverage_min)
+    return min(n_terms, max(floor, math.ceil(n_terms * ratio)))
+
 # --- 실행기 ----------------------------------------------------------------------
 
 
@@ -445,6 +468,63 @@ class _Run:
         body_hits, _ = _narrow_to_anchor(body_hits, self.anchor)
         self.add_hits(SOURCE_LEXICAL_SEARCH, body_hits)
         self.step(STRATEGY_LEXICAL, SOURCE_LEXICAL_SEARCH, len(body_hits), query=query, fallback_from=STRATEGY_VECTOR)
+        # 질의 문자열 통째로 뭔가 걸렸으면 그게 term 하나하나보다 강한 신호다 - term 분해는
+        # 그게 빈손일 때만 도는 구제 경로다. 항상 돌리면 "codex README"처럼 제목이 정확히
+        # 맞은 질의에서 term별 히트가 정답을 밀어낸다(v0-navigational-002: ndcg 1.000 → 0.356).
+        if not title_hits and not body_hits:
+            await self._term_fallback()
+
+    async def _term_fallback(self) -> None:
+        """`_keyword_fallback`의 두 번째 단계 - 질의 문자열 하나가 아니라 `keyword_terms`가
+        쪼갠 term마다 `lexical_search`를 부른다.
+
+        왜 나눠 부르나: `lexical_search`의 매칭은 (전체 질의 substring → 모든 토큰 substring →
+        `word_similarity`) 3단이라, 여러 어절짜리 자연어 질의는 전부 실패해 히트 0이 된다
+        (v0 baseline에서 conversation_thread 0.250 / sequence 0.343의 실제 원인 - `steps`에
+        `n_hits: 0`으로 남아 있다). term별 결과를 **소스를 나눠**(`lexical_search#<term>`) 넣는
+        것이 핵심이다: `merge_and_rerank`의 RRF는 같은 히트가 여러 소스 리스트에 등장할수록
+        점수를 더하므로, 소스를 나누면 "질의의 term을 더 많이 담은 문서"가 자동으로 위로 온다.
+        한 리스트에 몰아넣으면 그 신호가 사라진다.
+
+        term 하나짜리 질의는 건너뛴다 - 위의 전체 질의 조회와 같은 호출이 된다."""
+        terms = keyword_terms(self.c, max_terms=_MAX_FALLBACK_TERMS)
+        if len(terms) < 2:
+            return
+        limit = min(self.fetch_limit, _TERM_FETCH_LIMIT)
+        hits_by_term: dict[str, list[dict[str, Any]]] = {}
+        coverage: dict[str, set[str]] = {}
+        for term in terms:
+            hits = await lexical_search(
+                term, self.store, project_id=self.project_id, limit=limit, since=self.since, until=self.until
+            )
+            hits, _ = _narrow_to_anchor(hits, self.anchor)
+            hits_by_term[term] = hits
+            for hit in hits:
+                document_id = hit.get("document_id")
+                if document_id:
+                    coverage.setdefault(document_id, set()).add(term)
+
+        threshold = _coverage_threshold(len(terms))
+        kept_documents = {d for d, matched in coverage.items() if len(matched) >= threshold}
+        total = 0
+        for term, hits in hits_by_term.items():
+            kept = [hit for hit in hits if hit.get("document_id") in kept_documents]
+            total += len(kept)
+            if kept:
+                self.add_hits(f"{SOURCE_LEXICAL_SEARCH}#{term}", kept)
+        self.step(
+            STRATEGY_LEXICAL,
+            SOURCE_LEXICAL_SEARCH,
+            total,
+            terms=terms,
+            per_term={term: len(hits) for term, hits in hits_by_term.items()},
+            limit=limit,
+            coverage_threshold=threshold,
+            kept_documents=len(kept_documents),
+            dropped_documents=len(coverage) - len(kept_documents),
+            fallback_from=STRATEGY_VECTOR,
+            mode="per_term",
+        )
 
     async def comparison(self) -> None:
         collected: list[dict[str, Any]] = []

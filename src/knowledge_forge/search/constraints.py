@@ -643,6 +643,55 @@ async def extract_constraints(
     return merge_llm_enrichment(constraints, payload)
 
 
+# --- 키워드 term 분해 -----------------------------------------------------------
+
+# 어떤 문서에나 있어서 랭킹을 가르지 못하는 일반 명사. term 하나가 후보 리스트 하나를 만드는
+# 구조(`search/retrieve.py::_term_fallback`)라, 이런 term은 신호 없는 리스트를 늘려 max_terms
+# 예산만 잡아먹는다. `_FILLER_RE`(질의 전체에서 지우는 군더더기)와 달리 여기서만 뺀다 -
+# semantic_query 자체에는 남아 있어야 벡터 검색이 문맥으로 쓴다.
+_TERM_NOISE = frozenset(
+    {"내용", "관련", "정보", "자료", "부분", "목록", "리스트", "상황", "경우", "이야기", "순서", "여부"}
+)
+_TERM_SPLIT_RE = re.compile(r"[^0-9A-Za-z가-힣_.\-]+")
+
+
+def keyword_terms(constraints: QueryConstraints, *, max_terms: int = 10) -> list[str]:
+    """질의를 개별 검색어(term)로 쪼갠다 - `search/retrieve.py`가 임베딩 없이 돌 때
+    `lexical_search`를 term마다 한 번씩 부르기 위한 입력.
+
+    왜 필요한가: `lexical_search`/`document_search`는 pg_trgm 위의 (전체 질의 substring →
+    모든 토큰 substring → `word_similarity`) 3단 매칭이다. "농협 MVP 투입 인력 명함 제작 논의"
+    같은 자연어 질의는 세 단계 모두 실패한다 - 그 문자열을 통째로 담은 청크도, 일곱 토큰을
+    전부 담은 청크도 없고, 질의가 길어 `word_similarity`도 임계값 아래로 떨어진다. 그래서
+    v0 baseline에서 conversation_thread/sequence 질의가 히트 0으로 끝났다. term 단위로 나눠
+    각각 조회하면 RRF가 "여러 term이 겹친 문서"를 위로 올려 준다.
+
+    순서는 정밀도 순이다: `identifiers`/`quoted_phrases`(리터럴) → `entities` →
+    `semantic_query` 토큰. `max_terms`로 자를 때 앞쪽이 살아남게 하기 위한 것."""
+    raw: list[str] = [
+        *constraints.identifiers,
+        *constraints.quoted_phrases,
+        *constraints.entities,
+        *_TERM_SPLIT_RE.split(constraints.semantic_query),
+    ]
+    terms: list[str] = []
+    seen: set[str] = set()
+    for token in raw:
+        token = token.strip()
+        # `_clean_semantic_query`와 같은 이유로 3음절 이상 한글에만 조사를 뗀다 - "논의"의 "의",
+        # "묻는"의 "는"을 조사로 보면 1글자만 남아 term이 통째로 사라진다.
+        term = _strip_particle(token) if re.fullmatch(r"[가-힣]{3,}", token) else token
+        # 1글자 term은 거의 모든 청크에 걸려 랭킹 신호가 없다.
+        if len(term) < 2 or term in _TERM_NOISE:
+            continue
+        key = term.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        terms.append(term)
+    return terms[:max_terms]
+
+
 # --- 전략 힌트 -----------------------------------------------------------------
 
 

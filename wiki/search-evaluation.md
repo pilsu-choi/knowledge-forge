@@ -348,10 +348,76 @@ overall: n=76 hit@1=0.657 recall@5=0.697 mrr=0.706 ndcg@10=0.709
 다음 baseline은 (1) `OPENAI_API_KEY` + `KF_EMBEDDING_SOURCE=chunk`로 임베딩을 채우고,
 (2) `--no-llm` 없이(=planner/LLM 제약 추출 켜고) 다시 돌려 세 조건을 `--compare`로 비교한다.
 
-4. **동시 실행 주의** — `PostgresStore`는 커넥션 하나를 공유하고 `execute_readonly_query`만
-   명시적 트랜잭션을 연다. `eval-ir --concurrency`가 1을 넘으면 이게 겹쳐
-   `OutOfOrderTransactionNesting`이 났었다(첫 baseline에서 76개 중 20개 실패). 지금은 그 메서드가
-   `asyncio.Lock`으로 직렬화한다.
+### term 단위 키워드 fallback — 두 번째 실측 (2026-09-04)
+
+baseline의 conversation_thread(0.250)/sequence(0.343)를 `steps`로 파고든 결과, 원인은
+`document_links` 미사용이 아니라 **키워드 fallback이 질의 문자열을 통째로 pg_trgm에 넘겨
+히트가 0**이었던 것이다(자세한 설명은 `search-architecture.md`의 "키워드 fallback"). 질의를
+term으로 쪼개 term마다 `lexical_search`를 부르고 소스를 나눠 RRF에 넣도록 바꿨다.
+
+먼저 아무 안전장치 없이 돌리자 재현율은 크게 올랐지만 **정밀도 계열이 무너졌다**
+(`run_id=0f4d097f3c984c98bf37a1a087006f4f`): ndcg@10 0.709 → 0.814인데 `none_correct`
+1.000 → 0.000, `count_match` 0.500 → 0.000. term 하나만 스친 문서까지 후보가 되어 "관련 문서
+없음"이 정답인 질의가 전부 무언가를 돌려준 것이다.
+
+그래서 (a) **coverage 임계값**(질의 term을 `ceil(n × ratio)`개 이상 담은 문서만)과
+(b) **1단계(전체 질의)가 빈손일 때만 실행**하는 게이트를 붙이고 `KF_TERM_COVERAGE_RATIO`로
+스윕했다. 전부 `--no-llm`, 임베딩 0행, v0 골든셋 76개:
+
+| ratio (min=2) | 게이트 | hit@1 | recall@5 | mrr | ndcg@10 | exh_recall | count | none |
+|---|---|---|---|---|---|---|---|---|
+| — (baseline) | — | 0.657 | 0.697 | 0.706 | 0.709 | 0.778 | 0.500 | 1.000 |
+| 0 (필터 없음) | 없음 | 0.771 | 0.810 | 0.817 | 0.814 | 0.921 | **0.000** | **0.000** |
+| 0.34 | 없음 | 0.757 | 0.817 | 0.816 | 0.809 | 0.853 | 0.500 | 0.333 |
+| 0.5 | 없음 | 0.771 | 0.817 | 0.828 | 0.823 | 0.842 | 0.500 | 0.500 |
+| 0.6 | 없음 | 0.786 | 0.826 | 0.839 | 0.828 | 0.829 | 0.500 | 0.833 |
+| 0.67 | 없음 | 0.771 | 0.795 | 0.821 | 0.808 | 0.806 | 0.500 | 1.000 |
+| 0.75 | 없음 | 0.729 | 0.776 | 0.782 | 0.776 | 0.794 | 0.500 | 1.000 |
+| 0.34 | 있음 | 0.771 | 0.836 | 0.834 | 0.824 | 0.837 | 0.500 | 0.333 |
+| 0.5 | 있음 | 0.800 | 0.836 | 0.852 | 0.838 | 0.826 | 0.500 | 0.500 |
+| **0.67** | **있음** | **0.800** | **0.823** | **0.847** | **0.834** | **0.806** | **0.500** | **1.000** |
+| 1.0 | 있음 | 0.686 | 0.726 | 0.735 | 0.738 | 0.778 | 0.500 | 1.000 |
+
+**2/3 + 게이트를 기본값으로 골랐다** — baseline 대비 **어느 지표도 나빠지지 않는 유일한 지점**이다.
+0.5~0.6이 ndcg는 조금 더 높지만 `none_correct`가 1.000에서 내려간다. "관련 문서 없음"을 못 말하는
+검색은 재현율 몇 점과 바꿀 게 아니라고 보고 보수적인 쪽을 택했다.
+
+채택 run **`run_id=350e721aec6247fa81ac6c8057159486`** (label `gated-r0.67-m2`), baseline과의
+paired 비교:
+
+```
+knowledge-forge eval-ir --compare fc96003a531547a0b04267a2ca7b2844 350e721aec6247fa81ac6c8057159486 --metric ndcg@10
+mean A=0.7092 B=0.8342 delta(B-A)=+0.1250 95% CI [+0.0564, +0.2039] 유의
+win/loss/tie = 10/0/60
+```
+
+유형별로는 factoid 0.497 → 0.969, conversation_thread 0.250 → 0.750, entity_centric +0.273,
+specific_document_qa +0.200, multihop +0.271(planner가 아니라 근거 문서가 fallback으로 잡힌 것),
+sequence +0.117. **loss가 0건**이다.
+
+남은 낮은 유형과 그 성격:
+
+| 유형 | ndcg@10 | 성격 |
+|---|---|---|
+| sequence | 0.460 | 시간 순서를 랭킹에 안 쓴다. `document_links.thread_sequence`/`same_channel_sequence`는 백필돼 있지만 `retrieve()`가 아직 읽지 않는다 |
+| latest | 0.544 | `latest` 후처리가 도는데도 낮다 — 정답 쪽 문제인지 실행기 문제인지 미확인 |
+| metadata_filter | 0.609 | 작성자/참여자 필터가 Slack user id에 막힌다 |
+| navigational | 0.671 | LLM 없이는 자연어 제목 참조를 `document_reference`로 못 뽑는다 |
+| temporal | 0.562 / relative_temporal 0.667 | 시간 파싱 + 개발 DB의 시각 분포 |
+
+**A/B 도구의 한계 하나**: `--compare`가 "both runs share config_hash — the delta measures
+run-to-run noise"라고 경고했지만 실제로는 코드가 바뀐 A/B였다. `config_hash`가 설정값만 보고
+검색 코드 버전을 안 본다 — 코드/파이프라인 버전을 해시에 넣어야 이 경고가 쓸모 있어진다.
+
+### 동시 실행 주의
+
+`PostgresStore`는 커넥션 하나를 공유하고 `execute_readonly_query`만 명시적 트랜잭션을 연다.
+`eval-ir --concurrency`가 1을 넘으면 이게 겹쳐 `OutOfOrderTransactionNesting`이 났었다
+(첫 baseline에서 76개 중 20개 실패). 지금은 그 메서드가 `asyncio.Lock`으로 직렬화한다.
+**앞으로 `PostgresStore`에 트랜잭션을 여는 메서드를 추가하면 같은 락을 써야 한다.**
+
+별개로, `eval-ir`를 돌리는 동안 같은 DB에 `pytest`를 돌리면(테스트가 DDL을 친다) 서로
+`DeadlockDetected`로 죽는다. 스윕과 테스트는 겹쳐 돌리지 마라.
 
 ## (D) 명시적 Groundedness Gate — Iterative Retrieval 강화, 옵션
 

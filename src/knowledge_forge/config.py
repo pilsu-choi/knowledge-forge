@@ -86,6 +86,18 @@ class Settings(BaseSettings):
     # convention) - see wiki/embeddings.md. Only takes effect when a store
     # is configured (embedding needs somewhere to write to). `--embed`/
     # `--no-embed` on `extract` overrides this per invocation.
+    # `search/retrieve.py`의 term 단위 키워드 fallback 튜닝 노브 - 임베딩이 없거나
+    # vector가 빈손일 때 질의를 term으로 쪼개 각각 조회하고, "질의의 term을 몇 개나 담았나"로
+    # 후보를 거른다. ratio는 term 수 대비 비율, min은 그 하한(term이 두세 개뿐인 짧은 질의에서
+    # 비율만 쓰면 1개만 겹쳐도 통과한다). 0으로 두면 필터가 꺼진다 - 재현율은 오르지만 "관련
+    # 문서 없음"이 정답인 질의(null/negative)와 개수 질의가 무너진다(wiki/search-evaluation.md).
+    # 기본값 2/3은 v0 골든셋 스윕에서 고른 값이다(wiki/search-evaluation.md의 표): 이보다
+    # 느슨하면(0.5~0.6) ndcg는 조금 더 오르지만 none_correct가 1.000에서 내려가고, 더 조이면
+    # (0.75) 재현율이 baseline 쪽으로 되돌아간다. 2/3은 baseline 대비 어느 지표도 나빠지지 않는
+    # 유일한 지점이었다.
+    term_coverage_ratio: float = 2 / 3
+    term_coverage_min: int = 2
+
     embedding_enabled: bool = False
     # Switch point for a future non-OpenAI embedding backend (mirrors
     # llm_provider/get_extractor) - only "openai" is implemented so far.

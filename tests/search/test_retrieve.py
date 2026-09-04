@@ -245,6 +245,98 @@ async def test_empty_vector_result_falls_back_to_keyword_search_on_semantic_quer
     assert result.document_ids == ["d1", "d2"]
 
 
+async def test_term_fallback_is_skipped_when_the_whole_query_already_matched(monkeypatch):
+    """질의 문자열 통째로 걸린 히트가 term 하나하나보다 강한 신호다 - term 분해는 그게 빈손일
+    때만 도는 구제 경로. 항상 돌리면 제목이 정확히 맞은 질의를 term 히트가 밀어낸다
+    (v0-navigational-002 "codex README": ndcg 1.000 → 0.356)."""
+    store = _FakeStore(title_hits={"codex README": [_doc_hit("d1", 0.8)]})
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("codex README", store=store, now=_NOW)
+
+    assert not [s for s in result.steps if s.detail.get("mode") == "per_term"]
+    assert [q for q, _limit in store.chunk_calls] == ["codex README"]
+
+
+async def test_term_fallback_splits_the_query_and_ranks_by_term_coverage(monkeypatch):
+    """자연어 질의는 전체 문자열로는 pg_trgm에 안 걸린다(히트 0) - term별로 나눠 찾고, 여러
+    term이 겹친 문서가 RRF로 위에 온다. v0 baseline의 conversation_thread/sequence 실패 형태."""
+    store = _FakeStore(
+        chunk_hits={
+            "명함": [_chunk_hit("thread", "c1", 0.5)],
+            "제작": [_chunk_hit("thread", "c1", 0.5), _chunk_hit("other", "c9", 0.5)],
+            "논의": [_chunk_hit("thread", "c1", 0.5)],
+            "농협": [_chunk_hit("elsewhere", "c7", 0.5)],
+        }
+    )
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("농협 명함 제작 논의", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.detail.get("mode") == "per_term")
+    assert step.detail["terms"] == ["농협", "명함", "제작", "논의"]
+    assert step.detail["per_term"] == {"농협": 1, "명함": 1, "제작": 2, "논의": 1}
+    # thread만 term 3개(term 4개 × 2/3 → threshold 3) - 하나만 스친 elsewhere/other는 떨어진다.
+    assert step.detail["coverage_threshold"] == 3
+    assert (step.detail["kept_documents"], step.detail["dropped_documents"]) == (1, 2)
+    assert result.document_ids == ["thread"]
+
+
+async def test_term_coverage_threshold_keeps_recall_when_the_setting_is_off(monkeypatch):
+    """`term_coverage_ratio`/`term_coverage_min`을 0으로 내리면 필터가 꺼지고 term 하나만
+    겹친 문서도 후보로 남는다 - 재현율/정밀도 트레이드오프를 A/B로 재기 위한 노브."""
+    store = _FakeStore(
+        chunk_hits={
+            "명함": [_chunk_hit("thread", "c1", 0.5)],
+            "제작": [_chunk_hit("thread", "c1", 0.5), _chunk_hit("other", "c9", 0.5)],
+            "논의": [_chunk_hit("thread", "c1", 0.5)],
+            "농협": [_chunk_hit("elsewhere", "c7", 0.5)],
+        }
+    )
+    _patch_vector(monkeypatch, [])
+    monkeypatch.setattr(retrieve_module.settings, "term_coverage_ratio", 0.0)
+    monkeypatch.setattr(retrieve_module.settings, "term_coverage_min", 0)
+
+    result = await retrieve("농협 명함 제작 논의", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.detail.get("mode") == "per_term")
+    assert step.detail["coverage_threshold"] == 1
+    assert result.document_ids[0] == "thread"
+    assert set(result.document_ids) == {"thread", "elsewhere", "other"}
+
+
+def test_coverage_threshold_never_exceeds_the_term_count(monkeypatch):
+    """하한(`term_coverage_min`)이 term 수보다 크면 아무것도 통과하지 못한다 - term 수로 자른다."""
+    monkeypatch.setattr(retrieve_module.settings, "term_coverage_min", 5)
+    assert retrieve_module._coverage_threshold(2) == 2
+    assert retrieve_module._coverage_threshold(4) == 4
+    assert retrieve_module._coverage_threshold(9) == 6  # 하한보다 비율(ceil(9 × 2/3))이 크면 비율
+
+
+async def test_term_fallback_is_skipped_when_the_query_is_a_single_term(monkeypatch):
+    """term이 하나면 위의 전체 질의 조회와 같은 호출이라 DB를 한 번 더 때릴 이유가 없다."""
+    store = _FakeStore()
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("배포", store=store, now=_NOW)
+
+    assert not [s for s in result.steps if s.detail.get("mode") == "per_term"]
+    assert [q for q, _limit in store.chunk_calls] == ["배포"]
+
+
+async def test_term_fallback_caps_per_term_fetch_on_exhaustive_queries(monkeypatch):
+    """exhaustive 질의는 최종 컷오프가 없다 - term당 조회까지 EXHAUSTIVE_LIMIT으로 열어 주면
+    term 개수만큼의 노이즈가 그대로 답이 된다."""
+    store = _FakeStore()
+    _patch_vector(monkeypatch, [])
+
+    await retrieve("배포 일정 전부 알려줘", store=store, now=_NOW)
+
+    limits = dict(store.chunk_calls)
+    assert limits.pop("배포 일정") == EXHAUSTIVE_LIMIT  # semantic_query ("전부 알려줘"는 군더더기)
+    assert limits and set(limits.values()) == {retrieve_module._TERM_FETCH_LIMIT}
+
+
 async def test_vector_search_error_is_recorded_not_raised(monkeypatch):
     store = _FakeStore()
     _patch_vector(monkeypatch, RuntimeError("no embedder"))

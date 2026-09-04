@@ -19,3 +19,6 @@ data-host/
 refs/
 okf/
 kf-data/
+# eval-ir --json 스윕 산출물 (실행 기록은 eval_run 테이블에 남는다)
+out/
+
