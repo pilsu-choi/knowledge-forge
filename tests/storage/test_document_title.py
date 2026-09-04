@@ -143,8 +143,7 @@ def test_slack_excerpt_returns_none_for_nothing_usable():
 
 
 def test_slack_title_appends_the_excerpt_when_it_is_enabled(monkeypatch):
-    # 기본값은 0(끔)이다 - 왜 껐는지는 document_title.py의 `_SLACK_EXCERPT_CHARS` 주석 참고.
-    # 켰을 때 조립이 맞는지는 여기서 지킨다.
+    # 길이를 바꿔도 조립이 맞는지 지킨다(기본값 120과 무관하게).
     monkeypatch.setattr(document_title, "_SLACK_EXCERPT_CHARS", 40)
     title = _derive(
         source_type="slack",
@@ -154,7 +153,20 @@ def test_slack_title_appends_the_excerpt_when_it_is_enabled(monkeypatch):
     assert title == "#general 2026-08-11 3차 인터뷰 체크리스트 파일 전달드립니다"
 
 
-def test_slack_title_is_channel_and_date_only_by_default():
+def test_slack_title_includes_the_excerpt_by_default():
+    # 기본값이 120으로 켜졌다(커밋 09296fb가 `title_types` 술어를 지워 켜는 조건이 충족됐다).
+    # 이 테스트가 기본값이 켜져 있다는 계약을 지킨다 - 끄면 제목 경로의 슬랙 recall이
+    # 42/66에서 0/66으로 돌아간다(document_title.py의 상수 주석 참고).
+    title = _derive(
+        source_type="slack",
+        source_metadata={"channel": "C1", "channel_name": "general", "first_message": "U0BDNDBHWLV: 어떤 메시지든"},
+    )
+
+    assert title == "#general 2026-08-11 어떤 메시지든"
+
+
+def test_slack_title_is_channel_and_date_only_when_the_excerpt_is_off(monkeypatch):
+    monkeypatch.setattr(document_title, "_SLACK_EXCERPT_CHARS", 0)
     title = _derive(
         source_type="slack",
         source_metadata={"channel": "C1", "channel_name": "general", "first_message": "U0BDNDBHWLV: 어떤 메시지든"},
