@@ -352,6 +352,32 @@ async def test_vector_search_error_is_recorded_not_raised(monkeypatch):
 # --- latest -------------------------------------------------------------------------
 
 
+async def test_latest_sorts_only_within_the_relevance_pool(monkeypatch):
+    """`latest`가 후보 **전체**를 시각 정렬하면 병합 랭킹이 통째로 버려져 "질의와 상관없이 가장
+    최근 문서"가 1위가 된다 - 후보 수가 늘수록 나빠지는 종류의 버그다(v0-latest-001/002가
+    후보 2→96, 6→119이 되자 정답이 무관한 최근 슬랙 메시지 뒤로 밀려 ndcg 0.000). 관련도 상위
+    pool 안에서만 시각 정렬하고, pool 밖은 관련도 순 그대로 뒤에 붙인다."""
+    store = _FakeStore(
+        chunk_hits={
+            None: [
+                _chunk_hit("relevant-old", "c1", 0.9, content_at="2026-08-01T00:00:00+00:00"),
+                _chunk_hit("relevant-new", "c2", 0.8, content_at="2026-08-20T00:00:00+00:00"),
+                _chunk_hit("noise-newest", "c3", 0.1, content_at="2026-09-03T00:00:00+00:00"),
+            ]
+        }
+    )
+    _patch_vector(monkeypatch, [])
+    monkeypatch.setattr(retrieve_module.settings, "latest_relevance_pool", 2)
+
+    result = await retrieve("가장 최근 배포 노트", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.strategy == "latest")
+    assert (step.detail["relevance_pool"], step.detail["outside_pool"]) == (2, 1)
+    # pool(관련도 1~2위) 안에서만 시각 정렬 - 더 최근이지만 관련 없는 noise-newest는 못 올라온다.
+    assert result.document_ids == ["relevant-new", "relevant-old", "noise-newest"]
+
+
+
 async def test_latest_orders_by_time_and_keeps_only_the_newest_of_a_version_family(monkeypatch):
     store = _FakeStore(
         version_rows=[

@@ -125,7 +125,7 @@ hits(각 hit에 document_id/target_kind/score 필수), document_ids(hits에서 �
 | `vector` | `semantic_query`로 `vector_search`(since/until 전달) | 임베딩 0행/임베더 미구성이면 빈 결과 + `error` 기록(예외 아님). 비면 아래 **키워드 fallback**으로 내려간다(`fallback_from="vector"`) |
 | `comparison` | `comparison_targets` 각각 `document_search`(대상 안의 시간 표현은 그 대상에만 적용), 없으면 `lexical_search` | 대상별 최상위 문서를 anchor 다음으로 최상위 고정 |
 | `multihop` | provider 있으면 `plan_and_search` 근거를 한 소스로 RRF 합류 | 없으면 `skipped="no_provider"`. document_id 없는 히트(OKF file_search)는 채점 단위가 없어 버림 |
-| `latest` | 병합 결과를 `content_at` 내림차순, 같은 `version_family`는 `version_sort_key`로 최신 하나만 남기고 나머지는 뒤로 | family 안에서는 버전 표기(최종 > vN > 무표기 > 초안)가 시각보다 우선 - 구버전을 나중에 다시 올린 경우 때문 |
+| `latest` | **관련도 상위 `KF_LATEST_RELEVANCE_POOL`(기본 5) 문서 안에서만** `content_at` 내림차순, 같은 `version_family`는 `version_sort_key`로 최신 하나만 남기고 나머지는 뒤로 | family 안에서는 버전 표기(최종 > vN > 무표기 > 초안)가 시각보다 우선 - 구버전을 나중에 다시 올린 경우 때문. pool 밖 후보는 관련도 순 그대로 뒤에 붙는다 - 후보 전체를 시각 정렬하면 "질의와 상관없이 가장 최근 문서"가 1위가 된다(아래) |
 | `exhaustive`/`negative` | 소스별 limit을 200으로, 최종 컷오프 없음 | 부재 판정은 LLM 몫 - 실행기는 후보만 |
 | `count` | `predicted_count` = 최종 문서 수. 필터 단독 결과면 같은 WHERE로 `SELECT COUNT(*)` | count도 exhaustive 수집을 함의 |
 | `whole_document` | anchor(없으면 상위 2개 문서)를 `read_document`로 읽어 `documents_read`에, 청크를 문서 순서대로 히트 맨 앞에 | 같은 청크를 가리키던 검색 히트는 중복이라 제거 |
@@ -165,6 +165,19 @@ conversation_thread(0.250)/sequence(0.343)가 낮았던 실제 원인이 이것�
 term당 조회는 `_TERM_FETCH_LIMIT`(20)으로 따로 막는다 — exhaustive/negative/count 질의는
 `fetch_limit`이 200이고 최종 컷오프도 없어서, term 열 개 × 200이 그대로 답에 실리면 재현율보다
 정밀도를 더 깎는다.
+
+
+**`latest`가 관련도를 버리지 않게 하는 이유**:
+
+`latest`는 원래 병합 결과 **전체**를 `content_at` 내림차순으로 재정렬했다. 후보가 2~7개였을
+때는 우연히 맞았지만, term 단위 fallback으로 후보가 90~120개가 되자 정답이 무관한 최근 슬랙
+메시지 뒤로 밀려 `v0-latest-001/002`가 ndcg@10 0.000이 됐다. **후보 수가 늘수록 나빠지는**
+종류의 버그다 — 검색이 좋아지면 이 후처리가 더 망가진다.
+
+그래서 시각 정렬 대상을 **관련도 상위 pool**로 좁혔다. "가장 최근 X"는 "가장 최근 문서"가
+아니라 "X에 해당하는 것들 중 가장 최근"이므로, 관련도가 범위를 정하고 시각이 그 안에서 고르는
+게 맞다. pool 5는 v0 스윕값이고(7 이상이면 latest 0.544 / version 0.947로 되돌아간다) 근거가
+질의 10개뿐이라 잠정값이다.
 
 
 **병합 결정과 이유**:

@@ -95,8 +95,19 @@ class Settings(BaseSettings):
     # 느슨하면(0.5~0.6) ndcg는 조금 더 오르지만 none_correct가 1.000에서 내려가고, 더 조이면
     # (0.75) 재현율이 baseline 쪽으로 되돌아간다. 2/3은 baseline 대비 어느 지표도 나빠지지 않는
     # 유일한 지점이었다.
+    # 주의: 임계값은 `ceil(term수 × ratio)`라 정확히 나누어떨어지는 지점에서 계단이 진다 -
+    # 2/3과 0.67은 term이 3·6·9개일 때 임계값이 다르다(2/3 → 2·4·6, 0.67 → 3·5·7). 반올림
+    # 문제처럼 보이지만 실제로 랭킹이 바뀐다(v0 실측 ndcg@10 0.845 vs 0.839). 이 값을 손댈 때는
+    # 소수점 두 자리로 어림하지 말고 실제로 재라.
     term_coverage_ratio: float = 2 / 3
     term_coverage_min: int = 2
+    # `latest` 후처리가 시각 내림차순으로 재정렬할 때 대상으로 삼는 **관련도 상위 문서 수**.
+    # 전체 후보를 시각으로 정렬하면 관련도 랭킹이 통째로 버려져 "질의와 상관없이 가장 최근
+    # 문서"가 1위가 된다 - 후보가 늘어날수록 나빠진다(v0-latest-001/002가 그렇게 0.000이 됐다).
+    # 기본 5는 v0 스윕에서 고른 값이다(wiki/search-evaluation.md): 7 이상이면 latest 0.544 /
+    # version 0.947로 되돌아가고, 5 이하는 latest 0.667 / version 1.000으로 평평하다. 다만
+    # 근거가 latest 3개 + version 7개뿐이라 잠정값이다 - 골든셋 v1에서 다시 재야 한다.
+    latest_relevance_pool: int = 5
 
     embedding_enabled: bool = False
     # Switch point for a future non-OpenAI embedding backend (mirrors

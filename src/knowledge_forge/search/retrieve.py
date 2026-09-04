@@ -615,7 +615,15 @@ class _Run:
     # -- 후처리 ---------------------------------------------------------------
 
     async def latest(self, hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        ordered = sorted(hits, key=lambda hit: _hit_time(hit), reverse=True)
+        # 시각 정렬은 **관련도 상위 pool 안에서만** 한다. 후보 전체를 시각으로 정렬하면 병합
+        # 랭킹이 통째로 버려져 "질의와 상관없이 가장 최근 문서"가 1위가 된다 - 후보 수가 늘수록
+        # 나빠지는 종류의 버그다(v0-latest-001/002: 후보가 2→96, 6→119이 되자 정답이 무관한
+        # 최근 슬랙 메시지 뒤로 밀려 ndcg 0.000). pool 밖은 관련도 순 그대로 뒤에 붙인다.
+        ranked_documents, _ = _dedupe_documents(hits)
+        pool_ids = set(ranked_documents[: max(1, settings.latest_relevance_pool)])
+        pool = [hit for hit in hits if hit["document_id"] in pool_ids]
+        tail = [hit for hit in hits if hit["document_id"] not in pool_ids]
+        ordered = sorted(pool, key=lambda hit: _hit_time(hit), reverse=True) + tail
         document_ids, _ = _dedupe_documents(ordered)
         demoted: set[str] = set()
         families: dict[tuple[str | None, str], list[str]] = {}
@@ -656,6 +664,8 @@ class _Run:
             sql=sql,
             families={key[1]: members for key, members in families.items() if len(members) > 1},
             demoted=sorted(demoted),
+            relevance_pool=len(pool_ids),
+            outside_pool=len(ranked_documents) - len(pool_ids),
         )
         return result
 

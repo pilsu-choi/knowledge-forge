@@ -409,6 +409,67 @@ sequence +0.117. **loss가 0건**이다.
 run-to-run noise"라고 경고했지만 실제로는 코드가 바뀐 A/B였다. `config_hash`가 설정값만 보고
 검색 코드 버전을 안 본다 — 코드/파이프라인 버전을 해시에 넣어야 이 경고가 쓸모 있어진다.
 
+### `latest` 후처리 수정 — 세 번째 실측 (2026-09-04)
+
+term fallback 이후 남은 낮은 유형을 `steps`로 파고든 결과, `latest` 0.544의 원인은 골든셋이
+아니라 실행기였다. `_Run.latest`가 **후보 전체를 시각 내림차순으로 재정렬**해서 병합 랭킹을
+통째로 버리고 있었다(`search-architecture.md` "`latest`가 관련도를 버리지 않게 하는 이유").
+시각 정렬 대상을 관련도 상위 pool로 좁혔다(`KF_LATEST_RELEVANCE_POOL`).
+
+pool 스윕(전부 `--no-llm`, ratio 2/3, v0 76개):
+
+| pool | hit@1 | ndcg@10 | latest | version |
+|---|---|---|---|---|
+| 40 / 20 / 10 | 0.814 | 0.840 | 0.544 | 0.947 |
+| 7 | 0.815 | 0.840 | 0.544 | 0.947 |
+| **5** | **0.829** | **0.845** | **0.667** | **1.000** |
+
+채택 run **`run_id=f878d05c733642039298eb07c668fe53`** (label `latest-pool5`). 원 baseline과의
+paired 비교: mean 0.7092 → 0.8455, delta **+0.1363**, 95% CI [+0.0627, +0.2182] 유의,
+win/loss/tie **12/1/57**.
+
+직전 채택본(term fallback만) 대비로는 +0.0113, CI [-0.0195, +0.0497]로 **유의하지 않다** —
+`latest`/`version` 유형(10개)에만 걸리는 수정이라 76개 평균으로는 묻힌다. 유형별로는
+latest 0.544 → 0.667, version 0.947 → 1.000, navigational 0.671 → 0.830, sequence 0.460 → 0.710.
+
+유일한 loss는 `v0-set_query-002`(0.936 → 0.359)인데, 이건 pool이 아니라 **coverage ratio를
+0.67에서 2/3으로 바꾼 부작용**이다. 임계값이 `ceil(term수 × ratio)`라 term이 3·6·9개일 때
+두 값의 임계값이 갈린다(2/3 → 2·4·6, 0.67 → 3·5·7). 이 질의는 임계값이 3에서 2로 내려가면서
+`metadata_filter`가 `filter_only`(197건, 정답 10건 포함)에서 `intersected`(2건)로 바뀌었다.
+pool=5 고정 상태에서 두 ratio를 따로 재 보면 2/3이 0.67보다 전체적으로 낫다
+(ndcg@10 0.845 vs 0.839, hit@1 0.829 vs 0.814; 대신 set_query는 0.749 vs 0.783). 전체를 택했다.
+
+**교훈**: ratio를 소수점 두 자리로 어림해 적으면 안 된다. 계단이 지는 지점이라 반올림처럼
+보이는 차이가 랭킹을 바꾼다.
+
+### 남은 것 (우선순위 순)
+
+진단은 `eval_run_query.steps` 실측 기준이다.
+
+1. **임베딩 없는 상태를 최적화하고 있다는 것** — 76/76 질의에서 `vector_search`가 0히트다.
+   `OPENAI_API_KEY` + `KF_EMBEDDING_SOURCE=chunk`로 채우기 전까지 위 튜닝은 전부 degrade
+   경로 최적화다. 어휘 겹침이 0인 질의(`v0-latest-003`, `v0-relative_temporal-001`
+   "농협"→`nonghyup.com`, `v0-metadata_filter-003`)는 원리적으로 못 푼다.
+2. **term별 희소성 가중** — 지금은 "Kubernetes"(df=0)와 "가이드"(df≥20)가 동등하다. 비율 기반
+   임계값이 재현율/정밀도 trade-off에 갇히는 근본 원인. 희소 term이 0건이면 답이 없다고 보는
+   규칙이 null/negative를 다른 유형 희생 없이 지킬 수 있다.
+3. **metadata_filter 교집합이 무조건적** — 키워드 히트가 1건이라도 있으면 `filter_only`가
+   `intersected`로 바뀐다. `filter_only` 경로가 baseline 5건 → 지금 0건. 신뢰도 낮은 term
+   후보로 교집합을 걸지 말고 필터 집합을 랭킹 base로 두고 키워드를 가산점으로 쓰는 편이 안전하다
+   (`v0-set_query-002`, `v0-relative_temporal-001`).
+4. **fallback 경로에서 anchor가 안 잡힌다** — `_keyword_fallback`의 `document_search` 결과에는
+   `document_lookup()`의 anchor 판정이 안 걸린다. 제목 1.0 일치가 RRF 한 표로 전락한다.
+   더불어 RRF가 모든 소스를 1표로 보는 것도 재검토 대상이다.
+5. **슬랙 문서 제목이 197/197 채널 ID다**(`#C0BGQEQG1L6 2026-09-01`). 수집기가
+   `sources.metadata.channel_name`을 안 채운다. 골든셋 정답 문서 90개 중 48개가 슬랙이라,
+   제목 기반 조회/anchor 경로가 정답 절반 이상에 구조적으로 닿지 않는다 — 4번의 전제조건.
+6. **`count`가 `len(document_ids)`다** — 어휘 조건 기반 count를 SQL로 내려야 골든셋의 count
+   정의와 같은 것을 센다.
+7. **`relations` 문서 간 edge 0행 / `chunks.parent_chunk_id` 전부 NULL** — multihop·parent_child
+   유형은 지금 데이터로 실제 테스트가 안 된다. parent_child 1.000은 "문서=부모"로 우회한 결과다.
+8. **골든셋 v0 자체** — `v0-latest-003`은 정답 문서 본문에 질의의 "3차"도 "공지"도 없다(사람의
+   해석이 개입한 정답). v1 검수 때 질의문 수정 또는 제외 대상.
+
 ### 동시 실행 주의
 
 `PostgresStore`는 커넥션 하나를 공유하고 `execute_readonly_query`만 명시적 트랜잭션을 연다.
