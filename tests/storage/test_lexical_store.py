@@ -191,6 +191,31 @@ async def test_search_documents_by_title_returns_every_candidate_ranked(store):
     assert [h["document_id"] for h in exact[1:]] == ["test-lex-d2"]  # fuzzy sibling ranks below
 
 
+async def test_search_documents_by_title_matches_tokens_out_of_order(store):
+    """토큰이 전부 들어 있으면 순서와 구분자가 달라도 substring과 같은 1.0 - 실측된 회귀
+    (v0-navigational-004, 질의 "Dev Handover README" vs 제목
+    "README_ProjectIntel_Dev_Handover.md")를 그대로 옮긴 것이다. 판정 규칙 전부는
+    `storage/title_match.py` 참고."""
+    src = _source(10, SourceType.GOOGLE_DRIVE, {"name": "README_ProjectIntel_Dev_Handover.md"})
+    await store.save_source(src, raw_path=None)
+    await store.save_document(_document(10, src))
+
+    hits = await store.search_documents_by_title("Dev Handover README", project_id=_PROJECT)
+
+    assert hits[0]["document_id"] == "test-lex-d10" and hits[0]["score"] == 1.0
+
+
+async def test_search_documents_by_title_gives_no_1_0_when_several_titles_contain_the_query_tokens(store):
+    """토큰 집합 tier가 1.0을 양산하면 `_claim_anchor`가 엉뚱한 문서 하나로 검색을 좁힌다.
+    질의 토큰을 통째로 담은 문서가 둘이면 어느 쪽도 "그 문서"가 아니므로 1.0을 주지 않는다."""
+    await _seed(store)
+
+    hits = await store.search_documents_by_title("보고서 SH", project_id=_PROJECT)
+
+    assert {h["document_id"] for h in hits} == {"test-lex-d1", "test-lex-d2"}
+    assert all(0.5 < h["score"] < 1.0 for h in hits)
+
+
 async def test_search_documents_by_title_filters_by_time_source_type_and_project(store):
     await _seed(store)
 
