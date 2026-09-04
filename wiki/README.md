@@ -15,6 +15,7 @@
 | 문서 | 내용 |
 |---|---|
 | [`saas-connectors.md`](saas-connectors.md) | Slack/Gmail/GoogleDrive/Notion 커넥터 — 인증 클라이언트 주입 설계, 초기/증분 동기화, 삭제 감지 방식 |
+| [`reingest-replay.md`](reingest-replay.md) | `knowledge-forge reparse` — 이미 디스크에 있는 원본 바이트를 재수집 없이 다시 파싱하기. GDrive 239건 미적재 사건의 원인·복구 결과·남은 후속 과제 |
 | [`context-reconstruction.md`](context-reconstruction.md) | Slack 대화 세그멘테이션·Gmail 스레드 병합 — RawItem 하나가 항상 하나의 의미 단위는 아니라는 문제와 해법 |
 
 ## 파싱 · 청킹 · 추출

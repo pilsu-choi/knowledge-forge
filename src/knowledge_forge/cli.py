@@ -12,6 +12,7 @@ from knowledge_forge.agent.runtime import AgentSession, run_query
 from knowledge_forge.chunking import AdaptiveChunker
 from knowledge_forge.collectors.base import Collector, ensure_utc
 from knowledge_forge.collectors.local_file import LocalFileCollector
+from knowledge_forge.collectors.replay import RawBlobReplayCollector, filter_rows_by_extension
 from knowledge_forge.collectors.saas.factory import SAAS_COLLECTOR_BUILDERS
 from knowledge_forge.config import settings
 from knowledge_forge.embedding.factory import get_embedding_provider
@@ -22,6 +23,7 @@ from knowledge_forge.evaluation.ir_runner import run_ir_eval, run_to_dict
 from knowledge_forge.evaluation.judge import judge_search_log
 from knowledge_forge.extraction.auth import credential_hint_ko, has_resolvable_credentials
 from knowledge_forge.extraction.factory import get_extractor
+from knowledge_forge.models.source import SourceType
 from knowledge_forge.okf import OKFWriter
 from knowledge_forge.parsers.registry import default_registry
 from knowledge_forge.pipeline import run_pipeline
@@ -33,6 +35,7 @@ from knowledge_forge.scheduling.scheduler import (
 from knowledge_forge.storage import PipelineStore
 from knowledge_forge.storage.eval_store import EvalRun, EvalStore
 from knowledge_forge.storage.postgres_store import PostgresStore
+from knowledge_forge.storage.replay_index import load_replay_rows
 
 app = typer.Typer(help="Knowledge Forge: Collector -> Parser -> Adaptive Chunker -> Knowledge Extraction.")
 db_app = typer.Typer(help="PostgreSQL storage schema management.")
@@ -234,6 +237,134 @@ def extract(
     typer.echo(
         f"{len(knowledge_objects)}개의 Knowledge Object, {len(relations)}개의 Relation 생성 완료"
         + (f" (OKF: {okf_dir})" if okf_dir else ""),
+        err=True,
+    )
+
+
+@app.command()
+def reparse(
+    source_type: str = typer.Option(
+        ...,
+        "--source-type",
+        help=f"Which already-collected sources to replay: one of {', '.join(t.value for t in SourceType)}.",
+    ),
+    project_id: str | None = typer.Option(
+        None, "--project-id", help="Only replay sources tagged with this project_id. Default: every project."
+    ),
+    only_missing: bool = typer.Option(
+        True,
+        "--only-missing/--all",
+        help="Only replay sources that never produced a documents row (the default - the recovery case, and what "
+        "makes the run resumable). --all re-parses every selected source, e.g. after a parser's output changed.",
+    ),
+    extensions: str | None = typer.Option(
+        None,
+        "--extensions",
+        help="Comma-separated allowlist of file extensions to replay (e.g. '.md,.xlsx'). Default: no filter. Use it "
+        "to hold back formats whose parser needs credentials/budget you do not want to spend on this run.",
+    ),
+    limit: int | None = typer.Option(None, "--limit", help="Replay at most this many sources."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print the selection (count per extension) and exit without parsing anything."
+    ),
+    max_tokens: int = typer.Option(4000, "--max-tokens", help="Max tokens per chunk before splitting further."),
+    model: str | None = typer.Option(
+        None, "--model", help="Extraction model. Defaults to the active provider's (KF_LLM_PROVIDER) own default model."
+    ),
+    extract_objects: bool = typer.Option(
+        False,
+        "--extract/--no-extract",
+        help="Run LLM Knowledge Extraction as well. Off by default here (unlike `extract`): a replay's job is to "
+        "produce the Document/Chunk rows a past run failed to produce, and re-running extraction over a large "
+        "recovered backlog is a separate, far more expensive decision.",
+    ),
+    embed: bool = typer.Option(
+        False,
+        "--embed/--no-embed",
+        help="Embed after storing. Off by default here for the same reason as --extract: embedding a recovered "
+        "backlog is a paid, separately-decided step (see wiki/embeddings.md).",
+    ),
+    embedding_source: str = typer.Option(
+        settings.embedding_source, "--embedding-source", help="What --embed embeds: 'knowledge_object' or 'chunk'."
+    ),
+) -> None:
+    """Re-parse sources whose raw bytes were already collected, without re-collecting them.
+
+    Reads `sources.raw_path` blobs straight off disk (KF_DATA_DIR) and runs them
+    back through Parser -> Chunker, so a source that was collected while its
+    parser was missing or broken becomes a Document without any network call to
+    the origin SaaS API. See collectors/replay.py.
+    """
+    if embedding_source not in ("knowledge_object", "chunk"):
+        typer.echo(f"--embedding-source는 knowledge_object 또는 chunk여야 합니다: {embedding_source!r}", err=True)
+        raise typer.Exit(2)
+    try:
+        resolved_source_type = SourceType(source_type)
+    except ValueError:
+        typer.echo(
+            f"--source-type은 {', '.join(t.value for t in SourceType)} 중 하나여야 합니다: {source_type!r}", err=True
+        )
+        raise typer.Exit(2) from None
+    database_url = settings.database_url
+    if not database_url:
+        typer.echo("KF_DATABASE_URL이 필요합니다 - reparse는 sources 테이블에서 재적재 대상을 고릅니다.", err=True)
+        raise typer.Exit(1)
+    if extract_objects:
+        _ensure_authenticated()
+
+    allowed_extensions = {e.strip().lower() for e in extensions.split(",") if e.strip()} if extensions else None
+    pipeline_store = PipelineStore(database_url, settings.data_dir)
+    embedder = get_embedding_provider() if embed else None
+
+    async def _run(dsn: str) -> tuple[int, int, int]:
+        rows = await load_replay_rows(
+            dsn,
+            resolved_source_type,
+            project_id=project_id,
+            only_missing_documents=only_missing,
+        )
+        if allowed_extensions is not None:
+            rows = filter_rows_by_extension(rows, allowed_extensions)
+        # Applied after the extension filter, not in the SQL: `--limit 10
+        # --extensions .md` should mean ten markdown files, not "ten rows,
+        # however many of them happen to be markdown".
+        if limit is not None:
+            rows = rows[:limit]
+
+        by_extension: dict[str, int] = {}
+        for row in rows:
+            by_extension[row.extension or "(확장자 없음)"] = by_extension.get(row.extension or "(확장자 없음)", 0) + 1
+        for extension, count in sorted(by_extension.items(), key=lambda kv: -kv[1]):
+            typer.echo(f"  {extension}: {count}", err=True)
+        if dry_run or not rows:
+            return len(rows), 0, 0
+
+        collector = RawBlobReplayCollector(rows, resolved_source_type)
+        extractor = get_extractor(model=model) if extract_objects else None
+        async with pipeline_store:
+            await pipeline_store.init_schema()  # idempotent (CREATE TABLE IF NOT EXISTS)
+            documents = 0
+            objects = 0
+            async for outcome in run_pipeline(
+                collector,
+                default_registry(),
+                AdaptiveChunker(max_tokens_per_chunk=max_tokens),
+                extractor,
+                store=pipeline_store,
+                embedder=embedder,
+                embedding_source=embedding_source,
+            ):
+                documents += 1
+                objects += len(outcome.objects)
+        return len(rows), documents, objects
+
+    selected, documents, objects = asyncio.run(_run(database_url))
+    if dry_run:
+        typer.echo(f"재적재 대상 {selected}건 (--dry-run, 실제 파싱하지 않음)", err=True)
+        return
+    typer.echo(
+        f"재적재 대상 {selected}건 중 {documents}건 파이프라인 통과"
+        + (f", Knowledge Object {objects}개 생성" if extract_objects else ""),
         err=True,
     )
 
