@@ -180,7 +180,7 @@ async def test_plan_and_search_executes_independent_subqueries_and_collects_evid
         json.dumps([{"query": "지난달 AI 프로젝트 목록", "depends_on": []}, {"query": "각 프로젝트 성과", "depends_on": []}])
     )
 
-    async def _fake_file_search(query, project_id=None, type=None, limit=20):
+    async def _fake_file_search(query, project_id=None, type=None, limit=20, since=None, until=None):
         return [{"path": f"p-{query}", "title": query, "snippet": f"snippet for {query}"}]
 
     monkeypatch.setattr("knowledge_forge.search.planner.file_search", _fake_file_search)
@@ -192,6 +192,11 @@ async def test_plan_and_search_executes_independent_subqueries_and_collects_evid
     for item in result["evidence"]:
         assert item["results"][0]["retrieval_sources"] == ["file_search"]
         assert item["results"][0]["path"] == f"p-{item['subquery']}"
+
+    # The first sub-query's own text contains "지난달" - it should carry a
+    # resolved time_range; the second has no temporal expression at all.
+    assert result["evidence"][0]["time_range"]["label"] == "지난달"
+    assert result["evidence"][1]["time_range"] is None
 
 
 async def test_plan_and_search_augments_dependent_subquery_with_prior_results(monkeypatch):
@@ -205,7 +210,7 @@ async def test_plan_and_search_augments_dependent_subquery_with_prior_results(mo
     )
     captured_queries: list[str] = []
 
-    async def _fake_file_search(query, project_id=None, type=None, limit=20):
+    async def _fake_file_search(query, project_id=None, type=None, limit=20, since=None, until=None):
         captured_queries.append(query)
         if query == "가장 성과가 좋은 프로젝트":
             return [{"path": "p1", "summary": "Project Phoenix가 가장 성과가 좋았다"}]
@@ -230,7 +235,7 @@ async def test_plan_and_search_excludes_vector_search_when_no_store_is_given(mon
         vector_search_called = True
         return []
 
-    async def _fake_file_search(query, project_id=None, type=None, limit=20):
+    async def _fake_file_search(query, project_id=None, type=None, limit=20, since=None, until=None):
         return [{"path": "p1"}]
 
     monkeypatch.setattr("knowledge_forge.search.planner.file_search", _fake_file_search)
@@ -247,10 +252,10 @@ async def test_plan_and_search_uses_vector_search_when_store_is_given(monkeypatc
         json.dumps([{"query": "김철수가 참여한 프로젝트가 왜 실패했는지 이유를 설명해줘", "depends_on": []}])
     )
 
-    async def _fake_file_search(query, project_id=None, type=None, limit=20):
+    async def _fake_file_search(query, project_id=None, type=None, limit=20, since=None, until=None):
         return [{"path": "p1"}]
 
-    async def _fake_vector_search(query, store, project_id=None, type=None, limit=10):
+    async def _fake_vector_search(query, store, project_id=None, type=None, limit=10, since=None, until=None):
         return [{"knowledge_object_id": "ko1", "score": 0.9}]
 
     monkeypatch.setattr("knowledge_forge.search.planner.file_search", _fake_file_search)
@@ -272,10 +277,10 @@ async def test_plan_and_search_deduplicates_a_knowledge_object_both_sources_find
         json.dumps([{"query": "김철수가 참여한 프로젝트가 왜 실패했는지 이유를 설명해줘", "depends_on": []}])
     )
 
-    async def _fake_file_search(query, project_id=None, type=None, limit=20):
+    async def _fake_file_search(query, project_id=None, type=None, limit=20, since=None, until=None):
         return [{"path": "objects/decision/p1.md", "title": "실패 원인", "knowledge_object_id": "ko-shared"}]
 
-    async def _fake_vector_search(query, store, project_id=None, type=None, limit=10):
+    async def _fake_vector_search(query, store, project_id=None, type=None, limit=10, since=None, until=None):
         return [{"knowledge_object_id": "ko-shared", "score": 0.9}]
 
     monkeypatch.setattr("knowledge_forge.search.planner.file_search", _fake_file_search)
@@ -290,3 +295,42 @@ async def test_plan_and_search_deduplicates_a_knowledge_object_both_sources_find
     assert sorted(results[0]["retrieval_sources"]) == ["file_search", "vector_search"]
     assert results[0]["title"] == "실패 원인"
     assert results[0]["score"] == 0.9
+
+
+async def test_plan_and_search_forwards_a_temporal_filter_detected_in_the_subquery(monkeypatch):
+    provider = _ScriptedProvider(json.dumps([{"query": "어제 있었던 주요 결정", "depends_on": []}]))
+    captured: dict = {}
+
+    async def _fake_file_search(query, project_id=None, type=None, limit=20, since=None, until=None):
+        captured["since"] = since
+        captured["until"] = until
+        return []
+
+    monkeypatch.setattr("knowledge_forge.search.planner.file_search", _fake_file_search)
+
+    result = await plan_and_search("어제 뭐 결정했어?", provider, store=None)
+
+    assert captured["since"] is not None
+    assert captured["until"] is not None
+    assert (captured["until"] - captured["since"]).days == 1
+    assert result["evidence"][0]["time_range"]["label"] == "어제"
+    assert result["evidence"][0]["time_range"]["since"] == captured["since"].isoformat()
+    assert result["evidence"][0]["time_range"]["until"] == captured["until"].isoformat()
+
+
+async def test_plan_and_search_time_range_is_none_without_a_temporal_expression(monkeypatch):
+    provider = _ScriptedProvider(json.dumps([{"query": "인증 방식 관련 결정", "depends_on": []}]))
+    captured: dict = {}
+
+    async def _fake_file_search(query, project_id=None, type=None, limit=20, since=None, until=None):
+        captured["since"] = since
+        captured["until"] = until
+        return []
+
+    monkeypatch.setattr("knowledge_forge.search.planner.file_search", _fake_file_search)
+
+    result = await plan_and_search("인증 방식을 왜 바꿨어?", provider, store=None)
+
+    assert captured["since"] is None
+    assert captured["until"] is None
+    assert result["evidence"][0]["time_range"] is None

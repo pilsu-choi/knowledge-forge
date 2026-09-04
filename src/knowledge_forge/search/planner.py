@@ -27,6 +27,13 @@ Per sub-query, a route that names both sources gets its two hit lists merged
 through `search/rerank.py::merge_and_rerank` (Reciprocal Rank Fusion) rather
 than just concatenated - see that module for why RRF and not a raw score
 merge.
+
+Each sub-query's own text is also scanned for a temporal expression
+(`search/temporal.py::parse_temporal_expression`, "어제"/"지난주"/"2025년
+Q3"/...) and, if found, applied as a `since`/`until` filter on that
+sub-query's `file_search`/`vector_search` calls - this is the one piece of
+Query Understanding this module does itself (see that module's docstring
+for why it's a heuristic parser, not an LLM call).
 """
 
 from __future__ import annotations
@@ -41,6 +48,7 @@ from knowledge_forge.chat_provider import ChatProvider, Message
 from knowledge_forge.search.rerank import merge_and_rerank
 from knowledge_forge.search.router import FILE_SEARCH, VECTOR_SEARCH, route_query
 from knowledge_forge.search.service import file_search, vector_search
+from knowledge_forge.search.temporal import TimeRange, parse_temporal_expression
 
 if TYPE_CHECKING:
     from knowledge_forge.storage.store import PipelineStore
@@ -165,16 +173,23 @@ async def _execute_subquery(
     store: "PipelineStore | None",
     project_id: str | None,
     limit: int,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], TimeRange | None]:
     augmented_query = _augment_with_dependencies(subquery, results_by_id)
     decision = route_query(augmented_query, available_sources)
+    time_range = parse_temporal_expression(augmented_query)
+    since = time_range.start if time_range else None
+    until = time_range.end if time_range else None
 
     results_by_source: dict[str, list[dict[str, Any]]] = {}
     if FILE_SEARCH in decision.sources:
-        results_by_source[FILE_SEARCH] = await file_search(augmented_query, project_id=project_id, limit=limit)
+        results_by_source[FILE_SEARCH] = await file_search(
+            augmented_query, project_id=project_id, limit=limit, since=since, until=until
+        )
     if VECTOR_SEARCH in decision.sources and store is not None:
-        results_by_source[VECTOR_SEARCH] = await vector_search(augmented_query, store, project_id=project_id, limit=limit)
-    return merge_and_rerank(results_by_source)
+        results_by_source[VECTOR_SEARCH] = await vector_search(
+            augmented_query, store, project_id=project_id, limit=limit, since=since, until=until
+        )
+    return merge_and_rerank(results_by_source), time_range
 
 
 async def plan_and_search(
@@ -197,6 +212,7 @@ async def plan_and_search(
     available_sources = [FILE_SEARCH] + ([VECTOR_SEARCH] if store is not None else [])
 
     results_by_id: dict[int, list[dict[str, Any]]] = {}
+    time_range_by_id: dict[int, TimeRange | None] = {}
     for wave in _topological_waves(subqueries):
         wave_results = await asyncio.gather(
             *(
@@ -204,12 +220,27 @@ async def plan_and_search(
                 for sq in wave
             )
         )
-        for sq, hits in zip(wave, wave_results):
+        for sq, (hits, time_range) in zip(wave, wave_results):
             results_by_id[sq.id] = hits
+            time_range_by_id[sq.id] = time_range
 
     return {
         "subqueries": [{"id": sq.id, "query": sq.query, "depends_on": sq.depends_on} for sq in subqueries],
         "evidence": [
-            {"subquery_id": sq.id, "subquery": sq.query, "results": results_by_id[sq.id]} for sq in subqueries
+            {
+                "subquery_id": sq.id,
+                "subquery": sq.query,
+                "results": results_by_id[sq.id],
+                "time_range": (
+                    {
+                        "label": time_range_by_id[sq.id].label,
+                        "since": time_range_by_id[sq.id].start.isoformat() if time_range_by_id[sq.id].start else None,
+                        "until": time_range_by_id[sq.id].end.isoformat() if time_range_by_id[sq.id].end else None,
+                    }
+                    if time_range_by_id[sq.id]
+                    else None
+                ),
+            }
+            for sq in subqueries
         ],
     }

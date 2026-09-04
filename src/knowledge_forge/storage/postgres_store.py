@@ -616,6 +616,8 @@ class PostgresStore:
         project_id: str | None,
         type: str | None,
         limit: int,
+        since: datetime | None = None,
+        until: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Nearest-neighbor search over `knowledge_object_embeddings`' HNSW
         index (wiki/agent-search.md's vector_search) - `ORDER BY embedding
@@ -624,6 +626,10 @@ class PostgresStore:
         not a pgvector type - `connect()`'s `register_vector_async` call
         already teaches psycopg how to adapt it, the same as `save_embeddings`
         relies on for the INSERT side.
+
+        `since`/`until` (search/temporal.py, "⑥ Temporal Search") filter on
+        `ko.extracted_at` - `until` is exclusive, matching
+        `search/temporal.py::TimeRange`'s half-open interval contract.
 
         Returns dict rows, not `KnowledgeObject` - a search hit only needs
         enough to decide relevance (type/summary/topics) plus a similarity
@@ -640,10 +646,25 @@ class PostgresStore:
                 WHERE e.embedding_model = %s
                   AND (%s::text IS NULL OR e.project_id = %s)
                   AND (%s::text IS NULL OR ko.type = %s)
+                  AND (%s::timestamptz IS NULL OR ko.extracted_at >= %s)
+                  AND (%s::timestamptz IS NULL OR ko.extracted_at < %s)
                 ORDER BY e.embedding <=> %s
                 LIMIT %s
                 """,
-                (embedding, embedding_model, project_id, project_id, type, type, embedding, limit),
+                (
+                    embedding,
+                    embedding_model,
+                    project_id,
+                    project_id,
+                    type,
+                    type,
+                    since,
+                    since,
+                    until,
+                    until,
+                    embedding,
+                    limit,
+                ),
             )
             rows = await cur.fetchall()
 

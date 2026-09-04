@@ -1,4 +1,5 @@
 import textwrap
+from datetime import datetime, timezone
 from pathlib import Path
 
 from knowledge_forge.search.service import file_search
@@ -121,3 +122,63 @@ async def test_title_match_ranks_above_body_only_match(tmp_path):
     results = await file_search("OAuth", okf_root=tmp_path)
 
     assert [hit["title"] for hit in results] == ["인증 방식을 OAuth로 변경", "다른 개체"]
+
+
+def _seed_dated_object(root: Path, name: str, generated_at: str, project_id: str = "default") -> None:
+    project_root = root / project_id
+    (project_root / "manifest.yaml").parent.mkdir(parents=True, exist_ok=True)
+    (project_root / "manifest.yaml").write_text(f"project_id: {project_id}\n", encoding="utf-8")
+    _write(
+        project_root / "objects" / "decision" / f"{name}.md",
+        textwrap.dedent(
+            f"""\
+            type: Decision
+            title: OAuth 결정 {name}
+            generated:
+              by: knowledge_forge/0.1.0
+              at: '{generated_at}'
+            """
+        ),
+        "OAuth 관련 결정 본문.",
+    )
+
+
+async def test_since_excludes_hits_generated_before_the_cutoff(tmp_path):
+    _seed_dated_object(tmp_path, "old", "2026-01-01T00:00:00+00:00")
+    _seed_dated_object(tmp_path, "new", "2026-09-01T00:00:00+00:00")
+
+    results = await file_search("OAuth", okf_root=tmp_path, since=datetime(2026, 6, 1, tzinfo=timezone.utc))
+
+    assert [hit["title"] for hit in results] == ["OAuth 결정 new"]
+
+
+async def test_until_is_exclusive(tmp_path):
+    _seed_dated_object(tmp_path, "inside", "2026-08-31T23:59:59+00:00")
+    _seed_dated_object(tmp_path, "boundary", "2026-09-01T00:00:00+00:00")
+
+    results = await file_search("OAuth", okf_root=tmp_path, until=datetime(2026, 9, 1, tzinfo=timezone.utc))
+
+    assert [hit["title"] for hit in results] == ["OAuth 결정 inside"]
+
+
+async def test_since_and_until_together_bound_a_range(tmp_path):
+    _seed_dated_object(tmp_path, "before", "2026-07-01T00:00:00+00:00")
+    _seed_dated_object(tmp_path, "within", "2026-08-15T00:00:00+00:00")
+    _seed_dated_object(tmp_path, "after", "2026-10-01T00:00:00+00:00")
+
+    results = await file_search(
+        "OAuth",
+        okf_root=tmp_path,
+        since=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        until=datetime(2026, 9, 1, tzinfo=timezone.utc),
+    )
+
+    assert [hit["title"] for hit in results] == ["OAuth 결정 within"]
+
+
+async def test_since_excludes_hits_with_no_generated_at(tmp_path):
+    _seed_project(tmp_path)  # the decision object here has no `generated` field
+
+    results = await file_search("OAuth", okf_root=tmp_path, since=datetime(2020, 1, 1, tzinfo=timezone.utc))
+
+    assert results == []

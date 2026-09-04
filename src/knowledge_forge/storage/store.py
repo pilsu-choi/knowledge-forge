@@ -98,11 +98,15 @@ class PipelineStore:
         project_id: str | None = None,
         type: str | None = None,
         limit: int = 10,
+        since: datetime | None = None,
+        until: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """`search/service.py::vector_search`'s single entry point into
         storage - mirrors `record_embeddings`' role of being the one place
         the caller needs, rather than reaching into `PostgresStore` directly."""
-        return await self._db.search_knowledge_objects_by_embedding(embedding, embedding_model, project_id, type, limit)
+        return await self._db.search_knowledge_objects_by_embedding(
+            embedding, embedding_model, project_id, type, limit, since, until
+        )
 
     async def get_sync_cursor(self, source: str) -> dict[str, Any] | None:
         return await self._db.get_sync_cursor(source)

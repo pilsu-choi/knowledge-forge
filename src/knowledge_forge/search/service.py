@@ -16,6 +16,7 @@ actually produces (see reader.py's own module docstring).
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
 
@@ -118,18 +119,42 @@ def _snippet(frontmatter: dict[str, Any], body: str, query_lower: str) -> str:
     return f"{prefix}{body[start:end].strip()}{suffix}"
 
 
+def _generated_at(frontmatter: dict[str, Any]) -> datetime | None:
+    """`okf/writer.py` stamps every resources/*.md and objects/{type}/*.md
+    file with `generated.at` (an ISO 8601 string - the source's
+    `collected_at` for a resource, the KnowledgeObject's `extracted_at` for
+    an object) - the one timestamp available on every file this module
+    scans, so it doubles as the temporal-filter anchor (search/temporal.py)."""
+    generated = frontmatter.get("generated")
+    at = generated.get("at") if isinstance(generated, dict) else None
+    if not at:
+        return None
+    try:
+        return datetime.fromisoformat(at)
+    except (TypeError, ValueError):
+        return None
+
+
 async def file_search(
     query: str,
     project_id: str | None = None,
     type: str | None = None,
     limit: int = 20,
     okf_root: str | Path | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """OKF 파일 트리 위의 키워드/frontmatter 검색 - wiki/agent-search.md의 file_search 계약.
 
     `okf_root`를 생략하면 `KF_OKF_DIR`(settings.okf_dir)을 쓴다 - OKF 트리가 설정되어 있지 않거나
     존재하지 않으면 빈 리스트를 반환한다(에러가 아님 - 도구 호출 루프에서 "결과 없음"과 동일하게
     다뤄지면 되는 상황).
+
+    `since`/`until`(둘 다 tz-aware, `until`은 배타적)이 주어지면 frontmatter의 `generated.at`
+    (`_generated_at`)이 그 범위 밖인 파일은 제외한다 - `since`/`until`이 주어졌는데
+    `generated.at`이 없거나 파싱 실패하면(손상된 프론트매터 등) 안전하게 제외한다(있는지 없는지
+    모르는 걸 포함시키지 않음). `search/temporal.py::parse_temporal_expression`이 자연어
+    시간 표현을 이 두 값으로 바꿔주는 쪽이고, 이 함수 자체는 자연어를 이해하지 않는다.
     """
     root = _resolve_okf_root(okf_root)
     query_lower = query.strip().lower()
@@ -146,6 +171,14 @@ async def file_search(
             weight = _best_match_weight(frontmatter, body, query_lower)
             if weight is None:
                 continue
+            if since is not None or until is not None:
+                generated_at = _generated_at(frontmatter)
+                if generated_at is None:
+                    continue
+                if since is not None and generated_at < since:
+                    continue
+                if until is not None and generated_at >= until:
+                    continue
             tags = frontmatter.get("tags") or []
             hits.append(
                 (
@@ -180,6 +213,8 @@ async def vector_search(
     type: str | None = None,
     limit: int = 10,
     embedding_model: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """`knowledge_object_embeddings`의 HNSW 인덱스를 실제로 읽는 첫 소비자
     (wiki/agent-search.md의 vector_search 계약) - `file_search`가 강한 정확한
@@ -196,6 +231,10 @@ async def vector_search(
     embedding_model)`이라 여러 모델의 벡터가 동시에 존재할 수 있으므로, 검색도
     어느 모델의 벡터 공간에서 비교할지 명시해야 한다(`embeddings.md` 참고).
 
+    `since`/`until`(둘 다 tz-aware, `until`은 배타적)이 주어지면 `knowledge_objects.extracted_at`
+    이 그 범위 안인 것만 반환한다 - `file_search`의 `since`/`until`과 같은 계약,
+    `search/temporal.py::parse_temporal_expression`이 자연어를 이 두 값으로 바꿔준다.
+
     임베딩이 없는 KnowledgeObject(백필 전, 또는 `--no-embed`로 저장된 것)는
     결과에 그냥 나오지 않는다 - `knowledge_object_embeddings`에 조인하는
     쿼리라 애초에 후보에 없다(agent-search.md의 "아직 결정 안 된 것"에 대한
@@ -209,4 +248,6 @@ async def vector_search(
     model = embedding_model or settings.embedding_model
     embedder = get_embedding_provider(model=model)
     [vector] = await embedder.embed([query])
-    return await store.search_by_embedding(vector, model, project_id=project_id, type=type, limit=limit)
+    return await store.search_by_embedding(
+        vector, model, project_id=project_id, type=type, limit=limit, since=since, until=until
+    )

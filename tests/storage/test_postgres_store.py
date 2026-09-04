@@ -417,3 +417,59 @@ async def test_search_knowledge_objects_by_embedding_orders_by_similarity_and_fi
 
     other_model = await store.search_knowledge_objects_by_embedding(vector_a, "other-model", None, None, 10)
     assert other_model == []
+
+
+async def test_search_knowledge_objects_by_embedding_filters_by_extracted_at(store):
+    from knowledge_forge.embedding.base import EmbeddingRecord
+
+    src, doc, chunk, objects, _relation = _sample_records()
+    await store.save_source(src, raw_path=None)
+    await store.save_document(doc)
+    await store.save_chunks([chunk])
+
+    old_ko = objects[0].model_copy(update={"extracted_at": datetime(2020, 1, 1, tzinfo=timezone.utc)})
+    new_ko = objects[1].model_copy(update={"extracted_at": datetime(2026, 9, 1, tzinfo=timezone.utc)})
+    await store.save_knowledge_objects([old_ko, new_ko])
+
+    vector = [1.0] + [0.0] * 1535
+    await store.save_embeddings(
+        [
+            EmbeddingRecord(
+                knowledge_object_id=old_ko.knowledge_object_id,
+                embedding_model="test-model",
+                embedding=vector,
+                embedded_text="old",
+                embedded_text_hash="hash-old",
+                project_id=src.project_id,
+            ),
+            EmbeddingRecord(
+                knowledge_object_id=new_ko.knowledge_object_id,
+                embedding_model="test-model",
+                embedding=vector,
+                embedded_text="new",
+                embedded_text_hash="hash-new",
+                project_id=src.project_id,
+            ),
+        ]
+    )
+
+    since_only = await store.search_knowledge_objects_by_embedding(
+        vector, "test-model", None, None, 10, since=datetime(2026, 1, 1, tzinfo=timezone.utc)
+    )
+    assert {r["knowledge_object_id"] for r in since_only} == {new_ko.knowledge_object_id}
+
+    until_only = await store.search_knowledge_objects_by_embedding(
+        vector, "test-model", None, None, 10, until=datetime(2026, 1, 1, tzinfo=timezone.utc)
+    )
+    assert {r["knowledge_object_id"] for r in until_only} == {old_ko.knowledge_object_id}
+
+    both_bounds = await store.search_knowledge_objects_by_embedding(
+        vector,
+        "test-model",
+        None,
+        None,
+        10,
+        since=datetime(2019, 1, 1, tzinfo=timezone.utc),
+        until=datetime(2027, 1, 1, tzinfo=timezone.utc),
+    )
+    assert {r["knowledge_object_id"] for r in both_bounds} == {old_ko.knowledge_object_id, new_ko.knowledge_object_id}

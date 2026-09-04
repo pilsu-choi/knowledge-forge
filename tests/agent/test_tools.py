@@ -29,8 +29,8 @@ def _no_database_url(monkeypatch):
 async def test_default_tools_wraps_file_search_and_forwards_arguments(monkeypatch):
     captured = {}
 
-    async def _fake_file_search(query, project_id=None, type=None, limit=20):
-        captured.update(query=query, project_id=project_id, type=type, limit=limit)
+    async def _fake_file_search(query, project_id=None, type=None, limit=20, since=None, until=None):
+        captured.update(query=query, project_id=project_id, type=type, limit=limit, since=since, until=until)
         return [{"path": "p"}]
 
     monkeypatch.setattr("knowledge_forge.agent.tools.file_search", _fake_file_search)
@@ -42,14 +42,21 @@ async def test_default_tools_wraps_file_search_and_forwards_arguments(monkeypatc
     result = await spec.handler({"query": "auth", "project_id": "proj", "type": "decision", "limit": 5})
 
     assert result == [{"path": "p"}]
-    assert captured == {"query": "auth", "project_id": "proj", "type": "decision", "limit": 5}
+    assert captured == {
+        "query": "auth",
+        "project_id": "proj",
+        "type": "decision",
+        "limit": 5,
+        "since": None,
+        "until": None,
+    }
 
 
 async def test_default_tools_handler_uses_defaults_for_optional_arguments(monkeypatch):
     captured = {}
 
-    async def _fake_file_search(query, project_id=None, type=None, limit=20):
-        captured.update(query=query, project_id=project_id, type=type, limit=limit)
+    async def _fake_file_search(query, project_id=None, type=None, limit=20, since=None, until=None):
+        captured.update(query=query, project_id=project_id, type=type, limit=limit, since=since, until=until)
         return []
 
     monkeypatch.setattr("knowledge_forge.agent.tools.file_search", _fake_file_search)
@@ -57,7 +64,7 @@ async def test_default_tools_handler_uses_defaults_for_optional_arguments(monkey
     file_search_tool = next(t for t in default_tools() if t.name == "file_search")
     await file_search_tool.handler({"query": "auth"})
 
-    assert captured == {"query": "auth", "project_id": None, "type": None, "limit": 20}
+    assert captured == {"query": "auth", "project_id": None, "type": None, "limit": 20, "since": None, "until": None}
 
 
 async def test_default_tools_write_plan_uses_a_fresh_state_when_none_is_given():
@@ -254,8 +261,8 @@ async def test_default_tools_vector_search_opens_a_store_and_forwards_arguments(
         captured["data_dir"] = data_dir
         return _FakeConnectedStore(sentinel_store)
 
-    async def _fake_vector_search(query, store, project_id=None, type=None, limit=10):
-        captured.update(query=query, store=store, project_id=project_id, type=type, limit=limit)
+    async def _fake_vector_search(query, store, project_id=None, type=None, limit=10, since=None, until=None):
+        captured.update(query=query, store=store, project_id=project_id, type=type, limit=limit, since=since, until=until)
         return [{"knowledge_object_id": "ko1"}]
 
     monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
@@ -272,13 +279,15 @@ async def test_default_tools_vector_search_opens_a_store_and_forwards_arguments(
     assert captured["project_id"] == "proj"
     assert captured["type"] == "decision"
     assert captured["limit"] == 3
+    assert captured["since"] is None
+    assert captured["until"] is None
 
 
 async def test_default_tools_vector_search_handler_uses_defaults_for_optional_arguments(monkeypatch):
     captured = {}
 
-    async def _fake_vector_search(query, store, project_id=None, type=None, limit=10):
-        captured.update(query=query, project_id=project_id, type=type, limit=limit)
+    async def _fake_vector_search(query, store, project_id=None, type=None, limit=10, since=None, until=None):
+        captured.update(query=query, project_id=project_id, type=type, limit=limit, since=since, until=until)
         return []
 
     monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
@@ -290,7 +299,7 @@ async def test_default_tools_vector_search_handler_uses_defaults_for_optional_ar
     tool = next(t for t in default_tools() if t.name == "vector_search")
     await tool.handler({"query": "auth"})
 
-    assert captured == {"query": "auth", "project_id": None, "type": None, "limit": 10}
+    assert captured == {"query": "auth", "project_id": None, "type": None, "limit": 10, "since": None, "until": None}
 
 
 async def test_default_tools_omits_plan_search_without_provider():
@@ -374,3 +383,55 @@ async def test_default_tools_plan_search_query_project_id_overrides_default(monk
     await tool.handler({"query": "q", "project_id": "override-proj"})
 
     assert captured["project_id"] == "override-proj"
+
+
+async def test_default_tools_file_search_resolves_a_natural_language_time_range(monkeypatch):
+    captured = {}
+
+    async def _fake_file_search(query, project_id=None, type=None, limit=20, since=None, until=None):
+        captured.update(since=since, until=until)
+        return []
+
+    monkeypatch.setattr("knowledge_forge.agent.tools.file_search", _fake_file_search)
+
+    tool = next(t for t in default_tools() if t.name == "file_search")
+    await tool.handler({"query": "auth", "time_range": "어제"})
+
+    assert captured["since"] is not None
+    assert captured["until"] is not None
+    assert (captured["until"] - captured["since"]).days == 1
+
+
+async def test_default_tools_file_search_ignores_an_unrecognized_time_range(monkeypatch):
+    captured = {}
+
+    async def _fake_file_search(query, project_id=None, type=None, limit=20, since=None, until=None):
+        captured.update(since=since, until=until)
+        return []
+
+    monkeypatch.setattr("knowledge_forge.agent.tools.file_search", _fake_file_search)
+
+    tool = next(t for t in default_tools() if t.name == "file_search")
+    await tool.handler({"query": "auth", "time_range": "이해할 수 없는 표현"})
+
+    assert captured == {"since": None, "until": None}
+
+
+async def test_default_tools_vector_search_resolves_a_natural_language_time_range(monkeypatch):
+    captured = {}
+
+    async def _fake_vector_search(query, store, project_id=None, type=None, limit=10, since=None, until=None):
+        captured.update(since=since, until=until)
+        return []
+
+    monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
+    monkeypatch.setattr(
+        "knowledge_forge.storage.store.PipelineStore", lambda *a, **k: _FakeConnectedStore(object())
+    )
+    monkeypatch.setattr("knowledge_forge.agent.tools.vector_search", _fake_vector_search)
+
+    tool = next(t for t in default_tools() if t.name == "vector_search")
+    await tool.handler({"query": "auth", "time_range": "지난주"})
+
+    assert captured["since"] is not None
+    assert captured["until"] is not None

@@ -23,6 +23,7 @@ from knowledge_forge.config import settings
 from knowledge_forge.okf.fs_service import edit_file, list_dir, read_file, write_file
 from knowledge_forge.search.planner import DEFAULT_LIMIT_PER_SUBQUERY, plan_and_search
 from knowledge_forge.search.service import file_search, vector_search
+from knowledge_forge.search.temporal import parse_temporal_expression
 
 FILE_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -37,6 +38,13 @@ FILE_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
             "description": "KnowledgeObject 타입(예: entity, decision)으로 결과를 좁힌다. 생략하면 모든 타입 + 리소스를 포함한다.",
         },
         "limit": {"type": "integer", "description": "반환할 최대 결과 수.", "default": 20},
+        "time_range": {
+            "type": "string",
+            "description": (
+                "자연어 시간 표현으로 결과를 좁힌다 (예: '어제', '지난주', '지난달', '이번 분기', "
+                "'2025년 Q3', '최근 3일'). 이해하지 못하는 표현이면 무시된다(에러 아님)."
+            ),
+        },
     },
     "required": ["query"],
 }
@@ -57,6 +65,13 @@ VECTOR_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
             "description": "KnowledgeObject 타입(예: entity, decision)으로 결과를 좁힌다. 생략하면 모든 타입을 포함한다.",
         },
         "limit": {"type": "integer", "description": "반환할 최대 결과 수.", "default": 10},
+        "time_range": {
+            "type": "string",
+            "description": (
+                "자연어 시간 표현으로 결과를 좁힌다 (예: '어제', '지난주', '지난달', '이번 분기', "
+                "'2025년 Q3', '최근 3일'). 이해하지 못하는 표현이면 무시된다(에러 아님)."
+            ),
+        },
     },
     "required": ["query"],
 }
@@ -141,12 +156,31 @@ DELEGATE_TASK_INPUT_SCHEMA: dict[str, Any] = {
 }
 
 
+def _resolve_time_range(args: dict[str, Any]) -> tuple[Any, Any]:
+    """Shared by the `file_search`/`vector_search` tool handlers - turns the
+    optional natural-language `time_range` argument into `(since, until)` via
+    `search/temporal.py::parse_temporal_expression`. An expression it doesn't
+    recognize resolves to `(None, None)` (no filter applied) rather than an
+    error - the model guessing at a time expression this parser doesn't cover
+    should degrade to "search everything", not fail the whole tool call."""
+    time_range = args.get("time_range")
+    if not time_range:
+        return None, None
+    parsed = parse_temporal_expression(time_range)
+    if parsed is None:
+        return None, None
+    return parsed.start, parsed.end
+
+
 async def _file_search_handler(args: dict[str, Any]) -> list[dict[str, Any]]:
+    since, until = _resolve_time_range(args)
     return await file_search(
         query=args["query"],
         project_id=args.get("project_id"),
         type=args.get("type"),
         limit=int(args.get("limit", 20)),
+        since=since,
+        until=until,
     )
 
 
@@ -178,6 +212,7 @@ def _make_vector_search_tool(database_url: str) -> ToolSpec:
     from knowledge_forge.storage.store import PipelineStore
 
     async def _handler(args: dict[str, Any]) -> list[dict[str, Any]]:
+        since, until = _resolve_time_range(args)
         async with PipelineStore(database_url, settings.data_dir) as store:
             return await vector_search(
                 query=args["query"],
@@ -185,6 +220,8 @@ def _make_vector_search_tool(database_url: str) -> ToolSpec:
                 project_id=args.get("project_id"),
                 type=args.get("type"),
                 limit=int(args.get("limit", 10)),
+                since=since,
+                until=until,
             )
 
     return ToolSpec(
