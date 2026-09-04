@@ -1,0 +1,2583 @@
+{
+  "golden_version": "v1",
+  "created_at": "2026-09-04T21:39:30Z",
+  "project_id": null,
+  "index_snapshot": {
+    "documents": 358,
+    "chunks": 2856,
+    "knowledge_objects": 5107,
+    "sources_by_type": {
+      "gmail": 59,
+      "google_drive": 246,
+      "slack": 197
+    }
+  },
+  "queries": [
+    {
+      "id": "v0-factoid-001",
+      "query": "AGENTS.md 기준으로 커밋 제목의 type에 허용되는 값들은 무엇인가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "specific_document_qa"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "2a7d07c11b19924444643d21a9467d5b"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "정답: feat, fix, docs, chore, ci, test, refactor, style, perf, build, revert (Git Workflow 절).",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-factoid-001"
+    },
+    {
+      "id": "v0-factoid-002",
+      "query": "MLOps 개발계 보안취약점 패치 작업의 전체 예상 소요 시간은?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "51a30b62bc27cadef15b3a4350b91482"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "9b34d1761e29ab22f49aa166ddbcc93d"
+        ],
+        "knowledge_object_ids": [
+          "9e091eb8d71b240bc5ac05c2289ed870"
+        ]
+      },
+      "origin": "manual",
+      "notes": "정답: 3시간 이상(MinIO 패치가 데이터 양에 비례).",
+      "source_hash": "345328d0c30d3e2804044826273828bcfc0cdcf679cfc54359f8c256675901ec",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-factoid-002"
+    },
+    {
+      "id": "v0-factoid-003",
+      "query": "NH MVP 3차 인터뷰에서 당발송금(USD) 중계 AI Agent 과제의 인터뷰 예상 장소는?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "06fc2da74e167c33ec7429c1f93623ca"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "c529aec8a20b3fd7d3b8b9cbaef09245"
+        ],
+        "knowledge_object_ids": [
+          "07fd69ba996584bdaab655a4bf81d542"
+        ]
+      },
+      "origin": "manual",
+      "notes": "정답: 농협타워 14층 화상회의실1(6명).",
+      "source_hash": "6674ff940ae792100e0499257f77ea727eb16d6a2911443f29c451dfc9fb567e",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-factoid-003"
+    },
+    {
+      "id": "v0-factoid-004",
+      "query": "NH MVP 프로젝트의 투입 인력은 총 몇 팀으로 구성되어 있나?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "06fc2da74e167c33ec7429c1f93623ca"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "93298c0a46ec62d1463742629a99f998"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "정답: 총 6팀(팀당 2~3명).",
+      "source_hash": "6674ff940ae792100e0499257f77ea727eb16d6a2911443f29c451dfc9fb567e",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-factoid-004"
+    },
+    {
+      "id": "v0-factoid-005",
+      "query": "참가팀이 애자일소다 수행인력에게 메일을 보낼 때 받는 사람에 넣어야 하는 메일주소는 몇 개인가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "06fc2da74e167c33ec7429c1f93623ca"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "506b0f2ab9c9e63246849550e4a42542"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "정답: 3개(대표이메일, 전체 리스크관리, 과제별 리스크 관리).",
+      "source_hash": "6674ff940ae792100e0499257f77ea727eb16d6a2911443f29c451dfc9fb567e",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-factoid-005"
+    },
+    {
+      "id": "v0-factoid-006",
+      "query": "바이브 코딩 loop에서 멈춰야 하는 신호 중, 변경 범위가 몇 개 이상의 영역으로 번질 때인가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "specific_document_qa"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "5a0e59253d4963631d742bd0908c5a9e"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "정답: 2개 이상(apps/dashboard, services/risk-agent, second-brain, infra, docs 중).",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-factoid-006"
+    },
+    {
+      "id": "v0-factoid-007",
+      "query": "ProjectIntel에서 canonical project id로 인정되는 id 형식은?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561",
+          "217be20f362fae5df813e8054b92474f",
+          "6bd61532e21e06f96f6887568e6358bc"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "d02eaee476e58f84e07fa3908ff61ee3"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "정답: PRJ-* 만 canonical, E-*/D-*/A-*/V-*/YYYY-NNN은 evidence metadata. [검수 2026-09-05] 질의가 문서를 지목하지 않는데 \"PRJ-*만 canonical\"을 명시한 문서가 여럿이다. AGENTS.md(더 완전한 서술)와 신규 운영 가이드 PDF를 추가해 1→3건. pptx(7f30ecf4)는 슬라이드 조각 파싱이라 제외(아래 라벨 규칙).",
+      "source_hash": "6f1611d28113afa4fafd1e7ad7d0c7cef3922fab9a975e7a4913a645b80baccd",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-factoid-007"
+    },
+    {
+      "id": "v0-factoid-008",
+      "query": "OA 업무도우미 과제의 개발환경은 2차 인터뷰 이후 내부/외부 중 어느 쪽으로 결정됐나?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "37588771659d7df82f8e7053a3ff939e"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "a31a56af252c1e401f77bbf655311714"
+        ],
+        "knowledge_object_ids": [
+          "79aea8b1b7f8784bf38d47a2c7fb7757"
+        ]
+      },
+      "origin": "manual",
+      "notes": "정답: 외부개발(그러나 3차 인터뷰 안내에는 내부개발로 기재되어 재전달).",
+      "source_hash": "482e10e67eb0d773b85644dfd89ac54d24b68e6ad07dad363123eb924cc2e0d2",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-factoid-008"
+    },
+    {
+      "id": "v0-factoid-009",
+      "query": "ProjectIntel 개발 인수인계 패키지가 Google Drive에 업로드된 일자는?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "dc47d7f7302682c52da6ac6aa5aa3b4c",
+          "eb41c306a7359b09d2c96684ecb4347d",
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "182660e8c6b9e82549b79da21124bd3f"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "정답: 2026-07-20 07:14:28 UTC. [검수 2026-09-05] 업로드 일자 2026-07-20을 담은 \"현재 업로드 기록\" 표가 세 문서에 동일하게 있다(README만 UTC 시각까지). 1→3건.",
+      "source_hash": "2120309fcab574a9c54a4493eef8d23c78507fbccd2682026f72c3d38c9bf0ac",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-factoid-009"
+    },
+    {
+      "id": "v0-factoid-010",
+      "query": "GEBORIN은 무엇의 약자인가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "exact_match"
+      ],
+      "expected": {
+        "document_ids": [
+          "0ffca0ee499d1f2586ff9684e4215c79"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "ee3fb2362d5bd5777961efd6282a96af"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "정답: Governance & Early-warning Based Operational Risk Intelligence Network (ProjectIntel 개명 제안).",
+      "source_hash": "38bf37be2def5251071ff5101471fb4497ede5ce588014936168d358e52f1d0a",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-factoid-010"
+    },
+    {
+      "id": "v0-navigational-001",
+      "query": "projectintel-handover-guide 문서 찾아줘",
+      "primary_type": "navigational",
+      "types": [
+        "navigational"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "gdrive name 'projectintel-handover-guide.md'에서 확장자 제거.",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-navigational-001"
+    },
+    {
+      "id": "v0-navigational-002",
+      "query": "codex README",
+      "primary_type": "navigational",
+      "types": [
+        "navigational"
+      ],
+      "expected": {
+        "document_ids": [
+          "4d81d723d811dba6e13b79b1a0d06ad3"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "gdrive name 'codex-README.md'의 줄인 형태.",
+      "source_hash": "d8ef9aa1466445b23481467c080968cdff06630d31b34760f9b632fd1a683c78",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-navigational-002"
+    },
+    {
+      "id": "v0-navigational-003",
+      "query": "인수인계 pptx",
+      "primary_type": "navigational",
+      "types": [
+        "navigational"
+      ],
+      "expected": {
+        "document_ids": [
+          "7f30ecf41ccd666f24c00b463f875774"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "gdrive name 'projectintel-development-handover.pptx'를 한국어+확장자로 줄임.",
+      "source_hash": "044e1ae91ea10984597d7def2a12376a9d69c6ba8b733e0281a551a196d8c88f",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-navigational-003"
+    },
+    {
+      "id": "v0-navigational-004",
+      "query": "Dev Handover README 파일",
+      "primary_type": "navigational",
+      "types": [
+        "navigational"
+      ],
+      "expected": {
+        "document_ids": [
+          "dc47d7f7302682c52da6ac6aa5aa3b4c"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "gdrive name 'README_ProjectIntel_Dev_Handover.md'의 일부.",
+      "source_hash": "5d92ef1c07f3d7f26ab3501ac1626de7f20ca03fd8b54ffeef23688229b26ecd",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-navigational-004"
+    },
+    {
+      "id": "v0-whole_document_summary-001",
+      "query": "projectintel-development-handover.pptx 내용을 요약해줘",
+      "primary_type": "whole_document_summary",
+      "types": [
+        "whole_document_summary",
+        "navigational"
+      ],
+      "expected": {
+        "document_ids": [
+          "7f30ecf41ccd666f24c00b463f875774"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "437청크짜리 pptx - 문서 단위 요약.",
+      "source_hash": "044e1ae91ea10984597d7def2a12376a9d69c6ba8b733e0281a551a196d8c88f",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-whole_document_summary-001"
+    },
+    {
+      "id": "v0-whole_document_summary-002",
+      "query": "projectintel-handover-file-bundle.md 문서 전체를 요약해줘",
+      "primary_type": "whole_document_summary",
+      "types": [
+        "whole_document_summary",
+        "navigational"
+      ],
+      "expected": {
+        "document_ids": [
+          "eb41c306a7359b09d2c96684ecb4347d"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "",
+      "source_hash": "dfcad395da2dc605c028402a56a5bce7d9466a1f2453fcdb57f2127080bf5227",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-whole_document_summary-002"
+    },
+    {
+      "id": "v0-whole_document_summary-003",
+      "query": "ProjectIntel Agent Guide(AGENTS.md) 전체 내용을 요약해줘",
+      "primary_type": "whole_document_summary",
+      "types": [
+        "whole_document_summary",
+        "navigational"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "'AGENTS.md'만 쓰면 agents-skills-AGENTS.md와 겹치므로 제목(# ProjectIntel Agent Guide)으로 한정.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-whole_document_summary-003"
+    },
+    {
+      "id": "v0-specific_document_qa-001",
+      "query": "projectintel-handover-guide.md의 안전한 source/RAG 개발 기준에서 sensitive source 규칙은?",
+      "primary_type": "specific_document_qa",
+      "types": [
+        "specific_document_qa",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "d02eaee476e58f84e07fa3908ff61ee3"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "정답: 계약/견적/금액/개인정보 가능 원문은 원문 embedding과 기본 검색 노출을 막는다.",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-specific_document_qa-001"
+    },
+    {
+      "id": "v0-specific_document_qa-002",
+      "query": "AGENTS.md의 MR / PR Upload Rule에서 테스트를 못 돌렸을 때는 어떻게 해야 하나?",
+      "primary_type": "specific_document_qa",
+      "types": [
+        "specific_document_qa",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "4cb4ba815a745a263540654c47a86a95"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "정답: 못 돌린 이유를 한국어로 명시한다.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-specific_document_qa-002"
+    },
+    {
+      "id": "v0-specific_document_qa-003",
+      "query": "README_ProjectIntel_Dev_Handover.md에서 인수인계 패키지의 제외 파일은?",
+      "primary_type": "specific_document_qa",
+      "types": [
+        "specific_document_qa"
+      ],
+      "expected": {
+        "document_ids": [
+          "dc47d7f7302682c52da6ac6aa5aa3b4c"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "182660e8c6b9e82549b79da21124bd3f"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "정답: .env, .env.jobs, .env.readiness 등 secret 원문.",
+      "source_hash": "5d92ef1c07f3d7f26ab3501ac1626de7f20ca03fd8b54ffeef23688229b26ecd",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-specific_document_qa-003"
+    },
+    {
+      "id": "v0-specific_document_qa-004",
+      "query": "agents-skills-AGENTS.md에서 Tier 1 ProjectIntel 운영 스킬 목록은?",
+      "primary_type": "specific_document_qa",
+      "types": [
+        "specific_document_qa"
+      ],
+      "expected": {
+        "document_ids": [
+          "037e64a74be1fa40684070313973242e"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "209089b1aac768a360b28681056856b9"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "정답: codex-planner, product-planning-pipeline, development-workflow, codex-reviewer, codex-pr-creator, projectintel-orchestrator, ...",
+      "source_hash": "89d6d853efc3faef312e067f1a57eed8cd9f8ea5597cb73c4652e6e1e3ae610e",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-specific_document_qa-004"
+    },
+    {
+      "id": "v0-temporal-001",
+      "query": "2026년 7월에 감지된 caddy-drift 아웃테이지 알림",
+      "primary_type": "temporal",
+      "types": [
+        "temporal",
+        "set_query",
+        "exact_match"
+      ],
+      "expected": {
+        "document_ids": [
+          "32919336a8c3c5d3436a1968fa3b6ed5",
+          "1834cdb3f134b69bf435fe9296420b89",
+          "4964de261d6fbaaa5d1da5c412e5b891",
+          "b22c82e6563abc1d375db577c554d8ad"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "modified_at 07-27~07-31의 '아웃테이지 감지' 알림 4건. 07-29 00:50 복구 확인(30c56cce)은 감지 알림이 아니라 제외.",
+      "source_hash": "c41c9632270c92be87740d098d1b634b1ed1248c89840a0b2c65adf05ab2a90f",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-temporal-001"
+    },
+    {
+      "id": "v0-temporal-002",
+      "query": "2026년 8월 13일에 전달된 DB손보 관련 메일",
+      "primary_type": "temporal",
+      "types": [
+        "temporal",
+        "entity_centric",
+        "set_query"
+      ],
+      "expected": {
+        "document_ids": [
+          "52a817c144938f65d94065c83f76989c",
+          "26ea0e1e9f3f75bc28f773afbf62a1d5"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "두 통 모두 modified_at 2026-08-13(Fwd).",
+      "source_hash": "31727f381dffa89e5c65d3ccbb7af43b4f585fddae126d049def7822cd98f60a",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-temporal-002"
+    },
+    {
+      "id": "v0-temporal-003",
+      "query": "2026년 9월 2일에 올라온 OCR API 문서 공유 요청 스레드",
+      "primary_type": "temporal",
+      "types": [
+        "temporal",
+        "conversation_thread"
+      ],
+      "expected": {
+        "document_ids": [
+          "70a428433a9c1014d39ce1851e9fded9"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "slack thread_ts 1788327909, modified_at 09-02 07:42.",
+      "source_hash": "038a9a02561c9b4e82811d92f880958b400f37e7dc03ec1a26c5a84dc896fa73",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-temporal-003"
+    },
+    {
+      "id": "v0-relative_temporal-001",
+      "query": "최근 3일 안에 농협 측에서 온 메일",
+      "primary_type": "relative_temporal",
+      "types": [
+        "relative_temporal",
+        "metadata_filter"
+      ],
+      "expected": {
+        "document_ids": [
+          "c681a6c460a6bf5519a6730b55ee0670"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "as_of=2026-09-04T00:00:00Z 기준(금요일; 이번 주=08-31~09-06). sources.modified_at으로 판정. 09-01T00Z 이후 nonghyup.com 발신 메일은 09-02 '3차 인터뷰를 위한 회의자료 송부' 1통(08-31 oa업무도우미 메일은 범위 밖).",
+      "source_hash": "77b1edce84ff3d0bfc0479a3edb81ce08ccec44b96d72c91f4fa6a2e5f8a3f94",
+      "as_of": "2026-09-04T00:00:00Z",
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-relative_temporal-001"
+    },
+    {
+      "id": "v0-relative_temporal-002",
+      "query": "이번 주에 온 세아제강 제조가부 샘플 자료 관련 메일",
+      "primary_type": "relative_temporal",
+      "types": [
+        "relative_temporal",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "0c8fedb0ebe38afaa3fb8eb27acf6c29"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "as_of=2026-09-04T00:00:00Z 기준(금요일; 이번 주=08-31~09-06). sources.modified_at으로 판정. 'Re: [세아제강] 제조가부 샘플 자료 송부 건' modified_at 09-01.",
+      "source_hash": "cc62b30c60c8eb20cc488194fa2c8052a004a0dea360091a30de0bfea0f9e868",
+      "as_of": "2026-09-04T00:00:00Z",
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-relative_temporal-002"
+    },
+    {
+      "id": "v0-relative_temporal-003",
+      "query": "최근 일주일 내 받은 Google Drive 공유 요청 메일",
+      "primary_type": "relative_temporal",
+      "types": [
+        "relative_temporal",
+        "metadata_filter",
+        "set_query"
+      ],
+      "expected": {
+        "document_ids": [
+          "51e3061f23e75a93802a49e3bd8dd0d7",
+          "a981d6bea776f2c3742c61cd03344f94",
+          "8f3ac6822a1526e4f34170a7e3adecf3"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "as_of=2026-09-04T00:00:00Z 기준(금요일; 이번 주=08-31~09-06). sources.modified_at으로 판정. 08-28T00Z 이후 subject '공유 요청' 메일 3통(08-28 05:30 동양생명, 09-02 농협은행 G/J).",
+      "source_hash": "32afb543f9026f6de5910a2ee53f48a56ba30bb071c763b2b51c852e7ba63305",
+      "as_of": "2026-09-04T00:00:00Z",
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-relative_temporal-003"
+    },
+    {
+      "id": "v0-metadata_filter-001",
+      "query": "nonghyup.com 도메인 발신자가 보낸 메일",
+      "primary_type": "metadata_filter",
+      "types": [
+        "metadata_filter",
+        "set_query"
+      ],
+      "expected": {
+        "document_ids": [
+          "37588771659d7df82f8e7053a3ff939e",
+          "c681a6c460a6bf5519a6730b55ee0670"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "sources.metadata.participants의 주소 도메인 기준(2통).",
+      "source_hash": "f20a51dc31aa02477077c0d276cecb81b26acc35bfd1c70055712f445bab4c49",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-metadata_filter-001"
+    },
+    {
+      "id": "v0-metadata_filter-002",
+      "query": "Fwd:로 전달(포워딩)된 메일 전부",
+      "primary_type": "metadata_filter",
+      "types": [
+        "metadata_filter",
+        "set_query"
+      ],
+      "expected": {
+        "document_ids": [
+          "208773b4f9e89420ceb96d99adedd2c8",
+          "52a817c144938f65d94065c83f76989c",
+          "26ea0e1e9f3f75bc28f773afbf62a1d5",
+          "06fc2da74e167c33ec7429c1f93623ca"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "subject ilike 'Fwd:%' 4통.",
+      "source_hash": "e2a243fda0927ec41054ea4c461b2fe7f9ec5ea80ae889652e4062df0e9d1794",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-metadata_filter-002"
+    },
+    {
+      "id": "v0-metadata_filter-003",
+      "query": "Google Drive에서 수집된 파워포인트(pptx) 파일",
+      "primary_type": "metadata_filter",
+      "types": [
+        "metadata_filter",
+        "navigational"
+      ],
+      "expected": {
+        "document_ids": [
+          "5e6a5ca86364a039617d327649416fef",
+          "43d3dd43e76bef7553ae6a803bfa8ac3",
+          "3b9932c9290887eeb8c263a6ecbb2873",
+          "19fb888e6b59287d25c56ab8c87bdd79",
+          "d7a8b2ff3aee5c46b61cab89566f9781",
+          "b17d925afb0fd16c2d6ee75ac50666f3",
+          "f31074cfc590e08ff47cb267130066d2",
+          "d7d6731a220bb65ba65b91e9cda14c3a",
+          "7f30ecf41ccd666f24c00b463f875774",
+          "a7c0472375303cc0210131083610fd23",
+          "57074ae606235cb09b4fa054f90de12f",
+          "53ceb1786cd82119ce6353713e0fd457"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "documents가 있는 gdrive 소스 중 mimeType presentationml 1건. [검수 2026-09-05] 263→358 확대로 gdrive pptx가 1건→12건. mimeType presentationml 전수 재도출해 exhaustive=true로 교체. 이 항목이 코퍼스 성장으로 가장 크게 깨진 라벨이다.",
+      "source_hash": "3d0e9e046ec23823c752007beacb9faf322827d2ba0275e6dc09e12bf526f87f",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-metadata_filter-003"
+    },
+    {
+      "id": "v0-metadata_filter-004",
+      "query": "Drive 파일의 소유자가 되었다는 알림 메일",
+      "primary_type": "metadata_filter",
+      "types": [
+        "metadata_filter",
+        "set_query"
+      ],
+      "expected": {
+        "document_ids": [
+          "410852b07001b87f56a3b1f23e73ab58",
+          "41845682f3817c919bc7e87fa5006099",
+          "39a2e737e04091e78034a451e958cfa3",
+          "f49f045eff880860cee45a131b5b56ef"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "subject ilike '%소유자가 되었습니다%' 4통.",
+      "source_hash": "354044145d3010957ef151a364d1d15f50889865a734722759e1d856f6612b4c",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-metadata_filter-004"
+    },
+    {
+      "id": "v0-exact_match-002",
+      "query": "git.sparklingsoda.ai:8443/nhbank/apps/card-reco.git",
+      "primary_type": "exact_match",
+      "types": [
+        "exact_match",
+        "navigational"
+      ],
+      "expected": {
+        "document_ids": [
+          "a1f59f257ffbac5f00c620a1572e9b60"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "같은 호스트의 다른 repo 주소가 9개 채널에 더 있으므로 정확 일치가 필요.",
+      "source_hash": "e30bb9e6f7da31721fd5be50d013319858c879593e8775e97616771a90073338",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-exact_match-002"
+    },
+    {
+      "id": "v0-exact_match-003",
+      "query": "prepay-docs.168-107-13-173.sslip.io",
+      "primary_type": "exact_match",
+      "types": [
+        "exact_match"
+      ],
+      "expected": {
+        "document_ids": [
+          "c957ccf04365220dcf7d0993f88e3e5a"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "",
+      "source_hash": "0fb43b9863ef303c224ae403698e4c6c67d9380ddd8b332f31c5234aaa46f824",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-exact_match-003"
+    },
+    {
+      "id": "v0-entity_centric-001",
+      "query": "동양생명 관련 문서 전부",
+      "primary_type": "entity_centric",
+      "types": [
+        "entity_centric",
+        "set_query"
+      ],
+      "expected": {
+        "document_ids": [
+          "43a8bf49ea4c825f7fea6dd049236b30",
+          "4643e0fa5678704f488ac9c04d922281",
+          "668d59e736649154b1823af13ec1d5d5",
+          "7d80d325da608d771b05144315c8be13",
+          "8f3ac6822a1526e4f34170a7e3adecf3",
+          "e231f3e66929a30d9b091e020a8a9d60",
+          "e3531cb3ea6228b702248858037113e6",
+          "ba4e3d4a33e22bbac0296f2487f5a11c"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "chunks.text ilike '%동양생명%' 7건(공유 요청 메일 2 + ProjectIntel shortcut 알림 5). [검수 2026-09-05] 신규 gdrive \"프로젝트 필요 인력 정리 파일_260623.xlsx\"에 동양생명 MM 배분표가 있어 7→8건.",
+      "source_hash": "3afcfdff179526c4776100d1367fea41377f2b85eb372512738a25f0b74dcdc5",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-entity_centric-001"
+    },
+    {
+      "id": "v0-entity_centric-002",
+      "query": "광주은행 관련 문서",
+      "primary_type": "entity_centric",
+      "types": [
+        "entity_centric",
+        "set_query"
+      ],
+      "expected": {
+        "document_ids": [
+          "2d6e99fc13d545766fae11265027db29",
+          "3077ce784acd2f253e4c9f24dac4f88e",
+          "ca7a68822b93ffced2df744bde1a8011",
+          "d2194f9e088db2661250ef18805fa9cd",
+          "5044b014184ccc13e85d0353a9c81f95",
+          "05c8f33970ae3f1119cfc6e17886b75f"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "chunks.text ilike '%광주은행%' 4건. [검수 2026-09-05] 신규 계약 스프레드시트 2건에 광주은행 RIMS 계약 행이 있어 4→6건.",
+      "source_hash": "bd6fad70c102363f2493c171a8783b7054633cd9bbbf00fa0d14097d613989e9",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-entity_centric-002"
+    },
+    {
+      "id": "v0-entity_centric-003",
+      "query": "키스텝 프로젝트 관련 메시지",
+      "primary_type": "entity_centric",
+      "types": [
+        "entity_centric",
+        "set_query"
+      ],
+      "expected": {
+        "document_ids": [
+          "5c564c9129a0d1a0e699ddfac66b6e3a",
+          "b491e384ccf90cb150be48e8e3bf709e"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "데모영상 스레드 + 파일 다운로드 실패 알림.",
+      "source_hash": "cc53bb784fc864fbeb746295070b1b4bdf42dd7f522a974ef529f7d24dfb6bee",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-entity_centric-003"
+    },
+    {
+      "id": "v0-multihop-002",
+      "query": "3차 인터뷰 예상 일정을 안내한 뒤 확정된 스케줄은 어디에 업데이트됐나?",
+      "primary_type": "multihop",
+      "types": [
+        "multihop",
+        "sequence"
+      ],
+      "expected": {
+        "document_ids": [
+          "06fc2da74e167c33ec7429c1f93623ca",
+          "969047bffcf1abd444fab3004bc096d5"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": [
+          "cdd607b79341e8d93eedcba077852f5f",
+          "6f7dc1d02314a02c18dd51a3f75fc0d3"
+        ]
+      },
+      "origin": "manual",
+      "notes": "hop1: 예상 일정 엑셀 탭(메일 08-28) → hop2: 확정 스케줄을 구글 시트에 업데이트(슬랙 09-01).",
+      "source_hash": "f1f6966f2485e321ac872b7bff65ff03d8a0a68ff923233d1360e5aa5818d330",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-multihop-002"
+    },
+    {
+      "id": "v0-multihop-003",
+      "query": "명함 직책 표준화 결정 이후, NH농협타워 방문 시 명함은 어떻게 쓰이나?",
+      "primary_type": "multihop",
+      "types": [
+        "multihop",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "54e9f0ab7fd9f1028966b876b3103eca",
+          "b2bf00362f83d38f5a109e8957f6a206",
+          "83a905e7d8b12476b65709a9ba0fd0de"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": [
+          "ea0a1fb28e560ca6452d6d6010f1fdfe",
+          "05d3fe9b8a78f753070cae39eeebab49"
+        ]
+      },
+      "origin": "manual",
+      "notes": "hop1: 명함 제작/직급 표준화 스레드 → hop2: 안내센터에 명함 전달하면 카드키 수령. [검수 2026-09-05] hop1(명함/직책 표준화)에 해당하는 세 번째 슬랙 문서(83a905e7, \"김대길 계장이 책임으로\")를 누락하고 있었다. exhaustive=true라 미라벨 정답이 오탐으로 깎였다.",
+      "source_hash": "b41e76a9a9553b9f6d2cac6fbe782993f32b119e243687aedd7a1de3b7b0948d",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-multihop-003"
+    },
+    {
+      "id": "v0-cross_document_comparison-001",
+      "query": "DB손보 6/22 미팅 아젠다 메일과 PoC 산출물/개선안 전달 메일의 내용 차이는?",
+      "primary_type": "cross_document_comparison",
+      "types": [
+        "cross_document_comparison",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "52a817c144938f65d94065c83f76989c",
+          "26ea0e1e9f3f75bc28f773afbf62a1d5"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "",
+      "source_hash": "31727f381dffa89e5c65d3ccbb7af43b4f585fddae126d049def7822cd98f60a",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-cross_document_comparison-001"
+    },
+    {
+      "id": "v0-cross_document_comparison-002",
+      "query": "투입 MM 입력 요청 8월 공지와 9월 공지에서 '2개월 이상 밀림' 건수는 어떻게 달라졌나?",
+      "primary_type": "cross_document_comparison",
+      "types": [
+        "cross_document_comparison",
+        "version"
+      ],
+      "expected": {
+        "document_ids": [
+          "2d6e99fc13d545766fae11265027db29",
+          "49b8275b3088ebbb54fd1d8bfc239a4d"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "8월(8/14까지) 5건 → 9월(9/8까지) 1건.",
+      "source_hash": "0f9e962a9984a95f26c7fc130194905d4ffe153915f4102ec0e7561342f8cba5",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-cross_document_comparison-002"
+    },
+    {
+      "id": "v0-cross_document_comparison-003",
+      "query": "JT 플랫폼 패키지 목록 메일과 MLOps 개발계 보안취약점 패치 메일이 각각 요구하는 보안 점검은?",
+      "primary_type": "cross_document_comparison",
+      "types": [
+        "cross_document_comparison"
+      ],
+      "expected": {
+        "document_ids": [
+          "208773b4f9e89420ceb96d99adedd2c8",
+          "51a30b62bc27cadef15b3a4350b91482"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": [
+          "71f50a3b80f1e44d2570eef04f53b9ee",
+          "8295a460cffdb807f2ec06d04c0999a1"
+        ]
+      },
+      "origin": "manual",
+      "notes": "같은 발신 조직(AgentX 2팀)의 두 메일 - 추가 패키지 자체 점검 vs 루트 권한 필요한 패치.",
+      "source_hash": "1707371daf04ba4c33b74be599bc04ef3b7474797b2dd14ca8c9096cfbbcea86",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-cross_document_comparison-003"
+    },
+    {
+      "id": "v0-aggregation-001",
+      "query": "caddy-drift 알림이 올라온 메시지는 몇 건인가?",
+      "primary_type": "aggregation",
+      "types": [
+        "aggregation",
+        "exact_match"
+      ],
+      "expected": {
+        "document_ids": [
+          "32919336a8c3c5d3436a1968fa3b6ed5",
+          "1834cdb3f134b69bf435fe9296420b89",
+          "4964de261d6fbaaa5d1da5c412e5b891",
+          "b22c82e6563abc1d375db577c554d8ad",
+          "30c56ccef8e7918a588698e60d08335d",
+          "ce33880d30e10ce1f41ba312f7bfdc6b"
+        ],
+        "exhaustive": true,
+        "count": 6,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "SQL: select count(distinct document_id) from chunks where text ilike '%caddy-drift%'; -- 6",
+      "source_hash": "0f31fb0bf2bf28dd32ac913afc669b6b3d70622292e7fe9ae693953561169cb4",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-aggregation-001"
+    },
+    {
+      "id": "v0-aggregation-002",
+      "query": "Google Drive 공유 요청 메일은 총 몇 통인가?",
+      "primary_type": "aggregation",
+      "types": [
+        "aggregation",
+        "metadata_filter"
+      ],
+      "expected": {
+        "document_ids": [
+          "8595924b0c65a36faa8bc93fba311a92",
+          "53a294163a2f30f3cd28d5802772af1b",
+          "0ffe1dbac033d0ef7a63156325593961",
+          "b5580b99bea8835a142576d89631dc57",
+          "9565cb093d088e5cb019a995828533d2",
+          "3186028ff8a7409173c050530751f42b",
+          "051f674ee355d570e2f98289e0b9fbdd",
+          "68c6807142ca37f2c26e8ea270737cbd",
+          "0aa332babacb94a022e4126aca887a87",
+          "3077ce784acd2f253e4c9f24dac4f88e",
+          "d2194f9e088db2661250ef18805fa9cd",
+          "229e3a10ce4bb79b7b3b848afed5f6ac",
+          "20eed42c0bcccc29ca846e7eca1a51c3",
+          "d1d4e0f2f3a9be0a9bc9b5dbe653655f",
+          "dec1da6157172d7d8206882c61617ee8",
+          "cb81e73b8a8ef978580460013272b20c",
+          "559e1e106b7eaa09daf74607f16ebaa0",
+          "7b51f2edc5ad64de17c92d9c3141329c",
+          "e3531cb3ea6228b702248858037113e6",
+          "156dea7aab1fee827c11c1401e895625",
+          "8f3ac6822a1526e4f34170a7e3adecf3",
+          "51e3061f23e75a93802a49e3bd8dd0d7",
+          "a981d6bea776f2c3742c61cd03344f94"
+        ],
+        "exhaustive": true,
+        "count": 23,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "SQL: select count(*) from documents d join sources s using(source_id) where s.source_type='gmail' and s.metadata->>'subject' ilike '%공유 요청%'; -- 23",
+      "source_hash": "d6b048d95a68d914ca8c205c4d72d59d3dc5b489900867b1fff22f6425d1134d",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-aggregation-002"
+    },
+    {
+      "id": "v0-aggregation-003",
+      "query": "'이번 주 뭐 해야 해?' 주간 할 일 다이제스트가 올라온 메시지는 몇 개인가?",
+      "primary_type": "aggregation",
+      "types": [
+        "aggregation",
+        "exact_match"
+      ],
+      "expected": {
+        "document_ids": [
+          "35fb955722021d488a65b6471fa943fb",
+          "4021d7a69619feba333df400254ab1b8",
+          "42f455524e02e2eb1bedde92da3a347f",
+          "4d23bd36cc8b2d8b07b226eda6994863",
+          "4e4647538f8598293415b3d4ba49e8b7",
+          "4ef4bd439450c9c818ca1b02a169ed59",
+          "56fb126c00c71755f8bedc2cd8270d7c",
+          "6b08582aa3e1f0d9885190a6d2886041",
+          "b6c6cc9b9aeba89d68504b2ec682db76",
+          "cbdeb860f369ad0581d8f9ca6b19f5a2",
+          "df63b805caeb4048ed3ab610c81f1534"
+        ],
+        "exhaustive": true,
+        "count": 11,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "SQL: select count(distinct document_id) from chunks where text ilike '%이번 주 뭐 해야 해%'; -- 11",
+      "source_hash": "597839c024f8f6d05e997efa777dff2ac6686a3bcb8ca2e0a7e5715a52ea328a",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-aggregation-003"
+    },
+    {
+      "id": "v0-set_query-001",
+      "query": "Google Drive 인수인계 패키지의 마크다운 문서 전부",
+      "primary_type": "set_query",
+      "types": [
+        "set_query",
+        "metadata_filter"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f",
+          "037e64a74be1fa40684070313973242e",
+          "4d81d723d811dba6e13b79b1a0d06ad3",
+          "eb41c306a7359b09d2c96684ecb4347d",
+          "1e551c7fc23dfe1dee6059a13962d561",
+          "dc47d7f7302682c52da6ac6aa5aa3b4c"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "gdrive mimeType text/markdown이면서 documents가 있는 6건.",
+      "source_hash": "4fea0b16b02943e97ca596724183b998a44bc9ccaee0dc863163976b820f0ead",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-set_query-001"
+    },
+    {
+      "id": "v0-set_query-002",
+      "query": "3차 인터뷰 체크리스트 파일 전달 메시지가 올라온 모든 채널 문서",
+      "primary_type": "set_query",
+      "types": [
+        "set_query",
+        "exact_match"
+      ],
+      "expected": {
+        "document_ids": [
+          "02ec0049459196fcd729cdadee986438",
+          "1b2abe9a2eb7ea78351ae3d66f384f29",
+          "22b5dbc118937421e353dea0d7dcba54",
+          "28ed8caebd3a6e4bdafb306c80c32df2",
+          "72e1c7f3dcf1c8a5bdf49c0cac65558a",
+          "78f36c2143895e4b34cda9b59dd664f3",
+          "a394f949857d1fe66f7c6806b12f99c2",
+          "a9578b4310c175b6d86dee8118ed3e0c",
+          "ae90a162a35a92c32d0ec4b8786e2514",
+          "e4cb40bf68414a22d227fa4617ae54e9"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "chunks.text ilike '%3차 인터뷰 때 사용할 체크리스트 파일 전달드립니다%' 10건(과제 채널 10개).",
+      "source_hash": "9e5ec5954fec5ddaecafef05af7f579f94750969173612241b446910e72d6e8a",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-set_query-002"
+    },
+    {
+      "id": "v0-set_query-003",
+      "query": "세아제강 제조가부 투입 관리 시트 공유 요청 메일 전부",
+      "primary_type": "set_query",
+      "types": [
+        "set_query",
+        "version"
+      ],
+      "expected": {
+        "document_ids": [
+          "68c6807142ca37f2c26e8ea270737cbd",
+          "0aa332babacb94a022e4126aca887a87",
+          "229e3a10ce4bb79b7b3b848afed5f6ac",
+          "20eed42c0bcccc29ca846e7eca1a51c3",
+          "d1d4e0f2f3a9be0a9bc9b5dbe653655f",
+          "dec1da6157172d7d8206882c61617ee8"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "같은 subject의 공유 요청 6통(08-07~08-12).",
+      "source_hash": "249ba9b20ae6537ded5f1681a92295b751f2bf214183880a7de243f9967eeb3d",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-set_query-003"
+    },
+    {
+      "id": "v0-negative-001",
+      "query": "Kubernetes 클러스터 구성 가이드",
+      "primary_type": "negative",
+      "types": [
+        "negative"
+      ],
+      "expected": {
+        "document_ids": [],
+        "exhaustive": false,
+        "count": null,
+        "none": true,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "'Kubernetes'/'쿠버네티스' 모두 chunks.text에 0건 - 언급되지 않은 기술.",
+      "source_hash": null,
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-negative-001"
+    },
+    {
+      "id": "v0-negative-002",
+      "query": "Terraform으로 인프라를 프로비저닝하는 절차",
+      "primary_type": "negative",
+      "types": [
+        "negative"
+      ],
+      "expected": {
+        "document_ids": [],
+        "exhaustive": false,
+        "count": null,
+        "none": true,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "'Terraform' 0건.",
+      "source_hash": null,
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-negative-002"
+    },
+    {
+      "id": "v0-negative-003",
+      "query": "Kafka 토픽 설계와 파티션 전략",
+      "primary_type": "negative",
+      "types": [
+        "negative"
+      ],
+      "expected": {
+        "document_ids": [],
+        "exhaustive": false,
+        "count": null,
+        "none": true,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "'Kafka' 0건.",
+      "source_hash": null,
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-negative-003"
+    },
+    {
+      "id": "v0-null-001",
+      "query": "연말정산 서류 제출 안내",
+      "primary_type": "null",
+      "types": [
+        "null"
+      ],
+      "expected": {
+        "document_ids": [],
+        "exhaustive": false,
+        "count": null,
+        "none": true,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "'연말정산' 0건 - DB에 없는 주제.",
+      "source_hash": null,
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-null-001"
+    },
+    {
+      "id": "v0-null-002",
+      "query": "블록체인 기반 결제 시스템 제안서",
+      "primary_type": "null",
+      "types": [
+        "null"
+      ],
+      "expected": {
+        "document_ids": [],
+        "exhaustive": false,
+        "count": null,
+        "none": true,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "'블록체인' 0건.",
+      "source_hash": null,
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-null-002"
+    },
+    {
+      "id": "v0-null-003",
+      "query": "사내 특허 출원 현황",
+      "primary_type": "null",
+      "types": [
+        "null"
+      ],
+      "expected": {
+        "document_ids": [],
+        "exhaustive": false,
+        "count": null,
+        "none": true,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "'특허' 0건.",
+      "source_hash": null,
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-null-003"
+    },
+    {
+      "id": "v0-latest-001",
+      "query": "가장 최근 투입 MM 입력 요청 공지",
+      "primary_type": "latest",
+      "types": [
+        "latest",
+        "version"
+      ],
+      "expected": {
+        "document_ids": [
+          "49b8275b3088ebbb54fd1d8bfc239a4d"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "as_of=2026-09-04T00:00:00Z 기준(금요일; 이번 주=08-31~09-06). sources.modified_at으로 판정. 09-01(9/8까지) 공지가 최신, 08-07(8/14까지)은 이전 버전.",
+      "source_hash": "bee1ef0f0cebc510fb501a9771ac416ac4b4e1c03e13fb126b67ff53f9bd66e3",
+      "as_of": "2026-09-04T00:00:00Z",
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-latest-001"
+    },
+    {
+      "id": "v0-latest-002",
+      "query": "세아제강 제조가부 투입 관리 시트의 가장 최근 공유 요청 메일",
+      "primary_type": "latest",
+      "types": [
+        "latest",
+        "version"
+      ],
+      "expected": {
+        "document_ids": [
+          "dec1da6157172d7d8206882c61617ee8"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "as_of=2026-09-04T00:00:00Z 기준(금요일; 이번 주=08-31~09-06). sources.modified_at으로 판정. 같은 subject 6통 중 modified_at 08-12 06:21이 최신.",
+      "source_hash": "35644e8a8119d8cc69b8f2462bc4a20ccf99892a0a7b8933195b661f83aa3e77",
+      "as_of": "2026-09-04T00:00:00Z",
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-latest-002"
+    },
+    {
+      "id": "v0-latest-003",
+      "query": "인터뷰 일정이 변경된 가장 최근 공지는?",
+      "primary_type": "latest",
+      "types": [
+        "latest",
+        "temporal"
+      ],
+      "expected": {
+        "document_ids": [
+          "b2bf00362f83d38f5a109e8957f6a206"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "as_of=2026-09-04T00:00:00Z 기준(금요일; 이번 주=08-31~09-06). sources.modified_at으로 판정. 09-02 09:06 '16번 과제 인터뷰 16시→15시' 스레드. 09-01 'PF 팀 인터뷰 9/8 연기'(22b17a6b)는 그 이전. [검수 2026-09-05] 원 질의 \"가장 최근의 3차 인터뷰 일정 변경 공지\"는 정답 문서에 \"3차\"도 \"공지\"도 없어(사람 해석 개입) 질의문을 수정. 후보: 09-01 PF팀 인터뷰 연기(22b17a6b) vs 09-02 16번 과제 시간 변경(b2bf0036) → as_of 기준 후자.",
+      "source_hash": "f53c9182406589d16aef7e16ef47debf91ed883dcf038d59f42019b7b5f1db7b",
+      "as_of": "2026-09-04T00:00:00Z",
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-latest-003"
+    },
+    {
+      "id": "v0-version-001",
+      "query": "투입 MM 입력 요청 공지의 이전(8월) 버전",
+      "primary_type": "version",
+      "types": [
+        "version",
+        "temporal"
+      ],
+      "expected": {
+        "document_ids": [
+          "2d6e99fc13d545766fae11265027db29"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "같은 봇 공지의 8/14 마감 버전.",
+      "source_hash": "18d003b181e13bff9ab4167be6039ac82cee9441d47bce66cb8d4396bc7c8357",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-version-001"
+    },
+    {
+      "id": "v0-version-002",
+      "query": "AgentX 1팀 공유 요청 메일의 첫 요청과 재요청",
+      "primary_type": "version",
+      "types": [
+        "version",
+        "set_query"
+      ],
+      "expected": {
+        "document_ids": [
+          "b5580b99bea8835a142576d89631dc57",
+          "cb81e73b8a8ef978580460013272b20c"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "08-04 최초, 08-12 재요청.",
+      "source_hash": "475a84a6869602e164b81ac0c0f62034c7ef180f1bcb30a1629872d0c5aeac7c",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-version-002"
+    },
+    {
+      "id": "v0-version-003",
+      "query": "광주은행 투입 관리 공유 요청 메일의 모든 버전",
+      "primary_type": "version",
+      "types": [
+        "version",
+        "set_query"
+      ],
+      "expected": {
+        "document_ids": [
+          "3077ce784acd2f253e4c9f24dac4f88e",
+          "d2194f9e088db2661250ef18805fa9cd"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "08-10 00:31 / 00:40 두 통.",
+      "source_hash": "465be535b15b129c54e083b66599a935b12137ff620e3370c994ac7e464564e2",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-version-003"
+    },
+    {
+      "id": "v0-parent_child-001",
+      "query": "AGENTS.md의 Git Workflow 절",
+      "primary_type": "parent_child",
+      "types": [
+        "parent_child",
+        "specific_document_qa"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "2a7d07c11b19924444643d21a9467d5b"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "dev DB chunks.parent_chunk_id는 전부 NULL - '문서(부모) 안의 절(자식 청크)'로 해석. 문서 단위 정답 + chunk_id로 엄격 채점.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-parent_child-001"
+    },
+    {
+      "id": "v0-parent_child-002",
+      "query": "AGENTS.md의 Documentation System Gate 절",
+      "primary_type": "parent_child",
+      "types": [
+        "parent_child",
+        "specific_document_qa"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "fbe73506d5b30c0db2571695023e546c"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-parent_child-002"
+    },
+    {
+      "id": "v0-parent_child-003",
+      "query": "projectintel-handover-guide.md의 인수인계 체크리스트 절",
+      "primary_type": "parent_child",
+      "types": [
+        "parent_child",
+        "specific_document_qa"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "d9bf14c9dda26d86dd35e3b9843a5ff8"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-parent_child-003"
+    },
+    {
+      "id": "v0-conversation_thread-001",
+      "query": "농협 MVP 투입 인력 명함 제작 논의 스레드",
+      "primary_type": "conversation_thread",
+      "types": [
+        "conversation_thread",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "54e9f0ab7fd9f1028966b876b3103eca"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "slack thread_ts 1787919772, 22개 메시지.",
+      "source_hash": "4ddf645f10412530db7f0315c05b54ab6eef9a2093bde160f1f1d00eaf868199",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-conversation_thread-001"
+    },
+    {
+      "id": "v0-conversation_thread-002",
+      "query": "AEGIS-Agent 사용법 안내 스레드",
+      "primary_type": "conversation_thread",
+      "types": [
+        "conversation_thread"
+      ],
+      "expected": {
+        "document_ids": [
+          "fbc5c206f33ee05ccb044ab11f19048b"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "thread_ts 1788256032, 11개 메시지. AEGIS bot 테스트 스레드(7b825db0)는 사용법 안내가 아님.",
+      "source_hash": "276198eddcb2d8bfe281aade066c23da7d25ab5c61f89e2c509592ec57be62ed",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-conversation_thread-002"
+    },
+    {
+      "id": "v0-conversation_thread-003",
+      "query": "OCR 제품 교육 참석 여부를 묻는 스레드",
+      "primary_type": "conversation_thread",
+      "types": [
+        "conversation_thread"
+      ],
+      "expected": {
+        "document_ids": [
+          "8a69575a5eb64c6cad84a78ce31a940d"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "thread_ts 1788254070, 9개 메시지.",
+      "source_hash": "f6e154de1e1212b45d92e86a8269eb8003b54ac480105f9144ae6092c00c1b11",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-conversation_thread-003"
+    },
+    {
+      "id": "v0-sequence-001",
+      "query": "7월 29일 risk-agent 아웃테이지 감지부터 복구 확인까지의 알림 순서",
+      "primary_type": "sequence",
+      "types": [
+        "sequence",
+        "temporal",
+        "set_query"
+      ],
+      "expected": {
+        "document_ids": [
+          "4964de261d6fbaaa5d1da5c412e5b891",
+          "30c56ccef8e7918a588698e60d08335d"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "07-29 00:00 감지 → 00:50 복구 확인. 순서는 modified_at.",
+      "source_hash": "3768cb589d915a631b98b43c4363532262de3734b620f1182bdcfe9321920e25",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-sequence-001"
+    },
+    {
+      "id": "v0-sequence-002",
+      "query": "3차 인터뷰 일정이 예상 안내 → 확정 전달 → 시간 변경으로 바뀐 순서",
+      "primary_type": "sequence",
+      "types": [
+        "sequence",
+        "multihop",
+        "set_query"
+      ],
+      "expected": {
+        "document_ids": [
+          "06fc2da74e167c33ec7429c1f93623ca",
+          "969047bffcf1abd444fab3004bc096d5",
+          "b2bf00362f83d38f5a109e8957f6a206"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "08-28 메일(예상) → 09-01 슬랙(확정) → 09-02 슬랙(16번 과제 시간 변경).",
+      "source_hash": "86e346161bd527cb9a272ec57ce9ab6b2e04d2aea67e67d64237297d4a25b231",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-sequence-002"
+    },
+    {
+      "id": "v0-sequence-003",
+      "query": "PRJ-40311C8D17D84F 프로젝트 채널이 연결/해제/재연결된 알림 순서",
+      "primary_type": "sequence",
+      "types": [
+        "sequence",
+        "exact_match",
+        "set_query"
+      ],
+      "expected": {
+        "document_ids": [
+          "668d59e736649154b1823af13ec1d5d5",
+          "7d80d325da608d771b05144315c8be13",
+          "4643e0fa5678704f488ac9c04d922281",
+          "43a8bf49ea4c825f7fea6dd049236b30",
+          "e231f3e66929a30d9b091e020a8a9d60"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "08-03 연결 → 08-04 해제(2건) → 08-05 연결 → 08-28 연결. chunks.text ilike '%PRJ-40311C8D17D84F%' 5건.",
+      "source_hash": "127c120d93aa89604bd35d54d95870936c1899ff4d7e8d0b28c4e98192ba3996",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-sequence-003"
+    },
+    {
+      "id": "v0-long_range_context-001",
+      "query": "세아제강 제조가부 샘플 자료 메일 스레드에서 공장별 담당자 역할(원재료/제품 검토)을 정리해줘",
+      "primary_type": "long_range_context",
+      "types": [
+        "long_range_context",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "0c8fedb0ebe38afaa3fb8eb27acf6c29"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "188청크 메일 스레드 - 표가 여러 인용 깊이에 흩어져 있어 문서 전체 맥락 필요.",
+      "source_hash": "cc62b30c60c8eb20cc488194fa2c8052a004a0dea360091a30de0bfea0f9e868",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-long_range_context-001"
+    },
+    {
+      "id": "v0-long_range_context-002",
+      "query": "projectintel-development-handover.pptx의 전체 흐름을 슬라이드 순서대로 정리해줘",
+      "primary_type": "long_range_context",
+      "types": [
+        "long_range_context",
+        "whole_document_summary"
+      ],
+      "expected": {
+        "document_ids": [
+          "7f30ecf41ccd666f24c00b463f875774"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "437청크.",
+      "source_hash": "044e1ae91ea10984597d7def2a12376a9d69c6ba8b733e0281a551a196d8c88f",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-long_range_context-002"
+    },
+    {
+      "id": "v0-long_range_context-003",
+      "query": "NH_MVP 3차 인터뷰 안내 메일의 과제별 인터뷰 일정 표 전체",
+      "primary_type": "long_range_context",
+      "types": [
+        "long_range_context",
+        "specific_document_qa"
+      ],
+      "expected": {
+        "document_ids": [
+          "06fc2da74e167c33ec7429c1f93623ca"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "c529aec8a20b3fd7d3b8b9cbaef09245"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "23청크 메일 - 표 청크(chunk c529aec8)가 핵심.",
+      "source_hash": "6674ff940ae792100e0499257f77ea727eb16d6a2911443f29c451dfc9fb567e",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-long_range_context-003"
+    },
+    {
+      "id": "v0-ambiguous-001",
+      "query": "AGENTS.md",
+      "primary_type": "ambiguous",
+      "types": [
+        "ambiguous",
+        "navigational"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f",
+          "037e64a74be1fa40684070313973242e"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "gdrive name이 'AGENTS.md'와 'agents-skills-AGENTS.md' 두 개.",
+      "source_hash": "e09f2d4b0e1499c2439a7feb8046ed87c47138e2266e1710df906f1c0d22ddcb",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-ambiguous-001"
+    },
+    {
+      "id": "v0-ambiguous-002",
+      "query": "README",
+      "primary_type": "ambiguous",
+      "types": [
+        "ambiguous",
+        "navigational"
+      ],
+      "expected": {
+        "document_ids": [
+          "4d81d723d811dba6e13b79b1a0d06ad3",
+          "dc47d7f7302682c52da6ac6aa5aa3b4c"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "'codex-README.md'와 'README_ProjectIntel_Dev_Handover.md'.",
+      "source_hash": "0d509a014402625d543038e81c5d756386a08a4622bfb58e3b33bb73e1de7aa6",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-ambiguous-002"
+    },
+    {
+      "id": "v0-ambiguous-003",
+      "query": "인수인계 문서",
+      "primary_type": "ambiguous",
+      "types": [
+        "ambiguous",
+        "navigational"
+      ],
+      "expected": {
+        "document_ids": [
+          "7f30ecf41ccd666f24c00b463f875774",
+          "eb41c306a7359b09d2c96684ecb4347d",
+          "1e551c7fc23dfe1dee6059a13962d561",
+          "dc47d7f7302682c52da6ac6aa5aa3b4c",
+          "9ab8948989144994bfe5bd9c2d76b79b"
+        ],
+        "exhaustive": true,
+        "count": null,
+        "none": false,
+        "chunk_ids": [],
+        "knowledge_object_ids": []
+      },
+      "origin": "manual",
+      "notes": "handover 이름의 gdrive 파일 4개. [검수 2026-09-05] 신규 \"관리자 운영 가이드.dc.html\"이 스스로를 \"인수인계 가이드\"라고 적어 4→5건. 배포본 PDF(6bd61532)는 운영 가이드라 제외.",
+      "source_hash": "f7ac69edcae30a211239b450b3a1656d44e45a4f5b8b39d8585a99af8cf433d1",
+      "as_of": null,
+      "origin_set": "v0-handwritten",
+      "original_id": "v0-ambiguous-003"
+    },
+    {
+      "id": "v1-draft-factoid-001",
+      "query": "LOG.md에 기록하면 안 되는 민감한 정보나 데이터에는 무엇이 있는가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "9593136ba4b899b3e45b60799d8fed40"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 9593136ba4b899b3e45b60799d8fed40 (google_drive). 정답: 민감 데이터, 고객사 원문, Slack token, API key, .env 값, 원본 로그 전문 / 규칙 설명 섹션에서 명확히 나열됨 자동 검증: 정답 문서가 상위 10에 없음(전략=vector).",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null,
+      "origin_set": "evalgen-v1",
+      "original_id": "v1-draft-factoid-001"
+    },
+    {
+      "id": "v1-draft-temporal-001",
+      "query": "애자일소다(프로젝트_인텔) 폴더 공유 요청 메시지의 발송 일시는?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "temporal"
+      ],
+      "expected": {
+        "document_ids": [
+          "156dea7aab1fee827c11c1401e895625",
+          "7b51f2edc5ad64de17c92d9c3141329c",
+          "8595924b0c65a36faa8bc93fba311a92"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "09329e78f3aef958ea5f2c2c3f7c5101"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 09329e78f3aef958ea5f2c2c3f7c5101 (gmail). 정답: 2026년 8월 27일 00:42:51 UTC 자동 검증 rank=1. [검수 2026-09-05] 제목·본문이 같고 요청자/일시만 다른 공유 요청 메일이 3건이라 정답도 3건. 유형은 \"헤더 날짜 되묻기\"이지 시간 필터 검색이 아니므로 primary_type을 factoid로 강등(temporal은 부라벨로 유지).",
+      "source_hash": "9042b1fe7ee1ea9264c1714f9d5466a969ac050c1ad0629b4a5fe21e9b036209",
+      "as_of": null,
+      "origin_set": "evalgen-v1",
+      "original_id": "v1-draft-temporal-001"
+    },
+    {
+      "id": "v1-draft-factoid-003",
+      "query": "애자일소다(프로젝트_인텔) Google Drive 폴더 공유 시 사용자에게 부여할 수 있는 역할은 무엇인가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "156dea7aab1fee827c11c1401e895625",
+          "7b51f2edc5ad64de17c92d9c3141329c",
+          "8595924b0c65a36faa8bc93fba311a92"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "09329e78f3aef958ea5f2c2c3f7c5101"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 09329e78f3aef958ea5f2c2c3f7c5101 (gmail). 정답: 공동작업자 또는 뷰어 자동 검증: 정답 문서가 상위 10에 없음(전략=document_lookup,metadata_filter,vector). [검수 2026-09-05] 정답 3건인데 1건만 라벨돼 있었다(binary relevance라 precision@10/ndcg@10이 부당하게 깎임). 코퍼스 전수 확인 결과 정확히 3건.",
+      "source_hash": "9042b1fe7ee1ea9264c1714f9d5466a969ac050c1ad0629b4a5fe21e9b036209",
+      "as_of": null,
+      "origin_set": "evalgen-v1",
+      "original_id": "v1-draft-factoid-003"
+    },
+    {
+      "id": "v1-draft-conversation_thread-003",
+      "query": "금요일 4시 OA 회의는 어디서 진행하나?",
+      "primary_type": "conversation_thread",
+      "types": [
+        "conversation_thread",
+        "temporal",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "7cc1e1e3976daca7b75f2c6de6f40df0"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "e475cb865bf5f643d3f88cd788269d62"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 e475cb865bf5f643d3f88cd788269d62 (slack). 정답: 3층 중회의실 자동 검증: 정답 문서가 상위 10에 없음(전략=vector). [검수 2026-09-05] 원 질의는 앵커가 원시 채널 id(C0BTANFH9HQ)뿐이라 사람이 칠 질의가 아니었다. 청크 안의 고유 표현(\"4시\", \"OA\")으로 다시 씀. 유사 문서 56fb126c(\"금요일 3시 3층 중회의실\")가 방해자로 남는다.",
+      "source_hash": "2d95247ea10807fee4f66299ce170830e0fba05f24b431c2d172195bc01ee90a",
+      "as_of": null,
+      "origin_set": "evalgen-v1",
+      "original_id": "v1-draft-conversation_thread-003"
+    },
+    {
+      "id": "v1-draft-temporal-002",
+      "query": "AgentX 2팀 Google Drive 폴더 액세스 요청이 언제 들어왔나?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "temporal"
+      ],
+      "expected": {
+        "document_ids": [
+          "9565cb093d088e5cb019a995828533d2"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "18aeb5d23cec9b99b2a129d706489071"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 18aeb5d23cec9b99b2a129d706489071 (gmail). 정답: 2026년 8월 5일(수요일) 08:18 UTC / 메일 수신 시각 명시 자동 검증: 정답 문서가 상위 10에 없음(전략=metadata_filter,vector). [검수 2026-09-05] 메일 헤더 날짜 되묻기라 temporal이 아니라 factoid로 강등.",
+      "source_hash": "e99a1f20e0c0bc1753fdd84c498d0a110f8aea4a1b88dd0085545f98a5450fd6",
+      "as_of": null,
+      "origin_set": "evalgen-v1",
+      "original_id": "v1-draft-temporal-002"
+    },
+    {
+      "id": "v1-draft-factoid-004",
+      "query": "AgentX 2팀 폴더에 공동작업자를 추가하려면 어떻게 해야 하나?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "specific_document_qa"
+      ],
+      "expected": {
+        "document_ids": [
+          "9565cb093d088e5cb019a995828533d2"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "18aeb5d23cec9b99b2a129d706489071"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 18aeb5d23cec9b99b2a129d706489071 (gmail). 정답: 공유 링크를 클릭하고 공동작업자 또는 뷰어로 추가합니다. / Google Drive 공유 권한 부여 절차 자동 검증: 정답 문서가 상위 10에 없음(전략=vector).",
+      "source_hash": "e99a1f20e0c0bc1753fdd84c498d0a110f8aea4a1b88dd0085545f98a5450fd6",
+      "as_of": null,
+      "origin_set": "evalgen-v1",
+      "original_id": "v1-draft-factoid-004"
+    },
+    {
+      "id": "v1-draft-factoid-005",
+      "query": "Dashboard 화면 수정 시 새로운 색상이나 radius를 만들어야 할 때는 어떻게 처리하나?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561",
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "2056402cb121b138c39886ae64aa4cf1"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 2056402cb121b138c39886ae64aa4cf1 (google_drive). 정답: 새로운 색상/radius/shadow를 만들지 말고 globals.css token을 사용해야 한다. / Dashboard 화면 수정 절차의 2단계를 다룬 실무 팁 자동 검증: 정답 문서가 상위 10에 없음(전략=vector). [검수 2026-09-05] AGENTS.md의 \"Dashboard Design System Gate\" 절이 같은 답(globals.css 토큰 우선)을 준다. 1→2건.",
+      "source_hash": "938bd841605553d1e0590e120eec11e58a03da97ee54485d77ba0250be55ec92",
+      "as_of": null,
+      "origin_set": "evalgen-v1",
+      "original_id": "v1-draft-factoid-005"
+    },
+    {
+      "id": "v1-draft-factoid-006",
+      "query": "risk-agent API에서 API proxy contract가 변경되면 어떤 항목들을 함께 확인해야 하나?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "2056402cb121b138c39886ae64aa4cf1"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 2056402cb121b138c39886ae64aa4cf1 (google_drive). 정답: dashboard type과 risk-agent response를 함께 확인해야 한다. 또한 API contract 변경 시 dashboard proxy/type과 e2e 영향도를 봐야 한다. / risk-agent API 수정 절차의 3단계와 5단계를 종합한 확인 항목 자동 검증 rank=4.",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null,
+      "origin_set": "evalgen-v1",
+      "original_id": "v1-draft-factoid-006"
+    },
+    {
+      "id": "v1-draft-temporal-003",
+      "query": "프로젝트 투입 관리_2026-031_한국자산관리공사 파일의 소유권 이전이 발생한 날짜는?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "temporal"
+      ],
+      "expected": {
+        "document_ids": [
+          "410852b07001b87f56a3b1f23e73ab58"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "9de141a0727cead00a5076c6a1e91242"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 9de141a0727cead00a5076c6a1e91242 (gmail). 정답: 2026년 8월 12일 자동 검증 rank=9. [검수 2026-09-05] 메일 헤더 날짜 되묻기라 temporal이 아니라 factoid로 강등.",
+      "source_hash": "7ca61f349eee57258684b594fed04c8592fa867e28062529659e79a9c917e377",
+      "as_of": null,
+      "origin_set": "evalgen-v1",
+      "original_id": "v1-draft-temporal-003"
+    },
+    {
+      "id": "v1-draft-exact_match-001",
+      "query": "프로젝트 투입 관리_2026-031_한국자산관리공사 파일에 접근하는 Google Sheets 링크는?",
+      "primary_type": "specific_document_qa",
+      "types": [
+        "specific_document_qa",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "410852b07001b87f56a3b1f23e73ab58"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "9de141a0727cead00a5076c6a1e91242"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 9de141a0727cead00a5076c6a1e91242 (gmail). 정답: https://docs.google.com/spreadsheets/d/1kiI2XeEXDg-xhHewVCj2eacuIc_ltQ0R/edit?usp=sharing&rtpof=true&sd=true&ts=6a7c1d7e 자동 검증 rank=9. [검수 2026-09-05] 질의에 매칭할 리터럴이 없고 문서를 지목한 뒤 URL을 묻는 형태라 exact_match가 아니다. exact_match 버킷을 오염시키지 않도록 재분류.",
+      "source_hash": "7ca61f349eee57258684b594fed04c8592fa867e28062529659e79a9c917e377",
+      "as_of": null,
+      "origin_set": "evalgen-v1",
+      "original_id": "v1-draft-exact_match-001"
+    },
+    {
+      "id": "v1-draft-factoid-009",
+      "query": "ProjectIntel handover 문서는 어떤 경우에 업데이트되어야 하는가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561",
+          "eb41c306a7359b09d2c96684ecb4347d"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "625263f8e604972420773e332b906a89"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 625263f8e604972420773e332b906a89 (google_drive). 정답: 서버 별칭/경로, 배포 방식, agent routing, 주요 서비스 경계, 개발 검증 명령, Drive 인수인계 패키지 위치가 변경될 때 / 문서 유지보수 조건을 명확히 제시하는 부분 자동 검증 rank=2. [검수 2026-09-05] projectintel-handover-file-bundle.md에 같은 \"문서 갱신 시점\" 항목이 있어 1→2건.",
+      "source_hash": "a39fbeeb406b00130ed341dcf7a9f47ae951c633c27f8a26b26b84735b3ec5ca",
+      "as_of": null,
+      "origin_set": "evalgen-v1",
+      "original_id": "v1-draft-factoid-009"
+    },
+    {
+      "id": "v2-draft-factoid-002",
+      "query": "ProjectIntel Codex 프로젝트의 커밋 메시지 작성 규칙은 어떻게 되나요?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "exact_match"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "2a7d07c11b19924444643d21a9467d5b"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 2a7d07c11b19924444643d21a9467d5b (google_drive). 정답: 한국어 Conventional Commits 형식을 사용하며, 제목은 type(scope): 한국어 요약 또는 type: 한국어 요약 형식이고 type은 feat, fix, docs, chore, ci, test, refactor, style, perf, build, revert 중 하나이며 설명부에 한글이 포함되어야 함(merge/revert/fixup/squash 커밋은 예외) 자동 검증 rank=1. [검수 2026-09-05] 앵커·정답 확인.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null,
+      "origin_set": "evalgen-v2",
+      "original_id": "v2-draft-factoid-002"
+    },
+    {
+      "id": "v2-draft-specific_document_qa-002",
+      "query": ".claude/hooks/hooks.json 설정은 Codex 환경에서 어떻게 처리되는가?",
+      "primary_type": "specific_document_qa",
+      "types": [
+        "specific_document_qa",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "e67879714f82001bd0d094c5da94de5e"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 e67879714f82001bd0d094c5da94de5e (google_drive). 정답: Codex에서 자동 실행하지 않고, 대신 파괴적 명령 차단, dev server 로그 접근성 확보, push 전 diff/status 확인, 무분별한 문서 생성 억제, schema/reference 검증 등 안전 의도만 수동 규칙으로 반영한다 / .claude/ Reflection Map 표 내용 자동 검증 rank=1. [검수 2026-09-05] 앵커·정답 확인.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null,
+      "origin_set": "evalgen-v2",
+      "original_id": "v2-draft-specific_document_qa-002"
+    },
+    {
+      "id": "v2-draft-exact_match-002",
+      "query": "대시보드 Playwright e2e 테스트에서 로컬 포트가 겹칠 때 사용하는 환경변수는 무엇인가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "7f27758cc334dc9a6fbc1282d581e32e"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 7f27758cc334dc9a6fbc1282d581e32e (google_drive). 정답: DASHBOARD_E2E_PORT=<port> npm run e2e / Verification 섹션에 명시된 포트 충돌 해결 방법 자동 검증 rank=1. [검수 2026-09-05] DASHBOARD_E2E_PORT는 정답이지 질의 리터럴이 아니므로 exact_match → factoid로 재분류.",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null,
+      "origin_set": "evalgen-v2",
+      "original_id": "v2-draft-exact_match-002"
+    },
+    {
+      "id": "v2-draft-factoid-004",
+      "query": "dashboard 502 에러 발생 시 처음 확인해야 할 3가지는?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "exact_match"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "c74586d8fd1e08b21dd95ba64f767495"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 c74586d8fd1e08b21dd95ba64f767495 (google_drive). 정답: docker compose --env-file .env -f infra/docker/docker-compose.yml ps, docker logs caddy --tail=80, curl -fsSI http://localhost:3000 / 빠른 장애 지도 표 기준 자동 검증 rank=2. [검수 2026-09-05] 앵커·정답 확인. gdrive 한정 생성분 40건 중 채택 12건.",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null,
+      "origin_set": "evalgen-v2",
+      "original_id": "v2-draft-factoid-004"
+    },
+    {
+      "id": "v2-draft-parent_child-005",
+      "query": "ProjectIntel 신규 담당자가 서버 권한이 없을 때 첫날에 해야 할 행동은?",
+      "primary_type": "parent_child",
+      "types": [
+        "parent_child",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "4beb3a075d6e48ab2fa825757236e693"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 4beb3a075d6e48ab2fa825757236e693 (google_drive). 정답: 로컬 repo에서 git branch --show-current, git status --short 확인 후 Slack workflow thread에 서버 권한/운영 확인 요청을 남기고, local-only 검증 가능한 범위만 작업한다. / 1. 첫날 30분 루트 표의 '서버 권한 없음' 행 기준 자동 검증 rank=1. [검수 2026-09-05] 앵커·정답 확인.",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null,
+      "origin_set": "evalgen-v2",
+      "original_id": "v2-draft-parent_child-005"
+    },
+    {
+      "id": "v2-draft-factoid-010",
+      "query": "바이브 코딩에서 사람과 Codex의 역할 분담은 어떻게 되나요?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "7f30ecf41ccd666f24c00b463f875774",
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "ec288844dd6c00d3cd0b121002429670"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 ec288844dd6c00d3cd0b121002429670 (google_drive). 정답: 사람은 방향·경계·승인을 잡고, Codex는 탐색·수정·검증을 빠르게 반복한다. / 바이브 코딩 개념 설명 청크 기반 자동 검증 rank=2. [검수 2026-09-05] handover-guide 6절(바이브 코딩 작업 방식)이 같은 역할 분담을 서술한다. 1→2건.",
+      "source_hash": "af782c6879083a01c84567c3f956de051af7340825555c13fd12ca8d57223669",
+      "as_of": null,
+      "origin_set": "evalgen-v2",
+      "original_id": "v2-draft-factoid-010"
+    },
+    {
+      "id": "v2-draft-factoid-012",
+      "query": "ProjectIntel 개발 인수인계 패키지의 기준 repo 경로와 branch는 무엇인가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "dc47d7f7302682c52da6ac6aa5aa3b4c",
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "182660e8c6b9e82549b79da21124bd3f"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 182660e8c6b9e82549b79da21124bd3f (google_drive). 정답: 기준 repo는 /home/agilesoda/project_intel, 기준 branch는 deploy-main 자동 검증 rank=1. [검수 2026-09-05] handover-guide에도 같은 기준 repo/branch가 있다. 1→2건.",
+      "source_hash": "00dfd60885c80e074600da295bf532dab531a58967ec21d7e431109a6eec19e7",
+      "as_of": null,
+      "origin_set": "evalgen-v2",
+      "original_id": "v2-draft-factoid-012"
+    },
+    {
+      "id": "v2-draft-factoid-013",
+      "query": "ProjectIntel 개발 인수인계 패키지에서 제외되는 파일이나 자료는 어떤 것들인가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "specific_document_qa"
+      ],
+      "expected": {
+        "document_ids": [
+          "dc47d7f7302682c52da6ac6aa5aa3b4c",
+          "eb41c306a7359b09d2c96684ecb4347d"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "182660e8c6b9e82549b79da21124bd3f"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 182660e8c6b9e82549b79da21124bd3f (google_drive). 정답: .env, .env.jobs, .env.readiness 실제 운영본, .secrets/*, OAuth token, service account JSON, Slack/Gmail/Drive 원문, 고객사 원문, 견적/계약/금액/개인정보 자료 자동 검증 rank=2. [검수 2026-09-05] file-bundle 4절의 env/secret 제외 표가 같은 답을 준다. 1→2건.",
+      "source_hash": "b07dd37e1ca276ecc2c195f1a647eed5d27ba5bc3e3dc55782fe0ee9af06e056",
+      "as_of": null,
+      "origin_set": "evalgen-v2",
+      "original_id": "v2-draft-factoid-013"
+    },
+    {
+      "id": "v2-draft-exact_match-001",
+      "query": "ProjectIntel 개발 인수인계 패키지가 업로드된 Google Drive 폴더 URL은 무엇인가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "specific_document_qa"
+      ],
+      "expected": {
+        "document_ids": [
+          "eb41c306a7359b09d2c96684ecb4347d",
+          "dc47d7f7302682c52da6ac6aa5aa3b4c",
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "2a51ae4f0902adbe505bbb9cdb8d1a91"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 2a51ae4f0902adbe505bbb9cdb8d1a91 (google_drive). 정답: https://drive.google.com/drive/folders/1wEpG6WtR_wcXQi7mCnRlMfOXe3c7rK_p / 2026-07-20 업로드 기록에 명시된 Drive folder URL 자동 검증: 정답 문서가 상위 10에 없음(전략=metadata_filter,vector). [검수 2026-09-05] 세 문서가 같은 Drive 폴더 URL을 온전히 담는다(pptx는 URL이 잘려 제외). 질의에 리터럴이 없어 exact_match → factoid로 재분류.",
+      "source_hash": "2120309fcab574a9c54a4493eef8d23c78507fbccd2682026f72c3d38c9bf0ac",
+      "as_of": null,
+      "origin_set": "evalgen-v2",
+      "original_id": "v2-draft-exact_match-001"
+    },
+    {
+      "id": "v2-draft-factoid-016",
+      "query": "risk-agent API 작업을 시작할 때 대표 검증 명령은 무엇인가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "entity_centric"
+      ],
+      "expected": {
+        "document_ids": [
+          "eb41c306a7359b09d2c96684ecb4347d",
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "2a51ae4f0902adbe505bbb9cdb8d1a91"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 2a51ae4f0902adbe505bbb9cdb8d1a91 (google_drive). 정답: cd services/risk-agent && uv run pytest / 작업 유형별 파일/검증 표의 risk-agent API 행에 명시됨 자동 검증: 정답 문서가 상위 10에 없음(전략=document_lookup,lexical,vector). [검수 2026-09-05] handover-guide에도 risk-agent 대표 검증 명령이 있다. 1→2건.",
+      "source_hash": "a39fbeeb406b00130ed341dcf7a9f47ae951c633c27f8a26b26b84735b3ec5ca",
+      "as_of": null,
+      "origin_set": "evalgen-v2",
+      "original_id": "v2-draft-factoid-016"
+    }
+  ]
+}
