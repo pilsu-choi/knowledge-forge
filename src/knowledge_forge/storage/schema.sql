@@ -11,6 +11,10 @@
 -- postgres service uses pgvector/pgvector:pg16) - CREATE EXTENSION fails
 -- against a plain postgres image.
 CREATE EXTENSION IF NOT EXISTS vector;
+-- pg_trgm for the document-title / chunk-text lexical indexes below
+-- (search/service.py's document_search/lexical_search). Ships with every
+-- stock Postgres (contrib), so unlike `vector` this needs no special image.
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 CREATE TABLE IF NOT EXISTS sources (
     source_id     TEXT PRIMARY KEY,
@@ -42,6 +46,21 @@ ALTER TABLE documents ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL D
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 CREATE INDEX IF NOT EXISTS idx_documents_source_id ON documents(source_id);
 CREATE INDEX IF NOT EXISTS idx_documents_project_id ON documents(project_id);
+-- Denormalized display/search title (storage/document_title.py derives it:
+-- parser metadata title -> source name/subject -> slack channel+date ->
+-- first heading). `documents.metadata->>'title'` alone is NULL for nearly
+-- every SaaS-collected row (the parsers don't know the Drive file name or
+-- mail subject - only `sources.metadata` does), so title search needs one
+-- materialized column rather than a per-query CASE over two JSONB blobs.
+-- Nullable: a document with no usable title anywhere simply can't be found
+-- by title (it stays reachable through lexical_search/vector_search).
+-- Trigram GIN over it: pg_trgm serves both `ILIKE '%..%'` substring and
+-- `similarity()` fuzzy matching, and - unlike tsvector's 'simple'
+-- dictionary - needs no tokenizer, which matters because the titles are
+-- mostly Korean/underscore-joined file names a text search parser splits
+-- badly (see wiki/search-architecture.md ③).
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS title TEXT;
+CREATE INDEX IF NOT EXISTS idx_documents_title_trgm ON documents USING gin (title gin_trgm_ops);
 
 CREATE TABLE IF NOT EXISTS chunks (
     chunk_id        TEXT PRIMARY KEY,
@@ -62,6 +81,10 @@ ALTER TABLE chunks ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFA
 ALTER TABLE chunks ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_source_id ON chunks(source_id);
+-- Trigram GIN over the chunk body for lexical_search (error codes, ids,
+-- exact phrases - things an embedding can't be "close" to). Same
+-- pg_trgm-over-tsvector reasoning as idx_documents_title_trgm above.
+CREATE INDEX IF NOT EXISTS idx_chunks_text_trgm ON chunks USING gin (text gin_trgm_ops);
 
 -- `evidence` replaces the old single `chunk_id` column: a KnowledgeObject
 -- can be grounded in more than one Chunk (see models/knowledge_object.py),

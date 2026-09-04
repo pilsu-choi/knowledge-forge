@@ -161,6 +161,39 @@ class PipelineStore:
         """`search/sql.py::sql_search`'s single entry point into storage."""
         return await self._db.execute_readonly_query(sql, limit)
 
+    async def search_documents_by_title(
+        self,
+        query: str,
+        *,
+        project_id: str | None = None,
+        source_type: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """`search/service.py::document_search`'s entry point - see
+        `PostgresStore.search_documents_by_title`."""
+        return await self._db.search_documents_by_title(
+            query, project_id=project_id, source_type=source_type, since=since, until=until, limit=limit
+        )
+
+    async def search_chunks_lexical(
+        self,
+        query: str,
+        *,
+        project_id: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """`search/service.py::lexical_search`'s entry point - see
+        `PostgresStore.search_chunks_lexical`."""
+        return await self._db.search_chunks_lexical(query, project_id=project_id, since=since, until=until, limit=limit)
+
+    async def backfill_document_titles(self, project_id: str | None = None, *, overwrite: bool = False) -> int:
+        """`knowledge-forge db backfill-titles` - see `PostgresStore.backfill_document_titles`."""
+        return await self._db.backfill_document_titles(project_id, overwrite=overwrite)
+
     async def get_sync_cursor(self, source: str) -> dict[str, Any] | None:
         return await self._db.get_sync_cursor(source)
 

@@ -49,8 +49,8 @@ Postgres 컨테이너(`docker run postgres:16-alpine`)로 스키마 생성·저�
 | 테이블 | 기본키 | 주요 컬럼 | FK |
 |---|---|---|---|
 | `sources` | `source_id` | `source_type`, `uri`, `content_hash`, `raw_path`(디스크 경로), `metadata`(JSONB), `project_id`(테넌시 키, 기본 `'default'`) | - |
-| `documents` | `document_id` | `elements`(JSONB, 요소 전체 직렬화), `metadata`(JSONB), `project_id`(연결된 `sources.project_id`에서 파생) | → `sources` |
-| `chunks` | `chunk_id` | `hierarchy_level`, `sequence_index`, `text`, `token_count`, `element_ids`(JSONB), `page_start`/`page_end` | → `documents`, `sources` |
+| `documents` | `document_id` | `elements`(JSONB, 요소 전체 직렬화), `metadata`(JSONB), `title`(검색용 파생 제목, NULL 가능, trigram GIN 인덱스), `project_id`(연결된 `sources.project_id`에서 파생) | → `sources` |
+| `chunks` | `chunk_id` | `hierarchy_level`, `sequence_index`, `text`(trigram GIN 인덱스), `token_count`, `element_ids`(JSONB), `page_start`/`page_end` | → `documents`, `sources` |
 | `knowledge_objects` | `knowledge_object_id` | `type`, `evidence`(JSONB, 이 객체를 뒷받침하는 청크 목록), `summary`, `content`(JSONB, 타입별 payload), `topics`(JSONB), `document_type`, `model_used`, `version`/`pipeline_version`/`source_hash`/`supersedes`(재처리 이력) | → `sources`, `documents` |
 | `relations` | `relation_id` | `type`, `subject_id`/`object_id`(둘 다 `knowledge_object_id`를 가리키는 typed edge), `label`, `confidence`, `evidence`(JSONB, chunk_id 목록) | → `knowledge_objects`(양쪽) |
 | `knowledge_object_embeddings` | `embedding_id`(`stable_id(target_kind, 대상 id, embedding_model)`) | `target_kind`(`knowledge_object`/`chunk`), `knowledge_object_id`/`chunk_id`(grain에 따라 하나만), `document_id`(항상), `embedding`(`vector(1536)`, HNSW/cosine 인덱스), `embedded_text`, `embedded_text_hash`, `project_id` | → `knowledge_objects` 또는 `chunks`, `documents` |
@@ -70,6 +70,20 @@ surrogate PK + partial unique index를 쓰는 이유, HNSW/cosine 인덱스를 �
 생성/백필하는 방법은 [`embeddings.md`](embeddings.md)에 있다. `docker-compose.yml`의 `postgres` 서비스 이미지는
 `pgvector/pgvector:pg16`으로 pgvector 확장이 포함되어 있어야 한다 — 일반 `postgres:16` 이미지로는
 `CREATE EXTENSION vector`가 실패한다.
+
+**`documents.title`(검색용 파생 제목)**: `search/service.py::document_search`가 매칭하는 단
+하나의 문자열. 파서가 채우는 `metadata.title`은 SaaS 수집 문서에서 거의 항상 NULL이라(파서는 Drive
+파일명/메일 제목을 모른다 - 그건 `sources.metadata`의 `name`/`subject`에만 있다), `save_document`가
+`storage/document_title.py::derive_document_title()`로 **파서 title → 소스 `name`/`subject` →
+Slack `#channel YYYY-MM-DD` → 첫 Heading → NULL** 순으로 파생해 저장한다(`Document` 모델은
+`SourceRef`만 들고 있어 `save_document`가 `sources` 행을 한 번 읽는다 - `pipeline.py`는 항상
+`record_source` 다음에 `record_document`를 부른다). 컬럼이 생기기 전에 저장된 행은
+`knowledge-forge db backfill-titles [--project-id P] [--overwrite]`로 채운다(`PostgresStore.
+backfill_document_titles` - NULL인 행만, `--overwrite`면 전부 재파생; `updated_at`은 건드리지
+않는다 - 그건 콘텐츠 개정 추적용). 인덱스는 `pg_trgm`의 `gin_trgm_ops`(`chunks.text`도 같은
+인덱스) - `CREATE EXTENSION IF NOT EXISTS pg_trgm`은 `schema.sql`이 하며 contrib 확장이라 별도
+이미지가 필요 없다. 왜 tsvector가 아니라 trigram인지는 [`search-architecture.md`](search-architecture.md)
+③ 참고.
 
 **`project_id`(멀티테넌시 키)**: `sources`/`documents`는 각각 `project_id TEXT NOT NULL
 DEFAULT 'default'` 컬럼을 갖는다. `Source`가 만들어질 때(`pipeline._make_source`) 한 번

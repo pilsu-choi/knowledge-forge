@@ -1,6 +1,6 @@
 import pytest
 
-from knowledge_forge.search.router import FILE_SEARCH, VECTOR_SEARCH, route_query
+from knowledge_forge.search.router import FILE_SEARCH, VECTOR_SEARCH, has_exact_match_signal, route_query
 
 
 def test_route_query_raises_without_any_available_source():
@@ -53,3 +53,36 @@ def test_route_query_falls_back_to_file_search_when_vector_search_unavailable():
     decision = route_query("김철수가 참여한 프로젝트가 왜 실패했는지 이유를 설명해줘", [FILE_SEARCH])
 
     assert decision.sources == [FILE_SEARCH]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "2025_SH_업무_보고서 찾아줘",  # digit-leading, Hangul-mixed joined name
+        "왜 CASE3-EDGE-rl 결과가 다른지 설명해줘",  # hyphen-joined, inside a natural-language question
+        "보고서.pdf 어디 있어?",  # extension alone
+        "(2025_SH_업무_보고서.xlsx)",  # wrapped in brackets
+    ],
+)
+def test_has_exact_match_signal_recognizes_document_names(query):
+    assert has_exact_match_signal(query)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "업무-보고 정리",  # two joined pieces is ordinary prose (Latin pairs like "well-known" are _ID_LIKE_RE's call)
+        "프로젝트 진행 상황 정리",
+        "김철수가 참여한 프로젝트가 왜 실패했는지 이유를 설명해줘",
+        "pdf 파일로 저장하는 방법",  # the word, not an extension
+    ],
+)
+def test_has_exact_match_signal_ignores_ordinary_prose(query):
+    assert not has_exact_match_signal(query)
+
+
+def test_route_query_treats_a_document_name_in_a_question_as_an_exact_signal():
+    decision = route_query("왜 2025_SH_업무_보고서 매출 수치가 다른지 이유를 설명해줘", [FILE_SEARCH, VECTOR_SEARCH])
+
+    assert decision.sources == [FILE_SEARCH, VECTOR_SEARCH]
+    assert "파일명" in decision.reason

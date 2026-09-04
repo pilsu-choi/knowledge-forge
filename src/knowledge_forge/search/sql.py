@@ -66,6 +66,19 @@ sources(source_id TEXT PK, source_type TEXT, uri TEXT, collected_at TIMESTAMPTZ,
         modified_at TIMESTAMPTZ, project_id TEXT, metadata JSONB)
   원본 문서/메시지 1건. source_type: local_file/slack/gmail/google_drive/notion.
 
+documents(document_id TEXT PK, source_id TEXT REFERENCES sources, title TEXT NULL, metadata JSONB,
+          project_id TEXT, created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ)
+  파싱된 문서 1건(source와 1:1). title은 파일명/메일 제목/Slack "#채널 날짜"/첫 제목에서 파생된
+  검색용 제목이다(없으면 NULL) - 제목으로 문서를 찾을 땐 document_search 도구가 더 적합하지만,
+  SQL에서는 title ILIKE '%...%'로 조인 조건에 쓸 수 있다. elements(JSONB, 문서 요소 전체)
+  컬럼도 있지만 절대 SELECT하지 말 것(문서 하나가 수십 KB) - 필요하면 chunks.text를 쓸 것.
+
+chunks(chunk_id TEXT PK, document_id TEXT REFERENCES documents, source_id TEXT REFERENCES sources,
+       sequence_index INT, text TEXT, token_count INT, page_start INT, page_end INT)
+  문서를 나눈 원문 청크(document 안에서 sequence_index 순). text는 최대 수천 토큰이라 전체를
+  SELECT하지 말고 LEFT(text, 300) 같이 잘라서 볼 것 - 본문 문자열 일치 검색은 lexical_search
+  도구가 더 적합하다. project_id 컬럼이 없다 - documents 또는 sources와 JOIN해서 얻을 것.
+
 knowledge_objects(knowledge_object_id TEXT PK, type TEXT, source_id TEXT REFERENCES sources,
                    document_id TEXT, summary TEXT, content JSONB, topics JSONB(문자열 배열),
                    document_type TEXT, extracted_at TIMESTAMPTZ, version INT, supersedes TEXT)
