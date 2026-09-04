@@ -1245,3 +1245,209 @@ agent_groundedness_gate_max_retries: int = 2
   지금 범위 밖.
 - **Graph/SQL search가 라우팅에 추가될 때의 스키마 변경** — `evidence`/`tool_calls`가 이미
   JSONB라 소스 종류가 늘어도 컬럼 추가 없이 흡수된다.
+
+## 슬랙 제목을 채널 ID에서 채널명으로 — 그리고 본문 발췌를 끝내 안 넣은 이유
+
+### 출발점
+
+개발 DB의 슬랙 문서 **197건 전부** 제목이 `#C0BGQEQG1L6 2026-09-01`이었다(채널 ID + 날짜).
+v0 골든셋의 정답 문서 90건 중 **48건이 슬랙**이라, 제목 기반 조회(`document_search`)와
+anchor 판정이 정답 절반 이상에 닿지 못한다는 진단으로 시작했다.
+
+### 측정 1 — 제목 검색 경로만 떼어서 (오프라인)
+
+`search_documents_by_title`의 3-tier(전체 substring / 토큰 전부 substring /
+`word_similarity >= 0.3`)를 그대로 재현해, 358문서 전체를 후보로 두고 슬랙 정답을 가진
+25개 질의를 돌렸다. 지표는 **슬랙 정답 문서 66건의 recall@10**.
+
+| 제목 형태 | 슬랙 정답 recall@10 | 무관 질의 51건 top10에 낀 슬랙 문서 | 무관 질의 정답 recall@10 |
+|---|---|---|---|
+| `#<채널ID> <날짜>` (기존) | **0 / 66** | 0건 | 34/96 |
+| `#<채널명> <날짜>` | **0 / 66** | — | — |
+| `+ 첫 메시지 60자` | 34 / 66 | — | — |
+| `+ 첫 메시지 120자` | **42 / 66** | 46건 | 33/96 |
+| `+ 첫 메시지 200자` | 42 / 66 | — | — |
+
+읽을 것 두 가지.
+
+1. **채널명만으로는 아무것도 안 낫는다(0 → 0).** 사람은 슬랙을 찾을 때 채널 이름을 대지
+   않는다. v0의 실제 질의는 "caddy-drift 아웃테이지 알림", "OCR 제품 교육 참석 여부를 묻는
+   스레드", "명함 제작 논의 스레드"처럼 **첫 메시지 내용**을 댄다. 채널명은 후보 목록의
+   가독성을 위한 것이지 검색 신호가 아니다.
+2. **발췌는 120자에서 포화한다.** 200자로 늘려도 recall이 그대로인데 무관 질의 노이즈만
+   늘어난다.
+
+### 측정 2 — 파이프라인 전체 (eval-ir v0, `--no-llm`, 페어드)
+
+같은 worktree에서 코퍼스만 바꿔 가며 연달아 돌렸다. 코드는 세 런 모두 동일(`da64fac+dirty`).
+
+| 제목 형태 | ndcg@10 | run_id | vs 기준 |
+|---|---|---|---|
+| `#<채널ID> <날짜>` (기준) | 0.8516 | `da5cf39a0cc64bcf9576f020c6f00e26` | — |
+| `#<채널명> <날짜>` | 0.8490 | `b77b9e65eda1400184bd48bd6943ae11` | −0.0025, CI [−0.0076, +0.0000], **유의하지 않음**, 0승 1패 69무 |
+| `#<채널명> <날짜> <발췌 120자>` | 0.8498 | `62966bd1af93469eac681c02d6d3ffbd` | −0.0018, CI [−0.0293, +0.0233], **유의하지 않음**, 3승 5패 62무 |
+
+**이 작업의 가장 중요한 결과가 이것이다: 진단의 전제가 절반만 맞았다.** 제목 경로가 슬랙
+정답에 못 닿았던 것은 사실이지만(0/66), **시스템 전체로는 이미 벡터/청크 어휘 경로가 그
+문서들에 닿고 있었다.** 기준선에서 슬랙이 몰린 유형은 이미 높았다 — conversation_thread
+1.000, aggregation 0.888, sequence 0.786. 제목 경로는 그 문서들에 대해 **중복 경로**였다.
+"검색 튜닝이 정답 절반을 포기한 채로 이뤄졌다"는 표현은 제목 경로에 대해서만 참이다.
+
+### 발췌를 켰을 때 무엇이 움직였나 (3승 5패)
+
+**얻은 것**
+
+- `v0-exact_match-001`(`F0BUMH30V40`) 0.631 → **1.000**
+- `v0-exact_match-002`(`git.sparklingsoda.ai:8443/nhbank/apps/card-reco.git`) 0.631 → **1.000**
+- `v0-sequence-001`(risk-agent 아웃테이지 감지→복구 순서) 0.177 → **0.501**
+  (채널명만 넣었을 때는 오히려 0.177 → 0.000이었다)
+
+식별자·URL이 첫 메시지에 있는 스레드가 제목 substring 1.0으로 잡히면서 anchor가 되는 경우다.
+
+**잃은 것 — 전부 같은 하나의 결함에서 나온다**
+
+`search/retrieve.py::_metadata_filter_where`가 문서 종류 제약을 `d.title ILIKE '%가이드%'`로
+건다. 이 술어는 **제목이 이름이라고 가정한다.** 본문 발췌가 제목에 들어오는 순간 가정이
+깨지고, `_is_source_hint_only_filter`가 그 필터를 "믿을 수 있는 필터"로 분류해 교집합을
+잡으면서 나머지 후보를 통째로 날려 버린다.
+
+- `v0-whole_document_summary-003`("ProjectIntel Agent Guide(AGENTS.md) 전체 내용을 요약해줘")
+  **0.631 → 0.000**. `title ILIKE '%매뉴얼%'`에, 첫 줄에 "[done] 운영 매뉴얼 초안"이 있는
+  주간 다이제스트 스레드가 걸렸다. 결과가 그 슬랙 문서 1건으로 줄고 `whole_document`가
+  그걸 읽었다.
+- `v0-negative-001`("Kubernetes 클러스터 구성 가이드") **none_correct 1.0 → 0.0**.
+  `%가이드%`에 슬랙 스레드 2건이 걸려, 정답이 "없음"인 질의가 결과를 냈다.
+- `v0-multihop-002` 1.000 → 0.613. 다른 결함이다 — 기준선에서는 `document_search#semantic`이
+  0히트라 term 단위 fallback이 발동해 gmail 정답까지 물어왔는데, 발췌 덕에 슬랙 1건이
+  잡히자 **fallback 게이트가 닫혀** 그 1건이 결과 전부가 됐다.
+
+나머지 2패(`v0-factoid-007` −0.131, `v0-sequence-002` −0.021, `v0-set_query-002` −0.019)는
+순위 뒤섞임 수준이다.
+
+### 결정
+
+**`#<채널명> <YYYY-MM-DD>`로 간다. 발췌는 코드에 남기되 끈다**
+(`storage/document_title.py::_SLACK_EXCERPT_CHARS = 0`).
+
+세 형태가 통계적으로 구분되지 않는데(전부 ±0.056 노이즈 바닥 한참 아래), 발췌 쪽만 하드한
+회귀(negative 질의가 답을 내는 것, whole_document가 엉뚱한 문서를 읽는 것)를 동반하기
+때문이다. 그 회귀는 발췌 자체의 문제가 아니라 위의 `title_types` 결함이 드러난 것이므로,
+**켜는 조건이 명확하다**: `_metadata_filter_where`의 문서 종류 술어가 `documents.title`을
+종류 라벨로 쓰지 않게 고쳐지면 `_SLACK_EXCERPT_CHARS = 120`으로 되돌리고
+`knowledge-forge db backfill-slack-names`만 다시 돌리면 된다. **재적재는 필요 없다** —
+발췌의 원재료(`sources.metadata.first_message`)를 이미 저장해 뒀다.
+
+채널명 자체는 검색 지표를 못 올렸지만 남긴다. `search/planner.py`가 후보의 `title`을 LLM에게
+보여 주는 텍스트로 쓰는데(`hit.get("summary") or hit.get("snippet") or hit.get("title")`),
+`#C0BGQEQG1L6`은 LLM에게도 아무 의미가 없다. 이 코퍼스의 채널명은
+`proj_2026-038-a_nh농협은행_마케팅허브-메시지-ai-agent-구축`처럼 프로젝트 코드까지 담고 있다.
+이 이득은 `--no-llm` 런이 측정하지 않는 축이다.
+
+### 이 작업이 새로 드러낸 결함 3건
+
+1. **`_metadata_filter_where`의 `title_types` 술어**가 `documents.title`을 문서 종류
+   라벨처럼 쓴다(`title ILIKE '%가이드%'`). 제목에 본문이 조금이라도 섞이면 오탐이 나고,
+   `_is_source_hint_only_filter`가 그 필터를 신뢰해 교집합을 잡으므로 **오탐 1건이 결과
+   전체를 대체한다**. negative 질의까지 깨진다.
+2. **term 단위 fallback 게이트가 "0히트"에만 반응한다.** 약한 1히트가 잡히면 fallback이
+   닫혀서, 넓게 물어와야 답이 완성되는 multihop 질의가 그 1건으로 잘린다(`v0-multihop-002`).
+3. **`_metadata_filter_where`가 `participant_names`를 보지 않는다.** 이제 이름을 채워 놨는데도
+   "누가 보낸" 류 질의는 여전히 슬랙에 못 닿는다. `_person()`에 OR 하나 얹으면 된다.
+
+### 재현
+
+```
+# 백필 (멱등, sources.metadata + documents.title만 씀)
+uv run --extra dev --extra slack knowledge-forge db backfill-slack-names --dry-run
+uv run --extra dev --extra slack knowledge-forge db backfill-slack-names
+
+# 페어드 측정 (같은 worktree에서 코퍼스만 바꿔 연달아)
+uv run ... knowledge-forge eval-ir --golden tests/eval/golden/v0.json --no-llm --label <설정값 박은 라벨>
+uv run ... knowledge-forge eval-ir --compare <32자 run_id A> <32자 run_id B> --metric ndcg@10
+```
+
+### 왜 이득이 안 났나 — `eval_run_query.steps`로 확인한 답
+
+"골든셋 정답 90개 중 48개가 슬랙인데 제목을 고쳤는데 왜 지표가 안 오르나"가 핵심 질문이다.
+`document_search`(제목 조회)가 각 질의에서 **실제로 슬랙 문서를 후보로 물어왔는지**를
+`eval_run_query.steps`의 `detail.candidates`에서 세었다. 슬랙 정답을 가진 25개 질의 기준:
+
+| 제목 형태 | 제목 조회가 물어온 슬랙 문서 | 제목 히트가 하나라도 생긴 질의 |
+|---|---|---|
+| `#<채널ID> <날짜>` | **0건** | **0 / 25** |
+| `#<채널명> <날짜>` | 7건 | **2 / 25** |
+| `+ 첫 메시지 120자` | 27건 | 7 / 25 |
+
+76개 질의 전체로 보면, 제목 조회가 낸 후보 중 슬랙은 각각 0/67, 10/70, 37/89건이다.
+
+**첫 줄이 원래 진단이 옳았음을 확인해 준다** — 채널 ID 제목일 때 제목 경로는 슬랙 문서를
+**단 한 건도** 물어오지 못했다. 완전한 구조적 실명이었다.
+
+**그런데 채널명으로 고쳐도 25개 중 23개는 여전히 0건이다.** 사람이 슬랙을 찾을 때 채널
+이름을 대지 않기 때문이다. v0의 실제 질의는 "caddy-drift 아웃테이지 알림", "OCR 제품 교육
+참석 여부를 묻는 스레드", "3차 인터뷰 체크리스트 파일 전달 메시지"처럼 **첫 메시지 내용**을
+묻는다. 채널명은 질의 표면에 등장하지 않는다.
+
+그리고 히트가 생긴 2건마저 지표를 못 올렸다:
+
+| 질의 | ID제목 | 채널명 | +발췌 |
+|---|---|---|---|
+| `v0-conversation_thread-002` | 1.000 | 1.000 | 1.000 |
+| `v0-sequence-001` | 0.177 | **0.000** | 0.501 |
+
+- `conversation_thread-002`는 **이미 1.000**이었다. 벡터/청크 어휘 경로가 이미 정답을 1위로
+  올려놨으니 제목 표가 하나 더 붙어도 올릴 자리가 없다.
+- `sequence-001`은 **오히려 떨어졌다**. 채널 ID `C0BGQEQG1L6`이 제목에서 사라지면서, 질의에
+  섞여 있던 식별자성 문자열과의 약한 trigram 매칭을 잃었다.
+
+이 둘이 `−0.0025`의 전부다. **"제목을 고쳤으니 좋아졌을 것"은 틀렸다 — 실측은 반대다.**
+제목 경로의 실명은 진짜였지만, 그 경로는 이 코퍼스에서 벡터/어휘 경로와 **중복**이었다.
+제목 조회가 유일한 경로인 질의(짧은 navigational 질의)가 슬랙에는 사실상 없다.
+
+### 부록: `eval-ir`은 이 코퍼스에서 결정적이다 (실측)
+
+위 페어드 비교를 해석하려면 run-to-run 변동 폭(churn)을 알아야 한다. **코드·코퍼스·설정이
+완전히 같은 두 런**을 연달아 돌린 결과:
+
+```
+A=dfd28768611245c0b0e565fba2ba1638  B=a565122b2f0e4ad888868122453788fd
+mean A=0.8490 B=0.8490 delta=+0.0000 95% CI [+0.0000, +0.0000]
+win/loss/tie = 0/0/70
+```
+
+**질의 하나도 안 갈렸다.** 그러므로 위 표의 승/패는 전부 코퍼스 변경이 실제로 일으킨
+결정론적 차이지 노이즈가 아니다. `±0.056`은 골든셋 76개라는 **표본 크기**에서 오는 불확실성
+(같은 시스템을 다른 76개 질의로 재면 얼마나 흔들리는가)이지 재실행 변동이 아니다. 둘을
+섞으면 안 된다 — 재실행 변동이 0이라는 것은 "질의 1개가 갈린 것"이 진짜 변화라는 뜻이고,
+`±0.056`은 그 변화가 **모집단에서도** 개선인지를 말해 주지 않는다는 뜻이다.
+
+(세션 중 "벡터 동점 때문에 8질의가 churn한다"는 가설이 돌았지만, 이 측정과 오케스트레이터의
+독립 검증 양쪽에서 기각됐다. 실제로 다른 작업자가 관측한 "같은 코드 두 런이 갈렸다"의 원인은
+**이 작업의 제목 백필이 그 사람 측정 중간에 코퍼스를 바꾼 것**이었다. 교훈: corpus를 쓰는
+작업은 `--label`에 그 사실을 박고, 쓰기 전후를 자기 worktree에서 연달아 재라.)
+
+### 부록: 백필 전 상태 스냅샷과 되돌리기
+
+`documents_title_backup_slack` 테이블(및 worktree의 `documents_title_backup_slack.csv`)에
+백필 직전 197건의 제목이 그대로 있다. 되돌리려면:
+
+```sql
+UPDATE documents d SET title = b.title_before
+FROM documents_title_backup_slack b WHERE d.document_id = b.document_id;
+```
+
+백업 테이블이 없어도 **역산이 가능하다.** 백필은 원시 `sources.metadata.channel`을 지우지
+않으므로 예전 제목은 `'#' || (s.metadata->>'channel') || ' ' || to_char(content_at, 'YYYY-MM-DD')`로
+그대로 재현된다 — 실측으로 197/197건이 백업본과 정확히 일치한다.
+
+```sql
+-- 백업 테이블 없이 되돌리기
+UPDATE documents d SET title = '#' || (s.metadata->>'channel') || ' ' ||
+       to_char(COALESCE(s.modified_at, s.collected_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD')
+FROM sources s WHERE s.source_id = d.source_id AND s.source_type = 'slack';
+```
+
+주의: `db backfill-slack-names`도 `backfill_document_titles`도 **`documents.updated_at`을
+건드리지 않는다**(제목 채우기는 내용 개정이 아니라는 설계 판단). 그래서 `updated_at`을 보고
+"제목이 언제 바뀌었나"를 추론하면 **틀린다** — 실제로 이 세션에서 한 번 그 착오가 있었다.
+제목 변경 이력을 알고 싶으면 이 백업 테이블을 봐라.

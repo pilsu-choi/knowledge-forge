@@ -1234,6 +1234,144 @@ class PostgresStore:
             await cur.executemany("UPDATE documents SET title = %s WHERE document_id = %s", updates)
         return len(updates)
 
+    async def backfill_slack_display_names(
+        self,
+        directory: Any,
+        project_id: str | None = None,
+    ) -> dict[str, int]:
+        """이미 적재된 슬랙 `sources.metadata`에 사람이 읽는 이름을 채우고, 그 결과로
+        `documents.title`을 다시 유도한다(`knowledge-forge db backfill-slack-names`).
+
+        왜 필요한가: 개발 DB의 슬랙 문서 197건은 전부 제목이 `#C0BGQEQG1L6 2026-09-01`,
+        참여자가 `["U0BBCPVEHF0"]`였다. v0 골든셋의 정답 문서 90건 중 48건이 슬랙인데,
+        제목 조회(`search_documents_by_title`)로 닿는 슬랙 정답은 **66건 중 0건**이었다
+        (오프라인 실측, wiki/search-evaluation.md). 재적재가 아니라 전용 백필인 이유는
+        `normalize_unicode_text`와 같다 - 내용은 멀쩡하고 **표현만** 틀렸으며, 재적재는
+        파싱/추출/임베딩을 전부 다시 돌리면서 결국 같은 id를 덮어쓸 뿐이다. 게다가 슬랙
+        재적재는 `chunks`/`knowledge_object_embeddings`까지 다시 쓰므로, 같은 DB를 공유하는
+        평가 런의 인덱스 정합을 깬다.
+
+        `directory`는 `collectors/saas/slack.py::SlackDirectory` 모양의 무엇이든 된다
+        (`channel_name(id)` / `user_names(ids)` / `resolve_mentions(text)`). 스토리지 계층이
+        Slack SDK를 import하지 않게 하려고 프로토콜만 받는다 - 호출부(cli.py)가 만들어 넘긴다.
+
+        **이 메서드는 `sources.metadata`와 `documents.title` 두 컬럼만 쓴다.**
+        `chunks`/`knowledge_object_embeddings`/`knowledge_objects`는 손대지 않는다(같은 DB에서
+        도는 다른 평가가 깨지지 않아야 한다). `sources.metadata`의 원시 기록
+        (`channel`/`participants`/`message_ts`)도 지우지 않고 키만 덧붙인다 - `channel`은
+        `find_slack_thread_*`/`document_links.py`의 조인 키다.
+
+        멱등하다: 이미 같은 값이 들어 있으면 UPDATE를 아예 보내지 않으므로, 두 번째 실행은
+        전부 0건이 나온다.
+
+        `first_message`는 수집기 경로(`context/slack.py::_merge`)가 채우지만, 이미 적재된
+        행에는 없다. 그래서 여기서는 `documents.elements`의 첫 텍스트 블록에서 되살린다 -
+        그게 transcript의 첫 메시지고, 화자 접두어(`U0BD…: `)는
+        `document_title.slack_excerpt`가 떼어 준다.
+
+        반환값은 통계 dict."""
+        stats = {
+            "sources_scanned": 0,
+            "channels_resolved": 0,
+            "channels_unresolved": 0,
+            "participants_resolved": 0,
+            "first_messages_filled": 0,
+            "sources_updated": 0,
+            "titles_updated": 0,
+        }
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT s.source_id, s.metadata, d.document_id, d.title, d.metadata->>'title',
+                       COALESCE(s.modified_at, s.collected_at),
+                       (SELECT e.value->>'text'
+                          FROM jsonb_array_elements(d.elements) WITH ORDINALITY AS e(value, ord)
+                         WHERE e.value->>'type' = 'text'
+                         ORDER BY e.ord
+                         LIMIT 1),
+                       (SELECT e.value->>'text'
+                          FROM jsonb_array_elements(d.elements) WITH ORDINALITY AS e(value, ord)
+                         WHERE e.value->>'type' = 'heading'
+                         ORDER BY e.ord
+                         LIMIT 1)
+                FROM sources s
+                JOIN documents d ON d.source_id = s.source_id
+                WHERE s.source_type = 'slack'
+                  AND (%s::text IS NULL OR d.project_id = %s)
+                ORDER BY s.source_id
+                """,
+                (project_id, project_id),
+            )
+            rows = await cur.fetchall()
+
+        source_updates: dict[str, dict[str, Any]] = {}
+        title_updates: list[tuple[str, str]] = []
+        unresolved_channels: set[str] = set()
+        for source_id, metadata, document_id, current_title, metadata_title, content_at, first_text, first_heading in rows:
+            stats["sources_scanned"] += 1
+            metadata = dict(metadata or {})
+            enriched = source_updates.get(source_id, metadata)
+            changed = False
+
+            channel = enriched.get("channel")
+            if channel and not enriched.get("channel_name"):
+                name = directory.channel_name(str(channel))
+                if name:
+                    enriched["channel_name"] = name
+                    stats["channels_resolved"] += 1
+                    changed = True
+                else:
+                    unresolved_channels.add(str(channel))
+
+            participants = enriched.get("participants")
+            if isinstance(participants, list) and participants and not enriched.get("participant_names"):
+                names = directory.user_names(participants)
+                # 하나도 못 풀었으면(전부 원시 ID 그대로) 키를 만들지 않는다 - 이름이 있는
+                # 척하는 빈 껍데기를 남기면 다음 실행이 "이미 채워졌다"고 건너뛴다.
+                # 길이를 맞춰 zip하지 않는 이유: `user_names`는 빈 ID를 걸러내므로 결과가
+                # 입력보다 짧을 수 있다. "풀린 이름은 원시 ID 목록에 없다"로 판정하면 된다.
+                if any(name not in participants for name in names):
+                    enriched["participant_names"] = names
+                    stats["participants_resolved"] += 1
+                    changed = True
+
+            if not enriched.get("first_message") and first_text:
+                excerpt_source = directory.resolve_mentions(first_text)
+                excerpt_source = " ".join(str(excerpt_source).split())
+                if excerpt_source:
+                    enriched["first_message"] = excerpt_source[:_SLACK_FIRST_MESSAGE_CHARS]
+                    stats["first_messages_filled"] += 1
+                    changed = True
+
+            if changed:
+                source_updates[source_id] = enriched
+
+            title = derive_document_title(
+                metadata_title=metadata_title,
+                source_type="slack",
+                source_metadata=enriched,
+                content_at=content_at,
+                first_heading=first_heading,
+            )
+            if title is not None and title != current_title:
+                title_updates.append((title, document_id))
+
+        stats["channels_unresolved"] = len(unresolved_channels)
+        if source_updates:
+            async with self.conn.cursor() as cur:
+                await cur.executemany(
+                    "UPDATE sources SET metadata = %s WHERE source_id = %s",
+                    [(Jsonb(value), source_id) for source_id, value in source_updates.items()],
+                )
+            stats["sources_updated"] = len(source_updates)
+        if title_updates:
+            async with self.conn.cursor() as cur:
+                await cur.executemany(
+                    "UPDATE documents SET title = %s WHERE document_id = %s", title_updates
+                )
+            stats["titles_updated"] = len(title_updates)
+        return stats
+
     async def normalize_unicode_text(self, project_id: str | None = None) -> tuple[int, int]:
         """이미 저장된 `documents.title` / `chunks.text` 중 NFC가 아닌 행을 NFC로 고친다
         (`knowledge-forge db normalize-unicode`). 적재 경로에 NFC를 건 뒤 남는 과거 데이터를
@@ -1707,6 +1845,11 @@ class PostgresStore:
 # stricter 0.5 because a long text covers a short query's trigrams almost
 # by accident.
 _TITLE_SIMILARITY_THRESHOLD = 0.3
+# `backfill_slack_display_names`가 `sources.metadata.first_message`에 실어 두는 원문 길이 상한.
+# `context/slack.py::_FIRST_MESSAGE_CHARS`와 같은 값이어야 한다 - 수집 경로와 백필 경로가
+# 같은 모양의 메타데이터를 남겨야 `db backfill-titles --overwrite`가 두 경로에서 같은 제목을
+# 낸다. (상수를 import하지 않는 이유: 스토리지 계층이 context 계층을 참조하면 의존이 뒤집힌다.)
+_SLACK_FIRST_MESSAGE_CHARS = 400
 _CHUNK_SIMILARITY_THRESHOLD = 0.5
 # Cap on how many whitespace tokens the all-tokens tier ANDs together - past
 # this a query is a sentence, not a name, and belongs to vector_search.

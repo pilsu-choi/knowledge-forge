@@ -16,7 +16,7 @@ from knowledge_forge.collectors.saas.base import SaaSAuthConfig
 from knowledge_forge.collectors.saas.gdrive import GoogleDriveCollector
 from knowledge_forge.collectors.saas.gmail import GmailCollector
 from knowledge_forge.collectors.saas.notion import NotionCollector
-from knowledge_forge.collectors.saas.slack import SlackCollector
+from knowledge_forge.collectors.saas.slack import SlackCollector, SlackDirectory
 from knowledge_forge.config import settings
 
 
@@ -28,7 +28,7 @@ def _load_json_config(value: str) -> dict:
         return json.loads(Path(value).read_text())
 
 
-def build_slack_collector() -> SlackCollector:
+def _slack_config() -> tuple[list[str], dict[str, str]]:
     if not settings.slack_bot_token:
         raise RuntimeError("KF_SLACK_BOT_TOKEN is not set.")
 
@@ -45,6 +45,30 @@ def build_slack_collector() -> SlackCollector:
             "Neither KF_SLACK_CHANNELS nor KF_SLACK_CHANNEL_PROJECT_MAP is set "
             "(comma-separated channel IDs, or a channel-id -> project-id JSON map)."
         )
+    return channels, channel_project_map
+
+
+def build_slack_directory() -> SlackDirectory:
+    """채널/유저 이름 해석기(collectors/saas/slack.py::SlackDirectory).
+    `build_slack_collector`와 `cli.py::db backfill-slack-names`가 공유한다.
+
+    토큰에 `channels:read`/`users:read` 스코프가 없어 API가 실패하면 SlackDirectory가
+    경고만 남기고 None을 캐시한다. 그 경우 채널은 `KF_SLACK_CHANNEL_PROJECT_MAP`이 주는
+    프로젝트 ID로 떨어지고(원시 채널 ID보다는 질의에 나올 만한 문자열이다), 참여자는 원시
+    유저 ID 그대로 남는다 - 못 푼 것을 푼 척하지 않는다."""
+    channels, channel_project_map = _slack_config()
+    del channels
+
+    from slack_sdk import WebClient
+
+    return SlackDirectory(
+        client=WebClient(token=settings.slack_bot_token),
+        fallback_channel_names=channel_project_map or None,
+    )
+
+
+def build_slack_collector() -> SlackCollector:
+    channels, channel_project_map = _slack_config()
 
     from slack_sdk import WebClient
 
@@ -54,6 +78,7 @@ def build_slack_collector() -> SlackCollector:
         channels=channels,
         auth_config=SaaSAuthConfig(token=settings.slack_bot_token),
         channel_project_map=channel_project_map or None,
+        directory=SlackDirectory(client=client, fallback_channel_names=channel_project_map or None),
     )
 
 

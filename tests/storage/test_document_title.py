@@ -6,7 +6,8 @@ import unicodedata
 from datetime import datetime, timezone
 
 from knowledge_forge.models.document import Heading, TextBlock
-from knowledge_forge.storage.document_title import derive_document_title, first_heading_text
+from knowledge_forge.storage import document_title
+from knowledge_forge.storage.document_title import derive_document_title, first_heading_text, slack_excerpt
 from knowledge_forge.storage.postgres_store import _lexical_snippet, _like_pattern, _token_patterns
 
 _AT = datetime(2026, 8, 11, 9, 18, tzinfo=timezone.utc)
@@ -117,3 +118,52 @@ def test_title_is_truncated_after_normalization():
     title = _derive(source_metadata={"name": long_nfd})
 
     assert title == "한" * 300
+
+
+# --- 슬랙 발췌 (storage/document_title.py::slack_excerpt) --------------------------
+
+
+def test_slack_excerpt_strips_speaker_prefix_emoji_and_link_markup():
+    # 화자 접두어 `U…: `는 백필 경로(documents.elements의 첫 텍스트 블록)에만 붙어 있다.
+    raw = "U0BDNDBHWLV: :pushpin: [투입관리 원장] 실제 투입 MM 입력  요청 <https://x/y|원장 링크>"
+
+    assert slack_excerpt(raw, 200) == "[투입관리 원장] 실제 투입 MM 입력 요청 원장 링크"
+
+
+def test_slack_excerpt_keeps_bare_url_when_the_link_has_no_label():
+    assert slack_excerpt("보세요 <https://git.example/a.git>", 200) == "보세요 https://git.example/a.git"
+
+
+def test_slack_excerpt_returns_none_for_nothing_usable():
+    assert slack_excerpt(None, 200) is None
+    assert slack_excerpt("   ", 200) is None
+    assert slack_excerpt(123, 200) is None
+    # limit 0 = 발췌 끄기. derive_document_title이 이걸로 제목에 발췌를 붙일지 정한다.
+    assert slack_excerpt("아무 메시지", 0) is None
+
+
+def test_slack_title_appends_the_excerpt_when_it_is_enabled(monkeypatch):
+    # 기본값은 0(끔)이다 - 왜 껐는지는 document_title.py의 `_SLACK_EXCERPT_CHARS` 주석 참고.
+    # 켰을 때 조립이 맞는지는 여기서 지킨다.
+    monkeypatch.setattr(document_title, "_SLACK_EXCERPT_CHARS", 40)
+    title = _derive(
+        source_type="slack",
+        source_metadata={"channel": "C1", "channel_name": "general", "first_message": "U0BDNDBHWLV: 3차 인터뷰 체크리스트 파일 전달드립니다"},
+    )
+
+    assert title == "#general 2026-08-11 3차 인터뷰 체크리스트 파일 전달드립니다"
+
+
+def test_slack_title_is_channel_and_date_only_by_default():
+    title = _derive(
+        source_type="slack",
+        source_metadata={"channel": "C1", "channel_name": "general", "first_message": "U0BDNDBHWLV: 어떤 메시지든"},
+    )
+
+    assert title == "#general 2026-08-11"
+
+
+def test_slack_title_survives_a_missing_channel_when_the_excerpt_is_on(monkeypatch):
+    monkeypatch.setattr(document_title, "_SLACK_EXCERPT_CHARS", 40)
+
+    assert _derive(source_type="slack", source_metadata={"first_message": "회의록 공유"}) == "2026-08-11 회의록 공유"

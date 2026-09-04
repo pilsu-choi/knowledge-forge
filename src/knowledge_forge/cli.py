@@ -862,6 +862,85 @@ def db_normalize_unicode(
     typer.echo(f"유니코드 NFC 정규화 완료: 문서 제목 {documents}건, 청크 본문 {chunks}건", err=True)
 
 
+@db_app.command("backfill-slack-names")
+def db_backfill_slack_names(
+    project_id: str | None = typer.Option(
+        None, "--project-id", help="이 프로젝트의 슬랙 문서만 처리한다 (기본: 전체 프로젝트)."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="바꿀 제목 예시만 보여주고 아무것도 쓰지 않는다."),
+) -> None:
+    """이미 적재된 슬랙 문서의 채널 ID/유저 ID를 사람이 읽는 이름으로 풀어
+    `sources.metadata`(`channel_name`/`participant_names`/`first_message`)에 채우고,
+    `documents.title`을 다시 유도한다.
+
+    왜: 슬랙 문서는 제목이 `#C0BGQEQG1L6 2026-09-01`이라 제목 조회가 구조적으로 못 맞는다.
+    v0 골든셋 정답 문서 90건 중 48건이 슬랙인데, 제목 검색으로 닿는 슬랙 정답은 66건 중
+    0건이었다(오프라인 실측). 새 제목은 `#<채널명> <날짜> <첫 메시지 발췌 120자>`다 -
+    조각을 그렇게 고른 근거는 `storage/document_title.py` 주석과 wiki/search-evaluation.md.
+
+    `sources.metadata`와 `documents.title` **두 컬럼만** 쓴다(chunks/embeddings 불변).
+    원시 `channel`/`participants` ID는 지우지 않고 키만 덧붙이므로 재실행하면 0건이 나오는
+    멱등 연산이다. Slack Web API(`conversations.info` 채널당 1회, `users.list` 전체 1회)를
+    쓰므로 `KF_SLACK_BOT_TOKEN`이 필요하다."""
+    database_url = settings.database_url
+    if not database_url:
+        typer.echo("KF_DATABASE_URL이 설정되지 않았습니다.", err=True)
+        raise typer.Exit(1)
+
+    from knowledge_forge.collectors.saas.factory import build_slack_directory
+
+    directory = build_slack_directory()
+
+    async def _run() -> dict:
+        async with PipelineStore(database_url, settings.data_dir) as store:
+            if dry_run:
+                return await _preview_slack_titles(store, directory, project_id)
+            return await store.backfill_slack_display_names(directory, project_id)
+
+    stats = asyncio.run(_run())
+    if dry_run:
+        for before, after in stats["samples"]:
+            typer.echo(f"  {before}\n   -> {after}", err=True)
+        typer.echo(f"바뀔 제목 {stats['titles_updated']}건 / 스캔 {stats['sources_scanned']}건 (dry-run)", err=True)
+        return
+    typer.echo(
+        f"슬랙 이름 백필 완료: 소스 {stats['sources_scanned']}건 스캔, "
+        f"채널명 {stats['channels_resolved']}건 해석(못 푼 채널 {stats['channels_unresolved']}개), "
+        f"참여자 이름 {stats['participants_resolved']}건, 첫 메시지 {stats['first_messages_filled']}건, "
+        f"메타데이터 {stats['sources_updated']}건 갱신, 제목 {stats['titles_updated']}건 갱신",
+        err=True,
+    )
+
+
+async def _preview_slack_titles(store, directory, project_id: str | None) -> dict:
+    """`--dry-run`용. 트랜잭션을 열어 실제 백필을 돌린 뒤 **롤백**한다 - 미리보기 전용으로
+    제목 유도 로직을 한 벌 더 쓰면 두 벌이 서로 어긋나는 게 시간 문제라서, 진짜 경로를
+    그대로 돌리고 되돌린다."""
+    before: dict[str, str | None] = {}
+    async with store.conn.cursor() as cur:
+        await cur.execute(
+            "SELECT d.document_id, d.title FROM documents d JOIN sources s ON s.source_id = d.source_id "
+            "WHERE s.source_type = 'slack' AND (%s::text IS NULL OR d.project_id = %s)",
+            (project_id, project_id),
+        )
+        before = {row[0]: row[1] for row in await cur.fetchall()}
+    async with store.conn.transaction(force_rollback=True):
+        stats = await store.backfill_slack_display_names(directory, project_id)
+        async with store.conn.cursor() as cur:
+            await cur.execute(
+                "SELECT d.document_id, d.title FROM documents d JOIN sources s ON s.source_id = d.source_id "
+                "WHERE s.source_type = 'slack' AND (%s::text IS NULL OR d.project_id = %s) LIMIT 200",
+                (project_id, project_id),
+            )
+            samples = [
+                (before.get(row[0]), row[1])
+                for row in await cur.fetchall()
+                if before.get(row[0]) != row[1]
+            ][:10]
+    stats["samples"] = samples
+    return stats
+
+
 @db_app.command("backfill-links")
 def db_backfill_links(
     project_id: str | None = typer.Option(
