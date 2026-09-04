@@ -1012,3 +1012,87 @@ google_drive 3).
 도달하고, 그때 답이 통째로 비는 것을 막는다. **조건이 낡은 대리 지표라는 사실 자체는 코드
 주석에 박아 두었다** - 나중에 arm 라우팅을 건드리는 사람이 이 분기가 조용히 되살아나는 것을
 알아채야 하기 때문이다.
+## 제목은 문서 종류 라벨이 아니다 — `title_types` 술어 제거 (2026-09-05)
+
+`_metadata_filter_where`는 `document_types` 중 소스로 매핑되지 않는 라벨("회의록"/"매뉴얼"/
+"보고서"/"가이드"…)을 `d.title ILIKE '%매뉴얼%'` 술어로 걸었다. **이 술어는 제목을 타입
+라벨로 쓴다는 잘못된 전제 위에 있었다.** 제목은 사람이 읽는 문자열이라, 거기에 본문이 조금이라도
+섞이는 순간 오탐이 된다. 게다가 그 필터는 `_is_source_hint_only_filter`가 "믿을 만한 구조적
+술어"로 분류하는 쪽이라 **교집합**을 잡는다 — 오탐 1건이 관련도 랭킹 전체를 대체한다.
+
+실측 붕괴(`fix/slack-channel-names`가 슬랙 제목에 첫 메시지 발췌 120자를 붙였을 때):
+
+| 질의 | 지표 | 발췌 전 | 발췌 후 | 원인 |
+|---|---|---|---|---|
+| `v0-whole_document_summary-003` | ndcg@10 | 0.631 | 0.000 | `%매뉴얼%`에 "[done] 운영 매뉴얼 초안" 스레드가 걸림 |
+| `v0-negative-001` | none_correct | 1.000 | 0.000 | `%가이드%`("Kubernetes 클러스터 구성 가이드") |
+
+**negative 질의까지 깨진다**는 것이 이 결함의 성격을 가장 잘 보여준다: 정답이 없어야 하는
+질의에 오탐 하나가 교집합을 잡아 답으로 나갔다.
+
+### "신뢰할 수 있는 출처로 옮긴다"를 먼저 시도했고 기각한 근거
+
+개발 DB(358 docs) 실측:
+
+- **`documents.metadata`에 `document_type` 키가 없다.** 358행 전부. 있는 키는
+  `created_at`/`page_count`/`author`/`language`/`title`/`version_*`뿐이다.
+- **`knowledge_objects.document_type`은 있지만 하드 필터의 입력으로 못 쓴다.** LLM이 매번
+  자유 문자열로 채운 값이라 5107행에 서로 다른 값이 **571가지**다("Slack 메시지" 33 /
+  "Slack 대화" 23 / "Slack 메시지 스레드" 17 / "슬랙 메시지" 3 / "Slack message" 7 /
+  "guide" 4 / "guide or manual" 2 …). `DOCUMENT_TYPE_MARKERS`의 8개 라벨로 정규화할 방법이
+  없고, 정규화한들 KO가 붙은 문서는 **263/358**뿐이라 나머지 95건이 "타입 불명"이 아니라
+  "타입 불일치"로 하드 필터에서 **통째로 사라진다.**
+
+그래서 술어 자체를 없애고, `_is_source_hint_only_filter`의 "구조적 술어" 목록에서도 뺐다
+(둘은 1:1 대응이라 같이 고쳐야 한다). 함께 `_has_metadata_predicate` 가드를 넣었다 —
+`suggest_strategies`는 `document_types`만 있어도 metadata_filter를 고르는데, 이제 그 라벨은
+술어를 만들지 않으므로 WHERE가 `project_id` 하나뿐인 질의가 코퍼스 전체를 긁어와 아무것도
+안 거르는 교집합을 잡는 일이 생긴다. 그런 실행은 아예 건너뛰고 `skipped="no_predicate"`를
+step에 남긴다.
+
+**잃은 것은 하드 필터로서의 타입 조건뿐이다.** 타입 라벨은 그동안에도 `semantic_query`를 통해
+제목/본문/벡터 arm에 들어가고 있었다("회의록 요약해줘"의 "회의록"은 `document_search`가 본다).
+남은 과제: 타입 라벨을 **관련도 신호**로 쓰는 길(예: KO `document_type`을 임베딩 텍스트에
+섞기)은 열려 있다 — 하드 필터가 아니므로 커버리지 구멍이 치명적이지 않다.
+
+## term fallback 게이트: "히트가 있나"가 아니라 "히트가 강한가" (2026-09-05)
+
+`keyword_arm`은 semantic_query 통째로 건 제목/본문 조회가 **빈손일 때만** term 단위
+fallback으로 내려갔다(`if not title_hits and not body_hits`). 그래서 **약한 1히트**가 게이트를
+닫아 그 1건이 결과 전부가 됐다 — `v0-multihop-002` 1.000 → 0.613(기준선에서는 0히트라
+fallback이 돌아 gmail 정답까지 데려왔는데, 슬랙 제목에 발췌가 붙어 1건이 잡히자 게이트가 닫혔다).
+
+게이트를 **없애면 안 된다**: 항상 fallback을 돌리면 제목이 정확히 맞은 질의를 term 히트가
+밀어낸다(`v0-navigational-002` "codex README" 1.000 → 0.356). 그래서 판정 기준만 바꿨다.
+
+```python
+arm_documents = len({hit["document_id"] for hit in [*title_hits, *body_hits] if hit.get("document_id")})
+if self.anchor is None and arm_documents < _ARM_STRONG_DOCUMENTS:   # = 2
+    await self._term_fallback()
+```
+
+- **히트 수가 아니라 문서 수**를 센다. 한 문서의 청크 여러 개는 "여러 후보"가 아니다.
+- **임계는 일부러 최소값(2)**이다. 서로 다른 문서 1건은 애초에 랭킹이 아니다(비교 대상이
+  없어 RRF가 할 일이 없고, `lexical_search`의 3단 매칭에서 그 1건은 대개 마지막
+  `word_similarity` 티어로 겨우 걸린 것이다). 2건 이상이면 이미 순서가 있는 후보 집합이라,
+  거기에 term별 소스 열 개를 얹으면 **약한 히트를 살리려다 강한 히트를 밀어낸다.**
+  이 프로젝트가 같은 실패 양식을 세 번 밟았다: `latest` 후처리(후보가 늘수록 나빠짐),
+  게이트 없는 링크 확장(`feature/links-ranking`: `whole_document_summary-003` 0.631→0.000,
+  `factoid-003` 1.000→0.289), 그리고 무조건 term fallback. **RRF 표를 문서 자신의 관련도
+  순위와 무관한 크기로 주면 랭킹이 붕괴한다** — 임계를 올리자는 제안은 이 실측을 먼저 봐라.
+- **anchor를 먼저 본다.** 제목 substring 완전 일치는 가장 강한 신호인데, `_narrow_to_anchor`가
+  히트를 그 문서 하나로 좁히므로 문서 수는 1이 된다. anchor 가드가 없으면
+  `v0-navigational-002`가 그대로 회귀한다.
+
+## `participant_names`: 슬랙 참여자 이름 (2026-09-05)
+
+`_metadata_filter_where._person()`은 `sources.metadata->>'participants'`와
+`documents.metadata->>'author'`만 봤다. `participants`의 모양은 소스마다 다르다 — gmail은
+`"이름 <주소>"` 문자열이라 이름이 그대로 들어 있지만, **slack은 유저 ID 배열(`["U0…"]`)이라
+사람 이름이 절대 닿지 않는다.** `SlackDirectory`가 그 ID를 풀어 넣은
+`sources.metadata.participant_names`에 OR를 하나 얹었다(원시 `participants`는 스레드
+그룹핑·링크 백필의 조인 키라 그대로 남는다).
+
+개발 DB 확인: `sources.metadata.participant_names`는 slack 소스 **197/197행 전부** 채워져
+있다(`["intel", "백상이(패트릭)", "안민균(베르)"]` 같은 모양). 즉 데이터는 이미 있고 코드만
+안 보고 있었다.
