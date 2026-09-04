@@ -708,5 +708,8 @@ def run_to_dict(run: EvalRun) -> dict:
     """JSON-ready dump including the (otherwise excluded) query rows - the
     shape `eval-ir --json` writes."""
     payload = run.model_dump(mode="json")
-    payload["queries"] = [q.model_dump(mode="json") for q in run.queries]
+    # created_at/updated_at은 DB가 채우는 값이라 방금 돈 run의 메모리 객체에는
+    # 항상 None이다. 항상 null인 키를 파일에 남기면 "기록 시각이 없다"로 잘못
+    # 읽히므로 아예 뺀다 - 이 run의 시각은 started_at/finished_at이다.
+    payload["queries"] = [q.model_dump(mode="json", exclude={"created_at", "updated_at"}) for q in run.queries]
     return payload

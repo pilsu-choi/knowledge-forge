@@ -147,6 +147,47 @@ async def test_run_queries_roundtrip_and_cascade():
         assert await store.list_eval_run_queries(run_id) == []
 
 
+async def test_query_timestamps_are_db_filled_and_updated_at_bumps_on_reupsert():
+    """created_at/updated_at은 러너가 아니라 DB가 채운다. 재저장(같은 run 안의
+    재시도/부분 저장)은 created_at을 보존하고 updated_at만 민다."""
+    run_id = _rid()
+    row = EvalRunQuery(run_id=run_id, query_id="q-a", query_text="a?", primary_type="factoid", types=["factoid"])
+    async with EvalStore(DSN) as store:
+        await store.save_eval_run(_run(run_id))
+        await store.save_eval_run_queries(run_id, [row])
+
+        first = (await store.list_eval_run_queries(run_id))[0]
+        assert first.created_at is not None and first.updated_at is not None
+        assert first.created_at == first.updated_at
+
+        row.metrics = {"mrr": 0.5}
+        await store.save_eval_run_queries(run_id, [row])
+        second = (await store.list_eval_run_queries(run_id))[0]
+        assert second.created_at == first.created_at
+        assert second.updated_at > first.updated_at
+
+        # 저장 쪽 모델은 시각을 들고 있지 않다(DB가 주인) - 넘겨도 무시된다.
+        assert row.created_at is None and row.updated_at is None
+
+
+async def test_pre_timestamp_query_rows_get_a_default_not_null():
+    """컬럼 이전에 쌓인 행 = 시각을 모르는 INSERT. NOT NULL DEFAULT라 읽기는
+    깨지지 않지만, 그 값은 기록 시각이 아니라 마이그레이션 시각이다."""
+    run_id = _rid()
+    async with EvalStore(DSN) as store:
+        await store.save_eval_run(_run(run_id))
+        await store.conn.execute(
+            """
+            INSERT INTO eval_run_query (run_id, query_id, query_text, primary_type, types)
+            VALUES (%s, 'q-legacy', 'legacy?', 'factoid', %s)
+            """,
+            (run_id, Jsonb(["factoid"])),
+        )
+        legacy = (await store.list_eval_run_queries(run_id))[0]
+        assert legacy.query_id == "q-legacy"
+        assert legacy.created_at is not None and legacy.updated_at is not None
+
+
 async def test_dirty_files_roundtrip_and_distinguishes_same_commit_runs():
     """같은 커밋에서 잰 두 run이 표 위에서 구분돼야 한다 - b470057 하나에
     ndcg@10 0.736(ablate-vector)과 0.477(purity-vector-only)이 같은 git_commit으로

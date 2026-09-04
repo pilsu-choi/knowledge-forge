@@ -383,5 +383,14 @@ CREATE TABLE IF NOT EXISTS eval_run_query (
     -- Retrieval raised for this query; the run continues and the query
     -- simply contributes no metrics (it is listed in summary.errors).
     error               TEXT,
+    -- DB가 채운다(러너가 넘기지 않는다). 같은 (run_id, query_id)를 다시 쓰는
+    -- 건 재실행이 아니라 같은 run 안의 재시도/부분 저장이므로 created_at은
+    -- 최초 기록, updated_at은 마지막 upsert 시각이다.
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (run_id, query_id)
 );
+-- 기존 DB용. 이 컬럼 이전의 옛 행은 둘 다 실제 기록 시각이 아니라 마이그레이션
+-- 시각을 갖는다 - 그 run의 진짜 시각은 eval_run.started_at을 봐야 한다.
+ALTER TABLE eval_run_query ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE eval_run_query ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();

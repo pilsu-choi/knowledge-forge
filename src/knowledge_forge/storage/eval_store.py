@@ -86,6 +86,10 @@ class EvalRunQuery(BaseModel):
     steps: list[dict] = Field(default_factory=list)
     elapsed_ms: float = 0.0
     error: str | None = None
+    # DB가 채우는 감사 시각(스키마의 DEFAULT now() / upsert의 now()). 저장할
+    # 때는 넘기지 않으므로 새로 만든 객체에서는 None이고, 읽어 온 행에서만 값이 있다.
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class EvalRun(BaseModel):
@@ -124,10 +128,12 @@ _RUN_COLUMNS = (
     "run_id, golden_version, golden_path, project_id, config, config_hash, index_snapshot, "
     "git_commit, label, started_at, finished_at, summary, dirty_files"
 )
+# INSERT용(러너가 값을 주는 컬럼만). created_at/updated_at은 DB가 채우므로 빠져 있다.
 _RUN_QUERY_COLUMNS = (
     "run_id, query_id, query_text, primary_type, types, ranked_document_ids, scores, predicted_count, "
     "metrics, strategies, steps, elapsed_ms, error"
 )
+_RUN_QUERY_SELECT_COLUMNS = f"{_RUN_QUERY_COLUMNS}, created_at, updated_at"
 
 
 def _row_to_log(row: tuple) -> SearchLog:
@@ -186,6 +192,8 @@ def _row_to_run_query(row: tuple) -> EvalRunQuery:
         steps=row[10],
         elapsed_ms=row[11],
         error=row[12],
+        created_at=row[13],
+        updated_at=row[14],
     )
 
 
@@ -399,7 +407,8 @@ class EvalStore:
                     strategies = EXCLUDED.strategies,
                     steps = EXCLUDED.steps,
                     elapsed_ms = EXCLUDED.elapsed_ms,
-                    error = EXCLUDED.error
+                    error = EXCLUDED.error,
+                    updated_at = now()
                 """,
                 [
                     (
@@ -445,7 +454,7 @@ class EvalStore:
     async def list_eval_run_queries(self, run_id: str) -> list[EvalRunQuery]:
         async with self.conn.cursor() as cur:
             await cur.execute(
-                f"SELECT {_RUN_QUERY_COLUMNS} FROM eval_run_query WHERE run_id = %s ORDER BY query_id",
+                f"SELECT {_RUN_QUERY_SELECT_COLUMNS} FROM eval_run_query WHERE run_id = %s ORDER BY query_id",
                 (run_id,),
             )
             rows = await cur.fetchall()
