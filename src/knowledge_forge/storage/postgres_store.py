@@ -5,6 +5,8 @@ so every write here is an idempotent upsert - re-running the pipeline on
 unchanged input is safe to repeat.
 """
 
+import asyncio
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -13,18 +15,22 @@ import psycopg
 from pgvector import Vector
 from psycopg.types.json import Jsonb
 
-from knowledge_forge.models.chunk import Chunk
+from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.document import Document
 from knowledge_forge.models.knowledge_object import (
     DocumentRef,
     Evidence,
     KnowledgeObject,
 )
+from knowledge_forge.models.link import DocumentLink
 from knowledge_forge.models.relation import Relation
 from knowledge_forge.models.source import Source, SourceRef
+from knowledge_forge.storage.document_title import derive_document_title, first_heading_text
 
 if TYPE_CHECKING:
     from knowledge_forge.embedding.base import EmbeddingRecord
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
@@ -41,10 +47,17 @@ class PostgresStore:
     def __init__(self, dsn: str):
         self._dsn = dsn
         self._conn: psycopg.AsyncConnection | None = None
+        # `execute_readonly_query` opens an explicit transaction on the single
+        # shared connection. Two coroutines doing that at once interleave
+        # BEGIN/ROLLBACK and psycopg raises OutOfOrderTransactionNesting, so
+        # that one method serializes on this lock. Everything else on the
+        # store runs in autocommit and needs no lock.
+        self._tx_lock = asyncio.Lock()
 
     async def connect(self) -> "PostgresStore":
         self._conn = await psycopg.AsyncConnection.connect(self._dsn, autocommit=True)
         await self._register_vector_types()
+        await self._configure_ann_search()
         return self
 
     async def _register_vector_types(self) -> None:
@@ -63,6 +76,39 @@ class PostgresStore:
             await register_vector_async(self.conn)
         except psycopg.ProgrammingError:
             pass
+
+    async def _configure_ann_search(self) -> None:
+        """Turns pgvector's iterative index scan on for this session - without
+        it `search_by_embedding` silently loses rows whenever a filter
+        (project_id / target_kind / embedding_model / since-until) selects a
+        minority of `knowledge_object_embeddings`.
+
+        Why: an HNSW index scan walks the graph in distance order and hands
+        the executor roughly `hnsw.ef_search` (40) rows; the WHERE clause is
+        applied *after* that, and the scan then reports "no more rows"
+        instead of walking further. So a query scoped to a small project can
+        come back with zero hits even though matching rows exist - measured
+        on this schema: 4000 rows in one project + 3 rows in another,
+        `search_by_embedding(..., project_id=<the small one>)` returned 0
+        with the default `hnsw.iterative_scan = off` and the correct 3 with
+        this setting (see wiki/search-architecture.md "벡터 경로"). It is not
+        a hypothetical: the executor filters by project_id on every call, and
+        `search/temporal.py` adds since/until on top.
+
+        `strict_order` rather than `relaxed_order`: the rows must come back in
+        exact distance order, because `search_by_embedding` turns the
+        distance into the `score` every caller ranks on. Work stays bounded by
+        pgvector's own `hnsw.max_scan_tuples` (20000 by default), and an
+        unfiltered query is unaffected (measured: same latency either way).
+
+        Tolerates the GUC not existing (pgvector < 0.8) the same way
+        `_register_vector_types` tolerates the extension not existing - a
+        missing knob degrades to today's behaviour, it must not make
+        `connect()` fail."""
+        try:
+            await self.conn.execute("SET hnsw.iterative_scan = strict_order")
+        except psycopg.Error:  # pragma: no cover - only on pgvector < 0.8
+            logger.warning("hnsw.iterative_scan is unavailable - filtered vector search may lose hits")
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -88,6 +134,7 @@ class PostgresStore:
         # a no-op if this is the first time this database has ever seen it,
         # so retry it now that the type genuinely exists.
         await self._register_vector_types()
+        await self._configure_ann_search()
 
     async def save_source(self, source: Source, raw_path: str | None) -> None:
         await self.conn.execute(
@@ -118,19 +165,43 @@ class PostgresStore:
             ),
         )
 
+    async def _derive_title_for(self, document: Document) -> str | None:
+        """`documents.title` for `document` (storage/document_title.py). The
+        `Document` model only carries a `SourceRef` (id/type/uri), not the
+        source's metadata where the Drive file name / mail subject live, so
+        this reads the already-saved `sources` row (pipeline.py always
+        `record_source`s before `record_document`s). A missing source row
+        isn't an error here - the FK on the INSERT will report it - it just
+        means only the parser title / first heading are available."""
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                "SELECT source_type, metadata, COALESCE(modified_at, collected_at) FROM sources WHERE source_id = %s",
+                (document.source.source_id,),
+            )
+            row = await cur.fetchone()
+        return derive_document_title(
+            metadata_title=document.metadata.title,
+            source_type=row[0] if row else document.source.source_type.value,
+            source_metadata=row[1] if row else None,
+            content_at=row[2] if row else None,
+            first_heading=first_heading_text(document.elements),
+        )
+
     async def save_document(self, document: Document) -> None:
         now = datetime.now(timezone.utc)
+        title = await self._derive_title_for(document)
         await self.conn.execute(
             """
             INSERT INTO documents (document_id, source_id, elements, metadata, project_id,
-                                    created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                                    created_at, updated_at, title)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (document_id) DO UPDATE SET
                 source_id = EXCLUDED.source_id,
                 elements = EXCLUDED.elements,
                 metadata = EXCLUDED.metadata,
                 project_id = EXCLUDED.project_id,
-                updated_at = EXCLUDED.updated_at
+                updated_at = EXCLUDED.updated_at,
+                title = EXCLUDED.title
             """,
             (
                 document.document_id,
@@ -140,6 +211,7 @@ class PostgresStore:
                 document.source.project_id,
                 now,
                 now,
+                title,
             ),
         )
 
@@ -300,6 +372,52 @@ class PostgresStore:
                 """,
                 rows,
             )
+
+    async def list_chunks_by_document(
+        self, document_id: str, *, hierarchy_level: HierarchyLevel | None = None
+    ) -> list[Chunk]:
+        """Every chunk of one document in reading order (`sequence_index`) -
+        `search/document.py::read_document`'s single storage entry point.
+
+        `hierarchy_level=None` (the default, and what `read_document` uses)
+        returns every level together on purpose: `chunking/adaptive.py` only
+        materializes *leaf* units - an ancestor that got split is never
+        itself emitted (`parent_chunk_id` is always None today, and
+        `(document_id, sequence_index)` is unique) - so one document's chunks
+        across all levels are a single non-overlapping sequence, and
+        filtering by level would silently drop text (the dev DB's two
+        mixed-level documents are a paragraph+sentence email thread and a
+        chapter+section report). The filter exists for callers that want a
+        single grain (e.g. a future multi-resolution chunk store)."""
+        level = hierarchy_level.value if hierarchy_level is not None else None
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT chunk_id, document_id, source_id, hierarchy_level, sequence_index,
+                       parent_chunk_id, text, token_count, element_ids, page_start, page_end
+                FROM chunks
+                WHERE document_id = %s
+                  AND (%s::text IS NULL OR hierarchy_level = %s)
+                ORDER BY sequence_index
+                """,
+                (document_id, level, level),
+            )
+            rows = await cur.fetchall()
+        return [
+            Chunk(
+                chunk_id=row[0],
+                document_id=row[1],
+                source_id=row[2],
+                hierarchy_level=row[3],
+                sequence_index=row[4],
+                parent_chunk_id=row[5],
+                text=row[6],
+                token_count=row[7],
+                element_ids=row[8],
+                page_range=(row[9], row[10]) if row[9] is not None and row[10] is not None else None,
+            )
+            for row in rows
+        ]
 
     async def save_knowledge_objects(self, objects: list[KnowledgeObject]) -> None:
         rows: list[tuple[Any, ...]] = [
@@ -717,6 +835,86 @@ class PostgresStore:
             for row in rows
         ]
 
+    async def embedding_coverage(self, embedding_model: str, project_id: str | None = None) -> dict[str, Any]:
+        """벡터 검색이 왜 0히트인지 사람이 30초 안에 판정하기 위한 읽기 전용 진단.
+
+        벡터 경로가 조용히 실패하는 방식은 셋뿐인데(임베딩 행이 없다 / 모델 이름이 저장할
+        때와 검색할 때 다르다 / 다른 프로젝트에만 있다) 셋 다 에러도 경고도 없이 "결과 없음"과
+        구분되지 않는다(`search_by_embedding`의 docstring). 그래서 셋을 한 번에 보여준다:
+
+        - `rows_by_model_and_kind`: **모델 필터를 걸지 않은** 실제 적재 현황
+          `{embedding_model: {target_kind: n}}`. `embedding_model` 인자로 넘긴 이름이 여기
+          없으면 그게 바로 원인이다 - 이름이 한 글자만 달라도 검색은 0행이다
+          (`WHERE e.embedding_model = %s`).
+        - `chunks_total`/`chunks_embedded`, `knowledge_objects_total`/`knowledge_objects_embedded`:
+          그 모델 기준 grain별 커버리지(백필이 어디까지 갔는지).
+        - `dimensions`: 실제로 저장된 벡터 차원 집합. 스키마가 `vector(1536)` 고정이라 다른
+          차원은 애초에 INSERT가 실패하지만, 모델을 바꿨을 때 "왜 적재가 멈췄나"를 여기서 본다.
+
+        `project_id`가 None이면 전체. 순수 SELECT라 `execute_readonly_query`와 달리 트랜잭션을
+        열지 않는다(autocommit 그대로)."""
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT embedding_model, target_kind, count(*)
+                FROM knowledge_object_embeddings
+                WHERE (%s::text IS NULL OR project_id = %s)
+                GROUP BY embedding_model, target_kind
+                ORDER BY embedding_model, target_kind
+                """,
+                (project_id, project_id),
+            )
+            by_model: dict[str, dict[str, int]] = {}
+            for model, kind, n in await cur.fetchall():
+                by_model.setdefault(model, {})[kind] = n
+
+            await cur.execute(
+                """
+                SELECT count(*), count(e.embedding_id)
+                FROM chunks c
+                JOIN documents d ON d.document_id = c.document_id
+                LEFT JOIN knowledge_object_embeddings e
+                  ON e.chunk_id = c.chunk_id AND e.embedding_model = %s
+                WHERE (%s::text IS NULL OR d.project_id = %s)
+                """,
+                (embedding_model, project_id, project_id),
+            )
+            chunks_total, chunks_embedded = await cur.fetchone() or (0, 0)
+
+            await cur.execute(
+                """
+                SELECT count(*), count(e.embedding_id)
+                FROM knowledge_objects ko
+                JOIN documents d ON d.document_id = ko.document_id
+                LEFT JOIN knowledge_object_embeddings e
+                  ON e.knowledge_object_id = ko.knowledge_object_id AND e.embedding_model = %s
+                WHERE (%s::text IS NULL OR d.project_id = %s)
+                """,
+                (embedding_model, project_id, project_id),
+            )
+            ko_total, ko_embedded = await cur.fetchone() or (0, 0)
+
+            await cur.execute(
+                """
+                SELECT DISTINCT vector_dims(embedding)
+                FROM knowledge_object_embeddings
+                WHERE embedding_model = %s AND (%s::text IS NULL OR project_id = %s)
+                """,
+                (embedding_model, project_id, project_id),
+            )
+            dimensions = sorted(row[0] for row in await cur.fetchall())
+
+        return {
+            "embedding_model": embedding_model,
+            "project_id": project_id,
+            "rows_by_model_and_kind": by_model,
+            "chunks_total": chunks_total,
+            "chunks_embedded": chunks_embedded,
+            "knowledge_objects_total": ko_total,
+            "knowledge_objects_embedded": ko_embedded,
+            "dimensions": dimensions,
+        }
+
     async def search_by_embedding(
         self,
         embedding: list[float],
@@ -866,10 +1064,539 @@ class PostgresStore:
         literal-interpolation safe (whatever `limit` was, only its digits
         ever reach the query)."""
         wrapped = f"SELECT * FROM (\n{sql}\n) AS sql_search LIMIT {int(limit)}"
-        async with self.conn.transaction(force_rollback=True):
-            await self.conn.execute("SET TRANSACTION READ ONLY")
-            async with self.conn.cursor() as cur:
-                await cur.execute(wrapped)
-                rows = await cur.fetchall()
-                columns = [d.name for d in cur.description] if cur.description else []
+        async with self._tx_lock:
+            async with self.conn.transaction(force_rollback=True):
+                await self.conn.execute("SET TRANSACTION READ ONLY")
+                async with self.conn.cursor() as cur:
+                    await cur.execute(wrapped)
+                    rows = await cur.fetchall()
+                    columns = [d.name for d in cur.description] if cur.description else []
         return rows, columns
+
+    async def backfill_document_titles(self, project_id: str | None = None, *, overwrite: bool = False) -> int:
+        """Fills `documents.title` for rows written before the column existed
+        (`knowledge-forge db backfill-titles`), using the same
+        `derive_document_title()` `save_document` applies at write time, so
+        a backfilled row and a freshly ingested one can never disagree on
+        how a title is chosen. Only `title IS NULL` rows are touched unless
+        `overwrite=True` (re-derive everything - for after a change to the
+        derivation rules). The first heading is pulled out in SQL (`WITH
+        ORDINALITY` keeps document order) so the whole `elements` blob is
+        never shipped to Python just to read one string. `updated_at` is
+        deliberately left alone: it tracks content revisions, and a title
+        fill changes nothing the content-hash/versioning logic cares about.
+        Returns how many rows received a non-NULL title."""
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT d.document_id, d.metadata->>'title', s.source_type, s.metadata,
+                       COALESCE(s.modified_at, s.collected_at),
+                       (SELECT e.value->>'text'
+                          FROM jsonb_array_elements(d.elements) WITH ORDINALITY AS e(value, ord)
+                         WHERE e.value->>'type' = 'heading'
+                         ORDER BY e.ord
+                         LIMIT 1)
+                FROM documents d
+                JOIN sources s ON s.source_id = d.source_id
+                WHERE (%s::text IS NULL OR d.project_id = %s)
+                  AND (%s::boolean OR d.title IS NULL)
+                """,
+                (project_id, project_id, overwrite),
+            )
+            rows = await cur.fetchall()
+
+        updates: list[tuple[str, str]] = []
+        for document_id, metadata_title, source_type, source_metadata, content_at, first_heading in rows:
+            title = derive_document_title(
+                metadata_title=metadata_title,
+                source_type=source_type,
+                source_metadata=source_metadata,
+                content_at=content_at,
+                first_heading=first_heading,
+            )
+            if title is not None:
+                updates.append((title, document_id))
+        if not updates:
+            return 0
+        async with self.conn.cursor() as cur:
+            await cur.executemany("UPDATE documents SET title = %s WHERE document_id = %s", updates)
+        return len(updates)
+
+    async def search_documents_by_title(
+        self,
+        query: str,
+        *,
+        project_id: str | None = None,
+        source_type: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Title/file-name lookup over `documents.title` (search/service.py::
+        document_search) for navigational/ambiguous queries - "2025_SH_업무_
+        보고서 찾아줘", "SH 보고서" - that need string matching, not an
+        embedding. Three match tiers, ranked in this order and each a
+        pg_trgm-backed predicate on the one indexed column:
+
+        1. whole-query substring (`title ILIKE '%q%'`) - the user typed (part
+           of) the exact name;
+        2. every whitespace token a substring (`ILIKE ALL(...)`) - "SH 보고서"
+           against "2025_SH_업무_보고서.pdf", where the tokens are present but
+           not adjacent;
+        3. `word_similarity(q, title) >= _TITLE_SIMILARITY_THRESHOLD` - fuzzy
+           fallback for typos/partial words. `word_similarity` rather than
+           plain `similarity`: it asks "how much of the *query* is covered by
+           the title", so a short query against a long file name still scores
+           high (0.7 for "SH 보고서", vs 0.37 with `similarity`), which is the
+           question a title search is actually asking.
+
+        `score` is 1.0 for tier 1, `0.5 + sim/2` for tier 2 and the raw
+        similarity for tier 3, so it stays in [0, 1] and monotonic with the
+        tiers. `since`/`until` filter on `COALESCE(s.modified_at,
+        s.collected_at)` - the same real-content timestamp `search_by_embedding`
+        uses (its docstring explains why not a pipeline timestamp)."""
+        pattern = _like_pattern(query)
+        token_patterns = _token_patterns(query)
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT d.document_id, d.title, d.source_id, s.source_type, s.uri, s.modified_at,
+                       d.project_id, COALESCE(s.modified_at, s.collected_at) AS content_at,
+                       (d.title ILIKE %s) AS is_substring,
+                       (d.title ILIKE ALL(%s::text[])) AS all_tokens,
+                       word_similarity(%s, d.title) AS sim
+                FROM documents d
+                JOIN sources s ON s.source_id = d.source_id
+                WHERE d.title IS NOT NULL
+                  AND (d.title ILIKE %s OR d.title ILIKE ALL(%s::text[]) OR word_similarity(%s, d.title) >= %s)
+                  AND (%s::text IS NULL OR d.project_id = %s)
+                  AND (%s::text IS NULL OR s.source_type = %s)
+                  AND (%s::timestamptz IS NULL OR COALESCE(s.modified_at, s.collected_at) >= %s)
+                  AND (%s::timestamptz IS NULL OR COALESCE(s.modified_at, s.collected_at) < %s)
+                ORDER BY is_substring DESC, all_tokens DESC, sim DESC, d.title, d.document_id
+                LIMIT %s
+                """,
+                (
+                    pattern,
+                    token_patterns,
+                    query,
+                    pattern,
+                    token_patterns,
+                    query,
+                    _TITLE_SIMILARITY_THRESHOLD,
+                    project_id,
+                    project_id,
+                    source_type,
+                    source_type,
+                    since,
+                    since,
+                    until,
+                    until,
+                    limit,
+                ),
+            )
+            rows = await cur.fetchall()
+
+        hits: list[dict[str, Any]] = []
+        for row in rows:
+            is_substring, all_tokens, sim = bool(row[8]), bool(row[9]), float(row[10])
+            if is_substring:
+                score = 1.0
+            elif all_tokens:
+                score = 0.5 + sim / 2
+            else:
+                score = sim
+            hits.append(
+                {
+                    "target_kind": "document",
+                    "document_id": row[0],
+                    "title": row[1],
+                    "source_id": row[2],
+                    "source_type": row[3],
+                    "uri": row[4],
+                    "modified_at": row[5].isoformat() if row[5] is not None else None,
+                    "project_id": row[6],
+                    "content_at": row[7].isoformat(),
+                    "score": score,
+                }
+            )
+        return hits
+
+    async def search_chunks_lexical(
+        self,
+        query: str,
+        *,
+        project_id: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Substring/trigram match over `chunks.text` (search/service.py::
+        lexical_search) - the exact-identifier leg ("ERR_CONNECTION_RESET",
+        a ticket id, a quoted phrase) that `vector_search` structurally can't
+        do (an id has no meaning for an embedding to be near). Same tiers as
+        `search_documents_by_title` (substring -> all tokens -> fuzzy) with a
+        higher fuzzy bar (`_CHUNK_SIMILARITY_THRESHOLD`): chunk bodies are
+        long, so a low `word_similarity` matches almost anything.
+
+        Hits use the same key set as `search_by_embedding`'s chunk-grain rows
+        (`target_kind='chunk'`, `document_id`, `chunk_id`, `summary`, `score`,
+        ...) so `search/rerank.py` and the agent can treat the two
+        interchangeably, plus `title`/`source_type`/`uri`/`modified_at` from
+        the joined document/source. `summary` is a window of
+        `_CHUNK_HIT_SUMMARY_CHARS` around the first match rather than the head
+        of the chunk (the match is usually deep in a long chunk, and the head
+        would show nothing relevant). The fuzzy tier calls
+        `word_similarity()` per row instead of the index-backed `<%` operator
+        because that operator reads its threshold from a session GUC; at the
+        current table sizes the explicit function call is fast enough, and
+        the trigram index still serves the `ILIKE` tiers."""
+        pattern = _like_pattern(query)
+        token_patterns = _token_patterns(query)
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT c.chunk_id, c.document_id, c.source_id, c.hierarchy_level, c.sequence_index, c.text,
+                       d.title, d.project_id, s.source_type, s.uri, s.modified_at,
+                       COALESCE(s.modified_at, s.collected_at) AS content_at,
+                       (c.text ILIKE %s) AS is_substring,
+                       word_similarity(%s, c.text) AS sim
+                FROM chunks c
+                JOIN documents d ON d.document_id = c.document_id
+                JOIN sources s ON s.source_id = d.source_id
+                WHERE (c.text ILIKE %s OR c.text ILIKE ALL(%s::text[]) OR word_similarity(%s, c.text) >= %s)
+                  AND (%s::text IS NULL OR d.project_id = %s)
+                  AND (%s::timestamptz IS NULL OR COALESCE(s.modified_at, s.collected_at) >= %s)
+                  AND (%s::timestamptz IS NULL OR COALESCE(s.modified_at, s.collected_at) < %s)
+                ORDER BY is_substring DESC, sim DESC, c.document_id, c.sequence_index
+                LIMIT %s
+                """,
+                (
+                    pattern,
+                    query,
+                    pattern,
+                    token_patterns,
+                    query,
+                    _CHUNK_SIMILARITY_THRESHOLD,
+                    project_id,
+                    project_id,
+                    since,
+                    since,
+                    until,
+                    until,
+                    limit,
+                ),
+            )
+            rows = await cur.fetchall()
+
+        return [
+            {
+                "target_kind": "chunk",
+                "knowledge_object_id": None,
+                "chunk_id": row[0],
+                "document_id": row[1],
+                "source_id": row[2],
+                "type": "chunk",
+                "summary": _lexical_snippet(row[5], query, _CHUNK_HIT_SUMMARY_CHARS),
+                "topics": [],
+                "document_type": None,
+                "hierarchy_level": row[3],
+                "sequence_index": row[4],
+                "title": row[6],
+                "project_id": row[7],
+                "source_type": row[8],
+                "uri": row[9],
+                "modified_at": row[10].isoformat() if row[10] is not None else None,
+                "content_at": row[11].isoformat(),
+                "score": 1.0 if row[12] else float(row[13]),
+            }
+            for row in rows
+        ]
+
+    # --- document_links / version families (document_links.py) ---------
+
+    async def save_document_links(self, links: list[DocumentLink]) -> None:
+        rows: list[tuple[Any, ...]] = [
+            (
+                link.link_id,
+                link.from_document_id,
+                link.to_document_id,
+                link.link_type.value,
+                link.confidence,
+                Jsonb(link.metadata),
+                link.created_at,
+            )
+            for link in links
+        ]
+        if not rows:
+            return
+        async with self.conn.cursor() as cur:
+            await cur.executemany(
+                """
+                INSERT INTO document_links (link_id, from_document_id, to_document_id, link_type,
+                                            confidence, metadata, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (link_id) DO UPDATE SET
+                    from_document_id = EXCLUDED.from_document_id,
+                    to_document_id = EXCLUDED.to_document_id,
+                    link_type = EXCLUDED.link_type,
+                    confidence = EXCLUDED.confidence,
+                    metadata = EXCLUDED.metadata
+                """,
+                rows,
+            )
+
+    async def delete_document_links(self, document_ids: list[str], link_type: str) -> int:
+        """Removes every `link_type` edge that *starts* at one of
+        `document_ids` - the relink step (document_links.relink_version_family)
+        rebuilds a family's PREVIOUS_VERSION chain from scratch, and a stale
+        edge from an older run (a version ingested out of order) would
+        otherwise survive next to the new one, since stable link_ids only
+        dedupe identical edges."""
+        if not document_ids:
+            return 0
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                "DELETE FROM document_links WHERE link_type = %s AND from_document_id = ANY(%s)",
+                (link_type, document_ids),
+            )
+            return cur.rowcount
+
+    async def list_document_links(
+        self,
+        document_id: str,
+        *,
+        direction: str = "both",
+        link_type: str | None = None,
+    ) -> list[DocumentLink]:
+        """`direction`: "out" (edges starting at `document_id`), "in"
+        (edges pointing at it) or "both". Ordered by type then created_at
+        so the result is stable across calls."""
+        if direction not in ("out", "in", "both"):
+            raise ValueError(f"direction must be 'out', 'in' or 'both', not {direction!r}")
+        match_out = direction in ("out", "both")
+        match_in = direction in ("in", "both")
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT link_id, from_document_id, to_document_id, link_type, confidence, metadata, created_at
+                FROM document_links
+                WHERE ((%s AND from_document_id = %s) OR (%s AND to_document_id = %s))
+                  AND (%s::text IS NULL OR link_type = %s)
+                ORDER BY link_type, created_at, link_id
+                """,
+                (match_out, document_id, match_in, document_id, link_type, link_type),
+            )
+            rows = await cur.fetchall()
+        return [_document_link_from_row(row) for row in rows]
+
+    async def list_version_family(self, family_key: str, project_id: str) -> list[Document]:
+        """Every document in `project_id` whose metadata.version_family is
+        `family_key`, oldest version first / newest last - ordered in
+        Python by `ingest_version.version_sort_key` (초안 < unmarked < vN
+        < 수정본 < 최종) rather than a SQL ORDER BY, because that ranking
+        is a function of three metadata keys, not a single sortable
+        column. Ties (two unmarked `image.png` uploads) fall back to the
+        row's created_at, then document_id."""
+        from knowledge_forge.ingest_version import version_sort_key
+
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT d.document_id, d.elements, d.metadata, d.created_at, d.updated_at,
+                       s.source_id, s.source_type, s.uri, s.project_id
+                FROM documents d
+                JOIN sources s ON s.source_id = d.source_id
+                WHERE d.project_id = %s AND d.metadata->>'version_family' = %s
+                """,
+                (project_id, family_key),
+            )
+            rows = await cur.fetchall()
+        documents = [
+            Document(
+                document_id=row[0],
+                elements=row[1],
+                metadata=row[2],
+                created_at=row[3],
+                updated_at=row[4],
+                source=SourceRef(source_id=row[5], source_type=row[6], uri=row[7], project_id=row[8]),
+            )
+            for row in rows
+        ]
+        documents.sort(
+            key=lambda d: (
+                version_sort_key(d.metadata.version_label, d.metadata.version_number, d.metadata.is_final),
+                d.created_at or datetime.min.replace(tzinfo=timezone.utc),
+                d.document_id,
+            )
+        )
+        return documents
+
+    async def update_document_metadata(self, document_id: str, patch: dict[str, Any]) -> None:
+        """Merges `patch` into documents.metadata (`||`) instead of
+        replacing it - the backfill only owns the version_* keys and must
+        leave whatever else is already stored (title, page_count, keys
+        added by other code paths) untouched."""
+        await self.conn.execute(
+            "UPDATE documents SET metadata = metadata || %s, updated_at = %s WHERE document_id = %s",
+            (Jsonb(patch), datetime.now(timezone.utc), document_id),
+        )
+
+    async def find_document_ids_by_source_uris(self, uris: list[str], project_id: str) -> dict[str, str]:
+        """uri -> document_id for the sources (in `project_id`) that have a
+        parsed Document - how a `sources.metadata.links[].target_uri`
+        (context/slack.py, context/gmail.py) is turned into a
+        document_links endpoint. A uri whose source was never parsed
+        (skipped by the pipeline) is simply absent from the result."""
+        if not uris:
+            return {}
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT s.uri, d.document_id
+                FROM sources s
+                JOIN documents d ON d.source_id = s.source_id
+                WHERE s.project_id = %s AND s.uri = ANY(%s)
+                """,
+                (project_id, uris),
+            )
+            rows = await cur.fetchall()
+        return {row[0]: row[1] for row in rows}
+
+    async def find_slack_thread_parent_document(
+        self, project_id: str, channel: str, thread_ts: str, exclude_source_id: str
+    ) -> str | None:
+        """The document of the *other* Slack episode in `channel` whose
+        message_ts list contains `thread_ts` - i.e. the timeline episode
+        that already held the thread's parent message before the replies
+        arrived in a later sync (context/slack.py merges parent + replies
+        when they arrive together, in which case there is no separate
+        parent episode and this returns None)."""
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT d.document_id
+                FROM sources s
+                JOIN documents d ON d.source_id = s.source_id
+                WHERE s.project_id = %s AND s.source_type = 'slack' AND s.source_id <> %s
+                  AND s.metadata->>'channel' = %s AND s.metadata->'message_ts' ? %s
+                ORDER BY s.modified_at NULLS LAST, s.source_id
+                LIMIT 1
+                """,
+                (project_id, exclude_source_id, channel, thread_ts),
+            )
+            row = await cur.fetchone()
+        return row[0] if row is not None else None
+
+    async def list_documents_with_sources(
+        self, project_id: str | None = None, limit: int = 500, offset: int = 0
+    ) -> list[tuple[Document, Source]]:
+        """Backfill input (document_links.backfill_document_versions_and_links):
+        each Document paired with its full Source (the version parser needs
+        `sources.metadata.name`/`subject`, the linker needs `metadata.links`/
+        `thread_ts`). `elements` is not loaded - the Document comes back
+        with an empty element list, which is all the backfill needs and
+        keeps a whole-table pass cheap."""
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT d.document_id, d.metadata, d.created_at, d.updated_at,
+                       s.source_id, s.source_type, s.uri, s.content_hash, s.collected_at,
+                       s.modified_at, s.metadata, s.project_id
+                FROM documents d
+                JOIN sources s ON s.source_id = d.source_id
+                WHERE (%s::text IS NULL OR d.project_id = %s)
+                ORDER BY d.created_at, d.document_id
+                LIMIT %s OFFSET %s
+                """,
+                (project_id, project_id, limit, offset),
+            )
+            rows = await cur.fetchall()
+        pairs: list[tuple[Document, Source]] = []
+        for row in rows:
+            source = Source(
+                source_id=row[4],
+                source_type=row[5],
+                uri=row[6],
+                content_hash=row[7],
+                collected_at=row[8],
+                modified_at=row[9],
+                metadata=row[10],
+                project_id=row[11],
+            )
+            document = Document(
+                document_id=row[0],
+                source=SourceRef.from_source(source),
+                elements=[],
+                metadata=row[1],
+                created_at=row[2],
+                updated_at=row[3],
+            )
+            pairs.append((document, source))
+        return pairs
+
+
+
+
+# --- lexical search helpers (search_documents_by_title / search_chunks_lexical) ---
+
+# `word_similarity` floor for the fuzzy tier. 0.3 on titles lets "보고서 SH"
+# style partial/misspelled names through while keeping unrelated file names
+# out (measured on the dev DB's Drive/Gmail titles); chunk bodies need a
+# stricter 0.5 because a long text covers a short query's trigrams almost
+# by accident.
+_TITLE_SIMILARITY_THRESHOLD = 0.3
+_CHUNK_SIMILARITY_THRESHOLD = 0.5
+# Cap on how many whitespace tokens the all-tokens tier ANDs together - past
+# this a query is a sentence, not a name, and belongs to vector_search.
+_MAX_QUERY_TOKENS = 8
+
+
+def _like_pattern(text: str) -> str:
+    """`%text%` with LIKE's own metacharacters escaped (backslash is
+    Postgres' default LIKE escape). Matters here more than usual: the file
+    names this matches against are full of `_` ("2025_SH_업무_보고서"), which
+    unescaped is LIKE's single-character wildcard."""
+    escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _token_patterns(query: str) -> list[str]:
+    tokens = query.split()[:_MAX_QUERY_TOKENS]
+    return [_like_pattern(token) for token in tokens] or [_like_pattern(query)]
+
+
+def _lexical_snippet(text: str, query: str, max_chars: int) -> str:
+    """`max_chars` of whitespace-normalized `text` around the first
+    case-insensitive occurrence of the whole query (else of its first token
+    that occurs), or the head of the text when nothing is found (the fuzzy
+    tier matched on trigrams, not a literal substring)."""
+    normalized = " ".join(text.split())
+    lowered = normalized.lower()
+    idx = -1
+    for needle in [query.lower(), *(token.lower() for token in query.split())]:
+        idx = lowered.find(needle)
+        if idx != -1:
+            break
+    if idx == -1 or len(normalized) <= max_chars:
+        return normalized[:max_chars]
+    start = max(0, idx - max_chars // 3)
+    end = min(len(normalized), start + max_chars)
+    start = max(0, end - max_chars)
+    prefix = "…" if start > 0 else ""
+    suffix = "…" if end < len(normalized) else ""
+    return f"{prefix}{normalized[start:end]}{suffix}"
+
+
+
+
+def _document_link_from_row(row: tuple[Any, ...]) -> DocumentLink:
+    return DocumentLink(
+        link_id=row[0],
+        from_document_id=row[1],
+        to_document_id=row[2],
+        link_type=row[3],
+        confidence=row[4],
+        metadata=row[5],
+        created_at=row[6],
+    )

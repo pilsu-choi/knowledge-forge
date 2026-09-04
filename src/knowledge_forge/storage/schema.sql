@@ -11,6 +11,10 @@
 -- postgres service uses pgvector/pgvector:pg16) - CREATE EXTENSION fails
 -- against a plain postgres image.
 CREATE EXTENSION IF NOT EXISTS vector;
+-- pg_trgm for the document-title / chunk-text lexical indexes below
+-- (search/service.py's document_search/lexical_search). Ships with every
+-- stock Postgres (contrib), so unlike `vector` this needs no special image.
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 CREATE TABLE IF NOT EXISTS sources (
     source_id     TEXT PRIMARY KEY,
@@ -42,6 +46,52 @@ ALTER TABLE documents ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL D
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 CREATE INDEX IF NOT EXISTS idx_documents_source_id ON documents(source_id);
 CREATE INDEX IF NOT EXISTS idx_documents_project_id ON documents(project_id);
+-- Denormalized display/search title (storage/document_title.py derives it:
+-- parser metadata title -> source name/subject -> slack channel+date ->
+-- first heading). `documents.metadata->>'title'` alone is NULL for nearly
+-- every SaaS-collected row (the parsers don't know the Drive file name or
+-- mail subject - only `sources.metadata` does), so title search needs one
+-- materialized column rather than a per-query CASE over two JSONB blobs.
+-- Nullable: a document with no usable title anywhere simply can't be found
+-- by title (it stays reachable through lexical_search/vector_search).
+-- Trigram GIN over it: pg_trgm serves both `ILIKE '%..%'` substring and
+-- `similarity()` fuzzy matching, and - unlike tsvector's 'simple'
+-- dictionary - needs no tokenizer, which matters because the titles are
+-- mostly Korean/underscore-joined file names a text search parser splits
+-- badly (see wiki/search-architecture.md ③).
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS title TEXT;
+CREATE INDEX IF NOT EXISTS idx_documents_title_trgm ON documents USING gin (title gin_trgm_ops);
+
+-- documents.metadata->>'version_family' (models/document.py's DocumentMetadata.
+-- version_family, parsed by ingest_version.py) is what every "다른 버전
+-- 있어?" lookup and the PREVIOUS_VERSION relink (document_links.py) filter
+-- on - an expression index rather than a real column so the JSONB
+-- metadata blob stays the single place a Document's metadata lives.
+CREATE INDEX IF NOT EXISTS idx_documents_version_family
+    ON documents ((metadata->>'version_family'));
+
+-- Document-to-document typed edges (models/link.py's DocumentLink /
+-- LinkType, built by document_links.py). Distinct from `relations`, which
+-- only ever connects KnowledgeObjects, and from the OKF `links/*.yaml`
+-- view (pipeline._resolve_links) which is keyed by (source_id,
+-- document_id) for the file tree - this table is keyed by document_id so
+-- search/sql.py can JOIN it straight onto documents. link_id is
+-- stable_id('document_link', link_type, from, to) so a re-run upserts
+-- rather than duplicates. Both FKs are ON DELETE CASCADE: an edge without
+-- its endpoint is meaningless, and deleting a document shouldn't need to
+-- know about this table.
+CREATE TABLE IF NOT EXISTS document_links (
+    link_id           TEXT PRIMARY KEY,
+    from_document_id  TEXT NOT NULL REFERENCES documents(document_id) ON DELETE CASCADE,
+    to_document_id    TEXT NOT NULL REFERENCES documents(document_id) ON DELETE CASCADE,
+    link_type         TEXT NOT NULL,
+    confidence        DOUBLE PRECISION,
+    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at        TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_document_links_from ON document_links(from_document_id);
+CREATE INDEX IF NOT EXISTS idx_document_links_to ON document_links(to_document_id);
+CREATE INDEX IF NOT EXISTS idx_document_links_type ON document_links(link_type);
 
 CREATE TABLE IF NOT EXISTS chunks (
     chunk_id        TEXT PRIMARY KEY,
@@ -62,6 +112,10 @@ ALTER TABLE chunks ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFA
 ALTER TABLE chunks ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_source_id ON chunks(source_id);
+-- Trigram GIN over the chunk body for lexical_search (error codes, ids,
+-- exact phrases - things an embedding can't be "close" to). Same
+-- pg_trgm-over-tsvector reasoning as idx_documents_title_trgm above.
+CREATE INDEX IF NOT EXISTS idx_chunks_text_trgm ON chunks USING gin (text gin_trgm_ops);
 
 -- `evidence` replaces the old single `chunk_id` column: a KnowledgeObject
 -- can be grounded in more than one Chunk (see models/knowledge_object.py),
@@ -269,4 +323,59 @@ CREATE TABLE IF NOT EXISTS eval_score (
     claims              JSONB NOT NULL DEFAULT '[]'::jsonb,
     judge_model         TEXT NOT NULL,
     judged_at           TIMESTAMPTZ NOT NULL
+);
+
+-- Golden-set IR evaluation runs (wiki/search-evaluation.md (C)) - one
+-- `eval_run` per `knowledge-forge eval-ir` invocation plus one
+-- `eval_run_query` per golden query. Separate from `eval_score` (which keys
+-- on live `search_log` traffic) because these score a fixed gold file with
+-- no user in the loop, and the A/B comparison (`eval-ir --compare`) needs
+-- the *per-query* metrics of both runs, not just the aggregate - hence the
+-- child table rather than a single JSONB blob. run_id is uuid4 like
+-- search_log.log_id (event row, not Knowledge Graph content).
+CREATE TABLE IF NOT EXISTS eval_run (
+    run_id          TEXT PRIMARY KEY,
+    golden_version  TEXT NOT NULL,
+    golden_path     TEXT NOT NULL,
+    project_id      TEXT,
+    -- {provider, model, limit, strategies_override, use_llm_constraints, k_values}
+    config          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    -- sha256(sorted-json(config))[:12] - a cheap "same settings?" key for
+    -- grouping/comparing runs without diffing the JSON.
+    config_hash     TEXT NOT NULL,
+    -- Measured at run time, not copied from the gold file:
+    -- {documents, chunks, knowledge_objects, embeddings_by_kind}. Two runs
+    -- are only comparable when this matches (see ir_compare.py).
+    index_snapshot  JSONB NOT NULL DEFAULT '{}'::jsonb,
+    git_commit      TEXT,
+    label           TEXT,
+    started_at      TIMESTAMPTZ NOT NULL,
+    finished_at     TIMESTAMPTZ,
+    -- ir_metrics.aggregate() output ({overall, by_type, metric_n}) plus the
+    -- run's error/stale query lists.
+    summary         JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_eval_run_golden_version ON eval_run(golden_version);
+CREATE INDEX IF NOT EXISTS idx_eval_run_started_at ON eval_run(started_at);
+
+CREATE TABLE IF NOT EXISTS eval_run_query (
+    run_id              TEXT NOT NULL REFERENCES eval_run(run_id) ON DELETE CASCADE,
+    query_id            TEXT NOT NULL,
+    query_text          TEXT NOT NULL,
+    primary_type        TEXT NOT NULL,
+    types               JSONB NOT NULL DEFAULT '[]'::jsonb,
+    -- Deduplicated document ranking the metrics were computed from, kept
+    -- so a regression can be diagnosed without re-running retrieval.
+    ranked_document_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    scores              JSONB NOT NULL DEFAULT '[]'::jsonb,
+    predicted_count     INT,
+    -- ir_metrics.score_query() output; empty when `error` is set.
+    metrics             JSONB NOT NULL DEFAULT '{}'::jsonb,
+    strategies          JSONB NOT NULL DEFAULT '[]'::jsonb,
+    steps               JSONB NOT NULL DEFAULT '[]'::jsonb,
+    elapsed_ms          DOUBLE PRECISION NOT NULL DEFAULT 0,
+    -- Retrieval raised for this query; the run continues and the query
+    -- simply contributes no metrics (it is listed in summary.errors).
+    error               TEXT,
+    PRIMARY KEY (run_id, query_id)
 );

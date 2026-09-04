@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from knowledge_forge.collectors.base import RawItem
-from knowledge_forge.models.chunk import Chunk
+from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.document import Document
 from knowledge_forge.models.knowledge_object import KnowledgeObject
+from knowledge_forge.models.link import DocumentLink
 from knowledge_forge.models.relation import Relation
 from knowledge_forge.models.source import Source
 from knowledge_forge.storage.postgres_store import PostgresStore
@@ -157,9 +158,89 @@ class PipelineStore:
             embedding, embedding_model, project_id, type, limit, since, until, target_kind
         )
 
+    async def embedding_coverage(self, embedding_model: str, project_id: str | None = None) -> dict[str, Any]:
+        """임베딩 적재 현황 진단 - 벡터 검색 0히트의 세 가지 원인(행 없음 / 모델 이름 불일치 /
+        다른 프로젝트)을 한 번에 보여준다. `PostgresStore.embedding_coverage` 참고."""
+        return await self._db.embedding_coverage(embedding_model, project_id)
+
+    async def get_document(self, document_id: str) -> Document | None:
+        return await self._db.get_document(document_id)
+
+    async def get_source(self, source_id: str) -> Source | None:
+        return await self._db.get_source(source_id)
+
+    async def list_chunks_by_document(
+        self, document_id: str, *, hierarchy_level: HierarchyLevel | None = None
+    ) -> list[Chunk]:
+        """`search/document.py::read_document`'s entry point into storage
+        (with `get_document`/`get_source` above) - reading order, every
+        hierarchy level unless narrowed, see
+        `PostgresStore.list_chunks_by_document` for why."""
+        return await self._db.list_chunks_by_document(document_id, hierarchy_level=hierarchy_level)
+
     async def execute_readonly_query(self, sql: str, limit: int) -> tuple[list[tuple[Any, ...]], list[str]]:
         """`search/sql.py::sql_search`'s single entry point into storage."""
         return await self._db.execute_readonly_query(sql, limit)
+
+    async def search_documents_by_title(
+        self,
+        query: str,
+        *,
+        project_id: str | None = None,
+        source_type: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """`search/service.py::document_search`'s entry point - see
+        `PostgresStore.search_documents_by_title`."""
+        return await self._db.search_documents_by_title(
+            query, project_id=project_id, source_type=source_type, since=since, until=until, limit=limit
+        )
+
+    async def search_chunks_lexical(
+        self,
+        query: str,
+        *,
+        project_id: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """`search/service.py::lexical_search`'s entry point - see
+        `PostgresStore.search_chunks_lexical`."""
+        return await self._db.search_chunks_lexical(query, project_id=project_id, since=since, until=until, limit=limit)
+
+    async def backfill_document_titles(self, project_id: str | None = None, *, overwrite: bool = False) -> int:
+        """`knowledge-forge db backfill-titles` - see `PostgresStore.backfill_document_titles`."""
+        return await self._db.backfill_document_titles(project_id, overwrite=overwrite)
+
+    async def link_document(self, source: Source, document: Document) -> list[DocumentLink]:
+        """Version-family relink + source-metadata links for one just-stored
+        Document (document_links.link_document) - called by pipeline.py right
+        after `record_document`, which must come first so the family query
+        sees the new row."""
+        from knowledge_forge.document_links import link_document
+
+        return await link_document(self._db, source, document)
+
+    async def record_document_links(self, links: list[DocumentLink]) -> None:
+        await self._db.save_document_links(links)
+
+    async def list_document_links(
+        self, document_id: str, *, direction: str = "both", link_type: str | None = None
+    ) -> list[DocumentLink]:
+        return await self._db.list_document_links(document_id, direction=direction, link_type=link_type)
+
+    async def list_version_family(self, family_key: str, project_id: str) -> list[Document]:
+        """Oldest -> newest; see `PostgresStore.list_version_family`."""
+        return await self._db.list_version_family(family_key, project_id)
+
+    async def backfill_document_versions_and_links(self, project_id: str | None = None) -> dict[str, Any]:
+        """`knowledge-forge db backfill-links` - see document_links.py."""
+        from knowledge_forge.document_links import backfill_document_versions_and_links
+
+        return await backfill_document_versions_and_links(self._db, project_id)
 
     async def get_sync_cursor(self, source: str) -> dict[str, Any] | None:
         return await self._db.get_sync_cursor(source)

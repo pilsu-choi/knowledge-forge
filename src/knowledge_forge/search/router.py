@@ -37,6 +37,29 @@ _QUOTED_RE = re.compile(r"[\"'「『].+?[\"'」』]")
 # literal identifier file_search's substring match is good at and an
 # embedding is not (an id has no semantic meaning to be "close" to).
 _ID_LIKE_RE = re.compile(r"\b[A-Za-z]{2,}[-_][A-Za-z0-9]+\b|#\d+\b")
+# Document-name-shaped tokens the id regex above misses because they start
+# with a digit or mix in Hangul: "2025_SH_업무_보고서" (3+ pieces joined by
+# `_`/`-` - two pieces alone is too common in prose, e.g. a hyphenated
+# English word), and anything carrying an office-document extension
+# ("보고서.pdf"). Both are the user naming a specific file, which is a
+# literal-match signal just like a quoted phrase (search/service.py's
+# document_search is what actually resolves such a name to a document).
+_JOINED_NAME_RE = re.compile(r"(?<![^\s(\[\"'「『])[^\s_\-]+(?:[_\-][^\s_\-]+){2,}(?![^\s)\]\"'」』.,?!])")
+_FILE_EXTENSION_RE = re.compile(r"\S+\.(?:pdf|xlsx?|docx?|pptx?|hwpx?|csv|txt|md)(?![^\s)\]\"'」』,?!])", re.IGNORECASE)
+
+
+def has_exact_match_signal(query: str) -> bool:
+    """True when `query` carries something that should be matched literally
+    - a quoted phrase, an id-like token, a joined document name or a file
+    name with an extension. Exposed (rather than inlined in `route_query`)
+    so a caller with more sources than file_search/vector_search can reuse
+    the same judgment."""
+    return bool(
+        _QUOTED_RE.search(query)
+        or _ID_LIKE_RE.search(query)
+        or _JOINED_NAME_RE.search(query)
+        or _FILE_EXTENSION_RE.search(query)
+    )
 # Korean/English question words/markers - a reasonable proxy for "this reads
 # as a natural-language question", which is exactly what embeddings are
 # trained to match against, not literal substrings.
@@ -67,9 +90,10 @@ def route_query(query: str, available_sources: list[str]) -> RouteDecision:
     stripped = query.strip()
     word_count = len(stripped.split())
 
-    if _QUOTED_RE.search(stripped) or _ID_LIKE_RE.search(stripped):
+    if has_exact_match_signal(stripped):
         return RouteDecision(
-            sources=[FILE_SEARCH, VECTOR_SEARCH], reason="따옴표/ID 형태의 정확 일치 신호 - file_search 우선, 보강용 vector_search 병행"
+            sources=[FILE_SEARCH, VECTOR_SEARCH],
+            reason="따옴표/ID/파일명 형태의 정확 일치 신호 - file_search 우선, 보강용 vector_search 병행",
         )
     if word_count <= _SHORT_QUERY_WORD_COUNT:
         return RouteDecision(sources=[FILE_SEARCH, VECTOR_SEARCH], reason="짧은 키워드성 질의 - 두 소스 모두 병행")

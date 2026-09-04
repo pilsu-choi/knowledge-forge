@@ -11,10 +11,10 @@ Grounding까지)을 레이어별로 정리한다. 실제 프로덕션 엔터프�
 
 | 레이어 | 상태 |
 |---|---|
-| ① Query Understanding (intent/entity/temporal) | **부분 구현** — temporal expression parsing(`search/temporal.py`)은 있음. entity/속성 필터는 `sql_search`(Text-to-SQL, 아래 참고)로 우회 지원됨 - 별도 entity extraction 전처리 단계는 여전히 없고, 그 판단을 모델이 SQL을 짤 때 직접 함 |
+| ① Query Understanding (intent/entity/temporal) | **부분 구현** — `search/constraints.py`가 질의를 구조화된 제약(`QueryConstraints`: 시간 범위/작성자/식별자/문서 참조/소스·문서 타입)과 의도 플래그(latest/exhaustive/count/summary/whole_document/negative/comparison/multihop)로 분해하고 `suggest_strategies()`로 검색 전략 이름을 내놓는다(규칙 1단계 + 선택적 LLM 보강 2단계). temporal parsing(`search/temporal.py`)을 재사용. 그 전략 목록을 실제로 실행해 하나의 랭킹으로 합치는 실행기가 `search/retrieve.py`(아래 "Retrieval Plan 실행기" 절, 에이전트 `search` 도구와 `eval-ir`가 공유). 아직 없는 것: conversation-aware 질의 복원, 동의어/약어 확장 |
 | ② Query Planning (multi-hop 분해) | **구현됨** — `search/planner.py`, 아래 절 참고 |
 | Query Routing (소스 선택) | **구현됨** — `search/router.py`, 아래 절 참고 |
-| ③ Hybrid Retrieval (BM25+Vector+Metadata+Graph) | **부분 구현** — keyword(`file_search`)+semantic(`vector_search`)+metadata(`project_id`/`type`/시간 범위) 병행 실행 + RRF reranking까지 있음. Graph 전용 API(`graph_search`)는 미구현이지만 `sql_search`로 `relations` 테이블을 직접 JOIN하는 것으로 상당 부분 대체 가능 |
+| ③ Hybrid Retrieval (BM25+Vector+Metadata+Graph) | **부분 구현** — keyword(`file_search`)+semantic(`vector_search`)+metadata(`project_id`/`type`/시간 범위) 병행 실행 + RRF reranking까지 있음. 문서 제목/원문 청크의 pg_trgm 렉시컬 검색(`document_search`/`lexical_search`)도 있음. Graph 전용 API(`graph_search`)는 미구현이지만 `sql_search`로 `relations` 테이블을 직접 JOIN하는 것으로 상당 부분 대체 가능 |
 | Multi-stage Retrieval / Reranking | **부분 구현** — `search/rerank.py`의 Reciprocal Rank Fusion, 아래 절 참고. Cross-Encoder/LLM reranker는 미구현 |
 | ④ Context Engineering (dedup/conflict/compression) | **부분 구현** — 토큰 예산 압축(`agent/compaction.py`), cross-source dedup(`search/rerank.py`, knowledge_object_id 기준)은 있음. conflict 탐지/source reliability/temporal consistency/evidence clustering은 없음 |
 | ⑤ Map-Reduce / Hierarchical Retrieval | 설계만, 미구현 |
@@ -26,20 +26,190 @@ Grounding까지)을 레이어별로 정리한다. 실제 프로덕션 엔터프�
 
 ---
 
-## ① Query Understanding — 설계만, 미구현
+## ① Query Understanding — **부분 구현**, `search/constraints.py`
 
 Intent classification(사실 조회/비교/요약/탐색/분석), entity extraction(사람/프로젝트/문서),
 query rewriting/expansion(모호한 질문 → 검색 친화적 질의, 동의어/약어 확장), conversation-aware
-query("그 프로젝트는?" → 이전 대화의 entity 복원)까지 포함하는 넓은 레이어. 지금은 이 전체를
-LLM(에이전트 자신)에게 맡기고 있다 — `knowledge-forge agent`는 매 턴 전체 대화 히스토리를 보고
-스스로 file_search/vector_search/plan_search 중 무엇을, 어떤 질의로 호출할지 판단한다
-(`agent/prompts.py`). 별도 전처리 단계로 뽑아내지 않은 이유는, 지금 규모(도구 2~3개, 명시적
-멀티턴 세션)에서는 에이전트 자신의 판단이 이미 이 레이어의 상당 부분(특히 conversation-aware
-query, temporal understanding)을 공짜로 해주기 때문 — 별도 파이프라인을 만들면 에이전트가 이미
-하는 일을 중복으로 다시 하게 된다. Query Understanding을 명시적 레이어로 뽑아낼 필요가 생기는
-시점은, (a) 에이전트 turn 없이 검색 API를 직접 호출하는 소비자(HTTP `/search/*`, MCP 서버)가
-생기거나, (b) temporal join처럼 LLM 판단만으로는 부정확한 구조화된 파싱이 필요해질 때
-(아래 ⑥ 참고).
+query("그 프로젝트는?" → 이전 대화의 entity 복원)까지 포함하는 넓은 레이어. 이 중 **intent
+플래그 + 구조화된 제약 추출 + 벡터용 질의 재작성**을 `search/constraints.py`가 명시적 레이어로
+담당한다. conversation-aware 복원과 동의어/약어 확장은 여전히 에이전트(`agent/prompts.py`)가
+맡는다.
+
+### 왜 지금 명시적 레이어로 뽑았나
+
+원래 이 문서는 "에이전트 자신의 판단이 이 레이어의 상당 부분을 공짜로 해주므로 별도 전처리를
+만들면 중복"이라고 적고, 뽑아낼 시점을 (a) 에이전트 turn 없이 검색을 호출하는 소비자가 생길 때,
+(b) LLM 판단만으로는 부정확한 구조화된 파싱이 필요할 때로 못 박아 두었다. 둘 다 왔다.
+
+- (a) **평가 하네스 = 에이전트 없는 소비자.** `search-evaluation.md`의 골든셋 기반 IR 지표
+  (Recall/MRR/NDCG)는 "질의 → 검색 결과"를 LLM 판단 없이 같은 입력에 같은 출력으로 재현해야
+  지표가 의미를 가진다. 에이전트가 매 턴 암묵적으로 하던 "이건 특정 문서 요약이다 / 작성자
+  필터다 / 개수 질문이다" 판단을 결정론적 함수로 꺼내지 않으면 평가할 대상 자체가 없다.
+- (b) **검색 유형 표의 절반은 유사도 검색으로 원리적으로 못 잡는다.** `query-types.md`의
+  20개 유형 중 Navigational/Aggregation/Set Query/Negative/Latest/Version/Whole-document Summary는
+  임베딩 유사도가 아니라 제목 조회, COUNT, exhaustive 수집, 정렬, 문서 전체 읽기가 필요하다.
+  전략을 고르려면 질의를 먼저 제약+플래그로 분해해야 하고, 그 분해는 `temporal.py`가 이미
+  증명했듯 대부분 기계적이다.
+
+### 규칙 1단계 / LLM 2단계로 나눈 이유
+
+- `extract_constraints_rules(query, now=)` — LLM 없이 regex/마커 사전만으로. 시간 범위는
+  `search/temporal.py`를 그대로 재사용(올해/작년만 이 모듈이 보충), 따옴표/에러코드/파일명/
+  `2025_SH_업무_보고서`형 연결 토큰, 한국어·영어 의도 마커(최신/전부/개수/요약/전체/부정/비교/
+  multi-hop 추정), 작성자 조사 패턴("X가 작성한", "from X"), 소스·문서 타입 힌트. 결정론적이라
+  평가 기준선이 되고 단위 테스트(`tests/search/test_constraints.py`, 유형별 30여 질의)로 못
+  박힌다. `router.py`/`temporal.py`와 같은 recall 우선 원칙 - 플래그 오탐의 비용은 전략 하나를
+  더 도는 정도다.
+- `extract_constraints(query, provider=)` — `ChatProvider`가 주어지면 규칙 결과를 프롬프트에
+  실어 보내 **entities/authors/document_reference/document_types/semantic_query/is_multihop/
+  comparison_targets만** 보강한다. 시간 범위·식별자·의도 플래그는 규칙이 확정한 것이라 LLM이
+  덮어쓸 수 없다(병합 정책은 `merge_llm_enrichment` docstring) - LLM이 "2025년 3월"을 다른 달로
+  옮기거나 에러코드를 "정정"하는 사고를 구조적으로 막기 위해서다. JSON 파싱 실패/예외 시 규칙
+  결과로 degrade(`planner.py::decompose_query`와 같은 태도). 각 필드의 `origins`(rule|llm)를
+  남겨 평가 시 "LLM 보강이 실제로 무엇을 바꿨나"를 집계할 수 있다.
+- `ChatProvider.send()`는 temperature를 노출하지 않으므로 결정성은 "JSON 하나만" 프롬프트와
+  병합 정책으로 확보하고, temperature=0은 provider 구성 쪽 책임으로 둔다.
+
+### 전략 이름 계약 (`suggest_strategies()` → `search/retrieve.py`)
+
+통합 실행기 `search/retrieve.py`(아래 절)는 이 이름 목록을 받아 실제 검색을 조합한다.
+앞쪽은 후보 생성, 뒤쪽은 후처리/집계이며 각 그룹 안은 우선순위 순이다.
+
+| 전략 | 켜지는 조건 | 의미 |
+|---|---|---|
+| `document_lookup` | `document_reference` 또는 `identifiers` | 문서 제목/파일명 조회(Navigational) - 다른 에이전트가 만드는 `document_search`가 이걸 실행 |
+| `lexical` | `identifiers` 또는 `quoted_phrases` | 본문 정확 일치(Exact Match) - 임베딩은 에러코드에 의미가 없어 못 잡음 |
+| `metadata_filter` | authors/participants/source_types/document_types/time_range 중 하나 | `sources.metadata`/타임스탬프 WHERE 필터. 단독 랭킹이 아니라 다른 전략과 결합 |
+| `vector` | `semantic_query` 비어 있지 않음 | 제약 표현을 걷어낸 재작성 질의로 임베딩 검색 |
+| `latest` | `wants_latest` | 소스 타임스탬프 내림차순 상위 N |
+| `exhaustive` | `wants_exhaustive` 또는 `is_negative` | top-k 절단 없이 조건 만족 전부 수집 |
+| `count` | `wants_count` | 후보 개수가 답 - 필터 조건에서 SQL COUNT 직행 가능 |
+| `whole_document` | `wants_whole_document` (전문/원문 마커, 또는 문서 참조+요약) | 청크가 아니라 `read_document`로 본문 전체 |
+| `comparison` | `is_comparison` | `comparison_targets`별 독립 검색 후 나란히 |
+| `negative` | `is_negative` | 대상 집합을 exhaustive로 모은 뒤 부재 판정 - 유사도는 "없음"을 증명 못 함 |
+| `multihop` | `is_multihop` | `search/planner.py`로 분해 실행 |
+
+아직 없는 것: conversation-aware 질의 복원, 동의어/약어 확장, `route_query()`와의 통합(router는
+sub-query용 2-소스 선택기로 그대로 둔다).
+
+### Retrieval Plan 실행기 (`search/retrieve.py`) — **구현됨**
+
+`retrieve(query, *, store, provider=None, project_id=None, now=None, limit=10, use_llm_constraints=True,
+strategies_override=None) -> RetrievalResult`. 위 전략 이름 목록을 실제 검색 호출로 바꿔 **하나의
+랭킹**으로 합치는 함수이며, 에이전트 루프 없이 호출된다.
+
+**왜 필요했나.** 소비자가 둘이고 둘 다 "어떤 도구를 어떤 순서로 부를지"를 LLM 판단에 맡길 수 없다.
+(1) 골든셋 IR 평가 하네스(`eval-ir`, [`search-evaluation.md`](search-evaluation.md) (C))는 에이전트
+턴 없이 질의 → `document_ids` 랭킹을 얻어야 하고, 같은 입력에 같은 출력이어야 지표 비교가
+성립한다. (2) 에이전트에게 도구가 7개(document/lexical/vector/sql/read_document/plan/file)로
+늘면서 "이 질의엔 뭘 먼저?"를 매 턴 다시 추론하는 비용과 편차가 커졌다 - `search` 도구
+(`agent/tools.py::_make_search_tool`)는 이 실행기를 그대로 감싼 것이라, 실행기가 좋아지면
+평가 지표와 에이전트 경험이 같이 좋아진다(분리돼 있으면 둘이 따로 논다). LLM은 (a) 제약 보강
+(`extract_constraints`), (b) 멀티홉 분해(`plan_and_search`)에만 쓰이고 `provider=None`이면 둘 다
+건너뛴다 - 결정론적 기준선.
+
+**반환 계약** (`eval-ir`와 공유, 변경하려면 양쪽 동시에): `RetrievalResult{query, constraints
+(QueryConstraints.to_dict()), strategies, steps: [RetrievalStep{strategy, source, n_hits, detail}],
+hits(각 hit에 document_id/target_kind/score 필수), document_ids(hits에서 첫 등장 순 중복 제거 -
+채점 단위), scores(문서별 최고 점수), predicted_count(wants_count일 때), documents_read
+(read_document한 문서), elapsed_ms}`. `steps`는 사람이 실패 원인을 추적하는 용도다 - 어떤 SQL을
+돌렸는지, anchor를 왜 못 잡았는지, vector가 왜 비었는지가 전부 `detail`에 남는다.
+
+**전략별 실행 규칙**:
+
+| 전략 | 실행 | 비고 |
+|---|---|---|
+| `document_lookup` | `document_reference`/`identifiers`/`quoted_phrases` 각각 `document_search` | 문서 단위 최고 점수가 1.0(제목 substring)이고 2위와 0.2 이상 벌어지면 그 문서가 **anchor**. 2위도 1.0이면("AGENTS.md" vs "agents-skills-AGENTS.md") ambiguous - 후보 전부 히트로 |
+| `lexical` | `identifiers`/`quoted_phrases` 각각 `lexical_search` | anchor가 있으면 그 문서 히트만 남김(하나도 없으면 좁히지 않고 `anchor_narrowing="no_hits_in_anchor"` 기록) |
+| `metadata_filter` | authors/participants/source_types/document_types/time_range를 `sources`/`documents` WHERE로 - `execute_readonly_query`(READ ONLY + 강제 롤백) | 값은 `'`→`''` 이스케이프로 인라인(스토어가 문자열만 받음), SQL은 detail에. 작성자/참여자는 `sources.metadata->>'participants'` 텍스트 ILIKE + `documents.metadata->>'author'`(개발 DB의 gmail이 `participants`만 갖고 `from`이 없어서), 문서 타입은 `documents.title ILIKE`("메일"은 제목이 아니라 gmail 소스 타입으로 해석). 상한 500행 |
+| `vector` | `semantic_query`로 `vector_search`(since/until 전달) → **항상** 어휘 arm(`_keyword_arm`)을 이어서 실행 | 임베딩 0행/임베더 미구성이면 빈 결과 + `error` 기록(예외 아님). 유사도가 `KF_VECTOR_MIN_SCORE`(기본 0.45) 미만인 히트는 버리고 `dropped_below_min_score`에 기록 - ANN에는 관련도 하한이 없어 "관련 문서 없음"이 정답인 질의도 후보가 찬다. 어휘 arm은 `document_search#semantic` + `lexical_search#semantic` 소스로 RRF에 합류 |
+| `comparison` | `comparison_targets` 각각 `document_search`(대상 안의 시간 표현은 그 대상에만 적용), 없으면 `lexical_search` | 대상별 최상위 문서를 anchor 다음으로 최상위 고정 |
+| `multihop` | provider 있으면 `plan_and_search` 근거를 한 소스로 RRF 합류 | 없으면 `skipped="no_provider"`. document_id 없는 히트(OKF file_search)는 채점 단위가 없어 버림 |
+| `latest` | **관련도 상위 `KF_LATEST_RELEVANCE_POOL`(기본 5) 문서 안에서만** `content_at` 내림차순, 같은 `version_family`는 `version_sort_key`로 최신 하나만 남기고 나머지는 뒤로 | family 안에서는 버전 표기(최종 > vN > 무표기 > 초안)가 시각보다 우선 - 구버전을 나중에 다시 올린 경우 때문. pool 밖 후보는 관련도 순 그대로 뒤에 붙는다 - 후보 전체를 시각 정렬하면 "질의와 상관없이 가장 최근 문서"가 1위가 된다(아래) |
+| `exhaustive`/`negative` | 소스별 limit을 200으로, 최종 컷오프 없음 | 부재 판정은 LLM 몫 - 실행기는 후보만 |
+| `count` | `predicted_count` = 최종 문서 수. 필터 단독 결과면 같은 WHERE로 `SELECT COUNT(*)` | count도 exhaustive 수집을 함의 |
+| `whole_document` | anchor(없으면 상위 2개 문서)를 `read_document`로 읽어 `documents_read`에, 청크를 문서 순서대로 히트 맨 앞에 | 같은 청크를 가리키던 검색 히트는 중복이라 제거 |
+
+**키워드 fallback (vector가 빈손일 때)**:
+
+임베딩이 없는 배포/개발 DB에서 실행기가 "아무것도 못 찾음"이 되지 않게 하는 degrade 경로다.
+두 단계로 돈다.
+
+1. **전체 질의**: `semantic_query` 문자열 그대로 `document_search`(제목) + `lexical_search`(본문).
+2. **term 분해** (`_term_fallback`) — 1단계가 **양쪽 다 빈손일 때만**. `keyword_terms`가 질의를
+   term으로 쪼개 term마다 `lexical_search`를 부르고, 결과를 **소스를 나눠**
+   (`lexical_search#<term>`) RRF에 넣는다.
+
+왜 term으로 쪼개나: `lexical_search`/`document_search`의 매칭은 pg_trgm 위의 3단(전체 질의
+substring → 모든 토큰 substring → `word_similarity`)이다. "농협 MVP 투입 인력 명함 제작 논의"
+같은 자연어 질의는 세 단계가 전부 실패한다 — 그 문자열을 통째로 담은 청크도, 일곱 토큰을 전부
+담은 청크도 없고, 질의가 길어 `word_similarity`도 임계값 아래로 떨어진다. v0 baseline에서
+conversation_thread(0.250)/sequence(0.343)가 낮았던 실제 원인이 이것이고, `steps`에 `n_hits: 0`
+으로 남아 있었다(handoff가 짐작했던 `document_links` 미사용이 아니다).
+
+**소스를 term별로 나누는 것이 핵심**이다: RRF는 같은 히트가 여러 소스 리스트에 등장할수록 점수를
+더하므로, 나누면 "질의의 term을 더 많이 담은 문서"가 자동으로 위로 온다. 한 리스트에 몰아넣으면
+그 신호가 사라진다.
+
+두 개의 안전장치가 붙어 있다. 둘 다 실측으로 필요성이 확인된 것이다(수치는
+`search-evaluation.md`의 스윕 표):
+
+- **coverage 임계값** (`KF_TERM_COVERAGE_RATIO` 기본 2/3, `KF_TERM_COVERAGE_MIN` 기본 2):
+  질의의 term을 `ceil(term수 × ratio)`개 이상 담은 문서만 후보로 남긴다. 없으면 term 하나만 스친
+  문서까지 전부 후보가 되어, "관련 문서 없음"이 정답인 질의(null/negative)가 전부 무언가를
+  돌려주고(`none_correct` 1.000 → 0.000) 개수 질의가 부풀었다(`count_match` 0.500 → 0.000).
+- **1단계가 빈손일 때만 실행**: 질의 문자열이 통째로 걸렸으면 그게 term 하나하나보다 강한 신호다.
+  항상 돌리면 제목이 정확히 맞은 질의를 term 히트가 밀어낸다(`v0-navigational-002` "codex README":
+  ndcg@10 1.000 → 0.356).
+
+term당 조회는 `_TERM_FETCH_LIMIT`(20)으로 따로 막는다 — exhaustive/negative/count 질의는
+`fetch_limit`이 200이고 최종 컷오프도 없어서, term 열 개 × 200이 그대로 답에 실리면 재현율보다
+정밀도를 더 깎는다.
+
+
+**`latest`가 관련도를 버리지 않게 하는 이유**:
+
+`latest`는 원래 병합 결과 **전체**를 `content_at` 내림차순으로 재정렬했다. 후보가 2~7개였을
+때는 우연히 맞았지만, term 단위 fallback으로 후보가 90~120개가 되자 정답이 무관한 최근 슬랙
+메시지 뒤로 밀려 `v0-latest-001/002`가 ndcg@10 0.000이 됐다. **후보 수가 늘수록 나빠지는**
+종류의 버그다 — 검색이 좋아지면 이 후처리가 더 망가진다.
+
+그래서 시각 정렬 대상을 **관련도 상위 pool**로 좁혔다. "가장 최근 X"는 "가장 최근 문서"가
+아니라 "X에 해당하는 것들 중 가장 최근"이므로, 관련도가 범위를 정하고 시각이 그 안에서 고르는
+게 맞다. pool 5는 v0 스윕값이고(7 이상이면 latest 0.544 / version 0.947로 되돌아간다) 근거가
+질의 10개뿐이라 잠정값이다.
+
+
+**병합 결정과 이유**:
+
+- **RRF**(`search/rerank.py`): 소스별 점수 척도가 다르다(제목 tier 1.0/0.5+sim/2, trigram, 코사인).
+  planner가 이미 같은 이유로 RRF를 쓰고, 여기서 새 척도를 만들 이유가 없다.
+- **anchor 최상위 고정**: 사용자가 파일명을 그대로 적었다면 그 문서가 답의 범위다 - RRF가 다른
+  소스의 다수결로 이걸 밀어내면 Navigational/Specific-document QA가 무너진다. 고정은 순서를 지키는
+  partition이라 나머지 랭킹은 그대로다.
+- **metadata_filter 교집합**: 필터는 랭킹 신호가 아니라 범위다(작성자/기간이 틀린 문서는 아무리
+  유사해도 오답). 그래서 RRF 점수에 섞지 않고 병합 뒤 교집합으로 건다. 단 (a) 필터 질의 결과가 0행이면
+  필터 자체가 틀린 것으로 보고 무시(`applied="filter_empty_ignored"`), (b) 후보 생성 전략이 없거나
+  교집합이 비면 필터 집합 자체를 최신순 결과로 쓴다(`filter_only`/`no_overlap_fallback_to_filter`) -
+  "지난주 김철수 메일"은 필터만으로 답이 되는 질의라서.
+- `limit`은 최종 `document_ids` 길이다. 소스별 조회는 3배 over-fetch해서 필터/anchor 좁히기 뒤에도
+  limit개가 남게 한다(`strategies_override=["vector"]`, limit=10이면 vector 20건 → 상위 10문서 -
+  순수 벡터 baseline).
+
+**한계**:
+
+- 임베딩이 없으면(개발 DB 기준 0행) `vector`는 항상 비고 키워드 fallback으로 돈다 - 패러프레이즈/
+  개념 질의는 제목·본문에 그 단어가 그대로 있을 때만 잡힌다. term 분해가 "질의의 단어를 여러 개
+  담은 문서"까지는 끌어올리지만(v0 factoid 0.497 → 0.969), 단어가 하나도 겹치지 않는 패러프레이즈는
+  여전히 못 푼다 - 그건 임베딩이 있어야 한다. 골든셋 v0
+  스모크(provider=None, 임베딩 없음): navigational/whole_document_summary/exact_match 각 1건은
+  1위, aggregation(`caddy-drift` 6건)은 6건 전부 상위 6 안이지만 predicted_count=8(본문에
+  caddy-drift가 언급된 다른 메시지 2건 포함).
+- LLM이 없으면 `document_reference`는 규칙(파일명/연결 토큰)으로만 잡히고 "codex README" 같은 자연어
+  제목 참조는 vector fallback의 `document_search`에 기댄다. multihop은 아예 돌지 않는다.
+- Slack `participants`는 user id라 이름 기반 작성자/참여자 필터가 닿지 않는다.
+- `search_documents_by_title`/`search_chunks_lexical`에 document_id 필터가 없어 anchor 좁히기는
+  사후 필터(over-fetch 뒤 걸러냄)다 - anchor 문서의 일치 청크가 fetch 범위 밖이면 놓친다.
 
 ## ② Query Planning — **구현됨**, `search/planner.py`
 
@@ -167,6 +337,119 @@ Search Evaluation / Feedback Loop 절과 판정기를 공유하는 옵션 확장
     RRF는 각 소스의 기존 순위를 신뢰하는 저비용 융합일 뿐, 두 소스 모두 낮게 평가한 문서를
     끌어올리거나 실제 관련성을 재판단하지는 못한다. 필요해지는 시점은 RRF로 병합한 상위
     결과의 정밀도가 실사용에서 부족하다고 판명될 때.
+- **문서 렉시컬 검색(Document/Lexical Search) — 구현됨**, `search/service.py::document_search`/
+  `lexical_search` + `storage/postgres_store.py::search_documents_by_title`/`search_chunks_lexical`,
+  agent 도구 `document_search`/`lexical_search`(`KF_DATABASE_URL`이 있을 때만 등록).
+  검색 유형 중 Navigational("2025_SH_업무_보고서 찾아줘"), Exact/Identifier("ERR_CONNECTION_RESET
+  문서"), Ambiguous("SH 보고서" → 후보 여러 개)는 벡터 유사도로 풀 수 없다 - 파일명/에러 코드는
+  임베딩이 "가까울" 의미가 없고, `file_search`는 OKF 마크다운(추출된 KO 요약)만 봐서 요약 과정에서
+  사라진 리터럴을 놓친다. 그래서 Postgres의 `documents.title`/`chunks.text`에 대한 문자열 일치
+  검색을 따로 뒀다.
+  - **왜 tsvector(FTS)가 아니라 pg_trgm인가**: 제목/청크의 대부분이 한국어 + 언더스코어로 이어진
+    파일명(`2025_SH_업무_보고서.pdf`)이다. Postgres 기본 텍스트 검색 파서(`simple`)는 한국어를
+    형태소 단위로 나누지 못하고 공백 기준으로만 자르며, 언더스코어 파일명은 통째로 한 토큰이 되어
+    "SH 보고서"로는 절대 못 찾는다. trigram은 토크나이저가 없어 언어에 무관하고, `ILIKE '%q%'`
+    (substring)과 `similarity`/`word_similarity`(오타/부분 일치) 둘 다 같은 GIN 인덱스
+    (`gin_trgm_ops`)로 서빙한다. 영문/식별자용 tsvector 병행은 넣지 않았다 - 식별자는 substring
+    일치가 정답이고 trigram이 그걸 이미 인덱스로 처리하므로 얻는 게 없다.
+  - **3단 랭킹**: ① 질의 전체 substring(`ILIKE`) → ② 공백 토큰 전부 포함(`ILIKE ALL(...)`,
+    "SH 보고서"가 `2025_SH_업무_보고서.pdf`에 맞는 단계) → ③ `word_similarity(q, title) >= 0.3`
+    (청크는 0.5). `similarity` 대신 `word_similarity`를 쓰는 이유: 짧은 질의가 긴 파일명에 얼마나
+    덮이는지를 재므로("SH 보고서" 0.7 vs `similarity` 0.37) 제목 검색이 실제로 묻는 질문과 맞다.
+    LIKE 패턴은 `_`/`%`를 이스케이프한다 - 파일명의 `_`가 LIKE 와일드카드라 안 하면
+    `2025aSHb업무`도 맞는다. `score`는 ①=1.0, ②=0.5+sim/2, ③=sim으로 [0,1] 안에서 단계와 단조.
+  - **제목 파생 우선순위**(`storage/document_title.py`, [`storage.md`](storage.md)): 파서가 읽은
+    `document.metadata.title` → 소스 메타데이터 `name`(Drive)/`subject`(Gmail) → Slack이면
+    `#channel YYYY-MM-DD` → 첫 Heading → NULL. 개발 DB 기준 `documents.metadata->>'title'`은 전부
+    NULL이라(파서는 Drive 파일명/메일 제목을 모른다 - 그건 `sources.metadata`에만 있다) 이 파생이
+    없으면 제목 검색 자체가 성립하지 않는다. Heading이 마지막인 이유: Slack/Gmail 컨텍스트 파서가
+    만드는 "Slack #C0BG… 스레드" 같은 합성 제목은 사람이 부르는 이름이 아니다.
+  - **결과 모양**: `document_search`는 본문 없이 `{target_kind:"document", document_id, title,
+    source_type, uri, modified_at, score}` 후보 목록 - "어떤 문서인지 특정"하는 단계용이라 후보가
+    여럿이면 전부 돌려주고 모델이 사용자에게 되묻게 한다. `lexical_search`는 `vector_search`의
+    chunk grain 히트와 같은 키(`target_kind:"chunk"`, `document_id`, `chunk_id`, `summary`=일치
+    지점 주변 500자, `score`)라 `search/rerank.py`가 그대로 병합할 수 있다. 둘 다 `document_id`를
+    항상 싣는다 - [`search-evaluation.md`](search-evaluation.md) (C) 골든셋의 채점 단위.
+  - `search/router.py`: `_ID_LIKE_RE`가 못 잡던 숫자 시작/한글 혼합 식별자(`2025_SH_업무_보고서`
+    - `_`/`-`로 이어진 3토큰 이상)와 확장자(.pdf/.xlsx/.docx/.pptx/.hwp…) 포함 토큰을
+    `has_exact_match_signal()`의 정확 일치 신호로 추가했다. `plan_search`의 하위 질의 라우팅은
+    여전히 `file_search`/`vector_search` 두 소스만 고른다 - `document_search`를 planner에 엮는
+    건 골든셋으로 효과를 잰 뒤에.
+  - **아직 없는 것**: `document_search` 후보를 `vector_search`/`lexical_search`의 `document_id`
+    필터로 바로 잇는 파라미터(지금은 모델이 후보를 고른 뒤 `sql_search`나 본문 검색을 이어 부른다),
+    Slack 채널 ID → 채널 이름 해석(제목이 `#C0BGQEQG1L6 2026-08-11` 형태로 남는다 - 컬렉터가
+    `channel_name`을 메타데이터에 넣으면 파생 로직은 이미 그걸 우선 쓴다).
+
+### 벡터 경로(pgvector) — 임베딩이 실제로 채워졌을 때 (2026-09-04 검증)
+
+`knowledge_object_embeddings`가 개발 DB에서 0행이라, `vector_search` → `search_by_embedding`
+→ `retrieve()`의 RRF까지 이어지는 경로는 **실데이터로 한 번도 실행된 적이 없었다**(골든셋 76개
+질의 전부에서 `vector_search` 0히트 - 버그가 아니라 데이터 부재). 임베딩을 채우기 전에 미리
+검증한 결과를 여기 남긴다. 재현 테스트는 `tests/search/test_vector_path.py`(결정론적
+`ConceptEmbedder`로 API 키 없이 돈다)와 `tests/storage/test_embedding_diagnostics.py`.
+
+**확인된 것** (모두 테스트로 고정):
+- 청크 grain 저장(`record_chunk_embeddings`) → `vector_search`가 **표면형이 전혀 겹치지 않는**
+  질의로 그 청크를 1위로 찾아낸다. `pgvector.Vector` 바인딩(INSERT/조회 양쪽), 코사인 거리
+  → 유사도(`1 - distance`) 부호, `ORDER BY`/`LIMIT`이 실제로 맞다.
+- `target_kind`(`chunk` / `knowledge_object` / 생략=혼합), `project_id`, `embedding_model`,
+  `since`/`until` 필터가 전부 벡터 경로에서도 실제로 걸린다. 특히 다른 모델 이름으로 저장된
+  같은 청크의 벡터는 랭킹에 절대 섞이지 않는다.
+- 청크 히트의 `summary`는 `embedded_text`를 500자(`_CHUNK_HIT_SUMMARY_CHARS`)로 자른 것,
+  KO 히트의 `summary`는 KO의 summary - 한 키로 통일된다.
+- `retrieve()`의 RRF(`merge_and_rerank`)에서 벡터 히트가 최종 랭킹에 실제로 반영된다. 소스
+  이름은 `vector_search`로 일치하고, 어휘 검색이 전혀 못 잡는 문서가 벡터 단독으로 결과에 남는다.
+
+**고친 버그: 필터가 걸린 ANN이 히트를 통째로 잃었다** (`PostgresStore._configure_ann_search`)
+
+HNSW 인덱스 스캔은 거리 순으로 그래프를 걸으며 대략 `hnsw.ef_search`(기본 40)개를 실행기에
+넘기고, WHERE는 **그 뒤에** 적용된다. 그래서 필터가 테이블의 소수만 고르면 후보가 전부 필터에
+지워지고 스캔은 "더 없음"을 반환한다 - 조건에 맞는 행이 분명히 있는데도 0히트. 이 스키마에서
+실측: 한 프로젝트에 4000행 + 다른 프로젝트에 3행을 넣고 작은 쪽으로 `search_by_embedding`을
+부르면 기본값(`hnsw.iterative_scan = off`)에서 **0행**, `strict_order`에서 정상적으로 3행.
+`EXPLAIN`상 `Index Scan using idx_koe_embedding_hnsw ... Rows Removed by Filter: 20`.
+
+가설이 아니라 상시 경로다: 실행기는 **항상** `project_id`로 거르고, temporal 질의는 거기에
+`since`/`until`을 더한다. 그래서 `connect()`(및 `init_schema()`)에서 세션 GUC
+`hnsw.iterative_scan = strict_order`를 켠다. `relaxed_order`가 아닌 이유는 `search_by_embedding`이
+거리를 그대로 `score`로 바꿔 호출자가 그 순서를 신뢰하기 때문. 작업량은 pgvector 자신의
+`hnsw.max_scan_tuples`(기본 20000)로 묶이고, 필터가 없는 질의의 지연시간은 실측상 차이가 없다.
+GUC가 없는 pgvector(<0.8)에서는 경고만 남기고 넘어간다.
+
+**고치지 않았지만 반드시 알고 있어야 하는 것 두 가지** — 둘 다 "임베딩 0행" 시절의 골든셋
+점수(v0 ndcg@10 0.865)를 임베딩을 채운 뒤와 비교할 때 지표를 움직인다. 임계값을 찍어 맞히는
+대신 `eval-ir`로 재고 나서 결정할 문제라 지금은 동작만 테스트로 고정해 두었다:
+
+1. **키워드 fallback이 사실상 영원히 안 돈다.** `_Run._keyword_fallback`/`_term_fallback`은
+   벡터가 0히트일 때만 도는 degrade 경로인데(임베딩 0행 상태를 위한 것), ANN은 관련도와 무관하게
+   항상 `limit`개를 돌려주므로 임베딩이 채워지는 순간 조건이 성립하지 않는다. term 분해 fallback은
+   v0에서 ndcg@10을 0.709 → 0.865로 올린 바로 그 경로다.
+2. **ANN에는 관련도 하한이 없다.** 코퍼스에 전혀 없는 주제를 물어도 유사도 0인 문서들이 후보로
+   올라온다. `exhaustive`/`count`/`negative`는 top-k 컷오프 없이 이 후보 집합을 그대로 답(문서
+   집합/개수)으로 쓰므로, `predicted_count`가 부풀고 "관련 문서 없음"이 정답인 질의가 무언가를
+   돌려주게 된다(`fetch_limit`이 `EXHAUSTIVE_LIMIT`=200인 것도 여기서 곱해진다).
+
+**`suggest_strategies`의 짧은 semantic_query** (확인만, 미수정): `semantic_query`가 비어 있지
+않기만 하면 `vector`가 붙는다. v0/v1-draft 골든셋 94개 질의에 규칙 추출을 돌려 보면 실제로
+"보낸"(`nonghyup.com 도메인 발신자가 보낸 메일`), "내용"(`… .pptx 내용을 요약해줘`)처럼 의미가
+남지 않은 잔여 토큰으로 벡터가 붙는 경우가 있다(6자 이하 7건). 다만 **길이 기준으로 막으면 안
+된다** - 같은 구간에 "동양생명"/"광주은행"/"인수인계"처럼 정상적인 4자 개념어가 섞여 있다.
+올바른 수정은 `_FILLER_RE`에 잔여 기능어를 더하는 쪽이고, 그건 `eval-ir` 회귀로 재고 나서 할 일.
+
+**실적재 확인** (2026-09-04, 청크 936개): 실제로 저장된 `embedding_model`은
+`openai/text-embedding-3-small`(OpenRouter의 모델 id)이고 `Settings.embedding_model`의 기본값은
+`text-embedding-3-small`이다 - 즉 **`.env`가 로드되지 않는 CWD에서 검색을 돌리면 그것만으로
+0히트가 된다**(pydantic의 `env_file=".env"`는 CWD 상대경로라 git worktree 안에서는 안 잡힌다).
+실데이터로 `search_by_embedding`을 돌려 히트 모양/`summary` 길이(496자)/`content_at`/self-match
+score 1.0까지 확인했다. 936행에서는 플래너가 아직 정확 Sort를 골라 위의 ANN 필터 문제가
+발동하지 않는다 - 비용 기반이라 행이 몇 천 개로 늘면 HNSW 경로로 넘어간다(그때가 바로 위
+`_configure_ann_search`가 막는 지점이다).
+
+**진단**: `PostgresStore.embedding_coverage(embedding_model, project_id)`(→ `PipelineStore`에도
+노출). 벡터 검색이 조용히 0히트가 되는 원인 세 가지 - 행이 없다 / 저장할 때와 검색할 때 모델
+이름이 다르다 / 다른 프로젝트에만 있다 - 를 한 번에 보여준다(`rows_by_model_and_kind`는 모델
+필터 없이 집계하므로 이름 불일치가 바로 드러난다). CLI 노출은 아직 없다(`cli.py`는 이 작업
+범위 밖) - `knowledge-forge db embedding-coverage` 정도로 얇게 감싸면 된다.
 
 ## ④ Context Engineering — 부분 구현
 
@@ -178,13 +461,74 @@ consistency, relevance filtering, evidence clustering)은 없다. 지금 규모(
 질의당 최대 5건, 소스 최대 2개)에서는 모델 컨텍스트 윈도우에 그대로 넣어도 감당 가능하다고 보고
 미룬 것 - evidence 개수/소스 수가 늘어나면 가장 먼저 필요해질 레이어.
 
-## ⑤ Map-Reduce / Hierarchical Retrieval — 설계만, 미구현
+## ⑤ Map-Reduce / Hierarchical Retrieval — 부분 구현 (document expansion만, `search/document.py`)
 
 "지난 1년간 회사 AI 전략 변화 요약" 같은, 문서 수천~수만 개를 partition→map→reduce하거나
 Message→Chunk 요약→Document 요약→Project 요약처럼 계층적으로 사전 요약해 둬야 하는 질문은 지금
 스코프 밖이다. `pipeline.py`가 이미 문서 단위 map-reduce 요약(`extraction/schemas.py`의
 `ExtractionResult.summary`를 모아 재요약)을 고민한 흔적이 `roadmap.md`(7단계 이전 문서 요약
 설계)에 있으니, 필요해지면 그 설계를 확장하는 방향이 될 것.
+
+### Document Expansion (`read_document` 도구, `search/document.py`) — **구현됨**
+
+위 문단의 "수천 문서 map→reduce"는 여전히 스코프 밖이지만, 그 계층의 가장 작은 단위 - **문서
+하나를 통째로, 순서대로 읽는 것** - 은 top-k 검색만으로는 아예 답할 수 없는 질의 유형이 실제
+질문에서 반복돼서 먼저 구현했다. 청크 grain 임베딩(`embeddings.md`)이 들어오면서 `vector_search`가
+`document_id`를 히트마다 싣게 됐으니, "검색으로 문서를 특정 → 그 문서를 확장(expand)해서 읽는다"
+는 2단계가 자연스럽게 열린 것이기도 하다.
+
+**왜 필요했는가 - top-k로 못 푸는 네 가지 질의 유형**:
+
+| 유형 | 예 | top-k가 실패하는 이유 |
+|---|---|---|
+| whole-document summary | "2025_SH_업무_보고서 요약해줘" | 요약은 문서 전체가 입력이어야 한다 - 상위 k청크는 "잘 매칭된 일부"일 뿐 |
+| long-range extraction | "보고서 전체에서 핵심 리스크만 정리" | 리스크는 문서 곳곳에 흩어져 있고 질의 임베딩과 개별 청크의 유사도는 낮다 |
+| sequence / ordering | "회의에서 처음 제안된 내용과 최종 결정 비교" | "처음"/"최종"은 문서 내 **순서** 정보인데 랭킹은 순서를 버린다 |
+| negative / absence | "A 프로젝트에서 언급되지 않은 기술은?" | 부재는 전체를 다 봐야 증명된다 - 검색 결과에 없다는 것은 문서에 없다는 뜻이 아니다 |
+
+**무엇을 만들었나** (계층 설계는 `agent-runtime.md`의 원칙 그대로 - 서비스 함수 하나, 얇은 어댑터 둘):
+
+- `PostgresStore.list_chunks_by_document(document_id, *, hierarchy_level=None)` (+`PipelineStore` 위임):
+  `sequence_index` 순 정렬. **기본이 "모든 hierarchy_level"인 이유**: `chunking/adaptive.py`는 leaf
+  단위만 Chunk로 물질화한다 - 분할된 상위 단위는 emit되지 않고 `parent_chunk_id`는 항상 None,
+  `(document_id, sequence_index)`는 유일하다. 즉 한 문서의 청크는 레벨이 섞여 있어도(개발 DB 263건
+  중 2건: paragraph+sentence 이메일 스레드, chapter+section 보고서) 겹치지 않는 하나의 시퀀스라,
+  특정 레벨만 고르면 본문이 빠진다. `hierarchy_level` 필터는 나중에 multi-resolution 저장소가 생겼을
+  때를 위한 것이고 `read_document`는 쓰지 않는다.
+- `search/document.py::read_document(document_id, store, *, max_chars=None, offset=0)`: `{document_id,
+  title, source{source_id, source_type, uri, modified_at}, total_chunks, total_tokens, offset, chunks[{chunk_id,
+  sequence_index, page_start, page_end, text}], truncated, next_offset}`. 없는 문서는 None. `title`은
+  `documents.metadata.title`만 본다(별도 컬럼 가정 없음). `store`는 Protocol이라 `PipelineStore`(도구)와
+  `PostgresStore`(HTTP 라우트) 둘 다 받는다.
+- agent 도구 `read_document` (`agent/tools.py::_make_read_document_tool`): `vector_search`와 같은
+  "`KF_DATABASE_URL` 있을 때만 등록, 호출마다 `PipelineStore` 열기" 패턴. 없는 ID는 `read_file`의
+  FileNotFoundError처럼 예외 → `agent/loop.py`가 "error: document not found: …" tool_result로 바꾼다.
+- `GET /documents/{document_id}/chunks?offset=&max_chars=` (`api/routes/sources.py`): 같은 응답 모양
+  (`DocumentChunksResponse`) - UI가 긴 문서를 넘겨볼 때 에이전트와 같은 `next_offset` 계약을 쓴다.
+
+**컨텍스트 예산 결정** - 검색 히트에 `_CHUNK_HIT_SUMMARY_CHARS`(500자)/`_MAX_SEARCH_LIMIT`(50)을
+두는 것과 같은 걱정을 문서 단위로 옮긴 것:
+
+- 페이지 단위는 **글자 수 예산(`max_chars`) + 청크 인덱스 오프셋(`offset`)**. 청크를 중간에서 자르지
+  않는다(자르면 그 뒷부분을 다시 읽을 방법이 없다). 예산이 차면 `truncated: true`와 다음 청크 인덱스
+  `next_offset`을 돌려주고, 시스템 프롬프트가 "끝까지 이어 읽으라"고 지시한다 - 부재 확인 질의는
+  마지막 페이지까지 읽어야 답이 성립하기 때문.
+- **페이지의 첫 청크는 예산을 넘어도 항상 포함**한다 - 청크 하나가 `max_chars`보다 길 때 빈 페이지 +
+  같은 `next_offset`을 돌려주면 호출자가 영원히 제자리걸음이다. 청크 상한은 chunker의 토큰 예산(기본
+  4000×0.8)이라 초과 폭은 유한하다.
+- 도구 기본 `max_chars`는 **20,000자**, 서버 상한 **50,000자**. 근거는 개발 DB 실측(문서 263건/청크
+  936건 기준 문서당 평균 ~770자, 최장 ~21.6K자/437청크): 기본값이면 거의 모든 문서를 한 번에 읽고
+  최장 문서도 두 페이지면 끝난다. 한국어 20K자는 대략 15~25K 토큰 - 컨텍스트 윈도우의 한 자리 수 %
+  - 이고, 상한은 모델이 큰 값을 불러도 tool_result 하나가 예산을 통째로 날리지 못하게 막는다
+  (`_clamp_limit`, "모델이 부른 값을 그대로 믿지 않는다"). `total_tokens`(청크 `token_count` 합)를 같이
+  실어서 모델이 "몇 페이지짜리 문서인지"를 첫 호출에서 가늠하게 했다.
+- 매 페이지 청크 전체를 읽고 서비스에서 자른다 - 현재 규모에서 한 번의 조회가 충분히 싸고,
+  페이지마다 총계를 다시 세는 별도 쿼리보다 단순하다. 문서가 수천 청크로 커지면 store에 LIMIT/OFFSET을
+  내리고 총계 쿼리를 분리하는 게 다음 단계.
+
+**여전히 안 한 것**: 문서 여러 개를 한 질문에 확장하는 map-reduce(문서 N개 × 20K자는 예산 안에 안 든다 -
+그때는 `delegate_task`로 문서당 서브에이전트를 돌려 요약을 모으는 것이 지금 도구로 가능한 우회),
+문서 요약의 사전 계산/캐시(`roadmap.md`의 문서 요약 설계), 청크 텍스트 안의 표/이미지 전사 품질.
 
 ## ⑥ Temporal Search — 구현됨, `search/temporal.py` + `search/sql.py`
 

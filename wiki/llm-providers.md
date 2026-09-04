@@ -66,6 +66,10 @@ OpenRouter는 `provider/model-name` 형식을 쓴다 (`anthropic/claude-haiku-4.
   {...}})`를 호출해 구조화 출력을 받는다. `ExtractionResult.model_json_schema()`를 OpenAI
   strict 모드가 요구하는 형태(`additionalProperties: false` + 모든 프로퍼티를 `required`에
   포함)로 후처리하는 `_to_strict_json_schema()` 헬퍼가 포함되어 있다.
+- `src/knowledge_forge/embedding/openrouter_provider.py` — `OpenRouterEmbeddingProvider`.
+  `client.embeddings.create(model=..., input=[...])`만 호출한다(`dimensions`는 보내지 않는다 —
+  OpenRouter 문서에 없는 파라미터라 모델별 동작이 불확실). 응답 순서 방어와 차원 검증
+  (`embedding/validation.py`)이 추출 경로와 다른 점.
 - `src/knowledge_forge/vision/openrouter_extractor.py` — `OpenRouterVisionExtractor`. 동일한
   `chat.completions.create`를 쓰되, 이미지는 Anthropic의 `{"type":"image","source":{...}}`가
   아니라 OpenAI 방식 `{"type":"image_url","image_url":{"url":"data:<mime>;base64,<...>"}}`
@@ -98,6 +102,28 @@ OpenRouter는 `provider/model-name` 형식을 쓴다 (`anthropic/claude-haiku-4.
   점검이 잡을 수 있는 건 "CLI 자체가 아예 없음" 케이스뿐이다(다른 두 프로바이더의 사전 점검과
   같은 한계). CLI의 사전 점검(`_ensure_authenticated`)이 이걸 쓴다.
 
+## 임베딩도 OpenRouter로 붙일 수 있다 (별도 스위치)
+
+`KF_LLM_PROVIDER`는 Knowledge Extraction/Vision의 백엔드만 고른다. 임베딩은
+`KF_EMBEDDING_PROVIDER`라는 **별도 스위치**를 쓰며(`agent_provider`가 별도인 것과 같은 이유 —
+추출은 Anthropic, 임베딩은 OpenRouter 같은 조합이 정당하다), `openrouter`로 두면
+`embedding/openrouter_provider.py`가 OpenRouter의 OpenAI 호환 `/embeddings`를 호출한다. 자세한
+내용은 [`embeddings.md`](embeddings.md)의 "OpenRouter / OpenAI 호환 엔드포인트" 절.
+
+여기서 알아둘 두 가지:
+
+- **임베딩 키만은 `KF_` 접두 설정(`KF_EMBEDDING_API_KEY`)으로도 넣을 수 있다.** 위 표의
+  `OPENROUTER_API_KEY`/`ANTHROPIC_API_KEY`는 provider 클래스가 `os.environ`에서 직접 읽으므로
+  셸 `export`가 필요한데, pydantic-settings는 `.env`를 `Settings`로만 읽고 `os.environ`에
+  주입하지 않는다(이 저장소엔 `load_dotenv()`가 없다). 즉 **`.env`에 적은 `OPENROUTER_API_KEY`는
+  어떤 경로로도 읽히지 않는다** — 추출 쪽도 마찬가지다. 임베딩만 `.env` 한 줄로 설정 가능하도록
+  예외를 뒀고, 근거는 [`embeddings.md`](embeddings.md)의 "왜 `KF_EMBEDDING_API_KEY`라는 예외를
+  뒀는가" 절에 있다.
+- **임베딩 응답은 `index`로 재정렬하고 차원을 검증한다.** 게이트웨이 경유라 순서 보장이
+  간접적이고, OpenRouter에는 3072/4096 차원 모델이 흔해 `schema.sql`의 `vector(1536)`와 어긋나기
+  쉽기 때문이다. 추출 경로엔 없는 방어이므로 임베딩 provider를 복사해 새 백엔드를 만들 때
+  같이 가져가야 한다.
+
 ## 코드 중복에 대한 설계 결정
 
 `OpenRouterExtractor.extract()`는 `KnowledgeObject`를 만드는 로직을 `ClaudeExtractor.extract()`
@@ -110,7 +136,8 @@ OpenRouter는 `provider/model-name` 형식을 쓴다 (`anthropic/claude-haiku-4.
 
 **OpenRouter 경로는 실제 OpenRouter API 키로 라이브 검증되지 않았다.** 이 환경엔
 `OPENROUTER_API_KEY`가 없어서, `tests/extraction/test_openrouter_extractor.py`/
-`tests/vision/test_openrouter_extractor.py`/`tests/test_provider_factory.py` 전부 OpenAI SDK
+`tests/vision/test_openrouter_extractor.py`/`tests/test_provider_factory.py`/
+`tests/embedding/test_openrouter_embedding_provider.py` 전부 OpenAI SDK
 클라이언트를 모킹한 상태로만 검증했다(이 저장소의 다른 모든 외부 API 테스트와 동일한 철학 —
 SaaS 커넥터([`saas-connectors.md`](saas-connectors.md)), HWPX 등과 같은 급의 한계).
 

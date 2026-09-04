@@ -13,8 +13,9 @@ edges by reading `links/*.yaml` files alone, the same way it already reads
 
 from datetime import datetime
 from enum import Enum
+from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class LinkType(str, Enum):
@@ -26,6 +27,12 @@ class LinkType(str, Enum):
     THREAD_SEQUENCE = "thread_sequence"  # adjacent threads in the same mailbox, by time (context/gmail.py)
     CROSS_SOURCE_REFERENCE = "cross_source_reference"  # e.g. a doc citing a Slack thread
     DUPLICATE_OF = "duplicate_of"  # near-duplicate resource merged into a canonical one
+    # Document-to-document edges materialized in Postgres `document_links`
+    # (document_links.py, wiki/storage.md). Direction is from -> to:
+    PREVIOUS_VERSION = "previous_version"  # newer version -> the version right before it (same version_family)
+    ATTACHMENT_OF = "attachment_of"  # attachment file -> the mail/message it came with (schema-only today)
+    PARENT_FOLDER = "parent_folder"  # file -> its Drive folder (schema-only: folders aren't Documents yet)
+    THREAD_PARENT = "thread_parent"  # Slack thread episode -> the timeline episode holding its parent message
 
 
 class LinkEndpoint(BaseModel):
@@ -46,4 +53,25 @@ class Link(BaseModel):
     target_ref: LinkEndpoint
     label: str | None = None
     confidence: float | None = None
+    created_at: datetime
+
+
+class DocumentLink(BaseModel):
+    """A directed, typed edge between two *Documents*, persisted in the
+    `document_links` table (storage/schema.sql). `Link` above is the OKF
+    file-tree view of the same idea keyed by (source_id, document_id)
+    pairs; this is the queryable Postgres one keyed by document_id alone,
+    so `search/sql.py` can JOIN it against `documents` directly. Read
+    `from_document_id --link_type--> to_document_id` the way the type
+    name reads: "from has PREVIOUS_VERSION to", "from is an ATTACHMENT_OF
+    to", "from's THREAD_PARENT is to". The two sequence types keep the
+    direction `pipeline._resolve_links` already gives `Link`: from is the
+    *earlier* episode/thread, to is the one that followed it."""
+
+    link_id: str
+    from_document_id: str
+    to_document_id: str
+    link_type: LinkType
+    confidence: float | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime

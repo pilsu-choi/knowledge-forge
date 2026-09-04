@@ -21,8 +21,10 @@ from knowledge_forge.agent.plan import PlanState, make_plan_tool
 from knowledge_forge.agent.providers.base import ChatProvider, ToolSpec
 from knowledge_forge.config import settings
 from knowledge_forge.okf.fs_service import edit_file, list_dir, read_file, write_file
+from knowledge_forge.search.document import read_document
 from knowledge_forge.search.planner import DEFAULT_LIMIT_PER_SUBQUERY, plan_and_search
-from knowledge_forge.search.service import file_search, vector_search
+from knowledge_forge.search.retrieve import retrieve
+from knowledge_forge.search.service import document_search, file_search, lexical_search, vector_search
 from knowledge_forge.search.sql import describe_schema, sql_search
 from knowledge_forge.search.temporal import parse_temporal_expression
 
@@ -33,6 +35,17 @@ from knowledge_forge.search.temporal import parse_temporal_expression
 # 잘 동작하는 모델에겐 힌트일 뿐이라, 핸들러에서도 반드시 clamp한다.
 _MAX_SEARCH_LIMIT = 50
 _MAX_PLAN_SEARCH_LIMIT_PER_SUBQUERY = 20
+
+# `read_document`의 한 페이지 본문 글자 수 예산. 기본 20,000자는 개발 DB 기준 문서
+# 대부분(평균 ~770자, 최장 ~21.6K자)을 한 번에 담으면서도 한국어 기준 대략 15~25K
+# 토큰 - 컨텍스트 윈도우의 한 자리 수 % - 에 머무는 값이고, 상한 50,000자는 모델이
+# 큰 값을 불러도 tool_result 하나가 예산을 통째로 날리지 못하게 막는다(위
+# `_MAX_SEARCH_LIMIT`와 같은 "모델이 부른 값을 그대로 믿지 않는다" 패턴). 긴 문서는
+# next_offset으로 이어 읽게 하는 편이 한 번에 다 싣는 것보다 낫다.
+_READ_DOCUMENT_DEFAULT_MAX_CHARS = 20_000
+_READ_DOCUMENT_MAX_CHARS = 50_000
+# `search` 도구 결과의 히트당 본문 상한 - `postgres_store.py::_CHUNK_HIT_SUMMARY_CHARS`와 같은 500자.
+_SEARCH_HIT_SUMMARY_CHARS = 500
 
 
 def _clamp_limit(value: Any, default: int, maximum: int) -> int:
@@ -104,6 +117,68 @@ VECTOR_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
     "required": ["query"],
 }
 
+_TIME_RANGE_PROPERTY: dict[str, Any] = {
+    "type": "string",
+    "description": (
+        "자연어 시간 표현으로 결과를 좁힌다 (예: '어제', '지난주', '지난달', '이번 분기', "
+        "'2025년 Q3', '최근 3일'). 이해하지 못하는 표현이면 무시된다(에러 아님)."
+    ),
+}
+
+DOCUMENT_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": (
+                "찾는 문서의 제목/파일명(또는 그 일부) - 예: '2025_SH_업무_보고서', 'SH 보고서', "
+                "'산출물 기간 변경'. 자연어 문장이 아니라 이름만 넣을 것."
+            ),
+        },
+        "project_id": {
+            "type": "string",
+            "description": "특정 프로젝트로 범위를 좁힌다. 생략하면 모든 프로젝트를 검색한다.",
+        },
+        "source_type": {
+            "type": "string",
+            "description": "소스 종류로 좁힌다: local_file/slack/gmail/google_drive/notion. 생략하면 전부.",
+        },
+        "limit": {
+            "type": "integer",
+            "description": f"반환할 최대 후보 수 (서버가 {_MAX_SEARCH_LIMIT}로 상한을 둔다).",
+            "default": 10,
+            "maximum": _MAX_SEARCH_LIMIT,
+        },
+        "time_range": _TIME_RANGE_PROPERTY,
+    },
+    "required": ["query"],
+}
+
+LEXICAL_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": (
+                "원문에 그대로 들어 있어야 하는 문자열 - 에러 코드('ERR_CONNECTION_RESET'), 티켓/문서 ID, "
+                "정확한 문구. 의미가 비슷한 표현은 찾지 못하므로 그런 경우엔 vector_search를 쓸 것."
+            ),
+        },
+        "project_id": {
+            "type": "string",
+            "description": "특정 프로젝트로 범위를 좁힌다. 생략하면 모든 프로젝트를 검색한다.",
+        },
+        "limit": {
+            "type": "integer",
+            "description": f"반환할 최대 결과 수 (서버가 {_MAX_SEARCH_LIMIT}로 상한을 둔다).",
+            "default": 10,
+            "maximum": _MAX_SEARCH_LIMIT,
+        },
+        "time_range": _TIME_RANGE_PROPERTY,
+    },
+    "required": ["query"],
+}
+
 PLAN_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -124,6 +199,55 @@ PLAN_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
             ),
             "default": DEFAULT_LIMIT_PER_SUBQUERY,
             "maximum": _MAX_PLAN_SEARCH_LIMIT_PER_SUBQUERY,
+        },
+    },
+    "required": ["query"],
+}
+
+READ_DOCUMENT_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "document_id": {
+            "type": "string",
+            "description": "읽을 문서의 document_id - document_search/vector_search 결과의 document_id를 그대로 쓸 것.",
+        },
+        "offset": {
+            "type": "integer",
+            "description": "이어 읽기를 시작할 청크 인덱스 - 이전 결과의 next_offset을 그대로 넘긴다. 생략하면 처음부터.",
+            "default": 0,
+        },
+        "max_chars": {
+            "type": "integer",
+            "description": (
+                f"한 번에 돌려줄 본문 글자 수 예산 (기본 {_READ_DOCUMENT_DEFAULT_MAX_CHARS}, 서버가 "
+                f"{_READ_DOCUMENT_MAX_CHARS}로 상한을 둔다). 예산이 차면 truncated: true와 next_offset이 돌아온다."
+            ),
+            "default": _READ_DOCUMENT_DEFAULT_MAX_CHARS,
+            "maximum": _READ_DOCUMENT_MAX_CHARS,
+        },
+    },
+    "required": ["document_id"],
+}
+
+SEARCH_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": (
+                "사용자의 질문을 자연어 그대로 - 시간 표현('지난주'), 파일명/에러 코드, '요약해줘'/'전부'/"
+                "'몇 건' 같은 의도 표현을 지우지 말고 넣을 것(그걸 보고 전략을 고른다)."
+            ),
+        },
+        "project_id": {
+            "type": "string",
+            "description": "특정 프로젝트로 범위를 좁힌다. 생략하면 세션 기본 project_id(있다면)를 쓴다.",
+        },
+        "limit": {
+            "type": "integer",
+            "description": f"반환할 최대 문서 수 (서버가 {_MAX_SEARCH_LIMIT}로 상한을 둔다).",
+            "default": 10,
+            "maximum": _MAX_SEARCH_LIMIT,
         },
     },
     "required": ["query"],
@@ -279,6 +403,171 @@ def _make_vector_search_tool(database_url: str) -> ToolSpec:
     )
 
 
+def _make_read_document_tool(database_url: str) -> ToolSpec:
+    """`read_document`(document expansion, `search/document.py`)는
+    `vector_search`와 같은 이유로 `KF_DATABASE_URL`이 있을 때만 추가되고
+    호출마다 `PipelineStore`를 열고 닫는다. 검색 도구들이 top-k 청크/KO만
+    돌려주는 것과 달리 문서 하나의 청크 **전체**를 순서대로 돌려준다 - 문서
+    전체 요약, "보고서에서 리스크만 전부", "처음 제안 vs 최종 결정", "언급되지
+    않은 것" 같은 질의는 상위 k건으로는 답할 수 없기 때문. 없는 document_id는
+    `read_file`의 FileNotFoundError와 같은 방식으로 예외를 던져 `agent/loop.py`가
+    "error: ..." tool_result로 바꾸게 한다 - 모델이 잘못 짚은 ID를 다시 검색하게
+    만드는 신호로는 그게 가장 분명하다."""
+    from knowledge_forge.storage.store import PipelineStore
+
+    async def _handler(args: dict[str, Any]) -> dict[str, Any]:
+        document_id = args["document_id"]
+        try:
+            offset = max(0, int(args.get("offset") or 0))
+        except (TypeError, ValueError):
+            offset = 0
+        max_chars = _clamp_limit(
+            args.get("max_chars"), default=_READ_DOCUMENT_DEFAULT_MAX_CHARS, maximum=_READ_DOCUMENT_MAX_CHARS
+        )
+        async with PipelineStore(database_url, settings.data_dir) as store:
+            result = await read_document(document_id, store, max_chars=max_chars, offset=offset)
+        if result is None:
+            raise LookupError(f"document not found: {document_id}")
+        return result
+
+    return ToolSpec(
+        name="read_document",
+        description=(
+            "document_search/vector_search로 document_id를 특정한 뒤, 문서 전체 요약·문서 내부 질문·"
+            "부재 확인('언급되지 않은 것은?')·순서 비교('처음 제안 vs 최종 결정')처럼 검색 top-k로는 답할 수 "
+            "없는 질문에 쓴다 - 그 문서의 청크 전체를 원문 순서(sequence_index)로 돌려준다. 단순 사실 "
+            "검색에는 쓰지 말 것. 긴 문서는 truncated: true와 next_offset이 돌아오므로 offset에 그 값을 "
+            "넣어 이어 읽을 것."
+        ),
+        input_schema=READ_DOCUMENT_INPUT_SCHEMA,
+        handler=_handler,
+    )
+
+
+def _make_search_tool(database_url: str, *, provider: ChatProvider | None, project_id: str | None) -> ToolSpec:
+    """`search`(통합 검색, `search/retrieve.py`) - `vector_search`와 같은 "database_url이 있을
+    때만, 호출마다 `PipelineStore`를 열고 닫는" 패턴. 개별 도구(document/lexical/vector/sql/
+    read_document)를 모델이 고르는 대신 질의 제약(`search/constraints.py`)으로 전략을 결정론적으로
+    조합한다 - 평가 하네스가 쓰는 것과 같은 경로라, 여기서 좋아진 것은 평가 지표에도 그대로
+    반영된다. `provider`가 있으면 제약 보강과 멀티홉 분해에 쓴다(없으면 규칙만).
+
+    결과는 `RetrievalResult.to_dict()`에서 hits 상위 limit개 + steps 요약만 싣는다 - 청크 원문은
+    검색 소스가 이미 500자로 자르지만(`postgres_store.py::_CHUNK_HIT_SUMMARY_CHARS`) 여기서도
+    같은 상한을 다시 건다(`_MAX_SEARCH_LIMIT`와 같은 "값을 그대로 믿지 않는다" 패턴)."""
+    from knowledge_forge.storage.store import PipelineStore
+
+    async def _handler(args: dict[str, Any]) -> dict[str, Any]:
+        limit = _clamp_limit(args.get("limit"), default=10, maximum=_MAX_SEARCH_LIMIT)
+        async with PipelineStore(database_url, settings.data_dir) as store:
+            result = await retrieve(
+                args["query"],
+                store=store,
+                provider=provider,
+                project_id=args.get("project_id") or project_id,
+                limit=limit,
+            )
+        payload = result.to_dict()
+        hits = []
+        for hit in payload["hits"][:limit]:
+            summary = hit.get("summary")
+            if isinstance(summary, str) and len(summary) > _SEARCH_HIT_SUMMARY_CHARS:
+                hit["summary"] = summary[:_SEARCH_HIT_SUMMARY_CHARS]
+            hits.append(hit)
+        return {
+            "strategies": payload["strategies"],
+            "constraints": payload["constraints"],
+            "steps": [
+                {"strategy": s["strategy"], "source": s["source"], "n_hits": s["n_hits"], "detail": s["detail"]}
+                for s in payload["steps"]
+            ],
+            "document_ids": payload["document_ids"][:limit],
+            "documents_read": payload["documents_read"],
+            "predicted_count": payload["predicted_count"],
+            "hits": hits,
+        }
+
+    return ToolSpec(
+        name="search",
+        description=(
+            "질의 의도를 분석해 제목/렉시컬/벡터/메타데이터/문서 전체 읽기 전략을 자동으로 조합하는 통합 검색 - "
+            "어떤 도구를 쓸지 모르겠으면 이것부터. 질문을 자연어 그대로 넣으면 시간 표현·파일명·에러 코드·"
+            "'요약해줘'/'전부'/'몇 건' 같은 의도를 읽어 필요한 검색을 골라 실행하고, 결과(document_id/"
+            "chunk_id/summary)와 함께 어떤 전략을 어떻게 돌렸는지(steps)를 돌려준다. 결과가 부족하면 "
+            "steps를 보고 document_search/lexical_search/vector_search/sql_search/read_document로 보충할 것."
+        ),
+        input_schema=SEARCH_INPUT_SCHEMA,
+        handler=_handler,
+    )
+
+
+def _make_document_search_tool(database_url: str) -> ToolSpec:
+    """`document_search`(`search/service.py`) - `vector_search`와 같은
+    "database_url이 있을 때만, 호출마다 `PipelineStore`를 열고 닫는" 패턴.
+    별도 도구로 두는 이유: "2025_SH_업무_보고서 찾아줘" 같은 Navigational 질의는
+    답이 *문서 하나(또는 후보 몇 개)* 이지 청크/KO가 아니라, 결과 모양 자체가
+    다르다(본문 없이 제목+document_id 목록). `file_search`/`vector_search`
+    결과에 섞어 넣으면 모델이 "이게 그 문서인지"를 특정하는 단계를 건너뛰고
+    스니펫부터 읽기 시작한다."""
+    from knowledge_forge.storage.store import PipelineStore
+
+    async def _handler(args: dict[str, Any]) -> list[dict[str, Any]]:
+        since, until = _resolve_time_range(args)
+        async with PipelineStore(database_url, settings.data_dir) as store:
+            return await document_search(
+                query=args["query"],
+                store=store,
+                project_id=args.get("project_id"),
+                source_type=args.get("source_type"),
+                limit=_clamp_limit(args.get("limit"), default=10, maximum=_MAX_SEARCH_LIMIT),
+                since=since,
+                until=until,
+            )
+
+    return ToolSpec(
+        name="document_search",
+        description=(
+            "문서를 제목/파일명으로 찾아 후보 목록(document_id, title, source_type, uri, modified_at, score)을 "
+            "반환한다 - '2025_SH_업무_보고서 찾아줘', 'SH 보고서'처럼 **어떤 문서인지 특정**해야 할 때 "
+            "가장 먼저 쓸 것(부분 일치/오타도 허용, 후보가 여러 개면 전부 반환하니 사용자에게 어느 것인지 "
+            "되물을 수 있다). 본문은 싣지 않는다 - 특정한 document_id로 lexical_search/sql_search를 이어갈 것. "
+            "내용/개념으로 찾는 질문에는 vector_search가 적합하다."
+        ),
+        input_schema=DOCUMENT_SEARCH_INPUT_SCHEMA,
+        handler=_handler,
+    )
+
+
+def _make_lexical_search_tool(database_url: str) -> ToolSpec:
+    """`lexical_search`(`search/service.py`) - `file_search`가 OKF 마크다운(추출된
+    KO 요약)만 보는 것과 달리 Postgres `chunks.text` 원문을 pg_trgm으로 보므로,
+    추출 과정에서 요약되며 사라진 에러 코드/ID 같은 리터럴도 찾는다."""
+    from knowledge_forge.storage.store import PipelineStore
+
+    async def _handler(args: dict[str, Any]) -> list[dict[str, Any]]:
+        since, until = _resolve_time_range(args)
+        async with PipelineStore(database_url, settings.data_dir) as store:
+            return await lexical_search(
+                query=args["query"],
+                store=store,
+                project_id=args.get("project_id"),
+                limit=_clamp_limit(args.get("limit"), default=10, maximum=_MAX_SEARCH_LIMIT),
+                since=since,
+                until=until,
+            )
+
+    return ToolSpec(
+        name="lexical_search",
+        description=(
+            "원문 청크(chunks.text)에서 문자열이 그대로 들어 있는 곳을 찾는다 - 에러 코드, 티켓/문서 ID, "
+            "정확한 문구처럼 리터럴 일치가 필요한 질의용. 결과는 vector_search와 같은 모양(document_id, "
+            "chunk_id, 일치 지점 주변 summary, score)이다. 패러프레이즈/개념 질문에는 vector_search를, "
+            "문서 자체를 제목으로 찾을 때는 document_search를 쓸 것."
+        ),
+        input_schema=LEXICAL_SEARCH_INPUT_SCHEMA,
+        handler=_handler,
+    )
+
+
 def _make_sql_search_tool(database_url: str) -> ToolSpec:
     """`sql_search`(Text-to-SQL, `search/sql.py`)는 `vector_search`와 같은
     이유로 `KF_DATABASE_URL`이 있을 때만 추가되고 호출마다 `PipelineStore`를
@@ -409,7 +698,7 @@ def default_tools(
     """The full tool set: file_search + read_file/write_file/edit_file/
     list_dir (OKF-root-scoped, `okf/fs_service.py`) + write_memory
     (project-scoped, `agent/memory.py`) + write_plan, plus vector_search/
-    sql_search when `KF_DATABASE_URL` is configured, plan_search (Query
+    sql_search/read_document when `KF_DATABASE_URL` is configured, plan_search (Query
     Planning/Routing) when a `provider` is given, and delegate_task
     (SubAgents) when a `provider`/`system` are both given.
 
@@ -419,7 +708,7 @@ def default_tools(
     넘겨서 turn 사이에 계획이 유지되게 한다 - `history`가 유지되는 것과 같은
     이유.
 
-    `vector_search`/`sql_search`는 `settings.database_url`(`KF_DATABASE_URL`)
+    `vector_search`/`sql_search`/`read_document`/`search`는 `settings.database_url`(`KF_DATABASE_URL`)
     이 설정되어 있을 때만 도구 목록에 추가된다 - `file_search`/파일시스템
     도구와 달리 Postgres 없이는 아예 실행할 수 없는 도구라, `embedding_enabled`
     (`--embed`)와 같은 "설정 안 되어 있으면 조용히 빠짐" 컨벤션을 따른다.
@@ -438,7 +727,7 @@ def default_tools(
     추가된다 - 자식 에이전트 턴을 실제로 돌리려면 둘 다 필요하기 때문이다.
     자식에게 넘기는 도구 집합은 `include_delegate=False`로 만든
     `default_tools()`를 그대로 쓴다 - **delegate_task 자신만 빠지고
-    나머지(file_search/vector_search/sql_search/plan_search/파일시스템/
+    나머지(file_search/vector_search/sql_search/read_document/plan_search/파일시스템/
     write_plan/write_memory)는 부모와 동일** - 이렇게 위임 한 단계 안에서
     재귀적 위임을 구조적으로 차단한다(자식의 도구 목록에는 애초에
     delegate_task가 없으므로)."""
@@ -456,6 +745,10 @@ def default_tools(
     if settings.database_url:
         tools.append(_make_vector_search_tool(settings.database_url))
         tools.append(_make_sql_search_tool(settings.database_url))
+        tools.append(_make_document_search_tool(settings.database_url))
+        tools.append(_make_lexical_search_tool(settings.database_url))
+        tools.append(_make_read_document_tool(settings.database_url))
+        tools.append(_make_search_tool(settings.database_url, provider=provider, project_id=project_id))
     if provider is not None:
         tools.append(_make_plan_search_tool(provider=provider, database_url=settings.database_url, project_id=project_id))
     tools.extend(

@@ -868,3 +868,40 @@ async def test_init_schema_migrates_the_pre_chunk_embeddings_table_in_place():
     finally:
         await admin_conn.execute(f"DROP DATABASE IF EXISTS {fresh_db}")
         await admin_conn.close()
+
+
+async def test_list_chunks_by_document_orders_by_sequence_index_and_optionally_filters_level(store):
+    src, doc, _, _, _ = _sample_records()
+    await store.save_source(src, None)
+    await store.save_document(doc)
+
+    def _chunk(index: int, level: HierarchyLevel) -> Chunk:
+        return Chunk(
+            chunk_id=f"test-lc-c{index}",
+            document_id="test-d1",
+            source_id="test-s1",
+            hierarchy_level=level,
+            sequence_index=index,
+            text=f"chunk {index}",
+            token_count=2,
+            element_ids=[f"e{index}"],
+            page_range=(index, index) if index % 2 == 0 else None,
+        )
+
+    # Inserted out of order and with a mix of levels - the adaptive chunker
+    # emits leaf units only, so a document's chunks across levels are one
+    # sequence and the default (no level filter) must return all of them.
+    await store.save_chunks([_chunk(2, HierarchyLevel.SENTENCE), _chunk(0, HierarchyLevel.PARAGRAPH), _chunk(1, HierarchyLevel.PARAGRAPH)])
+
+    chunks = await store.list_chunks_by_document("test-d1")
+    assert [c.sequence_index for c in chunks] == [0, 1, 2]
+    assert [c.hierarchy_level for c in chunks] == [HierarchyLevel.PARAGRAPH, HierarchyLevel.PARAGRAPH, HierarchyLevel.SENTENCE]
+    assert chunks[0].page_range == (0, 0)
+    assert chunks[1].page_range is None
+    assert chunks[0].element_ids == ["e0"]
+    assert sum(c.token_count for c in chunks) == 6
+
+    only_paragraphs = await store.list_chunks_by_document("test-d1", hierarchy_level=HierarchyLevel.PARAGRAPH)
+    assert [c.sequence_index for c in only_paragraphs] == [0, 1]
+
+    assert await store.list_chunks_by_document("test-does-not-exist") == []

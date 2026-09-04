@@ -60,13 +60,80 @@ _THIS_MONTH_RE = re.compile(r"이번\s?달")
 _LAST_MONTH_RE = re.compile(r"(?:지난|저번)\s?달")
 _THIS_QUARTER_RE = re.compile(r"이번\s?분기")
 _LAST_QUARTER_RE = re.compile(r"(?:지난|저번)\s?분기")
-_RECENT_RE = re.compile(r"최근\s*(\d+)\s*(일|주|개?월)")
+
+# --- "최근 N일" 계열의 수량 표기 -------------------------------------------------
+# 이전 패턴은 `최근\s*(\d+)\s*(일|주|개?월)`로 아라비아 숫자만 받았다. v0 골든셋 실측에서
+# `v0-relative_temporal-003`("최근 일주일 내 받은 Google Drive 공유 요청 메일")이 시간 조건을
+# 통째로 놓쳐(`steps`의 since=null) SQL에 기간 필터가 안 붙었다 - 한국어는 이 자리를 숫자 없이
+# 쓰는 쪽이 오히려 더 자연스럽다("일주일", "한 달", "이틀").
+#
+# 수량을 세 갈래로 나눈다:
+# (a) 융합형 - 수사와 단위가 한 낱말로 굳어 분해가 안 되는 것("하루", "이틀", "며칠").
+# (b) 숫자 + 단위 - 기존 계약 그대로. 단위에 "달"/"년"을 추가했다.
+# (c) 수사 + 단위 - 고유어(한/두/세…)와 한자어(일/이/삼…) 수사.
+#     (c)에서 단위 "일"과 "해"는 일부러 뺐다. "최근 오일"/"최근 사일"은 실제로 쓰지 않는
+#     표현인데 이를 허용하면 "최근 오일 가격"이 5일 범위로, "최근 오해"가 5년 범위로 오독된다.
+#     숫자를 쓴 "최근 5일"은 (b)가, "최근 한 해"는 (a)가 받으므로 손실이 없다.
+_FUSED_RECENT: tuple[tuple[str, int, str], ...] = (
+    (r"하루", 1, "일"),
+    (r"이틀", 2, "일"),
+    (r"사흘", 3, "일"),
+    (r"나흘", 4, "일"),
+    (r"닷새", 5, "일"),
+    (r"엿새", 6, "일"),
+    # "며칠"은 정확한 수가 없다. 규칙 단계는 recall 우선(범위를 넓게 잡아 후보를 잃지 않는 쪽)이라
+    # 일주일로 본다 - 좁게 잡아 정답 문서를 빼는 비용이 넓게 잡는 비용보다 크다.
+    (r"며칠", 7, "일"),
+    (r"반\s*년", 6, "개월"),
+    (r"한\s*해", 1, "년"),
+)
+_RECENT_COUNT_WORDS: dict[str, int] = {
+    "한": 1, "두": 2, "세": 3, "네": 4, "다섯": 5, "여섯": 6, "일곱": 7, "여덟": 8, "아홉": 9, "열": 10,
+    "일": 1, "이": 2, "삼": 3, "사": 4, "오": 5, "육": 6, "칠": 7, "팔": 8, "구": 9, "십": 10,
+}
+# 표면형 → parse_temporal_expression이 분기하는 정규 단위.
+_RECENT_UNIT_CANON: dict[str, str] = {
+    "일": "일", "주": "주", "주일": "주", "달": "개월", "월": "개월", "개월": "개월", "년": "년",
+}
+_FUSED_ALT = "|".join(pattern for pattern, _count, _unit in _FUSED_RECENT)
+# 긴 수사가 짧은 수사에 먹히지 않도록 길이 내림차순(정규식 교체는 왼쪽 우선).
+_COUNT_WORD_ALT = "|".join(sorted(_RECENT_COUNT_WORDS, key=len, reverse=True))
+# "최근"/"지난" 뒤에 올 수 있는 수량 구절. `search/constraints.py`가 이 표면형을 재사용한다
+# (semantic_query에서 걷어내기 / "최근"을 latest 정렬 신호로 오독하지 않기) - 표기 목록이
+# 두 파일로 갈라지면 반드시 어긋나므로 여기 하나만 둔다.
+RECENT_QUANTITY_PATTERN = (
+    rf"(?:{_FUSED_ALT}|\d+\s*(?:개?월|달|주일?|일|년)|(?:{_COUNT_WORD_ALT})\s*(?:개?월|달|주일?|년))"
+)
+RECENT_SPAN_PATTERN = rf"(?:최근|지난|저번)\s*{RECENT_QUANTITY_PATTERN}"
+# "지난 일주일"도 받는다 - 달력 주("지난주", `_LAST_WEEK_RE`)와 달리 now 기준 롤링 구간이다.
+# "지난주"/"지난 달"은 수량 자리가 비어 이 패턴에 안 걸리고 기존 달력 경계 분기로 내려간다.
+_RECENT_RE = re.compile(
+    rf"(?:최근|지난|저번)\s*(?:"
+    rf"(?P<fused>{_FUSED_ALT})"
+    rf"|(?P<num>\d+)\s*(?P<num_unit>개?월|달|주일?|일|년)"
+    rf"|(?P<word>{_COUNT_WORD_ALT})\s*(?P<word_unit>개?월|달|주일?|년)"
+    rf")"
+)
 _YEAR_MONTH_RE = re.compile(r"(\d{4})\s?년\s?(\d{1,2})\s?월")
 # Year-qualified quarter, tried before the bare form below so "2025 Q3"/
 # "2025년 3분기" keep their explicit year instead of defaulting to `now.year`.
 _QUARTER_WITH_YEAR_RE = re.compile(r"(\d{4})\s?(?:년)?\s*(?:[Qq](\d)|(\d)\s?분기)")
 _QUARTER_BARE_RE = re.compile(r"[Qq](\d)|(\d)\s?분기")
 _YEAR_ONLY_RE = re.compile(r"(\d{4})\s?년")
+
+
+def _recent_amount(match: re.Match[str]) -> tuple[int, str] | None:
+    """`_RECENT_RE` 매치를 (수, 정규 단위) 계약으로 편다 - 어느 갈래로 잡혔든 호출부는
+    (count, "일"|"주"|"개월"|"년") 하나만 본다."""
+    fused = match.group("fused")
+    if fused is not None:
+        for pattern, count, unit in _FUSED_RECENT:
+            if re.fullmatch(pattern, fused):
+                return count, unit
+        return None
+    if match.group("num") is not None:
+        return int(match.group("num")), _RECENT_UNIT_CANON[match.group("num_unit")]
+    return _RECENT_COUNT_WORDS[match.group("word")], _RECENT_UNIT_CANON[match.group("word_unit")]
 
 
 def _start_of_day(dt: datetime) -> datetime:
@@ -119,12 +186,15 @@ def parse_temporal_expression(text: str, now: datetime | None = None) -> TimeRan
             return TimeRange(start, _add_months(start, 3), f"{year}년 Q{quarter}")
 
     m = _RECENT_RE.search(text)
-    if m:
-        count, unit = int(m.group(1)), m.group(2)
+    amount = _recent_amount(m) if m else None
+    if amount is not None:
+        count, unit = amount
         if unit == "일":
             return TimeRange(now - timedelta(days=count), None, f"최근 {count}일")
         if unit == "주":
             return TimeRange(now - timedelta(weeks=count), None, f"최근 {count}주")
+        if unit == "년":
+            return TimeRange(_add_months(_start_of_day(now), -12 * count), None, f"최근 {count}년")
         return TimeRange(_add_months(_start_of_day(now), -count), None, f"최근 {count}개월")
 
     if _TODAY_RE.search(text):

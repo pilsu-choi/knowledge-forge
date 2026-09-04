@@ -66,6 +66,19 @@ sources(source_id TEXT PK, source_type TEXT, uri TEXT, collected_at TIMESTAMPTZ,
         modified_at TIMESTAMPTZ, project_id TEXT, metadata JSONB)
   원본 문서/메시지 1건. source_type: local_file/slack/gmail/google_drive/notion.
 
+documents(document_id TEXT PK, source_id TEXT REFERENCES sources, title TEXT NULL, metadata JSONB,
+          project_id TEXT, created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ)
+  파싱된 문서 1건(source와 1:1). title은 파일명/메일 제목/Slack "#채널 날짜"/첫 제목에서 파생된
+  검색용 제목이다(없으면 NULL) - 제목으로 문서를 찾을 땐 document_search 도구가 더 적합하지만,
+  SQL에서는 title ILIKE '%...%'로 조인 조건에 쓸 수 있다. elements(JSONB, 문서 요소 전체)
+  컬럼도 있지만 절대 SELECT하지 말 것(문서 하나가 수십 KB) - 필요하면 chunks.text를 쓸 것.
+
+chunks(chunk_id TEXT PK, document_id TEXT REFERENCES documents, source_id TEXT REFERENCES sources,
+       sequence_index INT, text TEXT, token_count INT, page_start INT, page_end INT)
+  문서를 나눈 원문 청크(document 안에서 sequence_index 순). text는 최대 수천 토큰이라 전체를
+  SELECT하지 말고 LEFT(text, 300) 같이 잘라서 볼 것 - 본문 문자열 일치 검색은 lexical_search
+  도구가 더 적합하다. project_id 컬럼이 없다 - documents 또는 sources와 JOIN해서 얻을 것.
+
 knowledge_objects(knowledge_object_id TEXT PK, type TEXT, source_id TEXT REFERENCES sources,
                    document_id TEXT, summary TEXT, content JSONB, topics JSONB(문자열 배열),
                    document_type TEXT, extracted_at TIMESTAMPTZ, version INT, supersedes TEXT)
@@ -90,6 +103,27 @@ knowledge_object_embeddings(embedding_id TEXT PK, target_kind TEXT ('knowledge_o
   embedding 컬럼은 절대 SELECT하지 말 것(1536차원 벡터라 응답이 거대해진다) - 이 테이블은
   "이 KO/청크가 임베딩되어 있는지" 존재 여부 확인 용도로만 쓸 것. target_kind에 따라
   knowledge_object_id 또는 chunk_id 중 하나만 채워져 있고 document_id는 항상 있다.
+
+문서 버전 메타데이터 - documents.metadata JSONB 안의 키(파일명/메일 제목에서 인제스트 시
+규칙 기반으로 파싱, 없으면 NULL):
+  metadata->>'version_family'          같은 문서의 여러 버전을 묶는 정규화된 이름 키
+  (metadata->>'version_number')::float  v2.1 -> 2.1, "3차 수정본" -> 3, "(1)" 복사본 -> 1, 초안 -> 0
+  metadata->>'version_label'            표기 원문("v2", "3차 수정본", "최종", "20260824" 날짜 접미)
+  (metadata->>'is_final')::boolean      최종/final/확정 표기 여부
+  "최종본/최신 버전" 질문: 이름으로 후보 문서를 찾은 뒤 그 문서의 version_family로 같은 family를
+  묶고, is_final = true인 행을 우선, 없으면 version_number DESC(NULL은 뒤로), 그래도 없으면
+  created_at DESC로 고를 것. "3차 수정본"은 version_number = 3 또는 version_label ILIKE '%3차%'.
+
+document_links(link_id TEXT PK, from_document_id TEXT REFERENCES documents,
+               to_document_id TEXT REFERENCES documents, link_type TEXT,
+               confidence DOUBLE PRECISION, metadata JSONB, created_at TIMESTAMPTZ)
+  문서 사이의 typed edge (from -> to). link_type:
+  previous_version  from = 최신 쪽, to = 바로 이전 버전 (같은 version_family 안에서만 생성)
+  thread_parent     from = Slack 스레드 에피소드, to = 그 부모 메시지가 들어 있는 채널 에피소드
+  same_channel_sequence / thread_sequence  from = 앞선 에피소드/스레드, to = 바로 다음 것
+  attachment_of / parent_folder  스키마상 정의만 있고 아직 생성되지 않는다.
+  "이 문서의 이전 버전" = document_links WHERE from_document_id = X AND link_type =
+  'previous_version'; 전체 이력은 previous_version 체인을 따라가거나 version_family로 묶을 것.
 
 규칙:
 - SELECT 또는 WITH ... SELECT만 허용된다 - INSERT/UPDATE/DELETE/DDL은 전부 거부된다.

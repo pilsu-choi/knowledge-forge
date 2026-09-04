@@ -1,0 +1,459 @@
+{
+  "golden_version": "v1-draft",
+  "created_at": "2026-09-04T07:19:42.987730Z",
+  "project_id": null,
+  "index_snapshot": {
+    "documents": 263,
+    "chunks": 936,
+    "knowledge_objects": 5107,
+    "sources_by_type": {
+      "gmail": 59,
+      "google_drive": 246,
+      "slack": 197
+    }
+  },
+  "queries": [
+    {
+      "id": "v1-draft-factoid-001",
+      "query": "LOG.md에 기록하면 안 되는 민감한 정보나 데이터에는 무엇이 있는가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "9593136ba4b899b3e45b60799d8fed40"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 9593136ba4b899b3e45b60799d8fed40 (google_drive). 정답: 민감 데이터, 고객사 원문, Slack token, API key, .env 값, 원본 로그 전문 / 규칙 설명 섹션에서 명확히 나열됨 [review:hard] 자동 검증: 정답 문서가 상위 10에 없음(전략=vector).",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null
+    },
+    {
+      "id": "v1-draft-factoid-002",
+      "query": "LOG.md에는 날짜별로 어떤 항목들을 짧게 기록하는가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "9593136ba4b899b3e45b60799d8fed40"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 9593136ba4b899b3e45b60799d8fed40 (google_drive). 정답: 목표, 변경 요약, 검증 결과, 실패/재시도 요약, 남은 리스크, 다음 액션 / 운영 로그 기록 규칙을 직접 묻는 질문 [review:hard] 자동 검증: 정답 문서가 상위 10에 없음(전략=vector).",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null
+    },
+    {
+      "id": "v1-draft-conversation_thread-001",
+      "query": "Slack 채널 #C0BSW8Y2AD9에서 각 과제별 3차 인터뷰 일정 확인을 요청한 메시지의 내용은 무엇인가?",
+      "primary_type": "conversation_thread",
+      "types": [
+        "conversation_thread"
+      ],
+      "expected": {
+        "document_ids": [
+          "accda39d727abafc7db973d34be8d95d"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "f58f2628cd09b248943fc7093a1670d9"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 f58f2628cd09b248943fc7093a1670d9 (slack). 정답: 각 과제별 3차 인터뷰 일정 다시 한번 확인해주세요 [review:hard] 자동 검증: 정답 문서가 상위 10에 없음(전략=metadata_filter,vector).",
+      "source_hash": "fbf56b91f61cdb0ad3e5290724cd2138d47cc8209eda9177868a7d91f8b27a3d",
+      "as_of": null
+    },
+    {
+      "id": "v1-draft-conversation_thread-002",
+      "query": "Slack 채널 #C0BSW8Y2AD9에 접수된 파일은 어떤 파일인가?",
+      "primary_type": "conversation_thread",
+      "types": [
+        "conversation_thread",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "accda39d727abafc7db973d34be8d95d"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "f58f2628cd09b248943fc7093a1670d9"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 f58f2628cd09b248943fc7093a1670d9 (slack). 정답: image.png [review:hard] 자동 검증: 정답 문서가 상위 10에 없음(전략=metadata_filter,vector).",
+      "source_hash": "fbf56b91f61cdb0ad3e5290724cd2138d47cc8209eda9177868a7d91f8b27a3d",
+      "as_of": null
+    },
+    {
+      "id": "v1-draft-temporal-001",
+      "query": "애자일소다(프로젝트_인텔) 폴더 공유 요청 메시지의 발송 일시는?",
+      "primary_type": "temporal",
+      "types": [
+        "temporal"
+      ],
+      "expected": {
+        "document_ids": [
+          "156dea7aab1fee827c11c1401e895625"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "09329e78f3aef958ea5f2c2c3f7c5101"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 09329e78f3aef958ea5f2c2c3f7c5101 (gmail). 정답: 2026년 8월 27일 00:42:51 UTC 자동 검증 rank=1.",
+      "source_hash": "d17deab2db2deb44b3ee29cae341e1d60cf0bbf15182fe08db04625da55c1d27",
+      "as_of": null
+    },
+    {
+      "id": "v1-draft-factoid-003",
+      "query": "애자일소다(프로젝트_인텔) Google Drive 폴더 공유 시 사용자에게 부여할 수 있는 역할은 무엇인가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "156dea7aab1fee827c11c1401e895625"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "09329e78f3aef958ea5f2c2c3f7c5101"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 09329e78f3aef958ea5f2c2c3f7c5101 (gmail). 정답: 공동작업자 또는 뷰어 [review:hard] 자동 검증: 정답 문서가 상위 10에 없음(전략=document_lookup,metadata_filter,vector).",
+      "source_hash": "d17deab2db2deb44b3ee29cae341e1d60cf0bbf15182fe08db04625da55c1d27",
+      "as_of": null
+    },
+    {
+      "id": "v1-draft-conversation_thread-003",
+      "query": "C0BTANFH9HQ에서 금요일 4시에 진행하기로 한 회의의 장소는?",
+      "primary_type": "conversation_thread",
+      "types": [
+        "conversation_thread",
+        "temporal",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "7cc1e1e3976daca7b75f2c6de6f40df0"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "e475cb865bf5f643d3f88cd788269d62"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 e475cb865bf5f643d3f88cd788269d62 (slack). 정답: 3층 중회의실 [review:hard] 자동 검증: 정답 문서가 상위 10에 없음(전략=vector).",
+      "source_hash": "2d95247ea10807fee4f66299ce170830e0fba05f24b431c2d172195bc01ee90a",
+      "as_of": null
+    },
+    {
+      "id": "v1-draft-conversation_thread-004",
+      "query": "Slack C0BTANFH9HQ 스레드에서 선 결제 정리 후 진행하기로 한 것은?",
+      "primary_type": "conversation_thread",
+      "types": [
+        "conversation_thread",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "7cc1e1e3976daca7b75f2c6de6f40df0"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "e475cb865bf5f643d3f88cd788269d62"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 e475cb865bf5f643d3f88cd788269d62 (slack). 정답: oa (4시에 진행) [review:hard] 자동 검증: 정답 문서가 상위 10에 없음(전략=metadata_filter,vector).",
+      "source_hash": "2d95247ea10807fee4f66299ce170830e0fba05f24b431c2d172195bc01ee90a",
+      "as_of": null
+    },
+    {
+      "id": "v1-draft-temporal-002",
+      "query": "AgentX 2팀 Google Drive 폴더 액세스 요청이 언제 들어왔나?",
+      "primary_type": "temporal",
+      "types": [
+        "temporal",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "9565cb093d088e5cb019a995828533d2"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "18aeb5d23cec9b99b2a129d706489071"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 18aeb5d23cec9b99b2a129d706489071 (gmail). 정답: 2026년 8월 5일(수요일) 08:18 UTC / 메일 수신 시각 명시 [review:hard] 자동 검증: 정답 문서가 상위 10에 없음(전략=metadata_filter,vector).",
+      "source_hash": "e99a1f20e0c0bc1753fdd84c498d0a110f8aea4a1b88dd0085545f98a5450fd6",
+      "as_of": null
+    },
+    {
+      "id": "v1-draft-factoid-004",
+      "query": "AgentX 2팀 폴더에 공동작업자를 추가하려면 어떻게 해야 하나?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "specific_document_qa"
+      ],
+      "expected": {
+        "document_ids": [
+          "9565cb093d088e5cb019a995828533d2"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "18aeb5d23cec9b99b2a129d706489071"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 18aeb5d23cec9b99b2a129d706489071 (gmail). 정답: 공유 링크를 클릭하고 공동작업자 또는 뷰어로 추가합니다. / Google Drive 공유 권한 부여 절차 [review:hard] 자동 검증: 정답 문서가 상위 10에 없음(전략=vector).",
+      "source_hash": "e99a1f20e0c0bc1753fdd84c498d0a110f8aea4a1b88dd0085545f98a5450fd6",
+      "as_of": null
+    },
+    {
+      "id": "v1-draft-factoid-005",
+      "query": "Dashboard 화면 수정 시 새로운 색상이나 radius를 만들어야 할 때는 어떻게 처리하나?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "2056402cb121b138c39886ae64aa4cf1"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 2056402cb121b138c39886ae64aa4cf1 (google_drive). 정답: 새로운 색상/radius/shadow를 만들지 말고 globals.css token을 사용해야 한다. / Dashboard 화면 수정 절차의 2단계를 다룬 실무 팁 [review:hard] 자동 검증: 정답 문서가 상위 10에 없음(전략=vector).",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null
+    },
+    {
+      "id": "v1-draft-factoid-006",
+      "query": "risk-agent API에서 API proxy contract가 변경되면 어떤 항목들을 함께 확인해야 하나?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "2056402cb121b138c39886ae64aa4cf1"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 2056402cb121b138c39886ae64aa4cf1 (google_drive). 정답: dashboard type과 risk-agent response를 함께 확인해야 한다. 또한 API contract 변경 시 dashboard proxy/type과 e2e 영향도를 봐야 한다. / risk-agent API 수정 절차의 3단계와 5단계를 종합한 확인 항목 자동 검증 rank=4.",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null
+    },
+    {
+      "id": "v1-draft-factoid-007",
+      "query": "3차 인터뷰에 사용하기 위해 전달된 파일은 무엇인가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "72e1c7f3dcf1c8a5bdf49c0cac65558a"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "5c41fa2e1436a1c7924afdc098e72199"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 5c41fa2e1436a1c7924afdc098e72199 (slack). 정답: 체크리스트 파일 [review:hard] 자동 검증: 정답 문서가 상위 10에 없음(전략=vector).",
+      "source_hash": "c5b931717c7f89af5508bf566a9b0b35d62ea9728dc9609bd4978eeac1a8b8b2",
+      "as_of": null
+    },
+    {
+      "id": "v1-draft-conversation_thread-005",
+      "query": "Slack #C0BT6M412N9 채널에서 체크리스트 파일 전달 시 어떤 요청을 했는가?",
+      "primary_type": "conversation_thread",
+      "types": [
+        "conversation_thread",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "72e1c7f3dcf1c8a5bdf49c0cac65558a"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "5c41fa2e1436a1c7924afdc098e72199"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 5c41fa2e1436a1c7924afdc098e72199 (slack). 정답: 인터뷰 전까지 수정이 필요한 내용이 있으면 피드백 요청 [review:hard] 자동 검증: 정답 문서가 상위 10에 없음(전략=metadata_filter,vector,exhaustive).",
+      "source_hash": "c5b931717c7f89af5508bf566a9b0b35d62ea9728dc9609bd4978eeac1a8b8b2",
+      "as_of": null
+    },
+    {
+      "id": "v1-draft-temporal-003",
+      "query": "프로젝트 투입 관리_2026-031_한국자산관리공사 파일의 소유권 이전이 발생한 날짜는?",
+      "primary_type": "temporal",
+      "types": [
+        "temporal",
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "410852b07001b87f56a3b1f23e73ab58"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "9de141a0727cead00a5076c6a1e91242"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 9de141a0727cead00a5076c6a1e91242 (gmail). 정답: 2026년 8월 12일 자동 검증 rank=9.",
+      "source_hash": "7ca61f349eee57258684b594fed04c8592fa867e28062529659e79a9c917e377",
+      "as_of": null
+    },
+    {
+      "id": "v1-draft-exact_match-001",
+      "query": "프로젝트 투입 관리_2026-031_한국자산관리공사 파일에 접근하는 Google Sheets 링크는?",
+      "primary_type": "exact_match",
+      "types": [
+        "exact_match",
+        "specific_document_qa"
+      ],
+      "expected": {
+        "document_ids": [
+          "410852b07001b87f56a3b1f23e73ab58"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "9de141a0727cead00a5076c6a1e91242"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 9de141a0727cead00a5076c6a1e91242 (gmail). 정답: https://docs.google.com/spreadsheets/d/1kiI2XeEXDg-xhHewVCj2eacuIc_ltQ0R/edit?usp=sharing&rtpof=true&sd=true&ts=6a7c1d7e 자동 검증 rank=9.",
+      "source_hash": "7ca61f349eee57258684b594fed04c8592fa867e28062529659e79a9c917e377",
+      "as_of": null
+    },
+    {
+      "id": "v1-draft-factoid-008",
+      "query": "ProjectIntel 신규 담당자를 위한 인수인계 문서의 목적은 무엇인가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "specific_document_qa"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "625263f8e604972420773e332b906a89"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 625263f8e604972420773e332b906a89 (google_drive). 정답: SSH 운영 서버, agent 구조, 개발 흐름을 한 번에 파악하고 첫 작업을 안전하게 시작하기 위한 통합 handover 문서 / 청크에서 문서의 주요 목적을 명시적으로 설명하는 부분 자동 검증 rank=2.",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null
+    },
+    {
+      "id": "v1-draft-factoid-009",
+      "query": "ProjectIntel handover 문서는 어떤 경우에 업데이트되어야 하는가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "625263f8e604972420773e332b906a89"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "자동생성(eval-gen). 근거 청크 625263f8e604972420773e332b906a89 (google_drive). 정답: 서버 별칭/경로, 배포 방식, agent routing, 주요 서비스 경계, 개발 검증 명령, Drive 인수인계 패키지 위치가 변경될 때 / 문서 유지보수 조건을 명확히 제시하는 부분 자동 검증 rank=2.",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null
+    }
+  ]
+}

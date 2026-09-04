@@ -12,6 +12,19 @@ class Settings(BaseSettings):
     again for OPENAI_API_KEY (embedding/openai_provider.py). The agent
     runtime (agent/providers/) reuses ANTHROPIC_API_KEY/OPENROUTER_API_KEY
     rather than minting its own env var names, for the same reason.
+
+    `embedding_api_key` below is the one deliberate exception to that rule,
+    and the reason is mechanical rather than stylistic: pydantic-settings
+    loads `.env` into THIS class only - it does not export those values into
+    `os.environ`, and nothing in this repo calls `load_dotenv()`. So a bare
+    `OPENAI_API_KEY=`/`OPENROUTER_API_KEY=` line in `.env` is read by nobody:
+    the provider classes look it up with `os.environ.get()`, which only sees
+    variables actually exported into the process. Every other credential
+    above belongs to an SDK/CLI that people already export (or that Docker
+    Compose passes through), but "put the embedding key in .env" is a
+    reasonable thing to expect and used to silently do nothing - hence one
+    KF_-prefixed key that .env CAN carry. The env-var paths still win nothing
+    and lose nothing: they stay as the last fallback in both providers.
     """
 
     model_config = SettingsConfigDict(env_prefix="KF_", env_file=".env", extra="ignore")
@@ -86,14 +99,80 @@ class Settings(BaseSettings):
     # convention) - see wiki/embeddings.md. Only takes effect when a store
     # is configured (embedding needs somewhere to write to). `--embed`/
     # `--no-embed` on `extract` overrides this per invocation.
+    # `search/retrieve.py`의 term 단위 키워드 fallback 튜닝 노브 - 임베딩이 없거나
+    # vector가 빈손일 때 질의를 term으로 쪼개 각각 조회하고, "질의의 term을 몇 개나 담았나"로
+    # 후보를 거른다. ratio는 term 수 대비 비율, min은 그 하한(term이 두세 개뿐인 짧은 질의에서
+    # 비율만 쓰면 1개만 겹쳐도 통과한다). 0으로 두면 필터가 꺼진다 - 재현율은 오르지만 "관련
+    # 문서 없음"이 정답인 질의(null/negative)와 개수 질의가 무너진다(wiki/search-evaluation.md).
+    # 기본값 2/3은 v0 골든셋 스윕에서 고른 값이다(wiki/search-evaluation.md의 표): 이보다
+    # 느슨하면(0.5~0.6) ndcg는 조금 더 오르지만 none_correct가 1.000에서 내려가고, 더 조이면
+    # (0.75) 재현율이 baseline 쪽으로 되돌아간다. 2/3은 baseline 대비 어느 지표도 나빠지지 않는
+    # 유일한 지점이었다.
+    # 주의: 임계값은 `ceil(term수 × ratio)`라 정확히 나누어떨어지는 지점에서 계단이 진다 -
+    # 2/3과 0.67은 term이 3·6·9개일 때 임계값이 다르다(2/3 → 2·4·6, 0.67 → 3·5·7). 반올림
+    # 문제처럼 보이지만 실제로 랭킹이 바뀐다(v0 실측 ndcg@10 0.845 vs 0.839). 이 값을 손댈 때는
+    # 소수점 두 자리로 어림하지 말고 실제로 재라.
+    term_coverage_ratio: float = 2 / 3
+    term_coverage_min: int = 2
+    # `latest` 후처리가 시각 내림차순으로 재정렬할 때 대상으로 삼는 **관련도 상위 문서 수**.
+    # 전체 후보를 시각으로 정렬하면 관련도 랭킹이 통째로 버려져 "질의와 상관없이 가장 최근
+    # 문서"가 1위가 된다 - 후보가 늘어날수록 나빠진다(v0-latest-001/002가 그렇게 0.000이 됐다).
+    # 기본 5는 v0 스윕에서 고른 값이다(wiki/search-evaluation.md): 7 이상이면 latest 0.544 /
+    # version 0.947로 되돌아가고, 5 이하는 latest 0.667 / version 1.000으로 평평하다. 다만
+    # 근거가 latest 3개 + version 7개뿐이라 잠정값이다 - 골든셋 v1에서 다시 재야 한다.
+    latest_relevance_pool: int = 5
+
+    # ANN(HNSW)에는 "관련도 하한"이 없다 - 코퍼스에 전혀 없는 주제를 물어도 가장 가까운
+    # `limit`개를 무조건 돌려주므로, "관련 문서 없음"이 정답인 질의(golden의 negative/null)
+    # 조차 후보가 찬다. exhaustive/count/negative는 컷오프 없이 그 후보 집합을 그대로 답으로
+    # 쓰기 때문에 임베딩을 채우자 v0에서 none_correct 1.000 → 0.000, count_match 0.333 →
+    # 0.000이 됐다(run 9ad2bba2). 이 값보다 낮은 코사인 유사도(`1 - distance`)의 벡터 히트를
+    # 버린다. 0.0은 끄는 값(하한 없음)이고, 모델/코퍼스마다 달라지는 값이라 기본값은 추측이
+    # 아니라 eval-ir 스윕으로 정한다 - 근거는 wiki/search-evaluation.md.
+    #
+    # 0.45는 v0 골든셋 76개 스윕(0.0/0.35/0.40/0.42~0.48/0.50)에서 고른 값이다. 0.42~0.47이
+    # ndcg@10 0.876~0.888의 고원이고 none_correct 1.000 / count_match 0.333이 그 구간 내내
+    # 유지된다. 최고점은 0.42(0.888)지만 기본값은 고원 한가운데로 잡았다 - v0는 사람 검수를
+    # 거치지 않은 스모크셋이라(wiki/search-evaluation.md) argmax를 박으면 과적합이고,
+    # 0.40에서 none_correct가 0.833으로 무너지는 절벽과의 안전거리가 ndcg +0.002보다 낫다.
+    # 0.0으로 두면 하한이 꺼지고 임베딩 채운 직후의 동작(ndcg 0.870)으로 돌아간다.
+    vector_min_score: float = 0.45
+
     embedding_enabled: bool = False
-    # Switch point for a future non-OpenAI embedding backend (mirrors
-    # llm_provider/get_extractor) - only "openai" is implemented so far.
-    embedding_provider: Literal["openai"] = "openai"
+    # Which embedding backend embedding/factory.py builds (mirrors
+    # llm_provider/get_extractor). "openrouter" talks to OpenRouter's
+    # OpenAI-compatible /embeddings endpoint - same wire protocol, so it is
+    # the same `openai` SDK with a different base_url and key, exactly like
+    # the extraction path's openrouter option.
+    embedding_provider: Literal["openai", "openrouter"] = "openai"
+    # The model name is provider-scoped: a bare OpenAI name for "openai"
+    # ("text-embedding-3-small"), an OpenRouter `vendor/model` slug for
+    # "openrouter" ("openai/text-embedding-3-small",
+    # "qwen/qwen3-embedding-8b", ...). Deliberately one key rather than a
+    # per-provider pair - see the comment in embedding/factory.py for why
+    # embeddings differ from extraction here.
     embedding_model: str = "text-embedding-3-small"
+    # The embedding API key, and the ONLY credential in this file - see the
+    # class docstring for why this one exception exists (short version: a
+    # non-KF_ key in `.env` is read by nothing). Applies to whichever
+    # provider is active; each falls back to its own conventional env var
+    # (OPENAI_API_KEY / OPENROUTER_API_KEY) when this is unset.
+    embedding_api_key: str | None = None
+    # Overrides the endpoint both providers point at. None means the
+    # provider's own default (api.openai.com for "openai",
+    # `openrouter_base_url` for "openrouter"). Set it to run "openai"
+    # against any OpenAI-compatible server - a local vLLM/TEI/LM Studio
+    # instance, an Azure-style gateway - without needing a third provider
+    # implementation, which is the same reason
+    # agent_openai_compatible_base_url exists for the agent runtime.
+    embedding_base_url: str | None = None
     # Must match the `vector(N)` dimension in schema.sql's
     # knowledge_object_embeddings table - changing embedding_model to one
     # with a different output dimension requires updating both together.
+    # embedding/validation.py checks the model's actual output against this
+    # on every embed() call, because getting it wrong otherwise surfaces as
+    # an opaque pgvector INSERT error much later; that matters more now that
+    # "openrouter" puts 3072/4096-dim models one config line away.
     embedding_dimensions: int = 1536
     # Which grain gets embedded (wiki/embeddings.md's "청크 기반 vs
     # KnowledgeObject 기반" comparison) - "knowledge_object" (default) embeds
