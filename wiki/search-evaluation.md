@@ -144,11 +144,12 @@ groundedness_score=1.0으로 정상 채점된다 - 이 둘을 구분하지 않�
 
 | 파일 | 역할 |
 |---|---|
-| `evaluation/golden.py` | 골든셋 pydantic 모델(`GoldenSet`/`GoldenQuery`/`GoldenExpected`), `QUERY_TYPES`, `load_golden`/`save_golden`, `compute_source_hash`, `check_staleness` |
+| `evaluation/golden.py` | 골든셋 pydantic 모델(`GoldenSet`/`GoldenQuery`/`GoldenExpected`), `QUERY_TYPES`, `SPLITS`, `load_golden`/`save_golden`, `compute_source_hash`, `check_staleness`, `stratified_split` |
 | `evaluation/ir_metrics.py` | 순수 함수 지표(DB/LLM/numpy 없음): `recall_at_k`/`precision_at_k`/`hit_at_k`/`mrr`/`ndcg_at_k`/`exhaustive_recall`/`count_match`/`none_correct`, 유형별 묶음 `score_query`, 전체·유형별 평균 `aggregate`, A/B용 `paired_delta`/`bootstrap_ci` |
-| `tests/eval/golden/v0.json` | 손으로 쓴 v0 골든셋(76개, 아래 참고) |
-| `tests/eval/golden/validate_v0.py` | 실 DB 대조 검증 스크립트(id 존재·소속, `source_hash` 일치) — DB가 필요하므로 pytest 밖 |
-| `tests/evaluation/test_golden.py`, `test_ir_metrics.py` | 로더 불변식·지표 손계산·집계·bootstrap 결정론 (DB 불필요, v0.json 로딩 포함) |
+| `tests/eval/golden/v0.json` | 손으로 쓴 v0 골든셋(76개, 아래 참고). **불변** — 과거 run ~15개의 기준선 |
+| `tests/eval/golden/v1.json` | 현행 골든셋(178개 = v0 76개 + 신규 102개, dev/test 분할 포함, 아래 참고) |
+| `tests/eval/golden/validate_golden.py` | 실 DB 대조 검증 스크립트(id 존재·소속, `source_hash` 일치, count↔문서 수 일치, 빈 notes 금지, 분할 균형) — DB가 필요하므로 pytest 밖. 인자 없이 부르면 v1.json |
+| `tests/evaluation/test_golden.py`, `test_ir_metrics.py` | 로더 불변식·지표 손계산·집계·bootstrap 결정론, `stratified_split` 결정성/균형 (DB 불필요, v0.json·v1.json 로딩 포함) |
 | `evaluation/ir_runner.py` | `run_ir_eval`: 골든셋 질의마다 `search/retrieve.py::retrieve` 호출 → `score_query` → `aggregate`, 결과를 `EvalRun`으로. retriever는 `retrieve_fn`으로 주입(기본값은 지연 import) |
 | `evaluation/gen.py` | `eval-gen`의 생성 파이프라인: `stratified_sample`/`generate_for_chunk`/`reject_reason`/`build_golden_query`/`verify_queries`/`generate_golden` (DB·LLM 모두 주입) |
 | `agent/providers/claude_agent_sdk.py` | 로컬 `claude` CLI 경유 텍스트 전용 ChatProvider(평가 전용, 도구 호출 거부) |
@@ -256,23 +257,149 @@ groundedness_score=1.0으로 정상 채점된다 - 이 둘을 구분하지 않�
 유형별 개수(primary_type 기준): factoid 10, navigational 4, specific_document_qa 4,
 metadata_filter 4, 나머지 18개 유형 각 3 (negative/null 각 3 = "정답 없음" 6개, ~8%).
 
+### v1 골든셋 (2026-09-04) — 178개, dev/test 분할
+
+`tests/eval/golden/v1.json`. **v0.json은 손대지 않았다**(과거 run과의 비교선). v1은 v0의 76개를
+질의 id까지 그대로 옮겨 오고 신규 102개를 붙인 것이다.
+`index_snapshot`: documents 358 / chunks 2856 / knowledge_objects 5107.
+
+> **주의: 이 시점의 인덱스는 `knowledge_object_embeddings`가 936행뿐이다**(청크 2856개 중
+> 1920개에 벡터 없음). v1은 그래서 **검색을 한 번도 돌리지 않고** 만들었다 — 코퍼스를 직접
+> 읽고(원문·SQL) 라벨했다. 검색 기반 검증은 백필 이후로 미뤘다
+> ([아래](#v1-이후-남은-것--검색-기반-검증-미실행)).
+
+**왜 이 크기인가 — 노이즈 바닥 실측.** v0(공통 n=70)으로 paired bootstrap(20k resample)을
+돌려 본 결과:
+
+- 단일 run ndcg@10의 95% 여유가 **±0.056**. 이 프로젝트의 개선 이력 전체(0.865 → 0.893, +0.028)가
+  그 여유 **안**에 들어간다.
+- `KF_VECTOR_MIN_SCORE` 11개 값 스윕에서 **유의차 0건**. 하한을 아예 끄는 것(0.0)조차 채택값
+  0.45와 구분되지 않는다(Δ −0.016, CI [−0.054, +0.026]).
+
+즉 v0은 **구조적 결정을 확인하기에는 충분하고 노브 값을 고르기에는 부족했다**. 기준을
+"95% 신뢰구간 반폭 ≤ 목표 효과"로 두고 실측 표준편차(넓게 흔드는 변경 paired sd ≈ 0.18,
+한두 질의만 움직이는 결정적 변경 ≈ 0.06, 단일 run의 질의별 ndcg sd ≈ 0.24)로 계산하면:
+
+| 세트 | n | A/B(넓은 변경) | A/B(좁은 변경) | 단일 run 절대값 |
+|---|---:|---:|---:|---:|
+| v0 (paired n=70) | 70 | ±0.042 | ±0.014 | ±0.056 |
+| **v1 전체** | **178** | **±0.026** | ±0.009 | ±0.035 |
+| v1 dev | 89 | ±0.037 | ±0.012 | ±0.050 |
+| v1 test | 89 | ±0.037 | ±0.012 | ±0.050 |
+
+넓은 변경 +0.03을 가르려면 n ≥ 139, +0.02는 n ≥ 312가 필요하다. 178은 전자를 넉넉히 넘고
+후자에는 못 미친다 — **+0.02짜리 튜닝은 이 세트로도 여전히 못 가른다**는 뜻이고, 300+로 키우는
+작성·검수 비용은 아직 그 값을 하지 않는다고 봤다.
+
+**분할: dev 89 / test 89, `primary_type` 층화, 파일에 박아 넣음.**
+
+- *어디에 두나*: 별도 파일도 별도 manifest도 아니고 **질의마다 `split` 필드**. 실행할 때 무작위로
+  뽑는 분할은 "dev에서 튜닝하고 test로 보고한다"는 규율을 성립시키지 못하고(어제의 dev가 오늘의
+  test가 된다), 별도 manifest는 질의를 추가하면서 갱신을 잊는 순간 조용히 어긋난다. 파일 하나가
+  정본이면 `--compare`도 그대로 쓰인다.
+- *어떻게 나누나*: `golden.py::stratified_split` — 난수도 해시 버킷도 쓰지 않고, `primary_type`
+  순 → 질의 id 순으로 훑으며 누적기에 1/2씩 더해 1을 넘을 때만 test로 보낸다. 정수(Fraction)
+  연산이라 플랫폼·해시시드와 무관하게 결정적이고, 누적기가 층 경계를 넘어 이어지므로 홀수 크기
+  층의 나머지가 한쪽에 몰리지 않는다. 결과는 **22개 유형 전부에서 dev/test 차이가 ≤ 1**이다.
+  `test_v1_split_is_what_stratified_split_produces`가 파일의 분할이 이 알고리즘으로 재현되는지
+  검사하므로, 누가 손으로 흔들면 테스트가 깨진다.
+- *반반인 이유*: dev를 키우면(예: 6:4) 튜닝 검정력은 조금 오르지만 정작 발표되는 test의
+  신뢰구간이 넓어진다. 어차피 반쪽 하나(n=89)로는 +0.03을 못 가르므로, **분할의 역할은 작은
+  효과를 재는 게 아니라 dev 과적합(부호 뒤집힘·큰 축소)을 잡는 것**이고 그 목적에는 두 반쪽이
+  서로 비교 가능한 게 먼저다.
+- *부분 라벨 금지*: `GoldenSet` 로더가 "전부 라벨 or 전부 무라벨"만 허용한다. 반쪽만 라벨된
+  세트에 `--split test`를 걸면 조용히 다른 모집단을 채점하게 되는데, 그건 눈에 띄지 않는다.
+  v0.json은 무라벨이라 그대로 읽힌다.
+
+**신규 102개를 어디에 넣었나** — 인계 시점의 약한 유형(multihop 0.645/n=4, latest 0.667/n=3,
+temporal 0.667/n=6, navigational hit@1 0.500/n=12, metadata_filter count_match 0.000/n=8)과
+n<5라 한 질의가 유형 점수를 ±0.25 흔들던 유형들에 몰았다.
+
+| primary_type | v0 | v1 | dev | test | | primary_type | v0 | v1 | dev | test |
+|---|---:|---:|---:|---:|---|---|---:|---:|---:|---:|
+| factoid | 10 | 17 | 9 | 8 | | negative | 3 | 6 | 3 | 3 |
+| navigational | 4 | 11 | 5 | 6 | | null | 3 | 6 | 3 | 3 |
+| metadata_filter | 4 | 11 | 6 | 5 | | parent_child | 3 | 7 | 4 | 3 |
+| aggregation | 3 | 9 | 5 | 4 | | relative_temporal | 3 | 7 | 3 | 4 |
+| entity_centric | 3 | 9 | 5 | 4 | | set_query | 3 | 7 | 4 | 3 |
+| specific_document_qa | 4 | 9 | 4 | 5 | | whole_document_summary | 3 | 7 | 3 | 4 |
+| temporal | 3 | 9 | 5 | 4 | | ambiguous | 3 | 7 | 3 | 4 |
+| latest | 3 | 8 | 4 | 4 | | conversation_thread | 3 | 7 | 4 | 3 |
+| multihop | 3 | 8 | 4 | 4 | | cross_document_comparison | 3 | 7 | 3 | 4 |
+| exact_match | 3 | 7 | 3 | 4 | | long_range_context | 3 | 7 | 3 | 4 |
+| sequence | 3 | 6 | 3 | 3 | | version | 3 | 6 | 3 | 3 |
+| | | | | | | **합계** | **76** | **178** | **89** | **89** |
+
+multi-label `types` 기준으로는 entity_centric 44, metadata_filter 30, navigational 24,
+factoid 21, set_query 21이 가장 많다(유형별 `n`의 합 > 전체 `n`).
+
+**신규 102개의 성격.**
+
+- **전부 `origin: "manual"`**이다. `eval-gen`은 쓰지 않았다 — `v1-draft.json`(18개 중 9개가
+  factoid)이 보여주듯 생성기는 쉬운 유형으로 쏠리고, 여기서 필요한 건 정확히 그 생성기가
+  만들 수 없는 유형들(aggregation/set_query/negative/null/multihop/비교/relative_temporal/
+  latest/ambiguous — `gen.py::SINGLE_CHUNK_TYPES` 밖)이었다.
+- 정답 근거는 두 갈래다.
+  - **(a) 코퍼스에서 세는 것**(temporal/relative_temporal/metadata_filter/aggregation/
+    set_query/latest/version/ambiguous/entity_centric — 43개). `notes`가 그 규칙을 SQL 수준으로
+    적고, 끝에 `[이 스냅샷 기준 N건 …]`으로 작성 시점의 개수를 남긴다.
+  - **(b) 원문을 읽어야 하는 것**(factoid/specific_document_qa/parent_child/multihop/비교/
+    conversation_thread/long_range_context/whole_document_summary/navigational/exact_match/
+    sequence — 나머지). `chunks.text`를 직접 읽고 `notes`에 정답 문장을 적었다.
+  - negative/null 6개는 그 문자열이 코퍼스 전체에 **없다는 것**을 확인해서 넣었다.
+- `validate_golden.py`가 **빈 `notes`를 경고**하고, `test_v1_invariants_hold_per_query`가
+  v1에 대해서는 **거부**한다. v0에서 비어 있던 5건은 원문을 다시 읽어 채웠다(정답 문서는 그대로).
+- 개인 이름은 여전히 질의에 넣지 않았다(v0 규칙 유지). 슬랙/메일 본문에는 실명이 많지만
+  질의는 채널·과제·프로젝트·파일명으로만 지시한다.
+- **정답 목록을 손으로 적지 않은 이유**: 작성 중에 코퍼스가 `documents 326 → 358`
+  (`chunks 936 → 2856`)로 자랐다. docx/pptx/pdf가 들어오면서 "전부"라는 라벨 10개가 그 자리에서
+  거짓이 됐다(예: 9월 Drive 문서 7 → 11, 'Plot Plan' 9 → 26). 그래서 이 부류는 전부 **코퍼스에서
+  다시 세어 넣었고**, `notes`에 그 규칙을 적어 다음 사람이 같은 방식으로 다시 셀 수 있게 했다.
+  파일은 여전히 불변이고, 드리프트는 `index_snapshot` + `check_staleness` + `validate_golden.py`로
+  잡는다.
+
+**v0에서 옮겨 오며 고친 정답 4건.** v0 작성 시점(documents 263) 이후 gdrive 문서가 7 → 99개로
+늘어 "전부"류 정답이 실제로 불완전해졌다.
+
+| 질의 | v0 | v1 | 이유 |
+|---|---:|---:|---|
+| `v0-entity_centric-001` 동양생명 | 7 | 8 | 인력 정리 엑셀이 추가됨 |
+| `v0-entity_centric-002` 광주은행 | 4 | 6 | 계약 원장 엑셀 2건이 추가됨 |
+| `v0-metadata_filter-003` pptx | 1 | 12 | v0 시점엔 pptx가 1개뿐이었다. 라벨을 그대로 두면 "그 한 개를 1위로"가 정답이 된다 — `exhaustive`도 `true`로 고쳤다(metadata_filter의 원래 정답 모양) |
+| `v0-set_query-001` 인수인계 마크다운 | 6 | 6 | 집합은 같지만 하드코딩을 걷어내고 mimeType으로 다시 세게 바꿨다 |
+
+나머지 exhaustive/aggregation 항목(caddy-drift 6, 주간 다이제스트 11, 공유 요청 23,
+PRJ-40311C8D17D84F 5, 키스텝 2, AGENTS.md 2, README 2)은 재확인 결과 그대로였다 — gmail 59개와
+slack 197개는 이 기간에 변하지 않았고, 자란 건 google_drive뿐이다.
+
+**코퍼스 함정: Drive 파일명 상당수가 NFD(자모 분해)로 저장돼 있다**(70개 중 19개를 확인).
+`metadata->>'name' like '%제조가부%'`가 4건만 잡는데 실제로는 7건이다. 한글 파일명으로 정답을
+뽑을 때는 반드시 Python `unicodedata.normalize("NFC", ...)` 후에 세야 한다. v1의 해당 질의
+(`v1-set_query-002`)는 NFC 기준으로 라벨했고 `notes`에 이 사실을 적었다.
+
 ### `knowledge-forge eval-ir` — 실행 기록과 A/B 비교
 
 ```bash
-# 실행: v0 전체, LLM 제약 추출 없이, 결과를 DB + JSON에 기록
-knowledge-forge eval-ir --golden tests/eval/golden/v0.json --no-llm --label baseline --json out/v0-baseline.json
+# 실행: v1 전체, LLM 제약 추출 없이, 결과를 DB + JSON에 기록
+knowledge-forge eval-ir --golden tests/eval/golden/v1.json --no-llm --label baseline --json out/v1-baseline.json
+# 노브 튜닝은 dev에서만, 헤드라인은 test에서만
+knowledge-forge eval-ir --golden tests/eval/golden/v1.json --split dev --no-llm --label "vfloor-0.45-dev"
+knowledge-forge eval-ir --golden tests/eval/golden/v1.json --split test --no-llm --label "adopted-test"
 # 일부만: 유형·질의 id 필터, 전략 override, 결과 수
-knowledge-forge eval-ir --golden tests/eval/golden/v0.json --type set_query,aggregation --strategies lexical --limit 20
+knowledge-forge eval-ir --golden tests/eval/golden/v1.json --type set_query,aggregation --strategies lexical --limit 20
 # 비교 / 목록
 knowledge-forge eval-ir --compare <run_a> <run_b> --metric ndcg@10
-knowledge-forge eval-ir --list --golden-version v0
+knowledge-forge eval-ir --list --golden-version v1
 ```
 
 옵션: `--project-id`(골든셋의 `project_id`가 있으면 그쪽 우선), `--limit 10`, `--k 1,3,5,10`,
 `--strategies vector,lexical`(라우팅 무시), `--no-llm`(provider 생성 안 함,
 `use_llm_constraints=False`), `--provider/--model`(`eval`과 동일), `--label`, `--type`(multi-label
-`types` 중 하나라도 맞으면 포함), `--query-id`(반복), `--concurrency 4`, `--no-store`(DB 미기록 —
-`index_snapshot`/staleness 검사도 생략), `--json PATH`. `KF_DATABASE_URL`은 세 모드 모두 필수.
+`types` 중 하나라도 맞으면 포함), `--query-id`(반복), `--split dev|test`(분할된 골든셋의 한쪽만 —
+분할이 없는 파일에 걸면 0개를 조용히 채점하는 대신 에러다. `config`에 들어가므로 dev run과
+test run은 `config_hash`가 갈리고, `--compare`가 둘을 짝지으려 들지 않는다), `--concurrency 4`,
+`--no-store`(DB 미기록 — `index_snapshot`/staleness 검사도 생략), `--json PATH`.
+`KF_DATABASE_URL`은 세 모드 모두 필수.
 출력은 전체 지표 한 줄 + 유형별 표(n, hit@1, recall@5, mrr, ndcg@10, exhaustive_recall,
 count_match, none_correct 중 존재하는 열) + 실패 질의 + stale 질의 + `run_id`.
 
@@ -295,7 +422,7 @@ count_match, none_correct 중 존재하는 열) + 실패 질의 + stale 질의 +
 
 | 테이블 | 열 |
 |---|---|
-| `eval_run` | `run_id` PK, `golden_version`, `golden_path`, `project_id`, `config` JSONB(provider/model/limit/strategies_override/use_llm_constraints/k_values), `config_hash`, `index_snapshot` JSONB, `git_commit`, `label`, `started_at`, `finished_at`, `summary` JSONB(`aggregate` 결과 + errors/stale_queries) |
+| `eval_run` | `run_id` PK, `golden_version`, `golden_path`, `project_id`, `config` JSONB(provider/model/limit/strategies_override/use_llm_constraints/k_values/split), `config_hash`, `index_snapshot` JSONB, `git_commit`, `label`, `started_at`, `finished_at`, `summary` JSONB(`aggregate` 결과 + errors/stale_queries) |
 | `eval_run_query` | PK(`run_id` FK CASCADE, `query_id`), `query_text`, `primary_type`, `types`, `ranked_document_ids`, `scores`, `predicted_count`, `metrics`, `strategies`, `steps`, `elapsed_ms`, `error` |
 
 run 행은 시작 시 한 번(summary 비움), 종료 시 한 번 더 upsert — 중간에 죽어도
@@ -392,11 +519,12 @@ flag 비율이 높은 건 대체로 생성기 문제가 아니라 **검증 환�
 
 ### 다음 단계
 
-1. **v1-draft 사람 검수 → v1 발행.** `[review:hard]` 12개부터 본다. 검수를 마치면 파일명을
-   `v1.json`으로 굳히고(그때부터 불변) 첫 절대값 기준(Tier A)으로 쓴다.
-2. **청크 하나로 못 만드는 유형**(aggregation/set_query/negative/null/multihop/비교/
-   relative_temporal/latest/ambiguous)은 여전히 손 작성이거나 별도 생성기가 필요하다 —
-   v0의 그 항목들을 v1로 옮겨 오는 게 가장 싸다.
+1. **v1은 `eval-gen` 없이 손으로 만들었다.** 위 초안이 보여주듯 생성기는 쉬운 유형(factoid)으로
+   쏠리는데, 규모를 키워야 했던 곳은 정확히 생성기가 만들 수 없는 유형들이었다.
+   `v1-draft.json`은 그대로 두고(생성기 회귀용 샘플) v1.json에는 넣지 않았다.
+2. **`eval-gen`을 다시 쓸 값어치가 있으려면** 유형을 지정해 생성하는 경로(`--type`)와,
+   청크 하나가 아니라 SQL 집계에서 정답을 만드는 경로(aggregation/set_query/metadata_filter)가
+   필요하다. v1을 손으로 만들며 쓴 방법이 그대로 그 설계도다.
 3. **`eval-gen --from-traffic`** — `search_feedback.rating='up' ∧ groundedness ≥ 0.9`인
    `search_log`의 evidence를 `origin: "feedback"`으로 편입(Tier C). 노이즈가 크므로 큐레이션 셋을
    대체하지 않는다.
@@ -700,6 +828,28 @@ win/loss/tie 9/5/56. `navigational`은 −0.096 → **−0.055**(2승 3패)로 �
    유형은 지금 데이터로 실제 테스트가 안 된다. parent_child 1.000은 "문서=부모"로 우회한 결과다.
 8. **골든셋 v0 자체** — `v0-latest-003`은 정답 문서 본문에 질의의 "3차"도 "공지"도 없다(사람의
    해석이 개입한 정답). v1 검수 때 질의문 수정 또는 제외 대상.
+   → v1은 이 질의를 **그대로 옮겨 왔다**(v0와의 연속성 우선). 다시 볼 대상으로 남아 있다.
+
+### v1 이후 남은 것 — 검색 기반 검증 (미실행)
+
+v1 작성 시점의 인덱스는 `chunks 2856 / knowledge_object_embeddings 936`으로 **청크 1920개에
+벡터가 없었다**(백필 대기). 그래서 **검색 결과에 의존하는 작업은 일부러 하지 않았다** — 반쪽만
+임베딩된 인덱스에서 잰 숫자는 틀린 숫자이고, 그걸로 골든셋을 손보면 세트가 현재 구현에
+맞춰진다. 남은 것:
+
+1. **v1 첫 baseline run** — `eval-ir --golden tests/eval/golden/v1.json --no-llm --label v1-baseline`.
+   v0 run들과는 `golden_version`이 달라 `--compare`가 거부한다(정상). v1의 기준선은 새로 잡는다.
+2. **`[review:hard]` 표시** — 신규 102개를 되돌려 검색해 상위 k에 정답 문서가 없는 것을 표시.
+   `eval-gen`이 하던 것과 같은 판정이지만 **버리지 않고 표시만** 한다.
+3. **난이도 라벨과 sd 재추정** — v1 run 하나로 질의별 ndcg 표준편차를 다시 재고, 위 표의
+   검출 한계를 v0 값(sd 0.18/0.24)이 아니라 v1 실측으로 갱신한다.
+4. **정답이 원리적으로 못 잡히는 질의 솎기** — 예: 청크가 0개인 문서(`6bf2a929`,
+   `0c836769`)를 정답에 포함한 질의(`v1-entity_centric-006` 포항)는 파일명으로만 닿을 수 있다.
+   구조적으로 불가능한 것과 검색이 약한 것을 가르는 건 실측 후의 사람 판단이다.
+5. **인제스트가 또 돌면 라벨을 다시 세야 한다** — v1 작성 중에만 documents가 326 → 358로 늘어
+   "전부"류 라벨 10개가 그 자리에서 틀렸다. baseline run 직전에 반드시
+   `uv run python tests/eval/golden/validate_golden.py`를 돌리고, "전부"류 질의는 `notes`의
+   규칙으로 다시 세어 대조한다. 그때 값이 달라지면 v1을 고치는 게 아니라 **v2를 낸다**.
 
 ### 동시 실행 주의
 
@@ -761,11 +911,11 @@ agent_groundedness_gate_max_retries: int = 2
    실패 원인 추적"의 최소 형태(사람이 `search_log`를 직접 읽는 것)를 제공한다.
 2. **(B) Groundedness/Citation LLM-judge 배치 — 구현됨.** `knowledge-forge eval`을 주기적으로
    돌리기 시작하면 실패 유형 데이터가 쌓인다.
-3. **(C) 골드셋 기반 Recall/Precision/MRR/NDCG — 스키마·v0·지표·`eval-ir`/`eval-gen` CLI
-   구현됨, v1 사람 검수가 다음.** `evaluation/golden.py`/`ir_metrics.py`/`ir_runner.py`/`ir_compare.py`,
-   `eval_run`/`eval_run_query` 테이블, `knowledge-forge eval-ir`(실행·`--compare`·`--list`)까지
-   있다. v0 baseline run은 남겼고, `eval-gen`이 낸 `v1-draft.json`을 사람이 검수해 v1으로
-   굳히는 것이 다음이다.
+3. **(C) 골드셋 기반 Recall/Precision/MRR/NDCG — 스키마·지표·`eval-ir`/`eval-gen` CLI 구현됨,
+   골든셋은 v1(178개, dev/test 분할)까지 왔다.** `evaluation/golden.py`/`ir_metrics.py`/
+   `ir_runner.py`/`ir_compare.py`, `eval_run`/`eval_run_query` 테이블, `knowledge-forge eval-ir`
+   (실행·`--compare`·`--list`·`--split`)까지 있다. 다음은 **임베딩 백필 후 v1 baseline run**과
+   ["v1 이후 남은 것"](#v1-이후-남은-것--검색-기반-검증-미실행)의 검색 기반 검증이다.
 4. **(D) 온라인 Groundedness Gate — 설계만.** `knowledge-forge eval`을 몇 주 돌려 실사용
    hallucination/citation 오류 빈도가 실제로 문제 될 만큼 나오는지 (B)의 데이터로 먼저
    확인한 뒤 켜는 옵션 - 데이터 없이 미리 만들면 근거 없는 지연시간/비용 증가가 된다.
