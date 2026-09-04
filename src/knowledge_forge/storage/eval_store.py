@@ -456,7 +456,11 @@ class EvalStore:
         time rather than copied from the gold file so a drifted index shows
         up as a snapshot mismatch in `eval-ir --compare`. chunks/knowledge_
         objects carry no project_id of their own, so they are scoped through
-        their document."""
+        their document.
+
+        `evaluation/ir_runner.py`가 이걸 run 시작과 종료에 **두 번** 부른다(그
+        사이에 코퍼스가 변했는지 보려고). 그러니 여기는 비싸면 안 된다 - 지금은
+        count 4개, 인덱스만 훑는다."""
         async with self.conn.cursor() as cur:
             await cur.execute(
                 "SELECT count(*) FROM documents WHERE (%s::text IS NULL OR project_id = %s)",
@@ -479,20 +483,91 @@ class EvalStore:
                 (project_id, project_id),
             )
             knowledge_objects = (await cur.fetchone() or (0,))[0]
+            # 모델 이름까지 쪼개서 센다. 검색은 `WHERE embedding_model = %s`로 거르므로
+            # (`search/service.py::vector_search`) 다른 모델의 벡터는 이번 run의 벡터
+            # arm에 존재하지 않는 것과 같다 - grain 합계만 보면 그 상황이 "정합"으로
+            # 보인다. `embeddings_by_kind`는 이 값의 모델 합산이고, 이 컬럼을 읽던
+            # 기존 코드/기존 행을 위해 그대로 남긴다.
             await cur.execute(
                 """
-                SELECT target_kind, count(*) FROM knowledge_object_embeddings
+                SELECT embedding_model, target_kind, count(*) FROM knowledge_object_embeddings
                 WHERE (%s::text IS NULL OR project_id = %s)
-                GROUP BY target_kind ORDER BY target_kind
+                GROUP BY embedding_model, target_kind ORDER BY embedding_model, target_kind
                 """,
                 (project_id, project_id),
             )
-            by_kind = {kind: n for kind, n in await cur.fetchall()}
+            by_model: dict[str, dict[str, int]] = {}
+            by_kind: dict[str, int] = {}
+            for model, kind, n in await cur.fetchall():
+                by_model.setdefault(model, {})[kind] = n
+                by_kind[kind] = by_kind.get(kind, 0) + n
+            # --- 내용 지문 ---
+            # 행 수는 코퍼스의 신원이 아니다. 2026-09-05 실측: 다른 세션이 슬랙 문서
+            # 197건의 `documents.title`을 다시 쓰자 같은 코드(da64fac)의 v0 성적이
+            # 0.8516 -> 0.8490으로 움직였는데, documents/chunks/embeddings 행 수는
+            # 그대로였고 `updated_at`도 `sources.content_hash`도 안 바뀌었다
+            # (`check_staleness`조차 0건으로 통과시켰다). 제목은 pg_trgm 입력이라
+            # 랭킹을 실제로 바꾸는데, `eval_run`에는 그 변화의 흔적이 하나도 없었다.
+            # 그래서 **랭킹 입력이 되는 열**의 집계 해시를 같이 남긴다.
+            #
+            # 비용은 실측 ~20ms(문서 358 / 청크 2856 / 임베딩 2856)라 run당 두 번
+            # 불러도 무시할 수준이다. md5인 이유는 암호학적 강도가 필요해서가 아니라
+            # (변조 탐지가 아니라 우연한 드리프트 탐지다) Postgres에 내장이라
+            # 확장 없이 어디서나 돌기 때문이다.
+            await cur.execute(
+                """
+                SELECT
+                  md5(string_agg(document_id || E'\x1f' || coalesce(title, ''), E'\x1e' ORDER BY document_id))
+                FROM documents WHERE (%s::text IS NULL OR project_id = %s)
+                """,
+                (project_id, project_id),
+            )
+            title_fp = (await cur.fetchone() or (None,))[0]
+            await cur.execute(
+                """
+                SELECT md5(string_agg(c.chunk_id || md5(c.text), ',' ORDER BY c.chunk_id))
+                FROM chunks c JOIN documents d ON d.document_id = c.document_id
+                WHERE (%s::text IS NULL OR d.project_id = %s)
+                """,
+                (project_id, project_id),
+            )
+            chunk_fp = (await cur.fetchone() or (None,))[0]
+            await cur.execute(
+                """
+                SELECT md5(string_agg(
+                    coalesce(chunk_id, knowledge_object_id) || embedding_model || embedded_text_hash,
+                    ',' ORDER BY embedding_id))
+                FROM knowledge_object_embeddings WHERE (%s::text IS NULL OR project_id = %s)
+                """,
+                (project_id, project_id),
+            )
+            embedding_fp = (await cur.fetchone() or (None,))[0]
+            await cur.execute(
+                """
+                SELECT md5(string_agg(source_id || content_hash, ',' ORDER BY source_id))
+                FROM sources WHERE (%s::text IS NULL OR project_id = %s)
+                """,
+                (project_id, project_id),
+            )
+            source_fp = (await cur.fetchone() or (None,))[0]
         return {
             "documents": documents,
             "chunks": chunks,
             "knowledge_objects": knowledge_objects,
             "embeddings_by_kind": by_kind,
+            "embeddings_by_model_and_kind": by_model,
+            "fingerprints": {
+                # 제목(pg_trgm document_search 입력) - 위 사고가 정확히 이 열이다.
+                "document_titles": title_fp,
+                # 청크 본문(lexical_search 입력 + chunk grain 임베딩의 원문).
+                "chunk_text": chunk_fp,
+                # (대상, 모델, 임베딩된 텍스트) - 같은 모델로 다시 임베딩해도 원문이
+                # 바뀌었으면 여기서 드러난다.
+                "embeddings": embedding_fp,
+                # 인제스트 수준의 지문. 여기가 같은데 위가 다르면 "적재 후에 파생
+                # 열이 다시 쓰였다"는 뜻이고, 그게 이번 사고의 모양이었다.
+                "source_content": source_fp,
+            },
         }
 
     async def content_hashes_for(self, document_ids: list[str]) -> dict[str, str]:
