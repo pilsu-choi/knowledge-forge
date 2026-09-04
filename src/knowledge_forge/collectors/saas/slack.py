@@ -1,5 +1,6 @@
+from collections.abc import Iterator
 from datetime import datetime, timezone
-from typing import Any, Iterator
+from typing import Any
 
 from knowledge_forge.collectors.base import Cursor, RawItem
 from knowledge_forge.collectors.saas.base import SaaSAuthConfig, SaaSCollector

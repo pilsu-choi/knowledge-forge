@@ -149,7 +149,7 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
-async def sql_search(sql: str, store: "PipelineStore", limit: int = DEFAULT_MAX_ROWS) -> dict[str, Any]:
+async def sql_search(sql: str, store: PipelineStore, limit: int = DEFAULT_MAX_ROWS) -> dict[str, Any]:
     """Validates `sql` (raises `SqlSearchError` - a plain `ValueError`
     subclass - if it isn't a single read-only statement), runs it via
     `store.execute_readonly_query()`, and returns
@@ -162,7 +162,7 @@ async def sql_search(sql: str, store: "PipelineStore", limit: int = DEFAULT_MAX_
     rows, columns = await store.execute_readonly_query(validated, limit)
     return {
         "columns": columns,
-        "rows": [{col: _json_safe(value) for col, value in zip(columns, row)} for row in rows],
+        "rows": [{col: _json_safe(value) for col, value in zip(columns, row, strict=True)} for row in rows],
         "row_count": len(rows),
         "truncated": len(rows) >= limit,
     }

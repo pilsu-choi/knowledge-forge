@@ -6,7 +6,8 @@ collectors stay swappable/testable without changing this interface.
 """
 
 from abc import ABC
-from typing import Any, Callable, Iterator, TypeVar
+from collections.abc import Callable, Iterator
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, Field
 

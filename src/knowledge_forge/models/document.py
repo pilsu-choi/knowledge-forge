@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
@@ -75,7 +75,7 @@ class ImageElement(ElementBase):
 
 
 DocumentElement = Annotated[
-    Union[Heading, TextBlock, TableElement, ListElement, ImageElement],
+    Heading | TextBlock | TableElement | ListElement | ImageElement,
     Field(discriminator="type"),
 ]
 

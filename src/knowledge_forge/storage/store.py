@@ -82,7 +82,7 @@ class PipelineStore:
                 embedded_text_hash=content_hash(text.encode("utf-8")),
                 project_id=ko.source.project_id,
             )
-            for ko, text, vector in zip(objects, texts, vectors)
+            for ko, text, vector in zip(objects, texts, vectors, strict=True)
         ]
         await self._db.save_embeddings(records)
 

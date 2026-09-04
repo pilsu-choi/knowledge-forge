@@ -12,7 +12,7 @@ import asyncio
 import anthropic
 
 from knowledge_forge.agent.auth import ANTHROPIC_AGENT_CREDENTIAL_HINT_KO
-from knowledge_forge.agent.providers.base import AssistantTurn, ChatProvider, Message, ToolCall, ToolSpec
+from knowledge_forge.agent.providers.base import AssistantTurn, ChatProvider, Message, StopReason, ToolCall, ToolSpec
 from knowledge_forge.config import settings
 from knowledge_forge.exceptions import AgentError
 from knowledge_forge.retry import RETRYABLE_ANTHROPIC_ERRORS, anthropic_retry
@@ -106,6 +106,7 @@ class AnthropicChatProvider(ChatProvider):
             for block in response.content
             if block.type == "tool_use"
         ]
+        stop_reason: StopReason
         if tool_calls:
             stop_reason = "tool_use"
         elif response.stop_reason == "max_tokens":

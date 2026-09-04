@@ -85,4 +85,8 @@ class ClaudeExtractor(Extractor):
                         chunk_id=chunk_ids,
                     ) from exc
                 raise
+        if response.parsed_output is None:
+            raise KnowledgeExtractionError(
+                f"knowledge extraction returned no parsed output for chunk(s) {chunk_ids}", chunk_id=chunk_ids
+            )
         return response.parsed_output

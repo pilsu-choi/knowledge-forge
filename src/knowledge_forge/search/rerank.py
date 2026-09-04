@@ -22,7 +22,8 @@ previously just concatenating every source's hits with no merge at all.
 
 from __future__ import annotations
 
-from typing import Any, Hashable
+from collections.abc import Hashable
+from typing import Any
 
 DEFAULT_RRF_K = 60
 

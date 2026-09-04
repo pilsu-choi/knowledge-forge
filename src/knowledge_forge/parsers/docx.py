@@ -3,6 +3,7 @@ import io
 import logging
 
 from docx import Document as DocxDocument
+from docx.document import Document as DocxDocumentType
 from docx.enum.shape import WD_INLINE_SHAPE_TYPE
 
 from knowledge_forge.collectors.base import RawItem
@@ -19,8 +20,7 @@ from knowledge_forge.models.document import (
 )
 from knowledge_forge.models.source import SourceRef
 from knowledge_forge.parsers.base import Parser
-from knowledge_forge.vision.extractor import VisionExtractor
-from knowledge_forge.vision.factory import get_vision_extractor
+from knowledge_forge.vision.factory import VisionExtractorLike, get_vision_extractor
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +55,10 @@ class DocxParser(Parser):
 
     supported_extensions = {".docx"}
 
-    def __init__(self, vision_extractor: VisionExtractor | None = None):
+    def __init__(self, vision_extractor: VisionExtractorLike | None = None):
         self._vision = vision_extractor
 
-    def _vision_extractor(self) -> VisionExtractor:
+    def _vision_extractor(self) -> VisionExtractorLike:
         if self._vision is None:
             self._vision = get_vision_extractor()
         return self._vision
@@ -78,7 +78,7 @@ class DocxParser(Parser):
             elements=elements,
         )
 
-    def _convert_paragraphs(self, docx_document: DocxDocument, uri: str) -> list[DocumentElement]:
+    def _convert_paragraphs(self, docx_document: DocxDocumentType, uri: str) -> list[DocumentElement]:
         elements: list[DocumentElement] = []
         pending_list_items: list[str] = []
         pending_list_ordered = False
@@ -146,7 +146,7 @@ class DocxParser(Parser):
         return elements
 
     def _convert_tables(
-        self, docx_document: DocxDocument, uri: str, start_index: int
+        self, docx_document: DocxDocumentType, uri: str, start_index: int
     ) -> list[DocumentElement]:
         elements: list[DocumentElement] = []
         for offset, table in enumerate(docx_document.tables):
@@ -161,7 +161,7 @@ class DocxParser(Parser):
         return elements
 
     async def _convert_images(
-        self, docx_document: DocxDocument, uri: str, start_index: int
+        self, docx_document: DocxDocumentType, uri: str, start_index: int
     ) -> list[DocumentElement]:
         picture_parts = []
         for shape in docx_document.inline_shapes:

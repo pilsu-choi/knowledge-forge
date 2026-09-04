@@ -9,8 +9,9 @@ from knowledge_forge.chat_provider import (
     AssistantTurn,
     ChatProvider,
     Message,
+    StopReason,
     ToolCall,
     ToolSpec,
 )
 
-__all__ = ["AssistantTurn", "ChatProvider", "Message", "ToolCall", "ToolSpec"]
+__all__ = ["AssistantTurn", "ChatProvider", "Message", "StopReason", "ToolCall", "ToolSpec"]

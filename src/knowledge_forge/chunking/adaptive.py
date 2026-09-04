@@ -75,6 +75,7 @@ class AdaptiveChunker(Chunker):
             # Largest semantic unit that still fits the budget - keep it whole.
             return [RenderedChunk(level=node.level, text=node.text, element_ids=node.element_ids, pages=node.pages)]
 
+        children: list[Node] | None
         if node.children is not None:
             children = node.children
         elif node.table_rows is not None:

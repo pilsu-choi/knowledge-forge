@@ -7,8 +7,9 @@ Extractor implementation) without touching this module's logic.
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, AsyncIterator
+from typing import TYPE_CHECKING
 
 from knowledge_forge.chunking.base import Chunker
 from knowledge_forge.collectors.base import Collector, RawItem
@@ -201,7 +202,8 @@ async def run_pipeline(
 
         async def _extract(group):
             try:
-                return await extractor.extract(group, document, source)
+                # B023 false positive: awaited via gather() below within this same loop iteration, never deferred past it
+                return await extractor.extract(group, document, source)  # noqa: B023
             except KnowledgeExtractionError as exc:
                 group_ids = ",".join(c.chunk_id for c in group)
                 logger.error("extraction failed for chunk(s) %s, skipping: %s", group_ids, exc)

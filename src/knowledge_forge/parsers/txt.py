@@ -2,7 +2,7 @@ import re
 
 from knowledge_forge.collectors.base import RawItem
 from knowledge_forge.ids import stable_id
-from knowledge_forge.models.document import Document, TextBlock
+from knowledge_forge.models.document import Document, DocumentElement, TextBlock
 from knowledge_forge.models.source import SourceRef
 from knowledge_forge.parsers.base import Parser
 
@@ -22,7 +22,7 @@ class TxtParser(Parser):
             text = item.content.decode("latin-1")
 
         paragraphs = [p.strip() for p in _BLANK_LINE.split(text) if p.strip()]
-        elements = [
+        elements: list[DocumentElement] = [
             TextBlock(element_id=stable_id("element", item.uri, str(i)), text=p)
             for i, p in enumerate(paragraphs)
         ]

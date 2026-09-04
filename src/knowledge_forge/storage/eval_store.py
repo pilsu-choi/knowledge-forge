@@ -128,6 +128,7 @@ class EvalStore:
                 (log_id, project_id, query, answer, Jsonb(evidence), Jsonb(tool_calls), latency_ms, created_at),
             )
             row = await cur.fetchone()
+        assert row is not None  # a single-row INSERT ... RETURNING always yields exactly one row
         return _row_to_log(row)
 
     async def get_search_log(self, log_id: str) -> SearchLog | None:
@@ -165,6 +166,7 @@ class EvalStore:
                 (feedback_id, log_id, rating, comment, created_at),
             )
             row = await cur.fetchone()
+        assert row is not None  # a single-row INSERT ... RETURNING always yields exactly one row
         return _row_to_feedback(row)
 
     async def list_unscored_search_logs(self, project_id: str | None = None, limit: int = 20) -> list[SearchLog]:
@@ -172,7 +174,7 @@ class EvalStore:
         eval` (search-evaluation.md (B)) fetches to judge next."""
         async with self.conn.cursor() as cur:
             await cur.execute(
-                f"""
+                """
                 SELECT sl.log_id, sl.project_id, sl.query, sl.answer, sl.evidence, sl.tool_calls,
                        sl.latency_ms, sl.created_at
                 FROM search_log sl
@@ -212,6 +214,7 @@ class EvalStore:
                 (log_id, groundedness_score, citation_precision, Jsonb(claims), judge_model, judged_at),
             )
             row = await cur.fetchone()
+        assert row is not None  # an upsert's RETURNING always yields exactly one row
         return _row_to_score(row)
 
     async def get_eval_score(self, log_id: str) -> EvalScore | None:

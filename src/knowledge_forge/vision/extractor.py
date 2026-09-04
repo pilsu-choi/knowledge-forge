@@ -12,8 +12,11 @@ than a rule-based-first-fallback-to-VLM policy.
 import asyncio
 import base64
 import logging
+from typing import Any, cast
 
 import anthropic
+from anthropic.types import MessageParam
+from anthropic.types.base64_image_source_param import Base64ImageSourceParam
 
 from knowledge_forge.config import settings
 from knowledge_forge.exceptions import KnowledgeExtractionError
@@ -56,23 +59,31 @@ class VisionExtractor:
     @anthropic_retry()
     async def _call(self, image_bytes: bytes, media_type: str, prompt: str) -> str:
         data = base64.standard_b64encode(image_bytes).decode("ascii")
+        # `media_type` is plain `str` end-to-end (parsers hand back whatever
+        # content_type the source file/library reports), but the SDK's param
+        # type pins it to Anthropic's four supported image mime types - cast
+        # rather than threading a Literal through every parser, since a mime
+        # type outside that set is a genuine API-time failure either way.
+        image_source: Base64ImageSourceParam = {
+            "type": "base64",
+            "media_type": cast(Any, media_type),
+            "data": data,
+        }
+        messages: list[MessageParam] = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": image_source},
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ]
         async with self._semaphore:
             try:
                 response = await self._client.messages.create(
                     model=self._model,
                     max_tokens=self._max_tokens,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "image",
-                                    "source": {"type": "base64", "media_type": media_type, "data": data},
-                                },
-                                {"type": "text", "text": prompt},
-                            ],
-                        }
-                    ],
+                    messages=messages,
                 )
             except RETRYABLE_ANTHROPIC_ERRORS:
                 raise

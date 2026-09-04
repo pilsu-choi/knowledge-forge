@@ -57,7 +57,7 @@ import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import yaml
 
@@ -196,6 +196,18 @@ def _body_for(ko: KnowledgeObject) -> str:
     return ko.content.get("statement") or ko.summary
 
 
+class _ObjectIndexEntry(TypedDict):
+    path: str
+    title: str | None
+    type: str
+
+
+class _ResourceIndexEntry(TypedDict):
+    path: str
+    title: str | None
+    content_at: str | None
+
+
 class OKFWriter:
     def __init__(self, root: Path | str, project_id: str = "default"):
         self._base_root = Path(root)
@@ -204,8 +216,8 @@ class OKFWriter:
         # are written, and lazily backed by a one-time disk scan on a miss (so a
         # relation/link referencing a concept written by a *prior* OKFWriter
         # instance - e.g. across incremental syncs - still resolves).
-        self._object_index: dict[str, dict[str, dict[str, str]]] = {}
-        self._resource_index: dict[str, dict[str, dict[str, str]]] = {}
+        self._object_index: dict[str, dict[str, _ObjectIndexEntry]] = {}
+        self._resource_index: dict[str, dict[str, _ResourceIndexEntry]] = {}
         self._scanned_objects: set[str] = set()
         self._scanned_resources: set[str] = set()
         self._project_root(project_id)
@@ -292,14 +304,14 @@ class OKFWriter:
                     "content_at": fm.get("modified_at") or generated.get("at"),
                 }
 
-    def _lookup_object(self, root: Path, project_id: str, ko_id: str) -> dict[str, str] | None:
+    def _lookup_object(self, root: Path, project_id: str, ko_id: str) -> _ObjectIndexEntry | None:
         idx = self._object_index.setdefault(project_id, {})
         if ko_id not in idx and project_id not in self._scanned_objects:
             self._scan_objects(root, project_id)
             self._scanned_objects.add(project_id)
         return idx.get(ko_id)
 
-    def _lookup_resource(self, root: Path, project_id: str, source_id: str) -> dict[str, str] | None:
+    def _lookup_resource(self, root: Path, project_id: str, source_id: str) -> _ResourceIndexEntry | None:
         idx = self._resource_index.setdefault(project_id, {})
         if source_id not in idx and project_id not in self._scanned_resources:
             self._scan_resources(root, project_id)
@@ -344,7 +356,7 @@ class OKFWriter:
             # Falls back to extracted_at only if the source's resource file
             # was never found (shouldn't normally happen - write_resource()
             # runs before write_objects() in the pipeline).
-            content_at = (src or {}).get("content_at") or _iso(ko.extracted_at)
+            content_at = (src["content_at"] if src else None) or _iso(ko.extracted_at)
 
             frontmatter: dict[str, Any] = {
                 "type": ko.type.value.replace("_", " ").title(),

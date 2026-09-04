@@ -10,8 +10,7 @@ from knowledge_forge.ids import stable_id
 from knowledge_forge.models.document import Document, DocumentElement, Heading, ImageElement, TableElement, TextBlock
 from knowledge_forge.models.source import SourceRef
 from knowledge_forge.parsers.base import Parser
-from knowledge_forge.vision.extractor import VisionExtractor
-from knowledge_forge.vision.factory import get_vision_extractor
+from knowledge_forge.vision.factory import VisionExtractorLike, get_vision_extractor
 
 logger = logging.getLogger(__name__)
 
@@ -65,10 +64,10 @@ class HwpxParser(Parser):
 
     supported_extensions = {".hwpx"}
 
-    def __init__(self, vision_extractor: VisionExtractor | None = None):
+    def __init__(self, vision_extractor: VisionExtractorLike | None = None):
         self._vision = vision_extractor
 
-    def _vision_extractor(self) -> VisionExtractor:
+    def _vision_extractor(self) -> VisionExtractorLike:
         if self._vision is None:
             self._vision = get_vision_extractor()
         return self._vision

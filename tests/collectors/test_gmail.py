@@ -1,8 +1,6 @@
 import base64
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from knowledge_forge.collectors.base import Cursor
 from knowledge_forge.collectors.saas.gmail import GmailCollector
 

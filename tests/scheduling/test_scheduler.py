@@ -6,7 +6,7 @@ so the (async) tick body can be exercised directly.
 
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -156,7 +156,6 @@ async def test_tick_writes_and_refreshes_okf_tree(tmp_path, caplog):
 async def test_tick_swallows_exceptions_and_logs_instead_of_raising(tmp_path, caplog):
     (tmp_path / "a.txt").write_text("Some text that will fail extraction.")
 
-    client = _FakeClient(raise_error=False)
     # Force a failure that isn't caught as a normal KnowledgeExtractionError
     # by making chunk collection itself blow up - simplest reliable way: point
     # the collector at a path that raises when walked (nonexistent directory

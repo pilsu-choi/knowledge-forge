@@ -170,7 +170,7 @@ async def _execute_subquery(
     subquery: SubQuery,
     results_by_id: dict[int, list[dict[str, Any]]],
     available_sources: list[str],
-    store: "PipelineStore | None",
+    store: PipelineStore | None,
     project_id: str | None,
     limit: int,
 ) -> tuple[list[dict[str, Any]], TimeRange | None]:
@@ -196,7 +196,7 @@ async def plan_and_search(
     query: str,
     provider: ChatProvider,
     *,
-    store: "PipelineStore | None" = None,
+    store: PipelineStore | None = None,
     project_id: str | None = None,
     max_subqueries: int = DEFAULT_MAX_SUBQUERIES,
     limit_per_subquery: int = DEFAULT_LIMIT_PER_SUBQUERY,
@@ -220,9 +220,18 @@ async def plan_and_search(
                 for sq in wave
             )
         )
-        for sq, (hits, time_range) in zip(wave, wave_results):
+        for sq, (hits, time_range) in zip(wave, wave_results, strict=True):
             results_by_id[sq.id] = hits
             time_range_by_id[sq.id] = time_range
+
+    def _time_range_evidence(time_range: TimeRange | None) -> dict[str, Any] | None:
+        if time_range is None:
+            return None
+        return {
+            "label": time_range.label,
+            "since": time_range.start.isoformat() if time_range.start else None,
+            "until": time_range.end.isoformat() if time_range.end else None,
+        }
 
     return {
         "subqueries": [{"id": sq.id, "query": sq.query, "depends_on": sq.depends_on} for sq in subqueries],
@@ -231,15 +240,7 @@ async def plan_and_search(
                 "subquery_id": sq.id,
                 "subquery": sq.query,
                 "results": results_by_id[sq.id],
-                "time_range": (
-                    {
-                        "label": time_range_by_id[sq.id].label,
-                        "since": time_range_by_id[sq.id].start.isoformat() if time_range_by_id[sq.id].start else None,
-                        "until": time_range_by_id[sq.id].end.isoformat() if time_range_by_id[sq.id].end else None,
-                    }
-                    if time_range_by_id[sq.id]
-                    else None
-                ),
+                "time_range": _time_range_evidence(time_range_by_id[sq.id]),
             }
             for sq in subqueries
         ],

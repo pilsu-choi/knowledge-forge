@@ -15,7 +15,7 @@ import os
 import openai
 
 from knowledge_forge.agent.auth import OPENAI_COMPATIBLE_AGENT_CREDENTIAL_HINT_KO
-from knowledge_forge.agent.providers.base import AssistantTurn, ChatProvider, Message, ToolCall, ToolSpec
+from knowledge_forge.agent.providers.base import AssistantTurn, ChatProvider, Message, StopReason, ToolCall, ToolSpec
 from knowledge_forge.config import settings
 from knowledge_forge.exceptions import AgentError
 from knowledge_forge.retry import RETRYABLE_OPENAI_ERRORS, openai_retry
@@ -101,6 +101,7 @@ class OpenAICompatibleChatProvider(ChatProvider):
             ToolCall(id=tc.id, name=tc.function.name, arguments=json.loads(tc.function.arguments or "{}"))
             for tc in (msg.tool_calls or [])
         ]
+        stop_reason: StopReason
         if tool_calls:
             stop_reason = "tool_use"
         elif choice.finish_reason == "length":

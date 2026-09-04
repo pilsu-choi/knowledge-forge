@@ -8,7 +8,7 @@ from knowledge_forge.parsers.conversation import ConversationParser
 
 
 async def test_parses_slack_episode_into_heading_and_per_message_textblocks():
-    data = "A: 배포 언제 할까요?\n\nB: 오늘 오후 가능합니다".encode("utf-8")
+    data = "A: 배포 언제 할까요?\n\nB: 오늘 오후 가능합니다".encode()
     item = RawItem(
         uri="slack://general/episode/100.0",
         content=data,
@@ -29,7 +29,7 @@ async def test_parses_slack_episode_into_heading_and_per_message_textblocks():
 
 
 async def test_parses_gmail_thread_with_subject_heading():
-    data = "From: a@example.com\nhello".encode("utf-8")
+    data = b"From: a@example.com\nhello"
     item = RawItem(
         uri="gmail://thread/t1",
         content=data,

@@ -28,6 +28,7 @@ import asyncio
 import io
 import logging
 import statistics
+from typing import Literal
 
 import pdfplumber
 
@@ -45,8 +46,7 @@ from knowledge_forge.models.document import (
 )
 from knowledge_forge.models.source import SourceRef
 from knowledge_forge.parsers.base import Parser
-from knowledge_forge.vision.extractor import VisionExtractor
-from knowledge_forge.vision.factory import get_vision_extractor
+from knowledge_forge.vision.factory import VisionExtractorLike, get_vision_extractor
 from knowledge_forge.vision.markdown_table import parse_markdown_table
 
 logger = logging.getLogger(__name__)
@@ -96,13 +96,13 @@ class PDFParser(Parser):
 
     supported_extensions = {".pdf"}
 
-    def __init__(self, vision_extractor: VisionExtractor | None = None):
+    def __init__(self, vision_extractor: VisionExtractorLike | None = None):
         # Lazily constructed if not injected, so a PDFParser() with no
         # tables/images in the document never has to touch Anthropic
         # credentials at all.
         self._vision = vision_extractor
 
-    def _vision_extractor(self) -> VisionExtractor:
+    def _vision_extractor(self) -> VisionExtractorLike:
         if self._vision is None:
             self._vision = get_vision_extractor()
         return self._vision
@@ -134,8 +134,9 @@ class PDFParser(Parser):
         tables = list(page.find_tables())
         covered = [tuple(t.bbox) for t in tables]
 
-        async def _one(idx: int, table) -> tuple[int, tuple, list, str]:
+        async def _one(idx: int, table) -> tuple[int, tuple, list, Literal["rule_based", "vlm"]]:
             bbox = tuple(table.bbox)
+            extraction_method: Literal["rule_based", "vlm"]
             try:
                 markdown = await self._vision_extractor().extract_table_markdown(self._render_region(page, bbox))
                 rows = parse_markdown_table(markdown)
@@ -174,7 +175,7 @@ class PDFParser(Parser):
                 return None
 
         descriptions = await asyncio.gather(*(_one(idx, bbox) for idx, bbox in enumerate(covered)))
-        for idx, (bbox, description) in enumerate(zip(covered, descriptions)):
+        for idx, (bbox, description) in enumerate(zip(covered, descriptions, strict=True)):
             elements.append(
                 ImageElement(
                     element_id=stable_id("element", uri, str(start_index + len(elements)), "image", str(idx)),
@@ -213,7 +214,7 @@ class PDFParser(Parser):
             for line in lines
         ]
         page_median_size = statistics.median(s for s in sizes if s > 0) if any(sizes) else 0.0
-        gaps = [b["top"] - a["bottom"] for a, b in zip(lines, lines[1:])]
+        gaps = [b["top"] - a["bottom"] for a, b in zip(lines, lines[1:], strict=False)]  # pairwise: lengths differ by design
         median_gap = statistics.median(gaps) if gaps else 0.0
         page_left_x0 = min(line["x0"] for line in lines)
 

@@ -10,7 +10,7 @@ reach a Parser.
 """
 
 from abc import ABC, abstractmethod
-from typing import Iterator
+from collections.abc import Iterator
 
 from knowledge_forge.collectors.base import RawItem
 

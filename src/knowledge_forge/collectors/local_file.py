@@ -5,10 +5,9 @@ Cursor shape: `Cursor.data == {"manifest": {"<absolute path>": {"hash": str, "mt
 (when given) is just where that manifest is persisted between runs.
 """
 
-import os
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
 
 from knowledge_forge.collectors.base import Collector, Cursor, RawItem
 from knowledge_forge.ids import content_hash as compute_content_hash

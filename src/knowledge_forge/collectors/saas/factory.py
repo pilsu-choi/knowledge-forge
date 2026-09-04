@@ -8,8 +8,8 @@ required settings are missing.
 """
 
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from knowledge_forge.collectors.base import Collector
 from knowledge_forge.collectors.saas.base import SaaSAuthConfig

@@ -16,7 +16,7 @@ chain spans every thread this reconstruction call sees.
 """
 
 from collections import defaultdict
-from typing import Iterator
+from collections.abc import Iterator
 
 from knowledge_forge.collectors.base import RawItem
 from knowledge_forge.context.base import ContextReconstructor

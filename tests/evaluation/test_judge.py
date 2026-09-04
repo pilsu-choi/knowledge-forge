@@ -1,7 +1,7 @@
 import json
 from datetime import datetime, timezone
 
-from knowledge_forge.chat_provider import AssistantTurn, ChatProvider, Message
+from knowledge_forge.chat_provider import AssistantTurn, ChatProvider
 from knowledge_forge.evaluation.judge import judge_search_log
 from knowledge_forge.storage.eval_store import SearchLog
 

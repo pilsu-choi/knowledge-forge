@@ -10,6 +10,7 @@ run needs no database. To run these locally:
 import os
 from datetime import datetime, timezone
 
+import psycopg
 import pytest
 import pytest_asyncio
 
@@ -592,7 +593,7 @@ async def test_execute_readonly_query_rejects_a_write_at_the_database_level(stor
         f"WHERE knowledge_object_id = '{objects[0].knowledge_object_id}' RETURNING knowledge_object_id) "
         "SELECT * FROM x"
     )
-    with pytest.raises(Exception):
+    with pytest.raises(psycopg.Error):
         await store.execute_readonly_query(disguised_write, limit=10)
 
     unchanged = await store.get_knowledge_object(objects[0].knowledge_object_id)

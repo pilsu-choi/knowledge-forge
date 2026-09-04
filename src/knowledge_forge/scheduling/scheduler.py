@@ -11,9 +11,10 @@ import contextlib
 import logging
 import os
 import signal
+from collections.abc import Callable, Coroutine
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -51,10 +52,10 @@ def build_tick(
     registry,
     chunker,
     extractor,
-    store_factory: Optional[Callable[[], "PipelineStore"]] = None,
+    store_factory: Callable[[], "PipelineStore"] | None = None,
     project_id: str = "default",
     okf_writer: "OKFWriter | None" = None,
-) -> Callable[[], "asyncio.Future[None]"]:
+) -> Callable[[], Coroutine[None, None, None]]:
     """Returns a zero-arg async tick function that runs one incremental sync pass.
 
     Exposed separately from run_scheduled_sync so it can be unit-tested by
@@ -205,11 +206,11 @@ async def run_scheduled_sync(
     interval_seconds: int = DEFAULT_INTERVAL_SECONDS,
     max_tokens: int = 4000,
     model: str | None = None,
-    store_factory: Optional[Callable[[], "PipelineStore"]] = None,
+    store_factory: Callable[[], "PipelineStore"] | None = None,
     state_path: Path | str | None = None,
     project_id: str = "default",
     okf_writer: "OKFWriter | None" = None,
-    trigger_api_host: str | None = DEFAULT_TRIGGER_API_HOST,
+    trigger_api_host: str = DEFAULT_TRIGGER_API_HOST,
     trigger_api_port: int | None = DEFAULT_TRIGGER_API_PORT,
 ) -> None:
     """Runs forever as a background job on the current event loop,
@@ -262,7 +263,7 @@ async def run_scheduled_sync(
     if _install_manual_trigger_handler(scheduler):
         logger.info("manual sync trigger enabled - run `kill -USR1 %d` to sync immediately", os.getpid())
 
-    api_task: Optional[asyncio.Task] = None
+    api_task: asyncio.Task | None = None
     if trigger_api_port is not None:
         api_task = asyncio.create_task(_serve_trigger_api(scheduler, trigger_api_host, trigger_api_port))
         logger.info(

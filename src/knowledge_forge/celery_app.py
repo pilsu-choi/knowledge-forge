@@ -32,4 +32,6 @@ def run_ingest_job(job_id: str) -> dict:
     invocation gets its own event loop via `asyncio.run`, mirroring how
     `scheduling/scheduler.py` and `scheduling/auto_enqueue.py` each open a
     fresh store connection per tick rather than sharing one across calls."""
+    if not settings.database_url:
+        raise RuntimeError("KF_DATABASE_URL is not set - a worker needs Postgres to read/write jobs.")
     return asyncio.run(_execute_job(job_id, settings.database_url, settings.data_dir))

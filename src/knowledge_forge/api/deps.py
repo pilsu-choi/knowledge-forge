@@ -8,8 +8,8 @@ natural next step if this ever becomes a throughput bottleneck - not needed
 for the request volumes this server is built for today.
 """
 
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import AsyncIterator
 
 from fastapi import HTTPException
 

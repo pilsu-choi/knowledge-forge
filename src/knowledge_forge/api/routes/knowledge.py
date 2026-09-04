@@ -1,4 +1,3 @@
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -44,8 +43,8 @@ def _rel_to_response(rel) -> RelationResponse:
     summary="List knowledge objects",
 )
 async def list_knowledge_objects(
-    source_id: Optional[str] = None,
-    type: Optional[str] = None,
+    source_id: str | None = None,
+    type: str | None = None,
     limit: int = 50,
     offset: int = 0,
     store: PostgresStore = Depends(get_read_store),
@@ -77,9 +76,9 @@ async def get_knowledge_object(
     summary="List relations",
 )
 async def list_relations(
-    subject_id: Optional[str] = None,
-    object_id: Optional[str] = None,
-    type: Optional[str] = None,
+    subject_id: str | None = None,
+    object_id: str | None = None,
+    type: str | None = None,
     limit: int = 50,
     offset: int = 0,
     store: PostgresStore = Depends(get_read_store),

@@ -1,5 +1,5 @@
+
 from fastapi import APIRouter, Depends, HTTPException
-from typing import Optional
 
 from knowledge_forge.api.deps import get_job_store
 from knowledge_forge.api.schemas import JobResponse, Page
@@ -27,8 +27,8 @@ async def get_job(job_id: str, job_store: JobStore = Depends(get_job_store)) -> 
 
 @router.get("/jobs", response_model=Page[JobResponse], summary="List jobs")
 async def list_jobs(
-    status: Optional[JobStatus] = None,
-    project_id: Optional[str] = None,
+    status: JobStatus | None = None,
+    project_id: str | None = None,
     limit: int = 50,
     offset: int = 0,
     job_store: JobStore = Depends(get_job_store),

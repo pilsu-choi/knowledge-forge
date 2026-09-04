@@ -1,4 +1,4 @@
-from knowledge_forge.models.source import Source, SourceRef, SourceType
+from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.document import (
     Document,
     DocumentElement,
@@ -9,7 +9,6 @@ from knowledge_forge.models.document import (
     TableElement,
     TextBlock,
 )
-from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.knowledge_object import (
     DocumentRef,
     Entity,
@@ -17,8 +16,9 @@ from knowledge_forge.models.knowledge_object import (
     KnowledgeObject,
     KnowledgeObjectType,
 )
-from knowledge_forge.models.relation import Relation, RelationType
 from knowledge_forge.models.link import Link, LinkEndpoint, LinkType
+from knowledge_forge.models.relation import Relation, RelationType
+from knowledge_forge.models.source import Source, SourceRef, SourceType
 
 __all__ = [
     "Source",

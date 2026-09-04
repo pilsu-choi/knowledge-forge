@@ -103,6 +103,7 @@ class JobStore:
                 (job_id, job_type, Jsonb(payload), created_at, project_id),
             )
             row = await cur.fetchone()
+        assert row is not None  # a single-row INSERT ... RETURNING always yields exactly one row
         return _row_to_job(row)
 
     async def get(self, job_id: str) -> Job | None:

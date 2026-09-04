@@ -25,8 +25,9 @@ not in either SDK client.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Literal
 
 
 @dataclass
@@ -48,11 +49,14 @@ class Message:
     tool_call_id: str | None = None
 
 
+StopReason = Literal["tool_use", "end_turn", "max_tokens"]
+
+
 @dataclass
 class AssistantTurn:
     text: str | None
     tool_calls: list[ToolCall]
-    stop_reason: Literal["tool_use", "end_turn", "max_tokens"]
+    stop_reason: StopReason
 
 
 @dataclass

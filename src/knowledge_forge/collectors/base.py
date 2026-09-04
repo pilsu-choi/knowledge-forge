@@ -8,9 +8,10 @@ files, a page token / updated-after timestamp for SaaS APIs).
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, ClassVar, Iterator
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 

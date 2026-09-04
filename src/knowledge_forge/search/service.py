@@ -16,9 +16,10 @@ actually produces (see reader.py's own module docstring).
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import TYPE_CHECKING, Any
 
 from knowledge_forge.config import settings
 from knowledge_forge.okf.reader import list_projects
@@ -230,7 +231,7 @@ async def file_search(
 
 async def vector_search(
     query: str,
-    store: "PipelineStore",
+    store: PipelineStore,
     project_id: str | None = None,
     type: str | None = None,
     limit: int = 10,

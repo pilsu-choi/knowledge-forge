@@ -3,7 +3,6 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import typer
 
@@ -42,7 +41,7 @@ def _ensure_authenticated() -> None:
         raise typer.Exit(1)
 
 
-def _build_collector(source: str, path: Optional[Path]) -> Collector:
+def _build_collector(source: str, path: Path | None) -> Collector:
     """`source` picks which Collector `extract`/`schedule` run: "local" (the
     default) walks `path` via LocalFileCollector; "slack"/"notion"/"gdrive"/
     "gmail" build an authenticated SaaS collector from KF_* env config via
@@ -84,10 +83,10 @@ def _parse_datetime_arg(value: str, option_name: str) -> datetime:
             "(YYYY-MM-DD 또는 YYYY-MM-DDTHH:MM:SS[+HH:MM] 형식을 사용하세요).",
             err=True,
         )
-        raise typer.Exit(1)
+        raise typer.Exit(1) from None
 
 
-def _open_store() -> Optional[PipelineStore]:
+def _open_store() -> PipelineStore | None:
     """Builds a PipelineStore from KF_DATABASE_URL/KF_DATA_DIR, or None (with
     a warning) if no database is configured - storage stays opt-in so the
     simple `extract` flow keeps working without any Postgres setup."""
@@ -111,7 +110,7 @@ def _main() -> None:
 
 @app.command()
 def extract(
-    path: Optional[Path] = typer.Argument(
+    path: Path | None = typer.Argument(
         None, help="A local file or directory to ingest. Required when --source local (the default); unused otherwise."
     ),
     source: str = typer.Option(
@@ -121,15 +120,15 @@ def extract(
         "(built from KF_* env config, see wiki/saas-connectors.md).",
     ),
     max_tokens: int = typer.Option(4000, "--max-tokens", help="Max tokens per chunk before splitting further."),
-    model: Optional[str] = typer.Option(
+    model: str | None = typer.Option(
         None, "--model", help="Extraction model. Defaults to the active provider's (KF_LLM_PROVIDER) own default model."
     ),
-    output: Optional[Path] = typer.Option(None, "--output", help="Output file. Defaults to stdout."),
+    output: Path | None = typer.Option(None, "--output", help="Output file. Defaults to stdout."),
     pretty: bool = typer.Option(False, "--pretty", help="Write an indented JSON array instead of JSONL."),
     store: bool = typer.Option(
         True, "--store/--no-store", help="Persist Source/Document/Chunk/KnowledgeObject to Postgres + raw bytes to disk."
     ),
-    okf_dir: Optional[Path] = typer.Option(
+    okf_dir: Path | None = typer.Option(
         None,
         "--okf-dir",
         help="Also write a file-based OKF Knowledge Base tree (manifest.yaml + resources/objects/relations) to this directory, under a {project-id}/ subfolder.",
@@ -212,14 +211,14 @@ def extract(
 
 @app.command()
 def backfill(
-    path: Optional[Path] = typer.Argument(
+    path: Path | None = typer.Argument(
         None, help="A local file or directory to ingest. Required when --source local (the default); unused otherwise."
     ),
     since: str = typer.Option(
         ..., "--since", help="Start of the window to re-collect (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS[+HH:MM]; "
         "no tz offset is treated as UTC)."
     ),
-    until: Optional[str] = typer.Option(
+    until: str | None = typer.Option(
         None, "--until", help="End of the window (same format as --since). Defaults to now."
     ),
     source: str = typer.Option(
@@ -229,15 +228,15 @@ def backfill(
         "(built from KF_* env config, see wiki/saas-connectors.md).",
     ),
     max_tokens: int = typer.Option(4000, "--max-tokens", help="Max tokens per chunk before splitting further."),
-    model: Optional[str] = typer.Option(
+    model: str | None = typer.Option(
         None, "--model", help="Extraction model. Defaults to the active provider's (KF_LLM_PROVIDER) own default model."
     ),
-    output: Optional[Path] = typer.Option(None, "--output", help="Output file. Defaults to stdout."),
+    output: Path | None = typer.Option(None, "--output", help="Output file. Defaults to stdout."),
     pretty: bool = typer.Option(False, "--pretty", help="Write an indented JSON array instead of JSONL."),
     store: bool = typer.Option(
         True, "--store/--no-store", help="Persist Source/Document/Chunk/KnowledgeObject to Postgres + raw bytes to disk."
     ),
-    okf_dir: Optional[Path] = typer.Option(
+    okf_dir: Path | None = typer.Option(
         None,
         "--okf-dir",
         help="Also write a file-based OKF Knowledge Base tree (manifest.yaml + resources/objects/relations) to this directory, under a {project-id}/ subfolder.",
@@ -332,7 +331,7 @@ def backfill(
 
 @app.command()
 def schedule(
-    path: Optional[Path] = typer.Argument(
+    path: Path | None = typer.Argument(
         None, help="A local file or directory to ingest. Required when --source local (the default); unused otherwise."
     ),
     source: str = typer.Option(
@@ -345,13 +344,13 @@ def schedule(
         DEFAULT_INTERVAL_SECONDS, "--interval-seconds", help="Seconds between incremental sync runs (default: 10 minutes)."
     ),
     max_tokens: int = typer.Option(4000, "--max-tokens", help="Max tokens per chunk before splitting further."),
-    model: Optional[str] = typer.Option(
+    model: str | None = typer.Option(
         None, "--model", help="Extraction model. Defaults to the active provider's (KF_LLM_PROVIDER) own default model."
     ),
     store: bool = typer.Option(
         True, "--store/--no-store", help="Persist Source/Document/Chunk/KnowledgeObject to Postgres + raw bytes to disk."
     ),
-    okf_dir: Optional[Path] = typer.Option(
+    okf_dir: Path | None = typer.Option(
         None,
         "--okf-dir",
         help="Also write a file-based OKF Knowledge Base tree (manifest.yaml + resources/objects/relations) to "
@@ -426,7 +425,7 @@ def schedule(
             store_factory=store_factory,
             project_id=project_id,
             okf_writer=okf_writer,
-            trigger_api_host=trigger_host if trigger_api else None,
+            trigger_api_host=trigger_host,
             trigger_api_port=trigger_port if trigger_api else None,
         )
     )
@@ -472,11 +471,11 @@ def worker(
 
 @app.command()
 def embed(
-    project_id: Optional[str] = typer.Option(
+    project_id: str | None = typer.Option(
         None, "--project-id", help="Only embed this project's KnowledgeObjects. Omit to scan every project."
     ),
     batch_size: int = typer.Option(64, "--batch-size", help="KnowledgeObjects fetched/embedded per API call."),
-    model: Optional[str] = typer.Option(
+    model: str | None = typer.Option(
         None, "--model", help="Embedding model. Defaults to KF_EMBEDDING_MODEL (text-embedding-3-small)."
     ),
 ) -> None:
@@ -488,13 +487,14 @@ def embed(
     if not settings.database_url:
         typer.echo("KF_DATABASE_URL이 설정되지 않았습니다 - embed는 Postgres가 필수입니다.", err=True)
         raise typer.Exit(1)
+    database_url = settings.database_url
 
     embedding_model = model or settings.embedding_model
     embedder = get_embedding_provider(model=embedding_model)
 
     async def _run() -> int:
         total = 0
-        async with PipelineStore(settings.database_url, settings.data_dir) as store:
+        async with PipelineStore(database_url, settings.data_dir) as store:
             await store.init_schema()
             while True:
                 batch = await store.list_knowledge_objects_missing_embedding(
@@ -513,16 +513,16 @@ def embed(
 
 @app.command()
 def agent(
-    question: Optional[str] = typer.Argument(
+    question: str | None = typer.Argument(
         None, help="One-shot question to ask the agent. Omit and pass --interactive for a REPL instead."
     ),
-    project_id: Optional[str] = typer.Option(
+    project_id: str | None = typer.Option(
         None, "--project-id", help="Default project_id hint for file_search (the agent can still search other projects)."
     ),
-    provider: Optional[str] = typer.Option(
+    provider: str | None = typer.Option(
         None, "--provider", help="anthropic (default) or openai_compatible. Defaults to KF_AGENT_PROVIDER."
     ),
-    model: Optional[str] = typer.Option(None, "--model", help="Overrides the active provider's default model."),
+    model: str | None = typer.Option(None, "--model", help="Overrides the active provider's default model."),
     interactive: bool = typer.Option(False, "--interactive", help="REPL mode instead of a single one-shot question."),
 ) -> None:
     """OKF 지식 베이스를 file_search로 검색해 답하는 에이전트(wiki/agent-runtime.md) - 1회성
@@ -564,13 +564,14 @@ def agent(
         asyncio.run(_repl())
         return
 
+    assert question is not None  # guaranteed above: not interactive and not question already exits
     answer, log_id = asyncio.run(run_query(question, project_id=project_id, provider=provider, model=model))
     typer.echo(answer)
     if log_id:
         typer.echo(f"[log_id={log_id} - `knowledge-forge feedback {log_id} up|down`로 평가 가능]", err=True)
 
 
-def _handle_feedback_command(line: str, log_id: Optional[str]) -> None:
+def _handle_feedback_command(line: str, log_id: str | None) -> None:
     """`--interactive` REPL의 `/feedback up|down [코멘트]` - 직전 턴의
     `session.last_log_id`에 피드백을 붙인다 (wiki/search-evaluation.md (A))."""
     if log_id is None:
@@ -582,9 +583,13 @@ def _handle_feedback_command(line: str, log_id: Optional[str]) -> None:
         return
     rating = parts[1]
     comment = parts[2] if len(parts) > 2 else None
+    if not settings.database_url:
+        typer.echo("KF_DATABASE_URL이 설정되지 않았습니다.", err=True)
+        return
+    database_url = settings.database_url
 
     async def _run() -> None:
-        async with EvalStore(settings.database_url) as store:
+        async with EvalStore(database_url) as store:
             await store.add_feedback(log_id, rating, comment)
 
     asyncio.run(_run())
@@ -611,7 +616,7 @@ def db_init() -> None:
 @db_app.command("export-okf")
 def db_export_okf(
     okf_dir: Path = typer.Option(..., "--okf-dir", help="Directory to write the OKF Knowledge Base tree to."),
-    project_id: Optional[str] = typer.Option(
+    project_id: str | None = typer.Option(
         None, "--project-id", help="Only export this project's data. Omit to export every project found in Postgres."
     ),
     page_size: int = typer.Option(200, "--page-size", help="Rows fetched per paginated read."),
@@ -624,9 +629,10 @@ def db_export_okf(
     if not settings.database_url:
         typer.echo("KF_DATABASE_URL이 설정되지 않았습니다.", err=True)
         raise typer.Exit(1)
+    database_url = settings.database_url
 
     async def _run() -> tuple[int, int, int]:
-        db = PostgresStore(settings.database_url)
+        db = PostgresStore(database_url)
         await db.connect()
         try:
             writer = OKFWriter(okf_dir, project_id=project_id or "default")
@@ -704,7 +710,7 @@ def db_export_okf(
 def feedback(
     log_id: str = typer.Argument(..., help="`knowledge-forge agent`/REPL이 답변과 함께 출력한 log_id."),
     rating: str = typer.Argument(..., help="'up' 또는 'down'."),
-    comment: Optional[str] = typer.Option(None, "--comment", help="선택적 코멘트."),
+    comment: str | None = typer.Option(None, "--comment", help="선택적 코멘트."),
 ) -> None:
     """일회성 `knowledge-forge agent <질문>` 답변에 사후 피드백을 붙인다
     (wiki/search-evaluation.md (A)) - `--interactive` REPL은 대신 그 자리에서
@@ -712,12 +718,13 @@ def feedback(
     if not settings.database_url:
         typer.echo("KF_DATABASE_URL이 설정되지 않았습니다 - feedback은 Postgres가 필수입니다.", err=True)
         raise typer.Exit(1)
+    database_url = settings.database_url
     if rating not in ("up", "down"):
         typer.echo("rating은 'up' 또는 'down'이어야 합니다.", err=True)
         raise typer.Exit(1)
 
     async def _run() -> bool:
-        async with EvalStore(settings.database_url) as store:
+        async with EvalStore(database_url) as store:
             if await store.get_search_log(log_id) is None:
                 return False
             await store.add_feedback(log_id, rating, comment)
@@ -731,17 +738,17 @@ def feedback(
 
 @app.command()
 def eval(
-    project_id: Optional[str] = typer.Option(
+    project_id: str | None = typer.Option(
         None, "--project-id", help="이 프로젝트의 search_log만 채점. 생략하면 모든 프로젝트."
     ),
     batch_size: int = typer.Option(20, "--batch-size", help="한 번에 가져와 채점할 search_log 행 수."),
-    max_batches: Optional[int] = typer.Option(
+    max_batches: int | None = typer.Option(
         None, "--max-batches", help="최대 몇 배치까지 돌지 제한(생략하면 미채점 행이 없어질 때까지)."
     ),
-    provider: Optional[str] = typer.Option(
+    provider: str | None = typer.Option(
         None, "--provider", help="채점에 쓸 ChatProvider. 생략하면 KF_AGENT_PROVIDER(에이전트와 동일)."
     ),
-    model: Optional[str] = typer.Option(None, "--model", help="채점 모델. 생략하면 그 provider의 기본 모델."),
+    model: str | None = typer.Option(None, "--model", help="채점 모델. 생략하면 그 provider의 기본 모델."),
 ) -> None:
     """아직 채점되지 않은 `search_log` 행을 LLM-judge로 채점해 `eval_score`에 저장한다
     (wiki/search-evaluation.md (B)) - Recall/Precision/MRR/NDCG(같은 문서 (C), 골드셋
@@ -750,6 +757,7 @@ def eval(
     if not settings.database_url:
         typer.echo("KF_DATABASE_URL이 설정되지 않았습니다 - eval은 Postgres가 필수입니다.", err=True)
         raise typer.Exit(1)
+    database_url = settings.database_url
 
     chat_provider = get_chat_provider(provider=provider, model=model)
     # Mirrors get_chat_provider()'s own model resolution (agent/providers/factory.py)
@@ -760,7 +768,7 @@ def eval(
 
     async def _run() -> tuple[int, int]:
         scored = failed = 0
-        async with EvalStore(settings.database_url) as store:
+        async with EvalStore(database_url) as store:
             batches_run = 0
             while max_batches is None or batches_run < max_batches:
                 logs = await store.list_unscored_search_logs(project_id=project_id, limit=batch_size)

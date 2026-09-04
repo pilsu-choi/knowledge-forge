@@ -52,7 +52,7 @@ class PostgresStore:
         from pgvector.psycopg import register_vector_async
 
         try:
-            await register_vector_async(self._conn)
+            await register_vector_async(self.conn)
         except psycopg.ProgrammingError:
             pass
 

@@ -6,7 +6,6 @@ single-tenant callers), so a UI can list only the sources/documents that
 belong to the caller's project.
 """
 
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -46,7 +45,7 @@ def _document_to_response(document: Document) -> DocumentResponse:
 
 @router.get("/sources", response_model=Page[SourceResponse], tags=["Sources"], summary="List sources")
 async def list_sources(
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
     limit: int = 50,
     offset: int = 0,
     store: PostgresStore = Depends(get_read_store),
@@ -71,8 +70,8 @@ async def get_source(source_id: str, store: PostgresStore = Depends(get_read_sto
 
 @router.get("/documents", response_model=Page[DocumentResponse], tags=["Documents"], summary="List documents")
 async def list_documents(
-    project_id: Optional[str] = None,
-    source_id: Optional[str] = None,
+    project_id: str | None = None,
+    source_id: str | None = None,
     limit: int = 50,
     offset: int = 0,
     store: PostgresStore = Depends(get_read_store),

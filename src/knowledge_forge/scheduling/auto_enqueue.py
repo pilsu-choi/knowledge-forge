@@ -18,7 +18,6 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from pydantic import BaseModel, model_validator
@@ -41,12 +40,12 @@ class ScheduledSource(BaseModel):
     re-enqueue it."""
 
     source: str = "local"
-    path: Optional[str] = None
+    path: str | None = None
     project_id: str = "default"
     interval_seconds: int = DEFAULT_INTERVAL_SECONDS
-    max_tokens: Optional[int] = None
-    model: Optional[str] = None
-    okf_dir: Optional[str] = None
+    max_tokens: int | None = None
+    model: str | None = None
+    okf_dir: str | None = None
 
     @model_validator(mode="after")
     def _validate(self) -> "ScheduledSource":
@@ -60,7 +59,7 @@ class ScheduledSource(BaseModel):
         return self
 
 
-def parse_scheduled_sources(raw: Optional[str]) -> list[ScheduledSource]:
+def parse_scheduled_sources(raw: str | None) -> list[ScheduledSource]:
     """`raw` is `KF_SCHEDULED_SOURCES`: an inline JSON array, or a path to a
     file containing one - the same inline-or-path convention
     `collectors/saas/factory.py::_load_json_config` uses for a single JSON

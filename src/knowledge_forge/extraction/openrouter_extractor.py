@@ -133,4 +133,8 @@ class OpenRouterExtractor(Extractor):
                     message = f"{OPENROUTER_CREDENTIAL_HINT_KO} (chunk(s) {chunk_ids})"
                 raise KnowledgeExtractionError(message, chunk_id=chunk_ids) from exc
         content = response.choices[0].message.content
+        if content is None:
+            raise KnowledgeExtractionError(
+                f"knowledge extraction returned empty content for chunk(s) {chunk_ids}", chunk_id=chunk_ids
+            )
         return ExtractionResult.model_validate_json(content)

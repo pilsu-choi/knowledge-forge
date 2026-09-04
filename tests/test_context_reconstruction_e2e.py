@@ -4,9 +4,9 @@ before Parser/Chunker/Extraction ever see them - see
 wiki/roadmap.md's Source-aware Context Reconstruction section.
 """
 
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from typing import Iterator
 
 import yaml
 
@@ -42,7 +42,7 @@ class _FakeSlackCollector(Collector):
         # A much later, unrelated message - should become its own episode.
         yield RawItem(
             uri="slack://general/100000.0",
-            content="C: 완전히 다른 주제입니다".encode("utf-8"),
+            content="C: 완전히 다른 주제입니다".encode(),
             content_hash="irrelevant",
             modified_at=datetime.fromtimestamp(100000.0, tz=timezone.utc),
             metadata={"channel": "general", "ts": "100000.0", "user": "C", "thread_ts": None},
@@ -66,7 +66,7 @@ class _FakeGmailCollector(Collector):
         for thread_id, msg_id, subject, from_, minutes_offset in threads:
             yield RawItem(
                 uri=f"gmail://{msg_id}",
-                content=f"{subject} - body".encode("utf-8"),
+                content=f"{subject} - body".encode(),
                 content_hash="irrelevant",
                 modified_at=datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc) + timedelta(minutes=minutes_offset),
                 metadata={
