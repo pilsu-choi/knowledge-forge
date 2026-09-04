@@ -222,6 +222,48 @@ async def test_metadata_filter_alone_returns_its_rows_newest_first(monkeypatch):
     assert result.scores == [1.0, 1.0]
 
 
+async def test_source_type_hint_alone_never_hard_filters_the_relevance_ranking(monkeypatch):
+    """어휘 힌트뿐인 필터(`source_type IN (...)` 하나)는 관련도 랭킹을 자르지 못한다.
+
+    실측 버그: "Google Drive 폴더 공유 시 부여할 수 있는 역할"의 정답은 Drive 공유요청 **알림
+    메일**(source_type=gmail)인데, "Drive"가 `SOURCE_TYPE_MARKERS`에 걸려 source_types가
+    ['google_drive']로 굳었다. 예전 코드는 교집합 0이면 관련도 랭킹을 통째로 버리고 필터 집합을
+    최신순으로 냈고(`no_overlap_fallback_to_filter`), 그래서 서로 다른 두 질의가 완전히 같은
+    7건을 같은 순서로 돌려줬다 - 질의를 사실상 무시한 것. 코퍼스 실측으로도 본문에 "Google
+    Drive"를 언급하는 문서는 gmail 11 / slack 4 / google_drive 3으로 매핑 방향이 반대다.
+
+    교집합이 **부분적으로** 생기는 경우까지 여기서 함께 못 박는다(fd가 필터에 들어 있다) -
+    교집합 0만 고치면 벡터 arm이 드라이브 파일을 우연히 몇 건 물어온 순간 1위 정답이 다시
+    잘려나간다."""
+    store = _FakeStore(filter_rows=[_filter_row("fd", datetime(2026, 9, 1, tzinfo=timezone.utc))])
+    _patch_vector(monkeypatch, [_chunk_hit("mail1", "c1", 0.9), _chunk_hit("fd", "c2", 0.5)])
+
+    result = await retrieve("Google Drive 폴더 공유 시 부여할 수 있는 역할", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.strategy == "metadata_filter")
+    assert step.detail["filters"]["source_types"] == ["google_drive"]
+    assert step.detail["applied"] == "source_hint_not_applied"
+    assert result.document_ids == ["mail1", "fd"]
+
+
+async def test_no_overlap_still_falls_back_to_a_filter_with_structural_predicates(monkeypatch):
+    """반대로 작성자/참여자/시간 같은 **구조적 술어**가 든 필터는 교집합 0에서도 믿는다.
+
+    이런 질의는 제약을 걷어내고 나면 검색어가 거의 남지 않아("nonghyup.com 도메인 발신자가
+    보낸 메일" → semantic_query "보낸") 관련도 arm이 오히려 무관한 문서를 물어온다. 이 분기까지
+    같이 없앴더니 v0에서 metadata_filter ndcg 0.817→0.543, relative_temporal 1.000→0.578으로
+    무너졌다."""
+    store = _FakeStore(filter_rows=[_filter_row("mail1", datetime(2026, 9, 1, tzinfo=timezone.utc))])
+    _patch_vector(monkeypatch, [_chunk_hit("noise", "c1", 0.9)])
+
+    result = await retrieve("nonghyup.com 도메인 발신자가 보낸 메일", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.strategy == "metadata_filter")
+    assert "ILIKE '%nonghyup.com%'" in step.detail["sql"]
+    assert step.detail["applied"] == "no_overlap_fallback_to_filter"
+    assert result.document_ids == ["mail1"]
+
+
 async def test_sql_literal_escapes_quotes_and_like_metacharacters():
     assert retrieve_module._sql_literal("O'Brien") == "'O''Brien'"
     assert retrieve_module._like_literal("a_b%c") == "'%a\\_b\\%c%'"

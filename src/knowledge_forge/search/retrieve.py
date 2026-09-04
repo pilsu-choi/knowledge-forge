@@ -272,6 +272,27 @@ def _metadata_filter_where(constraints: QueryConstraints, project_id: str | None
     return where
 
 
+def _is_source_hint_only_filter(constraints: QueryConstraints) -> bool:
+    """이 필터가 "어디서(source_type)"만 담고 "누가/언제/무엇"은 하나도 담지 않았는가.
+
+    `merge()`가 **필터를 믿을지 관련도 랭킹을 믿을지** 가르는 신뢰도 판정이다.
+    `_metadata_filter_where`가 만드는 WHERE 절과 1:1로 대응하므로 **둘은 같이 고쳐야 한다.**
+
+    가르는 기준이 "규칙 vs LLM"이 아닌 이유: `source_types`는 애초에 LLM 보강 대상이 아니다
+    (`constraints.LLM_ENRICHABLE_FIELDS`에 없다). 그래서 provenance로는 갈리지 않고, 대신
+    **술어의 종류**로 가른다 -
+    - 작성자/참여자(`participants ILIKE '%nonghyup.com%'`), 시간 범위, 제목 종류는 질의가 명시한
+      구조적 술어다. 사용자가 "농협 도메인에서 온 메일"이라고 했으면 그 도메인 조건은 틀릴 수
+      없다. 이런 질의는 semantic_query가 "보낸" 한 단어로 쪼그라들어 관련도 arm이 오히려 쓰레기다.
+    - 반면 `source_type` 하나뿐인 필터는 `SOURCE_TYPE_MARKERS` 정규식이 질의 표면 어휘만 보고
+      찍은 추측이고, 그 어휘→source_type 매핑은 방향이 자주 반대다(merge() 주석의 코퍼스 실측).
+    """
+    if not constraints.source_types and not any(t in _DOCUMENT_TYPE_AS_SOURCE for t in constraints.document_types):
+        return False
+    title_types = [t for t in constraints.document_types if t not in _DOCUMENT_TYPE_AS_SOURCE]
+    return not (constraints.authors or constraints.participants or constraints.time_range or title_types)
+
+
 _FILTER_FROM = "FROM documents d JOIN sources s ON s.source_id = d.source_id"
 
 
@@ -653,6 +674,10 @@ class _Run:
     # -- 병합 -----------------------------------------------------------------
 
     def merge(self) -> list[dict[str, Any]]:
+        """관련도 랭킹(`merged`)에 메타데이터 필터(`filter_ids`)를 겹쳐 최종 순위를 만든다.
+
+        **필터는 관련도 랭킹을 좁히는 도구지 대체하는 도구가 아니다.** 아래 분기들은 전부 그
+        원칙과, "이 필터를 얼마나 믿을 수 있나"(`_is_source_hint_only_filter`)의 조합이다."""
         candidate_sources = {k: _with_document_id(v) for k, v in self.results_by_source.items() if v}
         merged = merge_and_rerank(candidate_sources)
 
@@ -661,15 +686,55 @@ class _Run:
             if not self.filter_ids:
                 filter_note = "filter_empty_ignored"
             elif not candidate_sources:
-                # 필터 단독 - 최신순 정렬된 필터 집합 자체가 결과
+                # 필터 단독 - 최신순 정렬된 필터 집합 자체가 결과. 여기에는 "관련도 랭킹을 버렸다"는
+                # 문제가 없다: 버릴 관련도 랭킹 자체가 없다(document/lexical/vector 전부 0건).
+                # "작년 3분기에 김민수가 보낸 메일" 같은 순수 메타데이터 질의는 검색어로 쓸 내용어가
+                # 없어 정상적으로 이 경로를 탄다. 여기서까지 필터를 무시하면 답이 통째로 빈다 -
+                # 아래 source_hint 분기와 정반대 상황이라 같이 손댈 이유가 없다.
                 merged = merge_and_rerank({SOURCE_SQL_SEARCH: self.filter_hits})
                 filter_note = "filter_only"
+            elif _is_source_hint_only_filter(self.c):
+                # **어휘 힌트뿐인 필터는 하드 필터로 쓰지 않는다.** `source_type IN (...)` 하나뿐인
+                # WHERE는 `SOURCE_TYPE_MARKERS` 정규식이 질의 표면 어휘만 보고 찍은 추측이고, 그
+                # 어휘 → source_type 매핑은 방향이 자주 반대다(코퍼스 실측은 그 상수 주석에).
+                # 관련도 쪽 arm이 후보를 물어왔다면 그쪽이 훨씬 더 믿을 만하다.
+                #
+                # 원래 버그: 교집합이 0이면 관련도 랭킹을 통째로 버리고 필터 집합을 최신순으로
+                # 내보냈다. 그래서 "애자일소다 Google Drive 폴더 공유 시 부여할 수 있는 역할"의
+                # 정답(Drive 공유요청 **알림 메일**, source_type=gmail)을 `document_search`가
+                # score 1.0으로 1위에 잡아둬도 통째로 버려졌고, 서로 다른 두 질의가 **완전히 같은
+                # 7건을 같은 순서로** 돌려줬다 - 질의를 사실상 무시한 것이다.
+                #
+                # 교집합 0만 고치는 것으로는 부족했다. 교집합이 **우연히 조금 생기는** 경우가
+                # 남는데(위 질의에서 벡터 arm이 드라이브 파일 4건을 같이 물어오면 `intersected:52->4`)
+                # 그때도 1위 정답이 그대로 잘려나간다. 그래서 교집합을 보기 전에 끊는다.
+                #
+                # 잃는 것: 어휘 힌트가 맞았을 때의 정밀도. v0에서는 손실이 관측되지 않았다
+                # (hit@1 0.843→0.857, ndcg@10 0.893→0.897, 나머지 지표 동일).
+                #
+                # 버린 대안:
+                # - 하드 필터 대신 재정렬(교집합 먼저, 나머지를 뒤에): 위 질의에서 1위 정답이
+                #   드라이브 파일 4건 뒤 5위로 밀린다. 잘려나가지만 않을 뿐 마찬가지로 나쁘다.
+                # - `google_drive` 마커를 ['google_drive','gmail']로 확장: 이 두 질의만 낫고
+                #   슬랙/노션에서 같은 모양으로 재발한다. 진짜 드라이브 질의의 필터도 넓어진다.
+                # - "LLM이 확정한 제약만 하드 필터": `source_types`는 애초에 LLM 보강 대상이
+                #   아니라(`constraints.LLM_ENRICHABLE_FIELDS`) provenance로는 갈리지 않는다.
+                #   그래서 술어의 종류로 가른다 - `_is_source_hint_only_filter` 참고.
+                filter_note = "source_hint_not_applied"
             else:
                 kept = [hit for hit in merged if hit["document_id"] in self.filter_ids]
                 if kept:
                     filter_note = f"intersected:{len(merged)}->{len(kept)}"
                     merged = kept
                 else:
+                    # 여기까지 왔으면 필터에 작성자/참여자/시간/제목 종류 같은 **구조적 술어**가
+                    # 들어 있다. 그런 필터는 교집합 0에서도 믿는 쪽이 맞다: 이런 질의는 조건을
+                    # 걷어내고 나면 검색어가 거의 남지 않아("nonghyup.com 도메인 발신자가 보낸
+                    # 메일" → semantic_query "보낸", "최근 3일 안에 농협 측에서 온 메일" →
+                    # "안에 농협 측 온") 관련도 arm 쪽이 오히려 쓰레기를 물어온다. 실제로 이
+                    # 분기까지 같이 없앴더니 v0에서 metadata_filter ndcg 0.817→0.543,
+                    # relative_temporal 1.000→0.578으로 무너졌다(v0-metadata_filter-001과
+                    # v0-relative_temporal-001이 1.000→0.000).
                     merged = merge_and_rerank({SOURCE_SQL_SEARCH: self.filter_hits})
                     filter_note = "no_overlap_fallback_to_filter"
         if self.filter_step is not None:
@@ -785,6 +850,10 @@ class _Run:
     async def count(self, document_ids: list[str]) -> None:
         via = "document_ids"
         sql: str | None = None
+        # SQL COUNT는 **결과 목록이 곧 필터 집합인 경우에만** 쓴다 - 그때만 "몇 건인가"의 답이
+        # 돌려준 목록과 일치한다. `source_hint_not_applied`가 여기 없는 이유가 그것이다: 그
+        # 분기는 필터를 믿지 못해 랭킹에서 뺐는데 같은 필터로 센 숫자를 답으로 내면 목록과
+        # 모순된다(`merge()` 참고).
         if self.filter_step is not None and self.filter_step.detail.get("applied") in (
             "filter_only",
             "no_overlap_fallback_to_filter",

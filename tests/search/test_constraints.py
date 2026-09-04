@@ -403,6 +403,24 @@ def test_recent_korean_word_quantity_is_stripped_from_semantic_query():
     assert c.semantic_query == "장애 원인"
 
 
+def test_source_type_markers_never_leave_half_a_phrase_in_the_semantic_query():
+    """마커 스트리핑은 구절을 통째로 처리한다 - 반쪽만 남기면 안 된다.
+
+    실측 버그: `\\bg?drive\\b`가 "Google Drive"에서 "Drive"만 지워 semantic_query가
+    "애자일소다 Google 폴더 공유 시 ..."라는 반쪽짜리 구절이 됐고, 남은 "Google"이 벡터 arm의
+    검색어를 흐렸다. "Google Drive"는 코퍼스 본문(Drive 공유요청 알림 메일)의 내용어이기도 해서
+    **통째로 남기는 쪽**을 골랐고(`_MARKER_KEEP_PATTERN`), "구글 메일"처럼 내용어가 아닌 쪽은
+    통째로 지운다."""
+    c = extract_constraints_rules("애자일소다 Google Drive 폴더 공유 역할", now=NOW)
+    assert c.source_types == ["google_drive"]
+    assert c.semantic_query == "애자일소다 Google Drive 폴더 공유 역할"
+
+    # 맨 종류어는 그대로 걷어낸다 - "구글"만 남기지 않는다.
+    c = extract_constraints_rules("구글 메일 계약 조건", now=NOW)
+    assert c.source_types == ["gmail"]
+    assert c.semantic_query == "계약 조건"
+
+
 def test_bare_recent_still_means_latest():
     """회귀 방지: 수량 없는 "최근"은 여전히 정렬 신호다."""
     c = extract_constraints_rules("최근 업무보고서", now=NOW)

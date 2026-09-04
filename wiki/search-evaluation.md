@@ -673,6 +673,93 @@ win/loss/tie 9/5/56. `navigational`은 −0.096 → **−0.055**(2승 3패)로 �
 토큰 집합 기반(순서 무관, 구분자 정규화)으로 바꾸는 것**이다. 임계값을 낮추면
 `v0-ambiguous-002`처럼 진짜 모호한 질의에 엉뚱한 anchor가 박힌다.
 
+### 어휘 source_type 힌트를 하드 필터에서 강등 — 일곱 번째 실측 (2026-09-04)
+
+**증상.** `v1-draft`의 두 질의가 **완전히 같은 7건을 같은 순서로** 돌려줬다.
+
+| id | 질의 | 정답 source_type |
+|---|---|---|
+| `v1-draft-factoid-003` | 애자일소다(프로젝트_인텔) Google Drive 폴더 공유 시 사용자에게 부여할 수 있는 역할은? | **gmail** |
+| `v1-draft-temporal-002` | AgentX 2팀 Google Drive 폴더 액세스 요청이 언제 들어왔나? | **gmail** |
+
+정답 2건은 `drive-shares-dm-noreply@google.com`이 보낸 Drive 공유요청 **알림 메일**이다.
+질의의 "Google **Drive**"가 `SOURCE_TYPE_MARKERS`에 걸려 `source_types=['google_drive']`
+하드 필터가 되고, 관련도 랭킹과 교집합이 0이 되자 `merge()`가 관련도 랭킹을 통째로 버리고
+필터 집합을 최신순으로 냈다(`no_overlap_fallback_to_filter`). `document_search`가 정답을
+score 1.0으로 1위에 잡아둔 채로 버려진 것이다. 질의에서 "Google Drive" 두 단어만 빼면 둘 다
+즉시 1위가 된다.
+
+**어휘 → source_type 매핑은 방향이 반대다.** 본문에 "Google Drive"/"드라이브"를 언급하는
+문서의 실제 source_type(개발 코퍼스 실측): **gmail 11 / slack 4 / google_drive 3.** Drive에
+저장된 원본 파일은 본문에 "Google Drive"라고 쓸 이유가 없고, 알림 메일은 항상 쓴다.
+
+**측정하면서 두 번 방향을 틀었다.** 처음 두 시도가 왜 틀렸는지가 이 절의 본론이다.
+
+1. **`no_overlap_fallback_to_filter`를 통째로 삭제** (필터를 항상 무시): 두 질의는 고쳐졌지만
+   v0에서 `metadata_filter` ndcg 0.817→0.543, `relative_temporal` 1.000→0.578으로 무너졌다
+   (`v0-metadata_filter-001` "nonghyup.com 도메인 발신자가 보낸 메일", `v0-relative_temporal-001`
+   "최근 3일 안에 농협 측에서 온 메일"이 각각 1.000→0.000). 이유는 명확하다 — 이런 질의는
+   제약을 걷어내고 나면 semantic_query가 "보낸" / "안에 농협 측 온"으로 쪼그라들어 **관련도 arm
+   쪽이 쓰레기**다. 필터가 유일하게 맞는 신호인데 그걸 버렸다.
+   → **필터의 신뢰도는 하나가 아니다.** 작성자/참여자/시간/제목 종류 같은 구조적 술어는
+   사용자가 명시한 것이라 틀릴 수 없고, `source_type`은 정규식이 표면 어휘로 찍은 추측이다.
+2. **교집합 0일 때만, 어휘 힌트뿐인 필터를 무시**: v0는 baseline과 완전히 동일(모든 지표 일치),
+   두 질의도 1위 회복. 안전하지만 **교집합이 우연히 조금 생기는 경우를 못 막는다** — 실제로
+   semantic_query를 함께 고치자(아래) 벡터 arm이 드라이브 파일 4건을 같이 물어와
+   `intersected:52->4`가 되면서 1위 정답이 다시 잘려나갔다.
+   → **교집합을 보기 전에 끊어야 한다.** 채택안: 어휘 힌트뿐인 필터
+   (`_is_source_hint_only_filter`: WHERE가 `source_type IN (...)` 하나뿐)는 후보가 있는 한
+   하드 필터로 쓰지 않는다(`applied="source_hint_not_applied"`). 구조적 술어가 하나라도 있으면
+   기존 `intersected` / `no_overlap_fallback_to_filter` 동작 그대로.
+
+**부수 수정: semantic_query 반쪽 스트리핑.** `\bg?drive\b`가 "Google Drive"에서 "Drive"만
+지워 semantic_query가 `"애자일소다 Google 폴더 공유 시 ..."`가 됐다. 통째로 지우는 쪽과 통째로
+남기는 쪽을 둘 다 재봤다(다른 조건 동일):
+
+| | 반쪽(옛 동작) | 통째로 지움 | **통째로 남김 (채택)** |
+|---|---|---|---|
+| hit@1 | 0.843 | 0.814 | **0.857** |
+| ndcg@10 | 0.893 | 0.890 | **0.897** |
+
+"Google Drive"는 마커이면서 **동시에 코퍼스 본문의 내용어**라 남기는 쪽이 이겼다(공유요청 알림
+메일 본문에 그대로 쓰여 있다). "드라이브"/"메일" 같은 맨 종류어는 정보량이 없어 그대로 지운다 —
+예외는 `_MARKER_KEEP_PATTERN` 하나로 좁혀 두었다.
+
+**채택안 v0 성적** (`--no-llm`). 측정 도중 **다른 작업의 유니코드 NFC 마이그레이션이 개발 DB에
+반영**돼 절대값이 통째로 내려갔다(같은 main 코드로 잰 baseline이 ndcg 0.893 → 0.879,
+none_correct 1.000 → 0.667). 그래서 **마이그레이션 이후 상태에서 baseline을 다시 찍어** 2분
+간격으로 잰 쌍을 채택 근거로 삼는다. `none_correct` 하락은 이 변경과 무관하다 — 채택안과
+baseline이 같은 0.667이다.
+
+| | baseline `cc07618e12ee…` | **채택 `31515a5cba68…`** |
+|---|---|---|
+| hit@1 | 0.814 | **0.829** |
+| recall@5 | 0.886 | **0.886** |
+| mrr | 0.879 | **0.886** |
+| ndcg@10 | 0.879 | **0.882** |
+| exhaustive_recall | 0.908 | **0.908** |
+| count_match | 0.333 | **0.333** |
+| none_correct | 0.667 | **0.667** |
+
+paired: delta **+0.0036, 95% CI [-0.0021, +0.0115]** — 유의하지 않다. win/loss/tie **2/1/67**.
+움직인 질의는 셋뿐이다: `v0-aggregation-002` 0.688→0.864, `v0-set_query-001` 0.342→0.494,
+`v0-set_query-002` 0.936→**0.861**(유일한 회귀). 두 v1-draft 질의는 둘 다 1위로 회복했다.
+
+마이그레이션 **전** DB에서 잰 쌍(`6f553efe3b22…` → `aa69d1c758ba…`)도 같은 그림이었다:
+0.893 → 0.897, delta +0.0038 CI [-0.0013, +0.0112], 움직인 질의 동일한 셋. 위의 스트리핑
+비교표(0.814/0.890 vs 0.857/0.897)도 마이그레이션 전 수치다.
+
+**정직하게 남기는 트레이드오프**: 어휘 힌트가 **맞았을 때**의 정밀도를 잃는다. v0 76개에서는
+손실이 관측되지 않았지만(내려간 지표 없음), v0는 사람 검수 안 된 스모크셋이고 source_type
+힌트가 맞는 질의가 많지 않다. `count`는 이 경로에서 SQL COUNT를 쓰지 않는다 — 믿지 못해
+랭킹에서 뺀 필터로 센 숫자를 답으로 내면 돌려준 목록과 모순된다.
+
+**버린 대안**: (a) `google_drive` 마커를 `['google_drive','gmail']`로 확장 — 이 두 질의만 낫고
+슬랙/노션에서 같은 모양으로 재발한다. (b) "LLM이 확정한 제약만 하드 필터" — `source_types`는
+애초에 LLM 보강 대상이 아니라(`LLM_ENRICHABLE_FIELDS`) provenance로는 갈리지 않는다. 그래서
+provenance 대신 **술어의 종류**로 갈랐다. (c) 하드 필터 대신 재정렬(교집합 먼저, 나머지 뒤) —
+`v1-draft-factoid-003`의 1위 정답이 드라이브 파일 4건 뒤 5위로 밀린다.
+
 ### 남은 것 (우선순위 순)
 
 진단은 `eval_run_query.steps` 실측 기준이다.
@@ -684,10 +771,13 @@ win/loss/tie 9/5/56. `navigational`은 −0.096 → **−0.055**(2승 3패)로 �
 2. **term별 희소성 가중** — 지금은 "Kubernetes"(df=0)와 "가이드"(df≥20)가 동등하다. 비율 기반
    임계값이 재현율/정밀도 trade-off에 갇히는 근본 원인. 희소 term이 0건이면 답이 없다고 보는
    규칙이 null/negative를 다른 유형 희생 없이 지킬 수 있다.
-3. **metadata_filter 교집합이 무조건적** — 키워드 히트가 1건이라도 있으면 `filter_only`가
+3. **metadata_filter 교집합이 (거의) 무조건적** — 키워드 히트가 1건이라도 있으면 `filter_only`가
    `intersected`로 바뀐다. `filter_only` 경로가 baseline 5건 → 지금 0건. 신뢰도 낮은 term
    후보로 교집합을 걸지 말고 필터 집합을 랭킹 base로 두고 키워드를 가산점으로 쓰는 편이 안전하다
-   (`v0-set_query-002`, `v0-relative_temporal-001`).
+   (`v0-set_query-002`, `v0-relative_temporal-001`). **일곱 번째 실측에서 절반만 해결했다** —
+   어휘 힌트뿐인 필터는 이제 교집합을 걸지 않지만(`source_hint_not_applied`), 구조적 술어가
+   섞인 필터는 여전히 무조건 교집합이다. 진짜 처방은 필터를 RRF에 가산점으로 섞는 것이고,
+   그건 `rerank.py` 쪽 변경이다.
 4. **fallback 경로에서 anchor가 안 잡힌다** — `_keyword_fallback`의 `document_search` 결과에는
    `document_lookup()`의 anchor 판정이 안 걸린다. 제목 1.0 일치가 RRF 한 표로 전락한다.
    더불어 RRF가 모든 소스를 1표로 보는 것도 재검토 대상이다.

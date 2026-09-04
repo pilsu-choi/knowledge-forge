@@ -188,10 +188,25 @@ term당 조회는 `_TERM_FETCH_LIMIT`(20)으로 따로 막는다 — exhaustive/
   소스의 다수결로 이걸 밀어내면 Navigational/Specific-document QA가 무너진다. 고정은 순서를 지키는
   partition이라 나머지 랭킹은 그대로다.
 - **metadata_filter 교집합**: 필터는 랭킹 신호가 아니라 범위다(작성자/기간이 틀린 문서는 아무리
-  유사해도 오답). 그래서 RRF 점수에 섞지 않고 병합 뒤 교집합으로 건다. 단 (a) 필터 질의 결과가 0행이면
-  필터 자체가 틀린 것으로 보고 무시(`applied="filter_empty_ignored"`), (b) 후보 생성 전략이 없거나
-  교집합이 비면 필터 집합 자체를 최신순 결과로 쓴다(`filter_only`/`no_overlap_fallback_to_filter`) -
-  "지난주 김철수 메일"은 필터만으로 답이 되는 질의라서.
+  유사해도 오답). 그래서 RRF 점수에 섞지 않고 병합 뒤 교집합으로 건다. **단 필터를 얼마나 믿을지는
+  필터 안에 든 술어의 종류로 가른다** - 아래 표. `applied` 값은 `metadata_filter` step의 detail에
+  그대로 남아서 실패를 추적할 수 있다.
+
+  | 상황 | `applied` | 결과 |
+  |---|---|---|
+  | 필터 질의가 0행 | `filter_empty_ignored` | 필터 무시, 관련도 랭킹 그대로 |
+  | 후보 생성 전략이 하나도 히트 없음 | `filter_only` | 필터 집합을 최신순으로 - "지난주 김철수 메일"은 필터만으로 답이 되는 질의다 |
+  | 필터가 **어휘 힌트뿐**(`source_type IN (...)` 하나) | `source_hint_not_applied` | 필터 무시, 관련도 랭킹 그대로 |
+  | 그 밖에 교집합이 있음 | `intersected:N->M` | 교집합 |
+  | 그 밖에 교집합이 0 | `no_overlap_fallback_to_filter` | 필터 집합을 최신순으로 |
+
+  **어휘 힌트뿐인 필터를 하드 필터에서 뺀 이유**(`_is_source_hint_only_filter`): `source_types`는
+  `SOURCE_TYPE_MARKERS` 정규식이 질의 표면 어휘만 보고 찍은 추측이고 - LLM 보강 대상 필드도 아니다
+  (`LLM_ENRICHABLE_FIELDS`) - 그 어휘 → source_type 매핑은 방향이 자주 반대다. 개발 코퍼스 실측으로
+  본문에 "Google Drive"/"드라이브"를 언급하는 문서의 source_type은 **gmail 11건 / slack 4건 /
+  google_drive 3건**이었다. Drive에 저장된 파일은 본문에 "Google Drive"라고 쓸 이유가 없고, Drive
+  공유요청 알림 메일은 항상 쓴다. 반대로 작성자/참여자/시간/제목 종류는 질의가 명시한 구조적
+  술어라 교집합이 0이어도 필터 쪽을 믿는다(자세한 근거는 wiki/search-evaluation.md의 회귀 기록).
 - `limit`은 최종 `document_ids` 길이다. 소스별 조회는 3배 over-fetch해서 필터/anchor 좁히기 뒤에도
   limit개가 남게 한다(`strategies_override=["vector"]`, limit=10이면 vector 20건 → 상위 10문서 -
   순수 벡터 baseline).
