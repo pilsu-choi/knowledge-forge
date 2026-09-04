@@ -1245,3 +1245,248 @@ agent_groundedness_gate_max_retries: int = 2
   지금 범위 밖.
 - **Graph/SQL search가 라우팅에 추가될 때의 스키마 변경** — `evidence`/`tool_calls`가 이미
   JSONB라 소스 종류가 늘어도 컬럼 추가 없이 흡수된다.
+
+## 골든셋 v1 — 세 갈래 통합 + 사람 검수 (2026-09-05)
+
+`v0.json`(손 작성 76) / `v1-draft.json`(eval-gen 1차 18) / `v2-draft.json`(eval-gen 2차 gdrive 40)로
+쪼개져 있던 골든셋을 **`tests/eval/golden/v1.json` 하나(95개)로 통합**했다. `v0.json`은 15개 run의
+기준선이라 **그대로 둔다**(불변). `compare_runs`가 `golden_version`이 다르면 `ValueError`를 던지는
+그대로, **v0 점수와 v1 점수는 직접 비교할 수 없다** — 질의 모집단이 다르다.
+
+### 계보를 파일 안에 남긴 방법 — `src/`를 건드리지 않고
+
+`GoldenQuery.origin`은 `manual|synthetic|feedback`만 받는 pydantic 필드라 "어느 파일에서 왔는가"를
+여기에 넣을 수 없다. 그래서:
+
+- **원래 id를 그대로 쓴다.** v1의 질의 id는 `v0-factoid-001` / `v1-draft-factoid-003` /
+  `v2-draft-parent_child-005`처럼 원본 그대로다(세 파일의 id 공간이 이미 겹치지 않는다).
+  id만 봐도 출신을 알 수 있고, 과거 run의 `eval_run_query.query_id`와도 이어진다.
+- **`origin_set` / `original_id`를 추가 필드로 넣는다.** pydantic 기본값이 `extra="ignore"`라
+  로더가 조용히 무시하고 파일에는 남는다 — 스키마를 고치지 않고 "손 작성 대 합성"을 갈라 보는
+  가장 싼 방법이다. 값은 `v0-handwritten` / `evalgen-v1` / `evalgen-v2`.
+- `origin`은 스키마가 허용하는 `manual`/`synthetic` 그대로 둔다.
+
+### 검수에서 세운 라벨 규칙 — "산문으로 답이 읽히는 문서만"
+
+라벨 누락을 고치다 보면 "이 문서도 정답인가"를 계속 판정해야 한다. 규칙을 하나로 못박았다:
+**문서를 열었을 때 산문이나 표로 답이 읽히면 정답, 아니면 아니다.**
+구체적으로 `projectintel-development-handover.pptx`(`7f30ecf4…`)는 청크 437개에 **중앙값 7토큰**,
+189개가 5토큰 이하인 슬라이드 조각으로 파싱돼 있다(VLM 미적용). "PRJ-* canonical" 같은 3토큰
+파편에 답의 토큰이 들어 있다고 정답 문서로 세면 파서 결함을 골든셋에 새기는 셈이라,
+**원래 라벨에 있던 경우만 유지하고 검수 중에는 새로 추가하지 않았다.** 코퍼스 전체로는
+2,856청크 중 605개(21%)가 5토큰 이하다.
+
+### 무엇을 걷어냈나
+
+| 출처 | 원본 | 채택 | 비율 |
+|---|---|---|---|
+| v0 (손 작성) | 76 | **74** | 97% |
+| v1-draft (eval-gen 1차) | 18 | **11** | 61% |
+| v2-draft (eval-gen 2차, gdrive) | 40 | **10** | 25% |
+| 합 | 134 | **95** | 71% |
+
+**v0에서 뺀 2건** — 둘 다 "사람 해석이 정답을 만들고 있던" 경우다.
+
+- `v0-multihop-001` "OA 업무도우미 과제의 개발환경이 2차 인터뷰 후 어떻게 결정됐고…":
+  hop1(메일)은 *OA 업무도우미*가 외부개발로 결정됐다고 하고, hop2(슬랙)는 *6번 과제*를 외부
+  개발로 바꾼다고 한다. **"6번 과제 = OA 업무도우미"라고 적은 문서가 코퍼스에 없다.**
+  검색기도 judge도 확인할 수 없는 연결이라 뺐다.
+- `v0-exact_match-001` `F0BUMH30V40`: 원시 슬랙 파일 id. 사람이 칠 질의가 아니고, 대상 문서는
+  그 id를 언급하는 한 줄짜리 메시지다.
+
+**v0에서 고친 질의 1건**
+
+- `v0-latest-003` "가장 최근의 3차 인터뷰 일정 변경 공지" → **"인터뷰 일정이 변경된 가장 최근
+  공지는?"**. 정답 문서(`b2bf0036…`)에는 "3차"도 "공지"도 없다 — 그 문서는 "내일 16번 과제 인터뷰
+  시간이 16시에서 15시로 변경"이고, 정작 "3차 인터뷰"라고 적힌 `5fe63f02…`는 일정 *변경* 공지가
+  아니다. baseline에서 이 질의만 ndcg@10=0.000이었던 이유다. "3차"를 빼면 후보가
+  09-01 PF팀 연기(`22b17a6b`)와 09-02 시간 변경(`b2bf0036`) 둘이 되어 `latest` 판정이 성립한다.
+
+**합성 질의에서 뺀 것 — 세 가지 실패 유형**
+
+1. *앵커 없는 질의*(가장 많다). 질의만 보고 사람이 어느 문서인지 특정할 수 없다.
+   `기존 문서를 대체할 때 삭제하는 대신 어떤 표시를 우선해야 하는가?`,
+   `MR/PR 제목과 본문은 어떤 언어로 작성해야 하나요?`,
+   `PRD/설계/운영 기준 변경 전 확인 문서 순서는?`,
+   `Project Structure 문서에서 정의한 주요 실행 경계 디렉토리 목록은?`
+   (마지막 것은 "Project Structure"가 문서가 아니라 AGENTS.md 안의 **절 제목**이다).
+2. *청크 문장 되묻기*. `copied_from_chunk`(최장 공통 부분 문자열 25자)를 빠져나가는 부류다.
+   `바이브 코딩은 AI에게 크게 맡기는 방식인가요?`(청크 첫 문장을 부정문으로 뒤집음),
+   `ProjectIntel handover 문서에는 secret 원문이 포함되어 있는가?`("이 문서는 secret 원문을 담지
+   않는다"의 예/아니오 뒤집기 — 게다가 그 문장은 두 문서에 그대로 있다),
+   `project-intel Codex 기준 가이드 파일의 Scope는?`(168자 청크가 질의와 같은 말로 답한다).
+3. *원시 채널 id 앵커*. `Slack 채널 #C0BSW8Y2AD9에서 …`, `Slack #C0BT6M412N9 채널에서 …`.
+   `#C0BSW8Y2AD9`로 시작하는 제목이 35개, 같은 날짜까지 같은 제목이 7개다. 사람이 칠 질의가
+   아니면서 라벨도 틀린다. 한 건(`v1-draft-conversation_thread-003`)만 청크 안의 고유 표현으로
+   **다시 써서** 살렸다: `금요일 4시 OA 회의는 어디서 진행하나?`(`선 결제`/`4시 OA`는 코퍼스에서
+   유일하다).
+
+**v2-draft는 문서당 상한을 걸었다.** 40개의 정답 문서가 5개뿐이고 34개가 문서 2개
+(`AGENTS.md`, `projectintel-handover-guide.md`)에 몰려 있어, 그대로 넣으면 v1이 "그 두 문서를
+얼마나 잘 찾나"를 재게 된다. 문서당 상한 3으로 잘라 10개만 채택했다.
+
+### 라벨 누락 9건 수정 — 이게 검수에서 가장 값이 나가는 부분
+
+binary relevance라 **정답인데 라벨이 안 된 문서가 상위에 올라오면 precision@10/ndcg@10이 부당하게
+깎인다.** 실제로 9건에서 정답이 빠져 있었고, 6건은 **코퍼스가 263→358로 커지기 전부터 이미 틀려
+있었다**(성장 탓이 아니다).
+
+| 질의 | 이전 | 이후 | 사유 |
+|---|---|---|---|
+| `v1-draft-factoid-003` | 1 | **3** | 제목·본문이 같고 요청자/일시만 다른 공유 요청 메일 3건(`156dea7a`/`7b51f2ed`/`8595924b`) |
+| `v1-draft-temporal-001` | 1 | **3** | 같은 3건 위에 있던 또 다른 질의 — 원래 지적에 없었다 |
+| `v0-metadata_filter-003` | 1 | **12**, exhaustive | "gdrive pptx 파일" — 263 시절엔 1건, 지금 12건. **성장으로 깨진 가장 큰 라벨** |
+| `v0-factoid-007` | 1 | **3** | "canonical project id 형식" — AGENTS.md와 신규 운영 가이드 PDF도 명시 |
+| `v0-factoid-009` | 1 | **3** | "업로드 일자 2026-07-20"이 담긴 "현재 업로드 기록" 표가 세 문서에 동일 |
+| `v0-entity_centric-001` | 7 | **8** | 신규 "프로젝트 필요 인력 정리 파일_260623.xlsx"에 동양생명 MM 배분표 |
+| `v0-entity_centric-002` | 4 | **6** | 신규 계약 스프레드시트 2건에 광주은행 RIMS 계약 행 |
+| `v0-ambiguous-003` | 4 | **5** | 신규 "관리자 운영 가이드.dc.html"이 스스로를 "인수인계 가이드"라고 적는다 |
+| `v0-multihop-003` | 2 | **3** | hop1(직책 표준화)에 해당하는 슬랙 문서 `83a905e7`("김대길 계장이 책임으로") 누락 |
+
+여기에 합성 질의 6건(`v1-draft-factoid-005/009`, `v2-draft-factoid-010/012/013/016`,
+`v2-draft-exact_match-001`)의 라벨도 1→2~3건으로 넓혔다.
+
+### 유형 재분류 5건
+
+`exact_match`는 "파일 id·repo URL·호스트명처럼 **질의 자체가 리터럴**"인 유형인데,
+`…Google Sheets 링크는?` / `…환경변수는 무엇인가?` / `…Drive 폴더 URL은?`은 리터럴이 답이지
+질의가 아니다. 3건을 `factoid`/`specific_document_qa`로 내렸다. `v1-draft`의 `temporal` 3건도
+"메일 헤더 날짜 되묻기"라 `factoid`로 내리고 `temporal`은 부라벨로만 남겼다 — 그대로 두면
+temporal 버킷이 실제보다 쉬워 보인다.
+
+### staleness — `source_hash`는 통과했지만 그게 안전하다는 뜻이 아니다
+
+134개 전부에 대해 `check_staleness`를 돌려 **stale 0건**(missing 0 / changed 0 / unhashed 0).
+코퍼스가 263→358로 커진 방식이 **기존 문서 수정이 아니라 gdrive 문서 95개 추가**뿐이라
+정답 문서들의 `sources.content_hash`가 하나도 안 바뀌었기 때문이다.
+
+**그런데 실제로는 4건이 깨져 있었다**(위 표의 metadata_filter-003 / entity_centric-001·002 /
+ambiguous-003). `check_staleness`는 *라벨된 정답 문서*만 해시하므로,
+**"새로 들어온 문서가 정답 집합에 들어가야 하는가"를 원리적으로 볼 수 없다.**
+exhaustive/count/none 질의에는 해시 비교가 아니라 **술어 재도출**이 필요하다 —
+`notes`에 적어 둔 SQL을 다시 돌리는 것이 유일하게 신뢰할 수 있는 검사다.
+(aggregation 3건은 재실행 결과 6/23/11로 변동 없었고, negative·null 6건의 금칙어
+kubernetes/terraform/kafka/연말정산/블록체인/특허는 358문서에서도 전부 0건이었다.)
+
+### 세션 중에 코퍼스가 바뀌었다 — 공유 DB 사고 재발
+
+검수 도중 **슬랙 문서 197개의 `documents.title`이 통째로 다시 쓰였다**
+(`#C0BSW8Y2AD9 2026-09-02` → `#proj_2026-038-0_nh농협은행_mvp 2026-09-02`). 다른 세션의 백필이다.
+`sources.content_hash`도 `documents.updated_at`도 안 바뀌어서 **`check_staleness`도 `index_snapshot`도
+이 변화를 잡지 못한다.** 제목은 pg_trgm/렉시컬 arm의 입력이므로 이건 검색 결과를 바꾸는 변화다.
+확인 삼아 같은 코드(da64fac)로 v0을 다시 돌렸다:
+
+| run_id | 시점 | ndcg@10 |
+|---|---|---|
+| `c729471ccea744468dad78ec9c43e82d` | 제목 백필 **전** | 0.8516 |
+| `a51c0681b8b14e17b68b58362719747d` | 제목 백필 **후** | 0.8490 |
+
+−0.0026이라 이번엔 실질적 영향이 없었다. 하지만 **운이 좋았던 것이지 안전한 게 아니다** —
+`eval_run`에 코퍼스 지문(예: `max(documents.updated_at)` + 제목 해시)이 없어서, 이 −0.0026이
+코드 변경 탓인지 코퍼스 변조 탓인지 기록만으로는 영원히 구분할 수 없다.
+`eval-provenance-and-corpus-hazards`에 적힌 것과 같은 부류의 결함이다.
+
+### v1 첫 절대값 baseline (2026-09-05)
+
+```bash
+knowledge-forge eval-ir --golden tests/eval/golden/v1.json --no-llm --label v1-baseline-2026-09-05
+```
+
+**`run_id=9eac82dcd2724727b95364dd6d83dabe`**, `git_commit=26c3527a3f831535fcca798abc8a09c4f3cefde9`
+(깨끗한 트리), 코퍼스 documents 358 / chunks 2856 / chunk 임베딩 2856, stale 0 / error 0.
+
+```
+overall: n=95 hit@1=0.742 recall@5=0.892 mrr=0.834 ndcg@10=0.851
+         exhaustive_recall=0.894 count_match=0.333 none_correct=1.000
+```
+
+| 잘 되는 유형 | ndcg@10 | 안 되는 유형 | ndcg@10 |
+|---|---|---|---|
+| conversation_thread / cross_doc / long_range_context / relative_temporal | 1.000 | **latest** | 0.500 |
+| specific_document_qa | 0.972 | **multihop** | 0.656 |
+| aggregation | 0.888 | **navigational** | 0.742 |
+| parent_child | 0.875 | **temporal** | 0.741 |
+| factoid | 0.874 | **sequence** | 0.742 |
+
+**같은 시점 v0은 0.849(`a51c0681…`, n=76)로 v1의 0.851과 거의 같지만, 이 둘을 "성능이 같다"로
+읽으면 안 된다.** 질의 모집단이 다르고(v1은 v0의 실패 질의 2건을 빼고 합성 질의 21개를 더했다),
+난이도 구성도 다르다. v1이 앞으로의 기준선이고, v0은 과거 15개 run과의 연속성 때문에 남긴다.
+
+### 이 세트가 감지할 수 있는 최소 효과 크기 — 95개로는 부족하다
+
+v1 baseline의 질의별 ndcg@10은 **n=89(none 유형 6개는 ndcg가 없다), 평균 0.851, sd 0.257**,
+단일 run 95% 마진 **±0.054**. A/B는 짝지어 보므로 필요한 건 *paired* sd인데, 이건 변경이
+몇 개 질의를 움직이느냐에 따라 크게 다르다. 과거 v0 run 쌍에서 실측:
+
+| 비교 쌍 | 움직인 질의 | paired sd | +0.03 감지에 필요한 n | +0.02에 필요한 n |
+|---|---|---|---|---|
+| `raredf-*` 이웃 파라미터 (1~3개 이동) | 1~3 / 70 | 0.028~0.052 | 7~23 | 15~53 |
+| vfloor 0.50 → 0.42 (실전형 튜닝) | 13 / 70 | **0.176** | **270** | 608 |
+| hybrid → vfloor 0.45 | 14 / 70 | 0.172 | 259 | 582 |
+| constraints-fixes → hybrid-keyword-arm (전략 변경) | 24 / 70 | 0.269 | 631 | 1420 |
+
+즉 **n=95에서 80% power로 감지 가능한 최소 효과는 paired sd 0.17 기준 약 +0.05**이고,
++0.03을 감지하려면 **250~300개**, +0.02는 **550개 이상**이 필요하다.
+현실적 결론: **v1로는 "0.05 이상 움직이는 변경"만 신뢰할 수 있다.** 그보다 작은 delta는
+`bootstrap_ci`와 win/loss/tie를 함께 보고 "유의하지 않음"으로 다뤄야 하며, 숫자가 올랐다는
+이유만으로 채택하면 안 된다.
+
+### 유형·출신 분포 (95개, `primary_type` 기준)
+
+| 유형 | v0-handwritten | evalgen-v1 | evalgen-v2 | 합 |
+|---|---|---|---|---|
+| factoid | 10 | 9 | 8 | **27** |
+| specific_document_qa | 4 | 1 | 1 | 6 |
+| navigational | 4 | 0 | 0 | 4 |
+| metadata_filter | 4 | 0 | 0 | 4 |
+| conversation_thread | 3 | 1 | 0 | 4 |
+| parent_child | 3 | 0 | 1 | 4 |
+| aggregation / ambiguous / cross_document_comparison / entity_centric / latest / long_range_context / negative / null / relative_temporal / sequence / set_query / temporal / version / whole_document_summary | 3 each | 0 | 0 | 3 each |
+| exact_match | 2 | 0 | 0 | 2 |
+| multihop | 2 | 0 | 0 | 2 |
+
+**22개 유형이 전부 채워졌다.** 청크 하나로는 만들 수 없는 9개 유형
+(aggregation/set_query/negative/null/multihop/cross_document_comparison/relative_temporal/
+latest/ambiguous)은 예상대로 **전부 v0에서 왔다** — 합성 생성기는 여기에 한 건도 기여하지 못했고,
+이건 `gen.py::SINGLE_CHUNK_TYPES`의 구조적 한계라 파라미터로 고쳐지지 않는다.
+
+정답 문서는 **106개**(v0 단독 90개에서 늘었다). 다만 편중은 남는다:
+`projectintel-handover-guide.md` 17회(18%), `AGENTS.md` 13회(14%). 개발 DB에 산문 gdrive
+문서가 그만큼 적어서 생긴 구조적 문제이지 검수로 더 줄일 수 없다.
+
+### 남은 구멍
+
+1. **신규 gdrive 95개 문서에 `knowledge_objects`가 0건이다.** 청크 임베딩은 2856/2856로 백필됐지만
+   KO는 안 만들어졌다(기존 gdrive 7개에 1801개, gmail 1372, slack 1934). KO를 읽는 arm에게
+   이 코퍼스는 여전히 263문서다. 이 비대칭이 위 라벨 수정 전부보다 절대값을 더 크게 움직인다.
+2. **`project_id`가 일관성이 없다.** gdrive 102개 전부가 `gdrive-live-check`(테스트용 id처럼 보인다),
+   gmail은 `default`, slack은 12개 `PRJ-*`에 흩어져 있다. project 스코프 필터를 켜면 질의마다
+   코퍼스 절반이 조용히 사라진다.
+3. **content_hash가 같은 중복 문서가 14그룹 65건**(슬랙 봇 공지가 채널 8~10개에 fan-out).
+   같은 텍스트끼리의 순위는 임의라 그 질의의 nDCG는 부분적으로 노이즈고, dedup 레이어를 넣으면
+   recall이 무너진다. 합성 생성기에 "정답 문서가 다른 문서와 content_hash를 공유하면 생성 금지"
+   가드가 필요하다.
+4. **청크가 0개인 문서 3건**(`ASME B36.10 …(OCR).pdf`, `si-onboarding-prototype.html`,
+   `포항공장 생산 CAPA CHART(2021)_PM53 업데이트.xlsx`)은 라벨이 뭐라 하든 검색 불가. 실효 코퍼스는 355다.
+5. **`.md`가 `text/plain`으로 들어왔다.** 기존 handover 마크다운 6개는 `text/markdown`인데 신규
+   13개는 `text/plain`이다. `v0-set_query-001`("마크다운 문서 전부")의 정답이 유지되는 건
+   검색 가능한 성질 때문이 아니라 **인제스트 불일치 덕분**이다.
+6. **`v0-whole_document_summary-001`과 `v0-long_range_context-002`는 사실상 같은 질의**다
+   (둘 다 같은 pptx 요약, 같은 단일 라벨). 완전 상관이라 유효 표본을 부풀린다. 유형 버킷이
+   각각 3개뿐이라 이번엔 남겼다.
+7. **`count_match`가 0.333에서 안 움직인다**(aggregation 3건 중 1건). retriever가 개수를
+   예측하지 않으므로 사실상 상수다 — 지표로 쓰려면 집계 경로가 먼저 필요하다.
+
+### 다음 단계
+
+1. **eval-gen을 넓어진 gdrive로 다시 돌린다.** `--min-tokens 80` 후보를 가진 gdrive 문서가
+   **7개 → 83개**(후보 청크 32 → 827)로 늘었다. v2-draft를 만들 때 `--max-per-document 13`까지
+   올려야 했던 이유가 사라졌으므로, 이제 기본값 `--max-per-document 2`로 문서 40~80개에 퍼진
+   초안을 뽑을 수 있다. **v2-draft의 실패(정답 문서 5개)는 생성기 문제가 아니라 그때 코퍼스가
+   얕았던 문제였다.**
+2. **표본을 250개 이상으로.** 위 계산대로 +0.03을 감지하려면 그만큼 필요하다. 늘리는 경로는
+   (1)의 재생성 + 사람 검수이지, 지금 있는 질의를 재활용하는 게 아니다.
+3. **`check_staleness`를 술어 재도출로 교체.** exhaustive/count/none 질의의 `notes`에 있는 SQL을
+   실행해 정답 집합을 다시 뽑고 파일과 대조하는 검사가 필요하다. 지금 방식은 이번에 4건을 놓쳤다.
+4. **`eval_run`에 코퍼스 지문을 기록.** `index_snapshot`의 행 수만으로는 제목 백필 같은
+   "행 수는 그대로인데 내용이 바뀐" 변화를 못 잡는다.
