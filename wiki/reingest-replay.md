@@ -84,6 +84,20 @@ knowledge-forge reparse --source-type google_drive \
 (`parsers/registry.py::extension_for` — 이번에 공개 함수로 뽑았다). 규칙을 두 벌 두면
 "고른 파일 집합"과 "실제로 파싱되는 파일 집합"이 조용히 어긋난다.
 
+**한 건만 다시 파싱할 때는 `--uri`를 써라.**
+
+```bash
+knowledge-forge reparse --source-type google_drive --all \
+    --uri "https://docs.google.com/spreadsheets/d/…/edit" --no-extract --no-embed
+```
+
+이미 문서가 있는 파일 하나를 고치려고 `--all --extensions ".xlsx"`를 쓰면 멀쩡한 형제
+20건까지 같이 재파싱된다. id가 결정적이라 행이 중복되지는 않지만
+(`document_id=stable_id("document", uri, content_hash)`,
+`chunk_id=stable_id(document_id, index, level)`), **형제들의 `elements`/`updated_at`이
+전부 다시 쓰이고**, 재파싱이 이전보다 청크를 **적게** 내면 남는 청크가 그대로 방치된다
+(청크 쓰기는 upsert뿐이고 orphan을 지우는 코드가 없다). 20건을 흔들어 1건을 고칠 이유는 없다.
+
 ## 적재 결과 (2026-09-04)
 
 이미지/오디오/비디오는 이번 범위에서 제외했다 — `.png` 114, `.jpg`/`.jpeg` 19,
@@ -116,8 +130,9 @@ VLM 없이 되는 65건(`.md` 13 + `.html` 26 + `.xlsx` 23 + `.csv` 3)을 재적
   돌려서 문서 행까지는 만들었는데, **동시 작업 중인 다른 에이전트의 검색 평가를 흔들지
   않으려고 청킹 도중에 중단**했다(`record_chunks`는 문서당 한 번에 몰아 쓰므로 청크는
   하나도 안 들어갔다). 시트가 커서 KSS 문장 분할이 수 분 단위로 걸린다.
-  나중에 `reparse --all --extensions ".xlsx"`로 마저 채워야 한다 — 문서 행이 이미 있어서
-  기본값 `--only-missing`으로는 안 잡힌다.
+  문서 행이 이미 있어서 기본값 `--only-missing`으로는 안 잡히므로,
+  `reparse --all --uri "<그 소스의 uri>"`로 그 한 건만 채운다(위 `--uri` 설명 참고).
+  `--all --extensions ".xlsx"`는 멀쩡한 20건까지 끌고 들어가므로 쓰지 않는다.
 
 ### 살리지 못한 것과 이유
 
@@ -148,22 +163,32 @@ VLM 없이 되는 65건(`.md` 13 + `.html` 26 + `.xlsx` 23 + `.csv` 3)을 재적
 
 ## 남긴 후속 과제
 
-1. **VLM 백로그 33건** — `.docx` 16 / `.pptx` 11 / `.pdf` 6. 세 파서 모두 VLM 실패를
-   **이미지·표 단위로 degrade**하므로(문서 자체는 만들어진다) 자격 증명 없이도 적재는 가능하다.
-   대신 PDF 표는 pdfplumber 원시 셀 텍스트로, 그림은 설명 없이 들어간다. 실측한 VLM 호출 수
-   (각 파서가 실제로 보낼 영역을 세어봤다):
+1. **VLM 백로그 33건 — VLM 없이 적재하기로 승인됨(실행 대기).** `.docx` 16 / `.pptx` 11 /
+   `.pdf` 6. 세 파서 모두 VLM 실패를 **이미지·표 단위로 degrade**한다. 자격 증명 없이 33건을
+   실제로 파싱해봤고(**DB 쓰기 없이**) 예외 0건, 총 **33문서 / 8,608청크 / 파싱 119초**다.
 
-   | 확장자 | 파일 | VLM 호출 |
-   |---|---|---|
-   | `.docx` | 16 | 28 (인라인 그림) |
-   | `.pptx` | 11 | 367 (슬라이드 그림) |
-   | `.pdf` | 6 | 1,466 (표 + 그림 영역) |
-   | 합계 | 33 | **1,861** |
+   | 확장자 | 파일 | 청크 | 본문 문자 | 파싱 시간 |
+   |---|---|---|---|---|
+   | `.docx` | 16 | 92 | 23,179 | 1s |
+   | `.pptx` | 11 | 786 | 25,938 | 4s |
+   | `.pdf` | 6 | 7,730 | 876,910 | 114s |
 
-   PDF 6건이 전체의 79%다. `anthropic/claude-haiku-4.5`(OpenRouter, 현재
-   `settings.openrouter_vision_model` 기본값) 기준 호출당 입력 이미지 ~1.5K + 프롬프트,
-   출력 수백 토큰으로 잡으면 **대략 $5–15** 규모다(자릿수 추정이지 정밀 견적이 아니다).
-   비용도 비용이지만 1,861회를 동시성 제한 아래 돌리는 실행 시간이 더 큰 제약일 수 있다.
+   VLM을 태웠다면 필요했을 호출은 **1,861회**(docx 28 / pptx 367 / pdf 1,466)이고,
+   `anthropic/claude-haiku-4.5` 기준 대략 $5–15 규모다(자릿수 추정).
+
+   적재 전에 알아야 할 것:
+
+   - **`나에게맞춘간편건강보험약관.pdf` 한 건이 7,643청크(전체의 89%)다.** 997페이지 보험약관이라
+     이것만으로 코퍼스 청크가 1,426 → 약 10,000으로 7배가 된다. 골든셋과 무관한 한국어 약관
+     보일러플레이트라, 어휘 arm의 term 변별력 문제를 정확히 악화시킬 후보다. **따로 적재해서
+     영향을 격리하거나 아예 빼는 편이 낫다.** 이 한 건을 빼면 32문서 / 965청크로 얌전해진다.
+   - **본문이 0자인 PDF가 3건**이다 — `ASME B36.10-2022`(34p, 이미지 41개, 청크 0개),
+     `WhaTap_AIOps_Presentation`(21p, 표 23개뿐, 이미지 426개), `Design.pdf`(청크 1개).
+     스캔/이미지 전용 문서라 VLM 없이는 사실상 빈 문서가 된다. VLM을 태울 가치가 있다면
+     정확히 이 3건이다.
+   - `.pptx` 786청크 중 777청크가 `structure_size.pptx`(283)와
+     `(공유용) DTS Equipment Cata별 Spacing 정의`(494) 두 건에서 나온다.
+
 2. **`vision/factory.py`에 `claude_agent_sdk` 분기가 없다.** `KF_LLM_PROVIDER`는
    `anthropic`/`openrouter`/`claude_agent_sdk` 3값인데 vision factory는 `openrouter`만
    분기하고 나머지는 `VisionExtractor`(Anthropic SDK 직접 호출)로 떨어진다. 이 머신은

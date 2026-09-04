@@ -263,6 +263,12 @@ def reparse(
         help="Comma-separated allowlist of file extensions to replay (e.g. '.md,.xlsx'). Default: no filter. Use it "
         "to hold back formats whose parser needs credentials/budget you do not want to spend on this run.",
     ),
+    uri: list[str] = typer.Option(
+        [],
+        "--uri",
+        help="Replay exactly these sources.uri values (repeatable). Pair it with --all to re-parse a single file "
+        "that already has a document, instead of re-parsing every sibling of its format to reach it.",
+    ),
     limit: int | None = typer.Option(None, "--limit", help="Replay at most this many sources."),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print the selection (count per extension) and exit without parsing anything."
@@ -322,6 +328,7 @@ def reparse(
             resolved_source_type,
             project_id=project_id,
             only_missing_documents=only_missing,
+            uris=list(uri) or None,
         )
         if allowed_extensions is not None:
             rows = filter_rows_by_extension(rows, allowed_extensions)
