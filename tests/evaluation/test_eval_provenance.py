@@ -26,12 +26,12 @@ from knowledge_forge.evaluation.ir_runner import (
     NOT_RECORDED,
     RANKING_SETTING_FIELDS,
     config_hash,
+    corpus_identity,
     embedding_consistency,
     index_warnings,
     ranking_settings,
     run_ir_eval,
     settings_diff,
-    snapshot_counts,
     snapshot_drift,
 )
 from knowledge_forge.storage.eval_store import EvalRun, EvalRunQuery
@@ -40,7 +40,9 @@ NOW = datetime(2026, 9, 4, tzinfo=timezone.utc)
 MODEL = "openai/text-embedding-3-small"
 
 
-def _snapshot(*, documents=358, chunks=2856, knowledge_objects=5107, embedded=2856, model=MODEL, kind="chunk") -> dict:
+def _snapshot(
+    *, documents=358, chunks=2856, knowledge_objects=5107, embedded=2856, model=MODEL, kind="chunk", titles="fp-titles"
+) -> dict:
     by_model = {model: {kind: embedded}} if embedded else {}
     return {
         "documents": documents,
@@ -48,6 +50,12 @@ def _snapshot(*, documents=358, chunks=2856, knowledge_objects=5107, embedded=28
         "knowledge_objects": knowledge_objects,
         "embeddings_by_kind": {kind: embedded} if embedded else {},
         "embeddings_by_model_and_kind": by_model,
+        "fingerprints": {
+            "document_titles": titles,
+            "chunk_text": "fp-chunks",
+            "embeddings": "fp-emb",
+            "source_content": "fp-src",
+        },
     }
 
 
@@ -181,7 +189,7 @@ def test_snapshot_drift_and_counts():
     assert drift["documents"] == [263, 326] and drift["chunks"] == [936, 1891]
     assert "embeddings_by_kind" not in drift  # 936으로 그대로 - 그래서 불일치가 생겼다
     # 새 키(warnings/finished/...)는 코퍼스 비교에 끼어들지 않는다.
-    assert snapshot_counts({**before, "warnings": ["x"], "finished": after}) == snapshot_counts(before)
+    assert corpus_identity({**before, "warnings": ["x"], "finished": after}) == corpus_identity(before)
 
 
 # --- (2b) 러너가 실제로 두 번 찍고 경고한다 -----------------------------
@@ -255,13 +263,22 @@ async def test_runner_snapshots_start_and_finish_and_flags_drift(caplog):
 
     assert store.snapshot_calls == 2
     # 상위 키는 시작 시점 그대로(하위호환), 종료 스냅샷은 그 옆에.
-    assert snapshot_counts(run.index_snapshot) == snapshot_counts(before)
+    assert corpus_identity(run.index_snapshot) == corpus_identity(before)
     assert run.index_snapshot["finished"] == after
     assert run.index_snapshot["changed_during_run"] is True
     assert run.index_snapshot["drift"]["chunks"] == [936, 1891]
     assert any("코퍼스가 변했다" in w for w in run.index_snapshot["warnings"])
     assert run.summary["index_warnings"] == run.index_snapshot["warnings"]
     assert "코퍼스가 변했다" in caplog.text
+
+
+async def test_runner_flags_a_content_only_change_during_the_run(caplog):
+    """행 수가 하나도 안 변해도 지문이 움직였으면 그 run은 두 코퍼스를 본 것이다."""
+    caplog.set_level(logging.WARNING, logger="knowledge_forge.evaluation.ir_runner")
+    run, _ = await _run([_snapshot(titles="fp-old"), _snapshot(titles="fp-new")])
+    assert run.index_snapshot["changed_during_run"] is True
+    assert run.index_snapshot["drift"] == {"fingerprints.document_titles": ["fp-old", "fp-new"]}
+    assert "fingerprints.document_titles" in caplog.text
 
 
 async def test_runner_warns_loudly_at_start_on_embedding_mismatch(caplog):
@@ -318,6 +335,27 @@ def test_compare_warns_on_different_corpora():
     report = compare_runs(a, _rows("a", {"ndcg@10": 0.5}), b, _rows("b", {"ndcg@10": 0.6}))
     assert report["snapshot_mismatch"] is True
     assert any("서로 다른 코퍼스" in w and "263" in w for w in report["warnings"])
+
+
+def test_same_row_counts_but_rewritten_titles_is_a_different_corpus():
+    """2026-09-05 실측 사고 그대로: 다른 세션이 슬랙 문서 197건의 `documents.title`을
+    다시 써서 같은 코드의 v0가 0.8516 -> 0.8490으로 움직였는데, documents/chunks/
+    embeddings 행 수도 `updated_at`도 `sources.content_hash`도 그대로였다
+    (`check_staleness`조차 0건). 제목은 pg_trgm 입력이라 랭킹을 실제로 바꾼다."""
+    a = _eval_run("a", snapshot=_snapshot(titles="fp-old"))
+    b = _eval_run("b", snapshot=_snapshot(titles="fp-new"), cfg_hash="cfg2")
+    report = compare_runs(a, _rows("a", {"ndcg@10": 0.5}), b, _rows("b", {"ndcg@10": 0.6}))
+
+    assert report["snapshot_mismatch"] is True
+    (corpus_warning,) = [w for w in report["warnings"] if "코퍼스" in w]
+    assert "document_titles" in corpus_warning
+    assert "행 수는 전부 같고" in corpus_warning  # 카운트만 보면 절대 못 잡는 경우
+    assert "check_staleness" in corpus_warning
+
+
+def test_drift_names_the_fingerprint_not_just_two_md5s():
+    drift = snapshot_drift(_snapshot(titles="fp-old"), _snapshot(titles="fp-new"))
+    assert drift == {"fingerprints.document_titles": ["fp-old", "fp-new"]}
 
 
 def test_compare_does_not_cry_wolf_over_a_new_snapshot_key():
@@ -399,9 +437,52 @@ def test_compare_warns_on_different_golden_files_with_the_same_version():
     assert any("골든셋 파일 경로가 다르다" in w for w in report["warnings"])
 
 
-def test_compare_of_two_identical_setups_stays_quiet_except_the_known_note():
-    a, b = _eval_run("a"), _eval_run("b")
+SHA = "da64fac878cea2bf36a837cab4ba5fd174830d27"
+
+
+def test_identical_setup_is_reported_as_reproducibility_not_as_an_ab_result():
+    """코드·설정·코퍼스가 모두 같은 두 run의 delta는 정의상 전부 재현 노이즈다 -
+    그리고 그게 이 파이프라인의 노이즈 바닥이다. 2026-09-05에 코드가 완전히 같은
+    두 baseline이 76질의 중 8개에서 갈린 게 확인됐다(벡터 검색에 결정적 tiebreak가
+    없어 동점 문서가 LIMIT 경계에서 뒤바뀐다)."""
+    a = _eval_run("a").model_copy(update={"git_commit": SHA})
+    b = _eval_run("b").model_copy(update={"git_commit": SHA})
+    report = compare_runs(a, _rows("a", {"ndcg@10": 0.5}), b, _rows("b", {"ndcg@10": 0.9}))
+
+    assert report["reproducibility"] == {
+        "identical_setup": True,
+        "n": 1,
+        "moved": 1,
+        "mean_abs_delta": pytest.approx(0.4),
+        "max_abs_delta": pytest.approx(0.4),
+    }
+    (warning,) = report["warnings"]
+    assert "코드·설정·코퍼스가 모두 같다" in warning and "0.400" in warning
+
+
+def test_identical_setup_with_zero_churn_says_so():
+    a = _eval_run("a").model_copy(update={"git_commit": SHA})
+    b = _eval_run("b").model_copy(update={"git_commit": SHA})
+    report = compare_runs(a, _rows("a", {"ndcg@10": 0.5}), b, _rows("b", {"ndcg@10": 0.5}))
+    assert report["reproducibility"]["moved"] == 0
+    assert "노이즈 바닥 0" in report["warnings"][0]
+
+
+def test_same_config_but_different_code_is_a_normal_ab_and_stays_quiet():
+    """설정이 같고 코드가 다른 건 정상적인 코드 A/B다 - 여기에 '노이즈를 재고 있다'는
+    경고를 붙이면 진짜 경고까지 같이 무시당한다."""
+    a = _eval_run("a").model_copy(update={"git_commit": SHA})
+    b = _eval_run("b").model_copy(update={"git_commit": "0" * 40})
     report = compare_runs(a, _rows("a", {"ndcg@10": 0.5}), b, _rows("b", {"ndcg@10": 0.6}))
-    assert report["warnings"] == [
-        "both runs share config_hash - the delta measures run-to-run noise, not a config change"
-    ]
+    assert report["warnings"] == []
+    assert report["reproducibility"]["identical_setup"] is False
+
+
+def test_same_code_and_config_but_drifted_corpus_says_the_delta_is_a_sum():
+    a = _eval_run("a", snapshot=_snapshot(documents=263, chunks=936, embedded=936)).model_copy(
+        update={"git_commit": SHA}
+    )
+    b = _eval_run("b").model_copy(update={"git_commit": SHA})
+    report = compare_runs(a, _rows("a", {"ndcg@10": 0.5}), b, _rows("b", {"ndcg@10": 0.6}))
+    assert report["reproducibility"]["identical_setup"] is False
+    assert any("인덱스 변화와 재현 노이즈의 합" in w for w in report["warnings"])

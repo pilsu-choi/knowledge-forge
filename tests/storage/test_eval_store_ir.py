@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 import pytest
 from psycopg.types.json import Jsonb
 
-from knowledge_forge.evaluation.ir_runner import embedding_consistency
+from knowledge_forge.evaluation.ir_runner import corpus_identity, embedding_consistency, snapshot_drift
 from knowledge_forge.storage.eval_store import EvalRun, EvalRunQuery, EvalStore
 
 DSN = os.environ.get("KF_TEST_DATABASE_URL")
@@ -225,15 +225,15 @@ async def test_snapshot_index_and_content_hashes_for():
             "knowledge_objects",
             "embeddings_by_kind",
             "embeddings_by_model_and_kind",
+            "fingerprints",
         }
         assert isinstance(before["embeddings_by_kind"], dict)
-        assert await store.snapshot_index(project) == {
-            "documents": 0,
-            "chunks": 0,
-            "knowledge_objects": 0,
-            "embeddings_by_kind": {},
-            "embeddings_by_model_and_kind": {},
-        }
+        empty = await store.snapshot_index(project)
+        assert empty["documents"] == 0 and empty["embeddings_by_model_and_kind"] == {}
+        # 빈 프로젝트는 지문도 전부 None(string_agg가 NULL) - "지문이 없다"와
+        # "지문이 같다"가 섞이지 않게 키 자체는 남는다.
+        assert set(empty["fingerprints"]) == {"document_titles", "chunk_text", "embeddings", "source_content"}
+        assert set(empty["fingerprints"].values()) == {None}
 
         await store.conn.execute(
             """
@@ -308,3 +308,44 @@ async def test_snapshot_counts_embeddings_per_model_not_only_per_grain():
         assert consistency["status"] == "mismatch"
         assert consistency["grains"]["chunk"] == {"total": 2, "embedded": 1, "coverage": 0.5}
         assert consistency["other_models"] == {"model-b": 1}
+
+
+async def test_title_rewrite_changes_the_fingerprint_though_no_count_moves():
+    """이 지문이 존재하는 이유. 2026-09-05에 다른 세션이 슬랙 문서 197건의
+    `documents.title`을 다시 쓰자 같은 코드의 v0가 0.8516 -> 0.8490으로 움직였는데,
+    행 수도 `updated_at`도 `sources.content_hash`도 그대로였다 - 행 수 스냅샷과
+    `check_staleness` 어느 쪽도 못 잡는 변조였다. 제목은 pg_trgm 입력이라 랭킹을
+    실제로 바꾼다."""
+    source_id = PREFIX + "src-" + uuid.uuid4().hex[:8]
+    doc_id = PREFIX + "doc-" + uuid.uuid4().hex[:8]
+    project = PREFIX + "proj-fp-" + uuid.uuid4().hex[:6]
+    async with EvalStore(DSN) as store:
+        await store.conn.execute(
+            """
+            INSERT INTO sources (source_id, source_type, uri, content_hash, collected_at, metadata, project_id)
+            VALUES (%s, 'slack', %s, 'hash-1', %s, %s, %s)
+            """,
+            (source_id, f"slack:///{source_id}", datetime.now(timezone.utc), Jsonb({}), project),
+        )
+        await store.conn.execute(
+            """
+            INSERT INTO documents (document_id, source_id, elements, metadata, project_id, title)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (doc_id, source_id, Jsonb([]), Jsonb({}), project, "#C0BSW8Y2AD9 2026-09-02"),
+        )
+        before = await store.snapshot_index(project)
+
+        # 제목만 다시 쓴다 - 행 수도, sources.content_hash도 그대로.
+        await store.conn.execute(
+            "UPDATE documents SET title = %s WHERE document_id = %s",
+            ("#proj_2026-038-0_nh농협은행_mvp 2026-09-02", doc_id),
+        )
+        after = await store.snapshot_index(project)
+
+    assert corpus_identity(before) != corpus_identity(after)
+    drift = snapshot_drift(before, after)
+    assert list(drift) == ["fingerprints.document_titles"]
+    # 행 수 기반 키는 하나도 안 움직였다 - 그래서 지문이 필요했다.
+    assert before["documents"] == after["documents"] == 1
+    assert before["fingerprints"]["source_content"] == after["fingerprints"]["source_content"]

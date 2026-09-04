@@ -204,31 +204,49 @@ def settings_diff(config_a: Mapping[str, Any], config_b: Mapping[str, Any]) -> d
 # 스키마는 건드리지 않았다 - 전부 기존 `index_snapshot` JSONB 안이다. 상위 키
 # (documents/chunks/…)는 **시작 시점 값 그대로** 남겨서 이 코드를 모르는 옛 조회와
 # 옛 행이 그대로 살아 있고, 새 정보는 그 옆의 새 키로만 붙는다.
-CORPUS_COUNT_KEYS: tuple[str, ...] = (
+# 두 run이 "같은 코퍼스를 봤는가"를 판정하는 데 쓰는 키들. **행 수만으로는 부족하다**:
+# 2026-09-05 실측으로, 다른 세션이 슬랙 문서 197건의 `documents.title`을 다시 쓰자 같은
+# 코드의 v0 성적이 0.8516 -> 0.8490으로 움직였는데 행 수도 `updated_at`도 `content_hash`도
+# 그대로였다(`check_staleness`도 통과). 그래서 `fingerprints`(랭킹 입력 열들의 집계 해시,
+# `eval_store.snapshot_index`)가 같이 들어간다.
+CORPUS_IDENTITY_KEYS: tuple[str, ...] = (
     "documents",
     "chunks",
     "knowledge_objects",
     "embeddings_by_kind",
     "embeddings_by_model_and_kind",
+    "fingerprints",
 )
 
 # 스냅샷 안에서 grain 이름 -> 그 grain의 전체 개수를 담은 키.
 _GRAIN_TOTAL_KEY = {"chunk": "chunks", "knowledge_object": "knowledge_objects"}
 
 
-def snapshot_counts(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
-    """스냅샷에서 **코퍼스 규모 부분만** 뽑는다. `index_snapshot`에는 이제 경고
-    목록과 종료 스냅샷도 같이 들어 있어서, 두 run의 코퍼스가 같은지는 dict 통째
-    비교가 아니라 이 부분집합으로 봐야 한다(옛 행은 상위 키가 곧 이 값이라 그대로
-    동작한다)."""
+def corpus_identity(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
+    """스냅샷에서 **코퍼스 신원 부분만** 뽑는다(규모 + 내용 지문). `index_snapshot`에는
+    이제 경고 목록과 종료 스냅샷도 같이 들어 있어서, 두 run의 코퍼스가 같은지는 dict
+    통째 비교가 아니라 이 부분집합으로 봐야 한다(옛 행은 상위 키가 곧 이 값이라 그대로
+    동작하고, 지문 키만 없다)."""
     if not snapshot:
         return {}
-    return {key: snapshot[key] for key in CORPUS_COUNT_KEYS if key in snapshot}
+    return {key: snapshot[key] for key in CORPUS_IDENTITY_KEYS if key in snapshot}
 
 
 def snapshot_drift(before: Mapping[str, Any] | None, after: Mapping[str, Any] | None) -> dict[str, list[Any]]:
-    """`{키: [시작값, 종료값]}` - 값이 달라진 코퍼스 카운트만."""
-    a, b = snapshot_counts(before), snapshot_counts(after)
+    """`{키: [시작값, 종료값]}` - 값이 달라진 코퍼스 신원 항목만. `fingerprints`는
+    한 덩어리로 비교하지 않고 지문 이름별로 펴서 `fingerprints.document_titles`처럼
+    돌려준다 - "무엇이 달라졌는지"가 md5 두 개보다 훨씬 유용하다."""
+
+    def flat(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for key, value in corpus_identity(snapshot).items():
+            if key == "fingerprints" and isinstance(value, Mapping):
+                out.update({f"fingerprints.{k}": v for k, v in value.items()})
+            else:
+                out[key] = value
+        return out
+
+    a, b = flat(before), flat(after)
     return {key: [a.get(key), b.get(key)] for key in sorted(set(a) | set(b)) if a.get(key) != b.get(key)}
 
 

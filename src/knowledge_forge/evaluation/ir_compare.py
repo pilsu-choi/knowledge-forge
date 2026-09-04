@@ -14,8 +14,10 @@ Comparability rules, enforced here rather than trusted to the caller:
 - different `index_snapshot` -> allowed but flagged (`snapshot_mismatch`,
   `warnings`). A re-ingested index changes what *can* be retrieved, so the
   delta may be drift rather than a retrieval change; the caller decides.
-  코퍼스 비교는 dict 통째가 아니라 `snapshot_counts()`(규모 부분)로 한다 -
+  코퍼스 비교는 dict 통째가 아니라 `corpus_identity()`(규모 + 내용 지문)로 한다 -
   `index_snapshot`에는 이제 경고 목록·종료 스냅샷도 같이 들어 있기 때문이다.
+  **행 수만 비교하면 부족하다**: 다른 세션이 문서 197건의 title을 다시 쓰자 같은
+  코드의 v0가 0.8516 -> 0.8490으로 움직였는데 행 수는 그대로였다(2026-09-05).
 - run **도중에** 코퍼스가 변한 run(`changed_during_run`), 임베딩/청크가 어긋난
   상태로 잰 run(`embedding_coverage.status != ok`)도 각각 경고한다. 전자는 그
   run 내부부터 이미 섞여 있고, 후자는 어휘 arm과 벡터 arm이 다른 코퍼스를 본
@@ -25,6 +27,10 @@ Comparability rules, enforced here rather than trusted to the caller:
 - `--strategies` override는 후보 생성뿐 아니라 **후처리 전략까지 통째로** 교체한다
   (override run에는 `count_match`가 아예 없다). 그래서 한쪽만 override면 "arm 둘"이
   아니라 "파이프라인 둘"을 비교하는 것이고, 이건 조용히 넘어가면 안 되는 종류다.
+- **코드·설정·코퍼스가 모두 같은 두 run**(`reproducibility.identical_setup`)은 A/B가
+  아니라 재현성 측정이다. 그 delta는 정의상 전부 노이즈이고, 동시에 이 파이프라인의
+  **노이즈 바닥**이다 - 다른 A/B의 delta가 이보다 작으면 의미가 없다. 실제로 그런
+  비교를 "개선을 쟀다"로 읽은 사고가 있었다.
 - queries with an `error` in either run (empty metrics) are simply not
   shared and drop out of the pairing - `n` says how many survived.
 - 코드 프로버넌스(`git_commit`)는 비교를 막지는 않지만 **반드시 보인다**.
@@ -36,11 +42,11 @@ Comparability rules, enforced here rather than trusted to the caller:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from knowledge_forge.evaluation.ir_metrics import bootstrap_ci, paired_delta
-from knowledge_forge.evaluation.ir_runner import base_commit, is_dirty_commit, settings_diff, snapshot_counts
+from knowledge_forge.evaluation.ir_runner import base_commit, corpus_identity, is_dirty_commit, settings_diff
 from knowledge_forge.storage.eval_store import EvalRun, EvalRunQuery
 
 
@@ -65,6 +71,62 @@ def _provenance_warnings(run_a: EvalRun, run_b: EvalRun) -> tuple[list[str], boo
             "두 run의 base commit은 같지만 실제로 돈 코드가 다르다 - 커밋 해시만 보고 '같은 코드'로 읽으면 안 된다"
         )
     return out, mismatch
+
+
+def _identity_detail(key: str, a: Any, b: Any) -> str:
+    """차이 한 줄. 지문은 md5 두 개를 통째로 찍는 대신 **어떤 지문이** 달라졌는지를
+    말한다 - 사람이 읽고 행동할 수 있는 건 이름 쪽이다."""
+    if key == "fingerprints" and isinstance(a, Mapping) and isinstance(b, Mapping):
+        names = sorted(k for k in set(a) & set(b) if a[k] != b[k])
+        rendered = ", ".join(f"{n}({str(a[n])[:8]}… vs {str(b[n])[:8]}…)" for n in names)
+        return f"내용 지문이 다르다: {rendered or '비교 가능한 지문 없음'}"
+    return f"{key}: {a!r} vs {b!r}"
+
+
+def _reproducibility(head: Mapping[str, Any] | None, *, replication: bool) -> dict[str, Any]:
+    """헤드라인 지표의 "얼마나 움직였나". `identical_setup`이 True면 이 숫자들이 곧
+    **재현 노이즈 바닥**이다 - 코드도 설정도 코퍼스도 같은 두 런의 delta는 정의상
+    전부 노이즈이기 때문이다."""
+    deltas = list(head.get("deltas") or []) if head else []
+    moved = [d for d in deltas if d != 0]
+    return {
+        "identical_setup": replication,
+        "n": len(deltas),
+        "moved": len(moved),
+        "mean_abs_delta": (sum(abs(d) for d in moved) / len(moved)) if moved else 0.0,
+        "max_abs_delta": max((abs(d) for d in moved), default=0.0),
+    }
+
+
+def _replication_warning(run_a: EvalRun, repro: Mapping[str, Any]) -> str:
+    """코드·설정·코퍼스가 모두 같은 두 런을 비교하고 있다.
+
+    두 가지 이유로 조용히 넘어가면 안 된다. (1) 그런 비교를 "개선을 쟀다"로 읽는
+    실수가 실제로 있었다. (2) 그 delta가 바로 **이 파이프라인의 재현 노이즈 바닥**
+    이고, 다른 A/B의 delta가 이보다 작으면 의미가 없다.
+
+    2026-09-05 실측 두 건이 왜 이 바닥이 0이 아닌지를 보여 준다.
+    (a) 코드가 완전히 같은 두 baseline이 76질의 중 8개에서 갈렸다(최대 ±0.63):
+        `storage/postgres_store.py`의 벡터 검색이 `ORDER BY 거리 LIMIT n`뿐이라
+        결정적 tiebreak가 없고, 임베딩 2856행 중 508행(17.8%)이 벡터가 완전히 같은
+        중복 그룹이라 LIMIT 경계에서 문서 랭킹이 런마다 바뀐다(SQL 수정은 별도 브랜치).
+    (b) 카운트가 똑같은데도(358/2856/2856) 세 시간 사이에 `v0-sequence-001`이
+        0.177 -> 0.000으로 굳어졌다. 이건 churn이 아니라 `index_snapshot`이 못 잡는
+        **코퍼스 내용 변화**다 - 카운트 스냅샷의 한계이고, 그래서 이 경고는 두
+        가능성을 같이 말한다."""
+    if repro["moved"] == 0:
+        return (
+            f"두 런은 코드·설정·코퍼스가 모두 같다 (code={run_a.git_commit}, cfg={run_a.config_hash}) - "
+            f"이 비교는 A/B가 아니라 재현성 측정이다. 공통 {repro['n']}개 질의가 하나도 움직이지 않았다"
+            "(이번 짝짓기에서는 노이즈 바닥 0)"
+        )
+    return (
+        f"두 런은 코드·설정·코퍼스가 모두 같다 (code={run_a.git_commit}, cfg={run_a.config_hash}) - "
+        f"이 delta는 코드/설정의 효과가 아니라 재현 노이즈이거나 카운트가 안 변한 코퍼스 내용 변화다. "
+        f"관측된 churn: 공통 {repro['n']}개 중 {repro['moved']}개 질의가 움직였고 평균 |delta| "
+        f"{repro['mean_abs_delta']:.3f}, 최대 {repro['max_abs_delta']:.3f} - 다른 A/B의 delta가 이보다 "
+        "작으면 이 바닥과 구분되지 않는다"
+    )
 
 
 def _index_health_warnings(run_a: EvalRun, run_b: EvalRun) -> list[str]:
@@ -155,31 +217,53 @@ def compare_runs(
             f"cannot compare runs on different golden versions: {run_a.golden_version!r} vs {run_b.golden_version!r}"
         )
     warnings: list[str] = []
-    counts_a, counts_b = snapshot_counts(run_a.index_snapshot), snapshot_counts(run_b.index_snapshot)
+    id_a, id_b = corpus_identity(run_a.index_snapshot), corpus_identity(run_b.index_snapshot)
     # **양쪽에 다 있는 키만** 비교한다. 한쪽에만 있는 키는 스냅샷 포맷이 늘어난
-    # 것이지 코퍼스가 달랐다는 증거가 아니다 - 옛 행에는 `embeddings_by_model_and_kind`가
-    # 없고, 그걸 차이로 세면 옛 run과의 모든 비교에 늑대소년 경고가 붙는다.
-    differing = sorted(key for key in set(counts_a) & set(counts_b) if counts_a[key] != counts_b[key])
+    # 것이지 코퍼스가 달랐다는 증거가 아니다 - 옛 행에는 `embeddings_by_model_and_kind`나
+    # `fingerprints`가 없고, 그걸 차이로 세면 옛 run과의 모든 비교에 늑대소년 경고가 붙는다.
+    differing = sorted(key for key in set(id_a) & set(id_b) if id_a[key] != id_b[key])
     snapshot_mismatch = bool(differing)
     if snapshot_mismatch:
-        detail = ", ".join(f"{key}: {counts_a[key]!r} vs {counts_b[key]!r}" for key in differing)
+        detail = ", ".join(_identity_detail(key, id_a[key], id_b[key]) for key in differing)
+        counts_same = "fingerprints" in differing and len(differing) == 1
         warnings.append(
             f"두 run이 서로 다른 코퍼스에서 측정됐다 (index_snapshot: {detail}) - 델타가 코드/설정이 아니라 "
             "인덱스 변화일 수 있다"
+            + (
+                ". 행 수는 전부 같고 **내용만** 달라졌다 - 적재 후에 파생 열(예: documents.title)이 "
+                "다시 쓰인 모양이고, 그건 updated_at/content_hash/check_staleness 어디에도 안 잡힌다"
+                if counts_same
+                else ""
+            )
         )
     warnings.extend(_index_health_warnings(run_a, run_b))
     config_diff = settings_diff(run_a.config, run_b.config)
-    if run_a.config_hash == run_b.config_hash:
-        warnings.append("both runs share config_hash - the delta measures run-to-run noise, not a config change")
-    elif config_diff:
+    # "코드도 설정도 코퍼스도 같다" = 정의상 delta가 전부 재현 노이즈여야 하는 짝짓기.
+    # git_commit이 None(비-git 체크아웃, 또는 옛 행)이면 "같다"고 주장할 수 없다.
+    same_code = run_a.git_commit is not None and run_a.git_commit == run_b.git_commit
+    same_config = run_a.config_hash == run_b.config_hash
+    replication = same_code and same_config and not snapshot_mismatch
+    if config_diff:
         # config_hash가 다르다는 사실만으로는 아무도 설정을 복원할 수 없다 - 값까지 적는다.
         warnings.append(
             "두 run의 설정이 다르다: "
             + ", ".join(f"{key} {a!r} -> {b!r}" for key, (a, b) in config_diff.items())
         )
-    elif run_a.config or run_b.config:
+    elif not same_config and (run_a.config or run_b.config):
         warnings.append(
             "config_hash는 다른데 기록된 config는 같다 - 한쪽이 노브를 기록하기 전에 돈 옛 run일 수 있다"
+        )
+    if same_config and same_code and snapshot_mismatch:
+        warnings.append(
+            "코드와 설정이 같고 코퍼스만 다르다 - 이 delta는 인덱스 변화와 재현 노이즈의 합이지 "
+            "코드/설정의 효과가 아니다"
+        )
+    elif same_config and (run_a.git_commit is None or run_b.git_commit is None):
+        # 설정은 같은데 코드가 같았는지 알 수 없다(옛 행/비-git). 설정 A/B는 아니라는
+        # 것만 말할 수 있다. 코드가 **다른** 건 정상적인 코드 A/B라 경고하지 않는다.
+        warnings.append(
+            "두 run의 config_hash가 같다 - 설정 차이를 잰 비교가 아니다(코드가 같았는지는 "
+            "git_commit이 없어 알 수 없다)"
         )
     if run_a.golden_path != run_b.golden_path:
         warnings.append(
@@ -193,6 +277,9 @@ def compare_runs(
     a = _metrics_by_query(queries_a)
     b = _metrics_by_query(queries_b)
     deltas_all = paired_delta(a, b)
+    reproducibility = _reproducibility(deltas_all.get(metric), replication=replication)
+    if replication:
+        warnings.append(_replication_warning(run_a, reproducibility))
     per_metric = {
         name: {k: v for k, v in d.items() if k in ("n", "mean_delta", "wins", "losses", "ties")}
         for name, d in deltas_all.items()
@@ -218,6 +305,7 @@ def compare_runs(
         "snapshot_mismatch": snapshot_mismatch,
         "provenance_mismatch": provenance_mismatch,
         "config_diff": config_diff,
+        "reproducibility": reproducibility,
         "warnings": warnings,
         "n_boot": n_boot,
         "seed": seed,
