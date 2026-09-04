@@ -30,15 +30,21 @@ DEFAULT_RRF_K = 60
 
 def _identity_key(source: str, hit: dict[str, Any]) -> Hashable:
     """The two sources use different identifier spaces - `vector_search`
-    always has `knowledge_object_id`, `file_search` only has it for
-    `objects/` hits (None for `resources/`, which aren't KnowledgeObjects at
-    all). A shared `knowledge_object_id` is the only safe cross-source
-    dedup key; anything else (a `file_search` resource hit, or a hit shape
-    this module doesn't recognize) gets a source-scoped fallback key so it
-    is never accidentally merged with an unrelated hit from another source."""
+    always has `knowledge_object_id` for KO-grain hits (and `chunk_id` for
+    chunk-grain ones, `KF_EMBEDDING_SOURCE=chunk`), `file_search` only has
+    `knowledge_object_id` for `objects/` hits (None for `resources/`, which
+    aren't KnowledgeObjects at all). A shared `knowledge_object_id` is the
+    only safe cross-source dedup key; a `chunk_id` is only ever produced by
+    `vector_search` so it dedups within that source; anything else (a
+    `file_search` resource hit, or a hit shape this module doesn't
+    recognize) gets a source-scoped fallback key so it is never
+    accidentally merged with an unrelated hit from another source."""
     knowledge_object_id = hit.get("knowledge_object_id")
     if knowledge_object_id:
         return ("ko", knowledge_object_id)
+    chunk_id = hit.get("chunk_id")
+    if chunk_id:
+        return ("chunk", chunk_id)
     path = hit.get("path")
     if path:
         return ("path", source, path)

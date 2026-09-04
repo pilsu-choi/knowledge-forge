@@ -78,3 +78,24 @@ def test_merge_and_rerank_empty_input_returns_empty_list():
 
 def test_default_rrf_k_is_a_positive_constant():
     assert DEFAULT_RRF_K > 0
+
+
+def test_merge_and_rerank_dedups_chunk_grain_hits_by_chunk_id_without_merging_into_ko_hits():
+    """Chunk-grain vector hits (KF_EMBEDDING_SOURCE=chunk) carry `chunk_id`
+    and no `knowledge_object_id` - two hits for the same chunk collapse,
+    but a chunk hit never merges with a KO hit even from the same document
+    (they are different retrieval units; the evaluation compares them at
+    document level itself)."""
+    vector_hits = [
+        {"chunk_id": "c1", "document_id": "d1", "score": 0.9},
+        {"knowledge_object_id": "ko1", "document_id": "d1", "score": 0.8},
+    ]
+    plan_hits = [{"chunk_id": "c1", "document_id": "d1", "score": 0.7}]
+
+    result = merge_and_rerank({"vector_search": vector_hits, "plan_search": plan_hits})
+
+    assert len(result) == 2
+    chunk_hit = next(hit for hit in result if hit.get("chunk_id") == "c1")
+    assert sorted(chunk_hit["retrieval_sources"]) == ["plan_search", "vector_search"]
+    ko_hit = next(hit for hit in result if hit.get("knowledge_object_id") == "ko1")
+    assert ko_hit["retrieval_sources"] == ["vector_search"]

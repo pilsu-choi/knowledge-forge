@@ -10,7 +10,17 @@ for no benefit, so this keeps the original casing and only collapses
 whitespace.
 """
 
+from knowledge_forge.models.chunk import Chunk
 from knowledge_forge.models.knowledge_object import KnowledgeObject
+
+
+def build_chunk_embedding_text(chunk: Chunk) -> str:
+    """The text embedded for a Chunk in `KF_EMBEDDING_SOURCE=chunk` mode -
+    the raw chunk text, whitespace-normalized the same way as
+    `build_embedding_text` (casing preserved, for the same reason). No
+    summary/topics exist at this grain, which is the point of the mode:
+    nothing to wait for from extraction."""
+    return " ".join(chunk.text.split())
 
 
 def build_embedding_text(ko: KnowledgeObject) -> str:

@@ -107,38 +107,83 @@ CREATE INDEX IF NOT EXISTS idx_relations_subject_id ON relations(subject_id);
 CREATE INDEX IF NOT EXISTS idx_relations_object_id ON relations(object_id);
 CREATE INDEX IF NOT EXISTS idx_relations_type ON relations(type);
 
--- One embedding vector per (KnowledgeObject, embedding_model) - a separate
--- table rather than a column on knowledge_objects so switching embedding
+-- One embedding vector per (target, embedding_model), where the target is
+-- either a KnowledgeObject (target_kind = 'knowledge_object', the default
+-- KF_EMBEDDING_SOURCE) or a raw Chunk (target_kind = 'chunk', for sources
+-- where LLM extraction is too slow/expensive to gate retrieval on - see
+-- wiki/embeddings.md "청크 기반 vs KnowledgeObject 기반"). A separate table
+-- rather than a column on knowledge_objects/chunks so switching embedding
 -- models is a new row, not a schema migration (old vectors stay queryable
 -- side by side during a rollout). embedded_text/embedded_text_hash record
 -- exactly what was embedded, for reproducibility and (future) staleness
 -- detection when a re-extraction changes a KO's summary/content - see
 -- wiki/embeddings.md for why staleness re-embedding isn't automated yet.
--- project_id is denormalized from the owning Source (same convention as
--- documents.project_id) since a filtered ANN query can't join out to
--- sources cheaply. Dimension (1536) matches the default embedding model,
--- KF_EMBEDDING_MODEL=text-embedding-3-small - changing models to a
--- different dimension requires a migration (see wiki/embeddings.md).
+--
+-- document_id is always set, whichever grain a row is - it is the one
+-- identifier both grains share, so a consumer (vector_search hits, the
+-- search-evaluation golden set in wiki/search-evaluation.md (C)) can score
+-- KO-mode and chunk-mode retrieval against the same document-level truth
+-- and A/B the two modes fairly. project_id is denormalized from the owning
+-- Source (same convention as documents.project_id) since a filtered ANN
+-- query can't join out to sources cheaply. Dimension (1536) matches the
+-- default embedding model, KF_EMBEDDING_MODEL=text-embedding-3-small -
+-- changing models to a different dimension requires a migration.
+--
+-- embedding_id is stable_id(target_kind, target id, embedding_model) - a
+-- deterministic surrogate PK, because a composite PK can't span two
+-- nullable columns (knowledge_object_id XOR chunk_id). The two partial
+-- unique indexes below enforce the per-grain uniqueness the old
+-- (knowledge_object_id, embedding_model) PK used to.
+--
+-- One-time migration from the pre-chunk shape (PK on knowledge_object_id,
+-- no target_kind column): the table is dropped and recreated below.
+-- Embeddings are derivable (re-run `knowledge-forge embed`), and the
+-- CREATE TABLE IF NOT EXISTS that follows can't alter an existing PK.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.tables WHERE table_name = 'knowledge_object_embeddings'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'knowledge_object_embeddings' AND column_name = 'target_kind'
+    ) THEN
+        DROP TABLE knowledge_object_embeddings;
+    END IF;
+END $$;
 CREATE TABLE IF NOT EXISTS knowledge_object_embeddings (
-    knowledge_object_id TEXT NOT NULL REFERENCES knowledge_objects(knowledge_object_id),
-    embedding_model    TEXT NOT NULL,
-    embedding          vector(1536) NOT NULL,
-    embedded_text      TEXT NOT NULL,
-    embedded_text_hash TEXT NOT NULL,
-    project_id         TEXT NOT NULL,
-    created_at         TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (knowledge_object_id, embedding_model)
+    embedding_id        TEXT PRIMARY KEY,
+    target_kind         TEXT NOT NULL CHECK (target_kind IN ('knowledge_object', 'chunk')),
+    knowledge_object_id TEXT REFERENCES knowledge_objects(knowledge_object_id),
+    chunk_id            TEXT REFERENCES chunks(chunk_id),
+    document_id         TEXT NOT NULL REFERENCES documents(document_id),
+    embedding_model     TEXT NOT NULL,
+    embedding           vector(1536) NOT NULL,
+    embedded_text       TEXT NOT NULL,
+    embedded_text_hash  TEXT NOT NULL,
+    project_id          TEXT NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL,
+    CHECK (
+        (target_kind = 'knowledge_object' AND knowledge_object_id IS NOT NULL AND chunk_id IS NULL)
+        OR (target_kind = 'chunk' AND chunk_id IS NOT NULL AND knowledge_object_id IS NULL)
+    )
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_koe_ko_model
+    ON knowledge_object_embeddings(knowledge_object_id, embedding_model)
+    WHERE knowledge_object_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_koe_chunk_model
+    ON knowledge_object_embeddings(chunk_id, embedding_model)
+    WHERE chunk_id IS NOT NULL;
 -- HNSW over IVFFlat: knowledge_objects is an append-heavy incremental
 -- workload (pipeline/schedule/worker keep inserting), and HNSW doesn't need
 -- a `lists` parameter tuned to table size or periodic rebuilds the way
 -- IVFFlat does. Cosine distance matches how OpenAI-style embeddings are
--- normally compared. No search endpoint reads this index yet
--- (wiki/agent-search.md's vector_search is still design-only) - it's built
--- alongside the table now to avoid a separate migration later.
+-- normally compared. Read by search/service.py's vector_search
+-- (postgres_store.py::search_by_embedding).
 CREATE INDEX IF NOT EXISTS idx_koe_embedding_hnsw
     ON knowledge_object_embeddings USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX IF NOT EXISTS idx_koe_project_id ON knowledge_object_embeddings(project_id);
+CREATE INDEX IF NOT EXISTS idx_koe_document_id ON knowledge_object_embeddings(document_id);
+CREATE INDEX IF NOT EXISTS idx_koe_target_kind ON knowledge_object_embeddings(target_kind);
 
 -- Ingest job queue (wiki/api.md): the FastAPI `/ingest` endpoint enqueues a
 -- row here and returns immediately; `knowledge-forge worker` polls it with

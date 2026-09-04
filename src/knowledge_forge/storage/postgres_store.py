@@ -28,6 +28,14 @@ if TYPE_CHECKING:
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
+# How much of a chunk-grain embedding's `embedded_text` a vector_search hit
+# carries as its `summary` (see `search_by_embedding`). A chunk can be up to
+# `--max-tokens` (4000 by default) long, and one tool_result holding `limit`
+# of those would blow the agent's context budget the same way an unclamped
+# `limit` would (agent/tools.py::_MAX_SEARCH_LIMIT) - the agent can
+# `read_file` the resource for the full text once it has picked a hit.
+_CHUNK_HIT_SUMMARY_CHARS = 500
+
 
 class PostgresStore:
     def __init__(self, dsn: str):
@@ -563,10 +571,18 @@ class PostgresStore:
             )
 
     async def save_embeddings(self, records: list["EmbeddingRecord"]) -> None:
+        """Upserts one `knowledge_object_embeddings` row per record, keyed
+        by `EmbeddingRecord.embedding_id` (deterministic from target_kind +
+        target id + model) - re-embedding the same KO/chunk with the same
+        model replaces the row in place."""
         now = datetime.now(timezone.utc)
         rows: list[tuple[Any, ...]] = [
             (
+                rec.embedding_id,
+                rec.target_kind,
                 rec.knowledge_object_id,
+                rec.chunk_id,
+                rec.document_id,
                 rec.embedding_model,
                 # register_vector_async() (connect(), above) only registers a
                 # dumper for pgvector.Vector/numpy.ndarray, not a plain
@@ -587,19 +603,71 @@ class PostgresStore:
         async with self.conn.cursor() as cur:
             await cur.executemany(
                 """
-                INSERT INTO knowledge_object_embeddings (knowledge_object_id, embedding_model,
+                INSERT INTO knowledge_object_embeddings (embedding_id, target_kind, knowledge_object_id,
+                                                           chunk_id, document_id, embedding_model,
                                                            embedding, embedded_text, embedded_text_hash,
                                                            project_id, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (knowledge_object_id, embedding_model) DO UPDATE SET
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (embedding_id) DO UPDATE SET
                     embedding = EXCLUDED.embedding,
                     embedded_text = EXCLUDED.embedded_text,
                     embedded_text_hash = EXCLUDED.embedded_text_hash,
+                    document_id = EXCLUDED.document_id,
                     project_id = EXCLUDED.project_id,
                     created_at = EXCLUDED.created_at
                 """,
                 rows,
             )
+
+    async def list_chunks_missing_embedding(
+        self, embedding_model: str, project_id: str | None, limit: int
+    ) -> list[tuple[Chunk, str]]:
+        """Chunk-mode counterpart of `list_knowledge_objects_missing_embedding`
+        (`KF_EMBEDDING_SOURCE=chunk`): chunks with no
+        `knowledge_object_embeddings` row for `embedding_model` yet. Returns
+        `(chunk, project_id)` pairs - `Chunk` itself carries no project_id,
+        but the embedding row needs it (denormalized from the owning
+        Source), so it rides along from the join. Ordered by
+        `(document_id, sequence_index)` so a resumed backfill makes steady
+        forward progress and one API batch tends to hold one document's
+        neighbouring chunks."""
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT c.chunk_id, c.document_id, c.source_id, c.hierarchy_level, c.sequence_index,
+                       c.parent_chunk_id, c.text, c.token_count, c.element_ids, c.page_start, c.page_end,
+                       s.project_id
+                FROM chunks c
+                JOIN sources s ON s.source_id = c.source_id
+                LEFT JOIN knowledge_object_embeddings e
+                  ON e.chunk_id = c.chunk_id AND e.embedding_model = %s
+                WHERE e.embedding_id IS NULL
+                  AND (%s::text IS NULL OR s.project_id = %s)
+                ORDER BY c.document_id, c.sequence_index
+                LIMIT %s
+                """,
+                (embedding_model, project_id, project_id, limit),
+            )
+            rows = await cur.fetchall()
+
+        return [
+            (
+                Chunk(
+                    chunk_id=row[0],
+                    document_id=row[1],
+                    source_id=row[2],
+                    hierarchy_level=row[3],
+                    sequence_index=row[4],
+                    parent_chunk_id=row[5],
+                    text=row[6],
+                    token_count=row[7],
+                    element_ids=row[8],
+                    page_range=(row[9], row[10]) if row[9] is not None and row[10] is not None else None,
+                ),
+                row[11],
+            )
+            for row in rows
+        ]
 
     async def list_knowledge_objects_missing_embedding(
         self, embedding_model: str, project_id: str | None, limit: int
@@ -619,7 +687,7 @@ class PostgresStore:
                 JOIN sources s ON s.source_id = ko.source_id
                 LEFT JOIN knowledge_object_embeddings e
                   ON e.knowledge_object_id = ko.knowledge_object_id AND e.embedding_model = %s
-                WHERE e.knowledge_object_id IS NULL
+                WHERE e.embedding_id IS NULL
                   AND (%s::text IS NULL OR s.project_id = %s)
                 ORDER BY ko.extracted_at
                 LIMIT %s
@@ -649,7 +717,7 @@ class PostgresStore:
             for row in rows
         ]
 
-    async def search_knowledge_objects_by_embedding(
+    async def search_by_embedding(
         self,
         embedding: list[float],
         embedding_model: str,
@@ -658,6 +726,7 @@ class PostgresStore:
         limit: int,
         since: datetime | None = None,
         until: datetime | None = None,
+        target_kind: str | None = None,
     ) -> list[dict[str, Any]]:
         """Nearest-neighbor search over `knowledge_object_embeddings`' HNSW
         index (wiki/agent-search.md's vector_search) - `ORDER BY embedding
@@ -670,6 +739,14 @@ class PostgresStore:
         `<=>` against `vector` fails with "operator does not exist" (the
         same reason `save_embeddings` wraps it on the INSERT side).
 
+        Rows of both grains (`target_kind` 'knowledge_object' and 'chunk',
+        see schema.sql) compete in one ranking unless `target_kind` narrows
+        it - the two share a vector space (same model), so mixing them is
+        sound; a caller measuring one grain in isolation (the evaluation
+        golden set, an A/B of the two modes) passes it explicitly. A `type`
+        filter only ever matches KO rows (chunks have no KO type), so
+        `type=` implicitly excludes chunk hits.
+
         `since`/`until` (search/temporal.py, "⑥ Temporal Search") filter on
         `COALESCE(s.modified_at, s.collected_at)` - the source's own
         real-world timestamp, not `ko.extracted_at` (when the pipeline
@@ -681,23 +758,33 @@ class PostgresStore:
         for the same issue on the `file_search` side). `until` is exclusive,
         matching `search/temporal.py::TimeRange`'s half-open contract.
 
-        Returns dict rows, not `KnowledgeObject` - a search hit only needs
-        enough to decide relevance (type/summary/topics) plus a similarity
-        `score`, not the full envelope (evidence/content/version/...) every
-        other `list_*`/`get_*` method here returns. `content_at` (the same
-        COALESCE used for filtering) is included so a caller can see which
-        timestamp the filter actually matched against."""
+        Returns dict rows, not `KnowledgeObject`/`Chunk` - a search hit only
+        needs enough to decide relevance plus a similarity `score`, not the
+        full envelope. Every hit carries `target_kind`, `document_id`
+        (both grains) and `knowledge_object_id`/`chunk_id` (one of them
+        None). `summary` is the KO summary for KO hits and the embedded
+        chunk text (whitespace-normalized, capped at `_CHUNK_HIT_SUMMARY_CHARS`)
+        for chunk hits - one key so downstream (planner snippets, the agent
+        reading the tool result) doesn't need to branch on grain; `type` is
+        the KO type or the literal 'chunk'. `content_at` (the same COALESCE
+        used for filtering) is included so a caller can see which timestamp
+        the filter actually matched against."""
         vector = Vector(embedding)
         async with self.conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT ko.knowledge_object_id, ko.type, ko.summary, ko.topics, ko.document_type,
+                SELECT e.target_kind, e.knowledge_object_id, e.chunk_id, e.document_id,
+                       ko.type, ko.summary, ko.topics, ko.document_type,
+                       LEFT(e.embedded_text, %s) AS chunk_text, c.hierarchy_level, c.sequence_index,
                        s.project_id, e.embedding <=> %s AS distance,
                        COALESCE(s.modified_at, s.collected_at) AS content_at
                 FROM knowledge_object_embeddings e
-                JOIN knowledge_objects ko ON ko.knowledge_object_id = e.knowledge_object_id
-                JOIN sources s ON s.source_id = ko.source_id
+                JOIN documents d ON d.document_id = e.document_id
+                JOIN sources s ON s.source_id = d.source_id
+                LEFT JOIN knowledge_objects ko ON ko.knowledge_object_id = e.knowledge_object_id
+                LEFT JOIN chunks c ON c.chunk_id = e.chunk_id
                 WHERE e.embedding_model = %s
+                  AND (%s::text IS NULL OR e.target_kind = %s)
                   AND (%s::text IS NULL OR e.project_id = %s)
                   AND (%s::text IS NULL OR ko.type = %s)
                   AND (%s::timestamptz IS NULL OR COALESCE(s.modified_at, s.collected_at) >= %s)
@@ -706,8 +793,11 @@ class PostgresStore:
                 LIMIT %s
                 """,
                 (
+                    _CHUNK_HIT_SUMMARY_CHARS,
                     vector,
                     embedding_model,
+                    target_kind,
+                    target_kind,
                     project_id,
                     project_id,
                     type,
@@ -722,22 +812,31 @@ class PostgresStore:
             )
             rows = await cur.fetchall()
 
-        return [
-            {
-                "knowledge_object_id": row[0],
-                "type": row[1],
-                "summary": row[2],
-                "topics": row[3],
-                "document_type": row[4],
-                "project_id": row[5],
-                # Cosine distance is in [0, 2] - 1 - distance is the matching
-                # cosine similarity (1.0 = identical direction), easier for a
-                # caller/model to read as "higher is more relevant".
-                "score": 1.0 - float(row[6]),
-                "content_at": row[7].isoformat(),
-            }
-            for row in rows
-        ]
+        hits: list[dict[str, Any]] = []
+        for row in rows:
+            kind = row[0]
+            is_ko = kind == "knowledge_object"
+            hits.append(
+                {
+                    "target_kind": kind,
+                    "knowledge_object_id": row[1],
+                    "chunk_id": row[2],
+                    "document_id": row[3],
+                    "type": row[4] if is_ko else "chunk",
+                    "summary": row[5] if is_ko else row[8],
+                    "topics": row[6] if is_ko else [],
+                    "document_type": row[7],
+                    "hierarchy_level": row[9],
+                    "sequence_index": row[10],
+                    "project_id": row[11],
+                    # Cosine distance is in [0, 2] - 1 - distance is the matching
+                    # cosine similarity (1.0 = identical direction), easier for a
+                    # caller/model to read as "higher is more relevant".
+                    "score": 1.0 - float(row[12]),
+                    "content_at": row[13].isoformat(),
+                }
+            )
+        return hits
 
     async def execute_readonly_query(self, sql: str, limit: int) -> tuple[list[tuple[Any, ...]], list[str]]:
         """Runs an already-validated, single read-only SELECT/WITH statement

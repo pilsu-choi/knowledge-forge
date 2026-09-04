@@ -86,6 +86,10 @@ class _FakeStore:
         self.saved_relations = []
         self.embedded_objects: list[KnowledgeObject] | None = None
         self.embedded_model: str | None = None
+        self.saved_chunks: list = []
+        self.embedded_chunks: list | None = None
+        self.embedded_chunks_project_id: str | None = None
+        self.calls: list[str] = []
 
     async def record_source(self, source, item):
         pass
@@ -94,10 +98,12 @@ class _FakeStore:
         pass
 
     async def record_chunks(self, chunks):
-        pass
+        self.saved_chunks.extend(chunks)
+        self.calls.append("record_chunks")
 
     async def record_knowledge_objects(self, objects):
         self.saved_objects.extend(objects)
+        self.calls.append("record_knowledge_objects")
 
     async def record_relations(self, relations):
         self.saved_relations.extend(relations)
@@ -108,6 +114,13 @@ class _FakeStore:
     async def record_embeddings(self, objects, embedder, embedding_model):
         self.embedded_objects = objects
         self.embedded_model = embedding_model
+        self.calls.append("record_embeddings")
+
+    async def record_chunk_embeddings(self, chunks, project_id, embedder, embedding_model):
+        self.embedded_chunks = chunks
+        self.embedded_chunks_project_id = project_id
+        self.embedded_model = embedding_model
+        self.calls.append("record_chunk_embeddings")
 
 
 async def test_reextraction_against_a_prior_store_autofills_supersedes(tmp_path):
@@ -193,3 +206,108 @@ async def test_embedder_omitted_skips_embedding_even_with_store(tmp_path):
     [outcome async for outcome in run_pipeline(collector, registry, chunker, extractor, store=store)]
 
     assert store.embedded_objects is None
+
+
+async def test_chunk_embedding_source_embeds_chunks_before_extraction_and_not_objects(tmp_path):
+    """`embedding_source="chunk"` (KF_EMBEDDING_SOURCE=chunk) switches the
+    grain: the raw chunks are embedded right after `record_chunks` - before
+    extraction has produced anything - and the KnowledgeObjects are *not*
+    embedded (one grain per run, the two would otherwise double up on the
+    same document in vector_search)."""
+    doc_path = tmp_path / "doc.txt"
+    doc_path.write_text("A short note about Acme.\n")
+
+    collector = LocalFileCollector(root=doc_path)
+    registry = default_registry()
+    chunker = AdaptiveChunker(max_tokens_per_chunk=4000)
+    extractor = _RepeatingFactExtractor()
+    store = _FakeStore(prior_objects=[])
+    embedder = _FakeEmbedder()
+
+    outcomes = [
+        outcome
+        async for outcome in run_pipeline(
+            collector,
+            registry,
+            chunker,
+            extractor,
+            store=store,
+            embedder=embedder,
+            embedding_source="chunk",
+            project_id="proj-x",
+        )
+    ]
+
+    assert len(outcomes) == 1
+    assert outcomes[0].objects  # extraction still ran
+    assert store.embedded_objects is None
+    assert store.embedded_chunks == store.saved_chunks
+    assert store.embedded_chunks_project_id == "proj-x"
+    assert store.calls.index("record_chunk_embeddings") < store.calls.index("record_knowledge_objects")
+
+
+async def test_extractor_none_skips_extraction_but_still_stores_and_embeds_chunks(tmp_path):
+    """The "KnowledgeObjects are optional" path: with `extractor=None` the
+    document is still chunked/stored/embedded (chunk grain) and an empty
+    outcome is yielded per document, so a caller counting outcomes still
+    sees the document was processed."""
+    doc_path = tmp_path / "doc.txt"
+    doc_path.write_text("A short note about Acme.\n")
+
+    collector = LocalFileCollector(root=doc_path)
+    registry = default_registry()
+    chunker = AdaptiveChunker(max_tokens_per_chunk=4000)
+    store = _FakeStore(prior_objects=[])
+    embedder = _FakeEmbedder()
+
+    outcomes = [
+        outcome
+        async for outcome in run_pipeline(
+            collector, registry, chunker, None, store=store, embedder=embedder, embedding_source="chunk"
+        )
+    ]
+
+    assert len(outcomes) == 1
+    assert outcomes[0].objects == [] and outcomes[0].relations == []
+    assert store.saved_objects == []
+    assert store.saved_chunks  # chunking + storage still happened
+    assert store.embedded_chunks == store.saved_chunks
+    assert "record_knowledge_objects" not in store.calls
+
+
+async def test_extractor_none_with_knowledge_object_source_embeds_nothing(tmp_path):
+    doc_path = tmp_path / "doc.txt"
+    doc_path.write_text("A short note about Acme.\n")
+
+    collector = LocalFileCollector(root=doc_path)
+    registry = default_registry()
+    chunker = AdaptiveChunker(max_tokens_per_chunk=4000)
+    store = _FakeStore(prior_objects=[])
+    embedder = _FakeEmbedder()
+
+    [
+        outcome
+        async for outcome in run_pipeline(
+            collector, registry, chunker, None, store=store, embedder=embedder, embedding_source="knowledge_object"
+        )
+    ]
+
+    assert store.embedded_objects is None
+    assert store.embedded_chunks is None
+
+
+async def test_unknown_embedding_source_is_rejected(tmp_path):
+    import pytest
+
+    doc_path = tmp_path / "doc.txt"
+    doc_path.write_text("x\n")
+    collector = LocalFileCollector(root=doc_path)
+
+    with pytest.raises(ValueError, match="embedding_source"):
+        [
+            outcome
+            async for outcome in run_pipeline(
+                collector, default_registry(), AdaptiveChunker(max_tokens_per_chunk=4000), None,
+                embedding_source="document",
+            )
+        ]

@@ -75,7 +75,9 @@ class PipelineStore:
         vectors = await embedder.embed(texts)
         records = [
             EmbeddingRecord(
+                target_kind="knowledge_object",
                 knowledge_object_id=ko.knowledge_object_id,
+                document_id=ko.document.document_id,
                 embedding_model=embedding_model,
                 embedding=vector,
                 embedded_text=text,
@@ -86,10 +88,54 @@ class PipelineStore:
         ]
         await self._db.save_embeddings(records)
 
+    async def record_chunk_embeddings(
+        self,
+        chunks: list[Chunk],
+        project_id: str,
+        embedder: "EmbeddingProvider",
+        embedding_model: str,
+    ) -> None:
+        """Chunk-grain counterpart of `record_embeddings`
+        (`KF_EMBEDDING_SOURCE=chunk`, wiki/embeddings.md): embeds each
+        chunk's raw text and stores a `target_kind='chunk'` row. Shared by
+        pipeline.py (right after `record_chunks`, before extraction even
+        starts) and the `embed --embedding-source chunk` backfill. All
+        `chunks` must belong to `project_id` - a `Chunk` doesn't carry it,
+        so the caller (which has the Source, or the join in
+        `list_chunks_missing_embedding`) supplies it."""
+        if not chunks:
+            return
+        from knowledge_forge.embedding.base import EmbeddingRecord
+        from knowledge_forge.embedding.text import build_chunk_embedding_text
+        from knowledge_forge.ids import content_hash
+
+        texts = [build_chunk_embedding_text(chunk) for chunk in chunks]
+        vectors = await embedder.embed(texts)
+        records = [
+            EmbeddingRecord(
+                target_kind="chunk",
+                chunk_id=chunk.chunk_id,
+                document_id=chunk.document_id,
+                embedding_model=embedding_model,
+                embedding=vector,
+                embedded_text=text,
+                embedded_text_hash=content_hash(text.encode("utf-8")),
+                project_id=project_id,
+            )
+            for chunk, text, vector in zip(chunks, texts, vectors, strict=True)
+        ]
+        await self._db.save_embeddings(records)
+
     async def list_knowledge_objects_missing_embedding(
         self, embedding_model: str, project_id: str | None = None, limit: int = 50
     ) -> list[KnowledgeObject]:
         return await self._db.list_knowledge_objects_missing_embedding(embedding_model, project_id, limit)
+
+    async def list_chunks_missing_embedding(
+        self, embedding_model: str, project_id: str | None = None, limit: int = 50
+    ) -> list[tuple[Chunk, str]]:
+        """`(chunk, project_id)` pairs - see `PostgresStore.list_chunks_missing_embedding`."""
+        return await self._db.list_chunks_missing_embedding(embedding_model, project_id, limit)
 
     async def search_by_embedding(
         self,
@@ -100,12 +146,15 @@ class PipelineStore:
         limit: int = 10,
         since: datetime | None = None,
         until: datetime | None = None,
+        target_kind: str | None = None,
     ) -> list[dict[str, Any]]:
         """`search/service.py::vector_search`'s single entry point into
         storage - mirrors `record_embeddings`' role of being the one place
-        the caller needs, rather than reaching into `PostgresStore` directly."""
-        return await self._db.search_knowledge_objects_by_embedding(
-            embedding, embedding_model, project_id, type, limit, since, until
+        the caller needs, rather than reaching into `PostgresStore` directly.
+        `target_kind` (None = both grains) narrows to 'knowledge_object' or
+        'chunk' rows, see `PostgresStore.search_by_embedding`."""
+        return await self._db.search_by_embedding(
+            embedding, embedding_model, project_id, type, limit, since, until, target_kind
         )
 
     async def execute_readonly_query(self, sql: str, limit: int) -> tuple[list[tuple[Any, ...]], list[str]]:

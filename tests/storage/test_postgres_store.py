@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import psycopg
 import pytest
 import pytest_asyncio
+from pgvector import Vector
 
 from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.document import Document, DocumentMetadata, TextBlock
@@ -105,7 +106,10 @@ async def store():
         await db.init_schema()
         yield db
         await db.conn.execute("DELETE FROM relations WHERE relation_id LIKE 'test-%'")
-        await db.conn.execute("DELETE FROM knowledge_object_embeddings WHERE knowledge_object_id LIKE 'test-%'")
+        await db.conn.execute(
+            "DELETE FROM knowledge_object_embeddings WHERE knowledge_object_id LIKE 'test-%' "
+            "OR chunk_id LIKE 'test-%' OR embedding_id LIKE 'test-%'"
+        )
         await db.conn.execute("DELETE FROM knowledge_objects WHERE knowledge_object_id LIKE 'test-%'")
         await db.conn.execute("DELETE FROM chunks WHERE chunk_id LIKE 'test-%'")
         await db.conn.execute("DELETE FROM documents WHERE document_id LIKE 'test-%'")
@@ -275,7 +279,9 @@ async def test_save_embeddings_upsert_is_idempotent(store):
 
     ko_id = objects[0].knowledge_object_id
     record = EmbeddingRecord(
-        knowledge_object_id=ko_id,
+     target_kind="knowledge_object",
+     knowledge_object_id=ko_id,
+     document_id="test-d1",
         embedding_model="test-model",
         embedding=[0.1] * 1536,
         embedded_text="Acme",
@@ -285,7 +291,9 @@ async def test_save_embeddings_upsert_is_idempotent(store):
     await store.save_embeddings([record])
 
     updated = EmbeddingRecord(
-        knowledge_object_id=ko_id,
+     target_kind="knowledge_object",
+     knowledge_object_id=ko_id,
+     document_id="test-d1",
         embedding_model="test-model",
         embedding=[0.2] * 1536,
         embedded_text="Acme v2",
@@ -313,6 +321,10 @@ async def test_list_knowledge_objects_missing_embedding(store):
     from knowledge_forge.embedding.base import EmbeddingRecord
 
     src, doc, chunk, objects, _relation = _sample_records()
+    # A populated dev database has thousands of unembedded KOs ahead of this
+    # test's rows in extracted_at order - scope the "missing" scans to a
+    # project only this test writes so `limit` can't hide them.
+    src = src.model_copy(update={"project_id": "test-proj-missing-ko"})
     await store.save_source(src, raw_path=None)
     await store.save_document(doc)
     await store.save_chunks([chunk])
@@ -322,7 +334,7 @@ async def test_list_knowledge_objects_missing_embedding(store):
     fact_id = objects[1].knowledge_object_id
 
     # Neither KO has an embedding yet - both should show up as missing.
-    missing = await store.list_knowledge_objects_missing_embedding("test-model", None, 50)
+    missing = await store.list_knowledge_objects_missing_embedding("test-model", src.project_id, 50)
     missing_ids = {ko.knowledge_object_id for ko in missing}
     assert entity_id in missing_ids
     assert fact_id in missing_ids
@@ -331,7 +343,9 @@ async def test_list_knowledge_objects_missing_embedding(store):
     await store.save_embeddings(
         [
             EmbeddingRecord(
+                target_kind="knowledge_object",
                 knowledge_object_id=entity_id,
+                document_id="test-d1",
                 embedding_model="test-model",
                 embedding=[0.1] * 1536,
                 embedded_text="Acme",
@@ -341,13 +355,13 @@ async def test_list_knowledge_objects_missing_embedding(store):
         ]
     )
 
-    missing = await store.list_knowledge_objects_missing_embedding("test-model", None, 50)
+    missing = await store.list_knowledge_objects_missing_embedding("test-model", src.project_id, 50)
     missing_ids = {ko.knowledge_object_id for ko in missing}
     assert entity_id not in missing_ids
     assert fact_id in missing_ids
 
     # A different embedding_model doesn't count as "embedded" for this model.
-    missing_other_model = await store.list_knowledge_objects_missing_embedding("other-model", None, 50)
+    missing_other_model = await store.list_knowledge_objects_missing_embedding("other-model", src.project_id, 50)
     missing_other_ids = {ko.knowledge_object_id for ko in missing_other_model}
     assert entity_id in missing_other_ids
     assert fact_id in missing_other_ids
@@ -364,7 +378,7 @@ async def test_list_knowledge_objects_missing_embedding(store):
     assert fact_id in {ko.knowledge_object_id for ko in missing_right_project}
 
 
-async def test_search_knowledge_objects_by_embedding_orders_by_similarity_and_filters(store):
+async def test_search_by_embedding_orders_by_similarity_and_filters(store):
     from knowledge_forge.embedding.base import EmbeddingRecord
 
     src, doc, chunk, objects, _relation = _sample_records()
@@ -385,7 +399,9 @@ async def test_search_knowledge_objects_by_embedding_orders_by_similarity_and_fi
     await store.save_embeddings(
         [
             EmbeddingRecord(
+                target_kind="knowledge_object",
                 knowledge_object_id=entity_id,
+                document_id="test-d1",
                 embedding_model="test-model",
                 embedding=vector_a,
                 embedded_text="Acme",
@@ -393,7 +409,9 @@ async def test_search_knowledge_objects_by_embedding_orders_by_similarity_and_fi
                 project_id=src.project_id,
             ),
             EmbeddingRecord(
+                target_kind="knowledge_object",
                 knowledge_object_id=fact_id,
+                document_id="test-d1",
                 embedding_model="test-model",
                 embedding=vector_b,
                 embedded_text="Acme owns X",
@@ -403,24 +421,24 @@ async def test_search_knowledge_objects_by_embedding_orders_by_similarity_and_fi
         ]
     )
 
-    results = await store.search_knowledge_objects_by_embedding(vector_a, "test-model", None, None, 10)
+    results = await store.search_by_embedding(vector_a, "test-model", None, None, 10)
     assert [r["knowledge_object_id"] for r in results] == [entity_id, fact_id]
     assert results[0]["score"] == pytest.approx(1.0, abs=1e-6)
     assert results[1]["score"] == pytest.approx(0.0, abs=1e-6)
 
-    fact_only = await store.search_knowledge_objects_by_embedding(vector_a, "test-model", None, "fact", 10)
+    fact_only = await store.search_by_embedding(vector_a, "test-model", None, "fact", 10)
     assert [r["knowledge_object_id"] for r in fact_only] == [fact_id]
 
-    wrong_project = await store.search_knowledge_objects_by_embedding(
+    wrong_project = await store.search_by_embedding(
         vector_a, "test-model", "no-such-project", None, 10
     )
     assert wrong_project == []
 
-    other_model = await store.search_knowledge_objects_by_embedding(vector_a, "other-model", None, None, 10)
+    other_model = await store.search_by_embedding(vector_a, "other-model", None, None, 10)
     assert other_model == []
 
 
-async def test_search_knowledge_objects_by_embedding_filters_by_the_sources_content_timestamp(store):
+async def test_search_by_embedding_filters_by_the_sources_content_timestamp(store):
     """Filtering must follow the *source's* real-world timestamp
     (modified_at, falling back to collected_at), not `extracted_at` - a
     batch extraction run stamps every KnowledgeObject it touches with the
@@ -502,7 +520,9 @@ async def test_search_knowledge_objects_by_embedding_filters_by_the_sources_cont
     await store.save_embeddings(
         [
             EmbeddingRecord(
+                target_kind="knowledge_object",
                 knowledge_object_id=old_ko.knowledge_object_id,
+                document_id=old_ko.document.document_id,
                 embedding_model="test-model",
                 embedding=vector,
                 embedded_text="old",
@@ -510,7 +530,9 @@ async def test_search_knowledge_objects_by_embedding_filters_by_the_sources_cont
                 project_id=old_src.project_id,
             ),
             EmbeddingRecord(
+                target_kind="knowledge_object",
                 knowledge_object_id=new_ko.knowledge_object_id,
+                document_id=new_ko.document.document_id,
                 embedding_model="test-model",
                 embedding=vector,
                 embedded_text="new",
@@ -520,18 +542,18 @@ async def test_search_knowledge_objects_by_embedding_filters_by_the_sources_cont
         ]
     )
 
-    since_only = await store.search_knowledge_objects_by_embedding(
+    since_only = await store.search_by_embedding(
         vector, "test-model", None, None, 10, since=datetime(2026, 1, 1, tzinfo=timezone.utc)
     )
     assert {r["knowledge_object_id"] for r in since_only} == {new_ko.knowledge_object_id}
     assert since_only[0]["content_at"] == "2026-09-01T00:00:00+00:00"
 
-    until_only = await store.search_knowledge_objects_by_embedding(
+    until_only = await store.search_by_embedding(
         vector, "test-model", None, None, 10, until=datetime(2026, 1, 1, tzinfo=timezone.utc)
     )
     assert {r["knowledge_object_id"] for r in until_only} == {old_ko.knowledge_object_id}
 
-    both_bounds = await store.search_knowledge_objects_by_embedding(
+    both_bounds = await store.search_by_embedding(
         vector,
         "test-model",
         None,
@@ -639,7 +661,9 @@ async def test_connect_succeeds_and_embeddings_work_on_a_database_with_no_vector
             await store.save_embeddings(
                 [
                     EmbeddingRecord(
+                        target_kind="knowledge_object",
                         knowledge_object_id=ko_id,
+                        document_id="test-d1",
                         embedding_model="test-model",
                         embedding=vector,
                         embedded_text="Acme",
@@ -648,8 +672,199 @@ async def test_connect_succeeds_and_embeddings_work_on_a_database_with_no_vector
                     )
                 ]
             )
-            results = await store.search_knowledge_objects_by_embedding(vector, "test-model", None, None, 10)
+            results = await store.search_by_embedding(vector, "test-model", None, None, 10)
             assert ko_id in {r["knowledge_object_id"] for r in results}
+    finally:
+        await admin_conn.execute(f"DROP DATABASE IF EXISTS {fresh_db}")
+        await admin_conn.close()
+
+
+async def _save_sample_graph(store):
+    src, doc, chunk, objects, _relation = _sample_records()
+    await store.save_source(src, raw_path=None)
+    await store.save_document(doc)
+    await store.save_chunks([chunk])
+    await store.save_knowledge_objects(objects)
+    return src, doc, chunk, objects
+
+
+def _chunk_record(chunk, project_id, vector, text="hello", model="test-model"):
+    from knowledge_forge.embedding.base import EmbeddingRecord
+
+    return EmbeddingRecord(
+        target_kind="chunk",
+        chunk_id=chunk.chunk_id,
+        document_id=chunk.document_id,
+        embedding_model=model,
+        embedding=vector,
+        embedded_text=text,
+        embedded_text_hash=f"hash-{text}",
+        project_id=project_id,
+    )
+
+
+async def test_chunk_embedding_upsert_is_idempotent_and_keeps_grain_columns(store):
+    src, _doc, chunk, _objects = await _save_sample_graph(store)
+
+    await store.save_embeddings([_chunk_record(chunk, src.project_id, [0.1] * 1536, text="v1")])
+    await store.save_embeddings([_chunk_record(chunk, src.project_id, [0.2] * 1536, text="v2")])
+
+    row = await (await store.conn.execute(
+        "SELECT count(*), min(target_kind), min(knowledge_object_id), min(document_id), min(embedded_text) "
+        "FROM knowledge_object_embeddings WHERE chunk_id = %s AND embedding_model = %s",
+        (chunk.chunk_id, "test-model"),
+    )).fetchone()
+    assert row == (1, "chunk", None, chunk.document_id, "v2")
+
+
+async def test_knowledge_object_embedding_rows_carry_document_id(store):
+    """document_id is the identifier both grains share - a KO-grain row
+    must carry it too, or the evaluation can't score KO-mode retrieval at
+    document level."""
+    from knowledge_forge.embedding.base import EmbeddingRecord
+
+    src, doc, _chunk, objects = await _save_sample_graph(store)
+    await store.save_embeddings(
+        [
+            EmbeddingRecord(
+                target_kind="knowledge_object",
+                knowledge_object_id=objects[0].knowledge_object_id,
+                document_id=doc.document_id,
+                embedding_model="test-model",
+                embedding=[0.1] * 1536,
+                embedded_text="Acme",
+                embedded_text_hash="h",
+                project_id=src.project_id,
+            )
+        ]
+    )
+    row = await (await store.conn.execute(
+        "SELECT target_kind, chunk_id, document_id FROM knowledge_object_embeddings WHERE knowledge_object_id = %s",
+        (objects[0].knowledge_object_id,),
+    )).fetchone()
+    assert row == ("knowledge_object", None, doc.document_id)
+
+
+async def test_schema_rejects_a_row_whose_ids_do_not_match_its_target_kind(store):
+    """The CHECK constraint is the last line of defence behind
+    EmbeddingRecord.__post_init__ - raw SQL can't sneak in a row that
+    claims one grain but points at the other."""
+    _src, doc, chunk, _objects = await _save_sample_graph(store)
+    with pytest.raises(psycopg.errors.CheckViolation):
+        await store.conn.execute(
+            """
+            INSERT INTO knowledge_object_embeddings (embedding_id, target_kind, knowledge_object_id, chunk_id,
+                document_id, embedding_model, embedding, embedded_text, embedded_text_hash, project_id, created_at)
+            VALUES ('test-bad', 'knowledge_object', NULL, %s, %s, 'm', %s, 't', 'h', 'default', now())
+            """,
+            (chunk.chunk_id, doc.document_id, Vector([0.0] * 1536)),
+        )
+
+
+async def test_list_chunks_missing_embedding_filters_by_model_and_project(store):
+    src, doc, chunk, objects, _relation = _sample_records()
+    src = src.model_copy(update={"project_id": "test-proj-missing-chunk"})  # see the KO variant above
+    await store.save_source(src, raw_path=None)
+    await store.save_document(doc)
+    await store.save_chunks([chunk])
+    await store.save_knowledge_objects(objects)
+
+    missing = await store.list_chunks_missing_embedding("test-model", src.project_id, 50)
+    assert (chunk.chunk_id, src.project_id) in {(c.chunk_id, pid) for c, pid in missing}
+    found = next(c for c, _ in missing if c.chunk_id == chunk.chunk_id)
+    assert found.text == chunk.text and found.page_range == chunk.page_range
+
+    await store.save_embeddings([_chunk_record(chunk, src.project_id, [0.1] * 1536)])
+
+    assert chunk.chunk_id not in {c.chunk_id for c, _ in await store.list_chunks_missing_embedding("test-model", src.project_id, 50)}
+    # A different model doesn't count as embedded for this model.
+    assert chunk.chunk_id in {c.chunk_id for c, _ in await store.list_chunks_missing_embedding("other-model", src.project_id, 50)}
+    # And a KO-grain embedding of the same document doesn't count as the chunk being embedded either.
+    assert chunk.chunk_id in {c.chunk_id for c, _ in await store.list_chunks_missing_embedding("other-model", src.project_id, 50)}
+    assert await store.list_chunks_missing_embedding("other-model", "no-such-project", 50) == []
+
+
+async def test_search_by_embedding_mixes_grains_by_default_and_narrows_on_target_kind(store):
+    from knowledge_forge.embedding.base import EmbeddingRecord
+
+    src, doc, chunk, objects = await _save_sample_graph(store)
+    ko_id = objects[0].knowledge_object_id
+    vector_a = [1.0] + [0.0] * 1535
+    vector_b = [0.0, 1.0] + [0.0] * 1534
+    long_text = "x" * 2000
+
+    await store.save_embeddings(
+        [
+            EmbeddingRecord(
+                target_kind="knowledge_object",
+                knowledge_object_id=ko_id,
+                document_id=doc.document_id,
+                embedding_model="test-model",
+                embedding=vector_b,
+                embedded_text="Acme",
+                embedded_text_hash="h",
+                project_id=src.project_id,
+            ),
+            _chunk_record(chunk, src.project_id, vector_a, text=long_text),
+        ]
+    )
+
+    both = await store.search_by_embedding(vector_a, "test-model", None, None, 10)
+    assert [(r["target_kind"], r["score"]) for r in both] == [("chunk", pytest.approx(1.0)), ("knowledge_object", pytest.approx(0.0))]
+    chunk_hit, ko_hit = both
+    # Both grains expose the shared document id and their own id only.
+    assert chunk_hit["document_id"] == ko_hit["document_id"] == doc.document_id
+    assert (chunk_hit["chunk_id"], chunk_hit["knowledge_object_id"]) == (chunk.chunk_id, None)
+    assert (ko_hit["chunk_id"], ko_hit["knowledge_object_id"]) == (None, ko_id)
+    # Chunk hit renders as type 'chunk' with a capped text summary; KO hit keeps its KO fields.
+    assert chunk_hit["type"] == "chunk" and len(chunk_hit["summary"]) == 500 and chunk_hit["topics"] == []
+    assert chunk_hit["hierarchy_level"] == "paragraph" and chunk_hit["sequence_index"] == 0
+    assert ko_hit["type"] == "entity" and ko_hit["summary"] == "Acme" and ko_hit["topics"] == ["t"]
+
+    only_chunks = await store.search_by_embedding(vector_a, "test-model", None, None, 10, target_kind="chunk")
+    assert [r["chunk_id"] for r in only_chunks] == [chunk.chunk_id]
+    only_kos = await store.search_by_embedding(vector_a, "test-model", None, None, 10, target_kind="knowledge_object")
+    assert [r["knowledge_object_id"] for r in only_kos] == [ko_id]
+    # A KO `type` filter can only ever match KO rows, so it implicitly drops chunk hits.
+    typed = await store.search_by_embedding(vector_a, "test-model", None, "entity", 10)
+    assert [r["knowledge_object_id"] for r in typed] == [ko_id]
+
+
+async def test_init_schema_migrates_the_pre_chunk_embeddings_table_in_place():
+    """A database created before target_kind existed has the old
+    (knowledge_object_id, embedding_model)-keyed table; init_schema must
+    replace it (embeddings are derivable) rather than fail on the PK
+    mismatch or leave the old shape behind."""
+    import urllib.parse
+
+    parts = urllib.parse.urlsplit(DSN)
+    admin_dsn = urllib.parse.urlunsplit(parts._replace(path="/postgres"))
+    fresh_db = "kf_embeddings_migration_test"
+    fresh_dsn = urllib.parse.urlunsplit(parts._replace(path=f"/{fresh_db}"))
+
+    admin_conn = await psycopg.AsyncConnection.connect(admin_dsn, autocommit=True)
+    try:
+        await admin_conn.execute(f"DROP DATABASE IF EXISTS {fresh_db}")
+        await admin_conn.execute(f"CREATE DATABASE {fresh_db}")
+        async with PostgresStore(fresh_dsn) as store:
+            await store.init_schema()
+            await store.conn.execute("DROP TABLE knowledge_object_embeddings")
+            await store.conn.execute(
+                """
+                CREATE TABLE knowledge_object_embeddings (
+                    knowledge_object_id TEXT NOT NULL REFERENCES knowledge_objects(knowledge_object_id),
+                    embedding_model TEXT NOT NULL, embedding vector(1536) NOT NULL, embedded_text TEXT NOT NULL,
+                    embedded_text_hash TEXT NOT NULL, project_id TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY (knowledge_object_id, embedding_model))
+                """
+            )
+            await store.init_schema()  # must migrate, and be idempotent on the next call
+            await store.init_schema()
+            cols = await (await store.conn.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'knowledge_object_embeddings' "
+                "ORDER BY ordinal_position"
+            )).fetchall()
+            assert [c[0] for c in cols][:5] == ["embedding_id", "target_kind", "knowledge_object_id", "chunk_id", "document_id"]
     finally:
         await admin_conn.execute(f"DROP DATABASE IF EXISTS {fresh_db}")
         await admin_conn.close()

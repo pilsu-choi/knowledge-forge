@@ -95,18 +95,19 @@ class Settings(BaseSettings):
     # knowledge_object_embeddings table - changing embedding_model to one
     # with a different output dimension requires updating both together.
     embedding_dimensions: int = 1536
-    # Which text gets embedded for a KnowledgeObject (wiki/embeddings.md's
-    # "청크 기반 vs KnowledgeObject 기반" comparison) - "knowledge_object"
-    # (default) embeds the LLM's summary/content/topics (higher retrieval
+    # Which grain gets embedded (wiki/embeddings.md's "청크 기반 vs
+    # KnowledgeObject 기반" comparison) - "knowledge_object" (default) embeds
+    # each KO's summary/content/topics after extraction (higher retrieval
     # precision, dedup'd, but only as good as the extraction and unavailable
-    # until extraction finishes); "chunk" embeds the raw evidence chunk text
-    # instead (no extraction-quality ceiling, embeddable as soon as chunking
-    # finishes, but noisier and not deduped). Same knowledge_object_embeddings
-    # table/schema either way - this only changes which text is sent to the
-    # embedding provider, not the storage grain. Switch per run with `--embed`
-    # or `knowledge-forge embed`'s `--embedding-source` if the choice needs
-    # to differ from this default (e.g. speed problems -> "chunk", precision
-    # problems -> "knowledge_object").
+    # until extraction finishes); "chunk" embeds the raw chunk text right
+    # after chunking (no extraction-quality ceiling, searchable before - or
+    # without - extraction, e.g. `extract --no-extract`, but noisier and not
+    # deduped). Both land in the same knowledge_object_embeddings table,
+    # distinguished by `target_kind` and joined through the shared
+    # `document_id` (schema.sql). Switch per run with `extract`'s /
+    # `embed`'s `--embedding-source` if the choice needs to differ from this
+    # default (e.g. speed problems -> "chunk", precision problems ->
+    # "knowledge_object").
     embedding_source: Literal["knowledge_object", "chunk"] = "knowledge_object"
 
     # Agent runtime (harness, wiki/agent-runtime.md) - a separate switch from

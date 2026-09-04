@@ -31,7 +31,7 @@
 | 문서 | 내용 |
 |---|---|
 | [`storage.md`](storage.md) | `PipelineStore`(디스크 원본 + PostgreSQL 구조화 레코드) 스키마와 opt-in 동작 |
-| [`embeddings.md`](embeddings.md) | `KnowledgeObject`를 pgvector에 임베딩하는 파이프라인 — `EmbeddingProvider` 추상화, `knowledge_object_embeddings` 스키마, `--embed`/`knowledge-forge embed`, staleness 미자동화 |
+| [`embeddings.md`](embeddings.md) | `KnowledgeObject` 또는 원시 `Chunk`를 pgvector에 임베딩하는 파이프라인 — `EmbeddingProvider` 추상화, `KF_EMBEDDING_SOURCE`(청크 기반 vs KO 기반, `--no-extract`), `knowledge_object_embeddings` 스키마(`target_kind`/`document_id`), `--embed`/`knowledge-forge embed`, staleness 미자동화 |
 | [`agent-search.md`](agent-search.md) | 에이전트 검색 설계 — pgvector/임베딩과 `vector_search`/`plan_search`/`sql_search`(Query Planning+Routing+Text-to-SQL) agent 도구(구현됨), `POST /search/vector` HTTP 엔드포인트/`depth>1` 그래프 확장/MCP 서버/검색 skill(설계만, 미구현) |
 | [`agent-runtime.md`](agent-runtime.md) | 모델 벤더 중립 Agent Runtime(harness) — `file_search`/`vector_search`/`sql_search`/`plan_search`/FileSystem/Memory/SubAgents 도구를 실제로 쥐고 도는 `knowledge-forge agent` CLI(구현됨), 자체 `ChatProvider` 추상화(Anthropic 네이티브 + OpenAI-호환) |
 | [`search-architecture.md`](search-architecture.md) | 넓은 엔터프라이즈 RAG 아키텍처 레이어별 상태 — Query Planning/Routing/Reranking(RRF+cross-source dedup)/Temporal Search/Text-to-SQL(entity 필터+temporal join+graph 1-hop 대체)는 구현됨, Context Engineering 나머지/Map-Reduce/Evidence Grounding/Feedback Loop는 설계만·미구현, Iterative Retrieval은 이미 tool-calling 루프로 충족 |

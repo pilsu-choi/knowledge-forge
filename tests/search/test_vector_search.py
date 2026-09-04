@@ -17,9 +17,18 @@ class _FakeStore:
         self.calls: list[tuple] = []
 
     async def search_by_embedding(
-        self, embedding, embedding_model, project_id=None, type=None, limit=10, since=None, until=None
+        self,
+        embedding,
+        embedding_model,
+        project_id=None,
+        type=None,
+        limit=10,
+        since=None,
+        until=None,
+        target_kind=None,
     ):
         self.calls.append((embedding, embedding_model, project_id, type, limit, since, until))
+        self.target_kinds = getattr(self, "target_kinds", []) + [target_kind]
         return self._hits
 
 
@@ -83,3 +92,19 @@ async def test_vector_search_uses_explicit_embedding_model(monkeypatch):
 
     assert captured["model"] == "custom-model"
     assert store.calls[0][1] == "custom-model"
+
+
+async def test_vector_search_forwards_target_kind_and_defaults_to_both_grains(monkeypatch):
+    """`target_kind=None` (the agent tool's default) lets KO-grain and
+    chunk-grain rows compete in one ranking; an explicit grain (what the
+    evaluation golden set passes to measure one mode in isolation) must
+    reach the store untouched."""
+    embedder = _FakeEmbedder([0.5])
+    store = _FakeStore([])
+    monkeypatch.setattr("knowledge_forge.embedding.factory.get_embedding_provider", lambda model=None: embedder)
+
+    await vector_search("q", store)
+    await vector_search("q", store, target_kind="chunk")
+    await vector_search("q", store, target_kind="knowledge_object")
+
+    assert store.target_kinds == [None, "chunk", "knowledge_object"]

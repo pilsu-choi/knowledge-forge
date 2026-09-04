@@ -84,10 +84,12 @@ relations(relation_id TEXT PK, type TEXT, subject_id TEXT REFERENCES knowledge_o
   entity를 먼저 찾고, 그 knowledge_object_id를 relations.object_id로 갖는 행의 subject_id로
   다시 knowledge_objects를 JOIN해서 풀 것.
 
-knowledge_object_embeddings(knowledge_object_id TEXT, embedding_model TEXT,
-                              embedding vector(1536), project_id TEXT)
+knowledge_object_embeddings(embedding_id TEXT PK, target_kind TEXT ('knowledge_object'|'chunk'),
+                              knowledge_object_id TEXT NULL, chunk_id TEXT NULL, document_id TEXT,
+                              embedding_model TEXT, embedding vector(1536), project_id TEXT)
   embedding 컬럼은 절대 SELECT하지 말 것(1536차원 벡터라 응답이 거대해진다) - 이 테이블은
-  "이 KO가 임베딩되어 있는지" 존재 여부 확인 용도로만 쓸 것.
+  "이 KO/청크가 임베딩되어 있는지" 존재 여부 확인 용도로만 쓸 것. target_kind에 따라
+  knowledge_object_id 또는 chunk_id 중 하나만 채워져 있고 document_id는 항상 있다.
 
 규칙:
 - SELECT 또는 WITH ... SELECT만 허용된다 - INSERT/UPDATE/DELETE/DDL은 전부 거부된다.

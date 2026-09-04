@@ -1,6 +1,7 @@
 # 임베딩 (pgvector)
 
-`KnowledgeObject`를 벡터로 만들어 PostgreSQL(pgvector)에 저장하는 기능. `wiki/agent-search.md`가
+`KnowledgeObject`(기본) 또는 원시 `Chunk`(`KF_EMBEDDING_SOURCE=chunk`, 아래 "청크 기반 vs
+KnowledgeObject 기반" 절)를 벡터로 만들어 PostgreSQL(pgvector)에 저장하는 기능. `wiki/agent-search.md`가
 설계해 둔 "pgvector 스키마"와 "임베딩 생성 파이프라인"을 구현한 결과물이다 — 이 문서가 최신
 상태의 기준이고, `agent-search.md`의 해당 절은 설계 당시 스케치라 실제 스키마와 사소하게 다를 수
 있다. **검색 엔드포인트(`/search/vector` 등)와 MCP 서버는 이번 구현에 포함되지 않았다** — 아래
@@ -21,8 +22,12 @@ Agent SDK를 갈아 끼울 수 있게 만든 것과 똑같은 이유로, 임베�
   보다 싸고 빠르다.
 - `EmbeddingRecord` dataclass(`embedding/base.py`)가 `knowledge_object_embeddings` 테이블 한
   행의 모양을 그대로 딴다 — `postgres_store.py`의 `save_embeddings()`와
-  `storage/store.py`의 `record_embeddings()`가 이 필드 이름/순서에 그대로 의존하므로 임의로
-  바꾸면 안 된다.
+  `storage/store.py`의 `record_embeddings()`/`record_chunk_embeddings()`가 이 필드 이름에
+  그대로 의존하므로 임의로 바꾸면 안 된다. `target_kind`에 따라 `knowledge_object_id` 또는
+  `chunk_id` 중 정확히 하나만 채워야 하며(`__post_init__`이 검증, 테이블 CHECK 제약이 2차
+  방어), `document_id`는 항상 채운다. `embedding_id`는 `stable_id(target_kind, 대상 id,
+  embedding_model)`로 계산되는 결정적 surrogate PK — 같은 대상을 같은 모델로 다시 임베딩하면
+  새 행이 아니라 제자리 upsert가 된다.
 - `embedding/factory.py`의 `get_embedding_provider()`가 `KF_EMBEDDING_PROVIDER`를 보고 구현체를
   고르는 유일한 분기점 — `extraction/factory.py::get_extractor()`와 같은 스위치 포인트 패턴이다.
   지금은 `"openai"` 하나만 구현되어 있다(`config.py`의 `embedding_provider: Literal["openai"]`).
@@ -36,7 +41,8 @@ Agent SDK를 갈아 끼울 수 있게 만든 것과 똑같은 이유로, 임베�
   공백 정규화해 하나의 문자열로 합친다 — **대소문자는 보존한다**. `similarity.py::text_similarity()`가
   `.lower()`로 정규화하는 것과 의도적으로 다르다: difflib 문자 단위 diff에서 대소문자는 잡음일
   뿐이지만, 임베딩 모델은 자연어로 학습돼 있어 대소문자가 실제 신호("Acme"라는 고유명사 vs
-  "acme"라는 일반 단어)이기 때문이다.
+  "acme"라는 일반 단어)이기 때문이다. 청크 grain용 `build_chunk_embedding_text()`는 같은
+  규칙으로 `chunk.text`만 정규화한다(요약/토픽이 없다는 게 이 모드의 본질이다).
 - `EmbeddingError`(`exceptions.py`)는 `KnowledgeExtractionError`와 같은 모양의 non-retryable
   예외 — 배치 임베딩 호출이 실패했을 때 던진다.
 
@@ -47,6 +53,7 @@ Agent SDK를 갈아 끼울 수 있게 만든 것과 똑같은 이유로, 임베�
 | `KF_EMBEDDING_ENABLED` | `False` | `extract`가 기본적으로 임베딩을 생성할지. `--store`처럼 opt-in(꺼져 있으면 저장은 되지만 임베딩은 안 함) |
 | `KF_EMBEDDING_PROVIDER` | `openai` | 임베딩 백엔드 선택 스위치. 지금은 `"openai"`만 구현됨 |
 | `KF_EMBEDDING_MODEL` | `text-embedding-3-small` | 실제 호출할 임베딩 모델명 |
+| `KF_EMBEDDING_SOURCE` | `knowledge_object` | 무엇을 임베딩할지: `knowledge_object`(추출된 KO의 summary/content/topics) 또는 `chunk`(원시 청크 텍스트, 추출 없이도 가능). `extract`/`embed`의 `--embedding-source`로 실행마다 override 가능 — 아래 "청크 기반 vs KnowledgeObject 기반" |
 | `KF_EMBEDDING_DIMENSIONS` | `1536` | `schema.sql`의 `vector(N)` 차원과 반드시 일치해야 한다 — 다른 차원의 모델로 바꾸려면 마이그레이션이 필요(아래 "왜 별도 테이블인가" 참고) |
 | `OPENAI_API_KEY` | (없음) | OpenAI API 키. `KF_` 접두사가 아니다 — `OPENROUTER_API_KEY`/`ANTHROPIC_API_KEY`와 같은 원칙으로, `Settings`에 중복 저장하지 않고 `OpenAIEmbeddingProvider` 생성 시점에 환경에서 직접 읽는다 |
 
@@ -54,33 +61,97 @@ Agent SDK를 갈아 끼울 수 있게 만든 것과 똑같은 이유로, 임베�
 그대로 재사용한다 — "동시 요청을 무한정 fan-out하지 않는다"는 같은 관심사라, 전용 설정을 따로
 둘 만큼의 근거가 아직 없다는 판단.
 
+## 청크 기반 vs KnowledgeObject 기반 — `KF_EMBEDDING_SOURCE`
+
+임베딩할 grain은 둘 중 하나다. 한 실행에 하나만 고르며(둘 다 켜면 같은 문서가 `vector_search`
+랭킹에 두 번 등장한다), 실행마다 `extract --embedding-source` / `embed --embedding-source`로
+바꿀 수 있다.
+
+| | `knowledge_object` (기본) | `chunk` |
+|---|---|---|
+| 임베딩 텍스트 | KO의 `summary` + `content` 값 + `topics` | 청크 원문 `chunk.text` |
+| 생성 시점 | 추출 → dedup/supersedes 병합이 끝난 뒤 | 청킹 직후, **추출 전**(추출을 아예 안 해도 됨) |
+| 정밀도 | 높음(LLM이 정리한 텍스트, 중복 제거됨) | 낮음(잡음, 중복 미제거) |
+| 상한 | 추출 품질에 갇힘 — 추출이 놓친 지식은 검색 불가 | 없음 — 원문에 있으면 후보가 됨 |
+| 언제 쓰나 | 기본 | 추출이 너무 느리거나 비싼 소스, 또는 KO 생성을 건너뛰는 실행(`extract --no-extract`) |
+
+`extract --no-extract`는 파이프라인을 청킹/저장에서 멈추고 KO를 만들지 않는다 — "KnowledgeObject는
+선택"인 경로. 이때 `--embed --embedding-source chunk`를 같이 줘야 문서가 벡터 검색 대상이
+된다(`knowledge_object` 모드는 임베딩할 KO가 없으니 경고만 내고 아무것도 임베딩하지 않는다).
+LLM 자격 증명 검사도 건너뛴다 — 임베딩 API 키(`OPENAI_API_KEY`)만 있으면 된다.
+
+두 모드의 행은 같은 테이블에 `target_kind`로 구분돼 들어가고, `vector_search`는 기본적으로
+둘을 한 랭킹에서 경쟁시킨다(같은 모델의 같은 벡터 공간이라 섞어도 된다). 한 grain만 따로
+보려면 `search/service.py::vector_search(target_kind=...)`를 명시한다 — 에이전트 도구는
+노출하지 않고, 평가([`search-evaluation.md`](search-evaluation.md) (C))처럼 "KO 모드 vs 청크
+모드"를 A/B할 때 쓰라고 둔 파라미터다. 청크 grain 히트는 `type="chunk"`, `summary`=원문 앞
+500자(`postgres_store.py::_CHUNK_HIT_SUMMARY_CHARS` — 청크는 `--max-tokens`만큼 길 수 있어
+`limit`개를 통째로 실으면 에이전트 컨텍스트가 터진다), `topics=[]`로 렌더링되고, 모든 히트에
+`target_kind`/`document_id`/`knowledge_object_id`/`chunk_id`(둘 중 하나는 None)가 실린다.
+
 ## 스키마: `knowledge_object_embeddings` (`storage/schema.sql`)
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE IF NOT EXISTS knowledge_object_embeddings (
-    knowledge_object_id TEXT NOT NULL REFERENCES knowledge_objects(knowledge_object_id),
-    embedding_model    TEXT NOT NULL,
-    embedding          vector(1536) NOT NULL,
-    embedded_text      TEXT NOT NULL,
-    embedded_text_hash TEXT NOT NULL,
-    project_id         TEXT NOT NULL,
-    created_at         TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (knowledge_object_id, embedding_model)
+    embedding_id        TEXT PRIMARY KEY,           -- stable_id(target_kind, 대상 id, embedding_model)
+    target_kind         TEXT NOT NULL CHECK (target_kind IN ('knowledge_object', 'chunk')),
+    knowledge_object_id TEXT REFERENCES knowledge_objects(knowledge_object_id),  -- target_kind='knowledge_object'일 때만
+    chunk_id            TEXT REFERENCES chunks(chunk_id),                        -- target_kind='chunk'일 때만
+    document_id         TEXT NOT NULL REFERENCES documents(document_id),         -- 두 grain이 공유하는 키, 항상
+    embedding_model     TEXT NOT NULL,
+    embedding           vector(1536) NOT NULL,
+    embedded_text       TEXT NOT NULL,
+    embedded_text_hash  TEXT NOT NULL,
+    project_id          TEXT NOT NULL,
+    created_at          TIMESTAMPTZ NOT NULL,
+    CHECK ((target_kind = 'knowledge_object' AND knowledge_object_id IS NOT NULL AND chunk_id IS NULL)
+        OR (target_kind = 'chunk' AND chunk_id IS NOT NULL AND knowledge_object_id IS NULL))
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_koe_ko_model
+    ON knowledge_object_embeddings(knowledge_object_id, embedding_model) WHERE knowledge_object_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_koe_chunk_model
+    ON knowledge_object_embeddings(chunk_id, embedding_model) WHERE chunk_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_koe_embedding_hnsw
     ON knowledge_object_embeddings USING hnsw (embedding vector_cosine_ops);
 CREATE INDEX IF NOT EXISTS idx_koe_project_id ON knowledge_object_embeddings(project_id);
+CREATE INDEX IF NOT EXISTS idx_koe_document_id ON knowledge_object_embeddings(document_id);
+CREATE INDEX IF NOT EXISTS idx_koe_target_kind ON knowledge_object_embeddings(target_kind);
 ```
 
-### 왜 `knowledge_objects`에 컬럼을 얹지 않고 별도 테이블인가
+테이블 이름은 청크 grain이 추가된 뒤에도 `knowledge_object_embeddings` 그대로다 — 이름을
+바꾸면 `search/sql.py`의 스키마 설명, 문서, 기존 DB까지 전부 따라가야 하는데 그만한 값어치가
+없다고 판단했다.
+
+### 왜 `knowledge_objects`/`chunks`에 컬럼을 얹지 않고 별도 테이블인가
 
 임베딩 벡터 하나를 `knowledge_objects.embedding`처럼 컬럼으로 얹었다면, 임베딩 모델을 바꾸는
 일(예: `text-embedding-3-small` → 다른 차원의 모델)이 곧 스키마 변경(컬럼 재정의 + 기존 값
-백필)이 된다. 대신 복합 PK를 `(knowledge_object_id, embedding_model)`로 잡아, 모델을 바꾸는
-것을 **새 행을 추가하는 것**으로 만들었다 — 옛 모델의 벡터와 새 모델의 벡터가 같은 테이블에
-나란히 남아 있을 수 있어, 롤아웃 중에도 두 모델을 동시에 조회 가능한 상태로 유지할 수 있다.
+백필)이 된다. 대신 `(대상, embedding_model)`을 유일 키로 잡아, 모델을 바꾸는 것을 **새 행을
+추가하는 것**으로 만들었다 — 옛 모델의 벡터와 새 모델의 벡터가 같은 테이블에 나란히 남아 있을
+수 있어, 롤아웃 중에도 두 모델을 동시에 조회 가능한 상태로 유지할 수 있다.
+
+### 왜 surrogate PK + `document_id`인가
+
+원래 PK는 `(knowledge_object_id, embedding_model)` 복합키였다. 청크 grain이 들어오면서
+`knowledge_object_id`가 NULL일 수 있게 됐고, NULL 가능한 두 컬럼(`knowledge_object_id` XOR
+`chunk_id`)에 걸친 복합 PK는 만들 수 없다 — 그래서 결정적 surrogate `embedding_id`를 PK로
+두고, grain별 유일성은 partial unique index 두 개(`idx_koe_ko_model`/`idx_koe_chunk_model`)로
+예전 PK가 하던 일을 그대로 보장한다. `embedding_id`가 `stable_id(...)`라 upsert 의미도 그대로다.
+
+`document_id`를 두 grain 모두에 항상 채우는 이유는 검색 평가 때문이다: KO 모드 히트와 청크
+모드 히트는 서로 다른 id 공간에 있어 그대로는 비교할 수 없지만, 둘 다 `document_id`를
+가지므로 "이 질의의 정답 문서를 찾았는가"는 같은 골든셋으로 채점할 수 있다 — 그래야 두 모드를
+공정하게 A/B할 수 있다([`search-evaluation.md`](search-evaluation.md) (C)). 스키마에서 이
+컬럼을 뺐다면 청크 히트는 `chunks`, KO 히트는 `knowledge_objects`를 각각 join해야 문서를 알 수
+있어 평가/검색 양쪽 SQL이 grain별로 갈라진다.
+
+**기존 DB 마이그레이션**: `init_schema()`가 `target_kind` 컬럼이 없는 옛 모양의 테이블을 발견하면
+`DROP` 후 재생성한다(`schema.sql`의 `DO $$ ... $$` 블록). 임베딩은 파생 데이터라
+`knowledge-forge embed`로 다시 채우면 되고, `CREATE TABLE IF NOT EXISTS`로는 PK를 바꿀 수
+없어서다. 이미 임베딩이 많이 쌓인 DB라면 이 재생성 뒤 백필을 한 번 돌려야 한다.
+
 `embedded_text`/`embedded_text_hash`는 정확히 무엇을 임베딩했는지 재현 가능하게 기록해 둔
 것 — 지금 당장 읽는 코드는 없지만, 향후 staleness 감지(아래 절)에 쓰기 위해 미리 저장해
 둔다. `project_id`는 `sources.project_id`/`documents.project_id`와 같은 관례로 소유
@@ -116,21 +187,31 @@ uv run knowledge-forge extract tests/fixtures/sample.md --store --embed
 파이프라인 내부에서는 `pipeline.run_pipeline()`이 `store.record_knowledge_objects()`/
 `record_relations()` 직후, **문서 단위로 dedup/supersedes 병합까지 끝난 최종 객체 집합**
 (`merged_outcome.objects`)에만 `store.record_embeddings(...)`를 호출한다 — 병합 전 중간 산출물을
-임베딩해 나중에 버려지는 낭비를 피하기 위해서다.
+임베딩해 나중에 버려지는 낭비를 피하기 위해서다. `--embedding-source chunk`면 대신
+`store.record_chunks()` 직후에 `store.record_chunk_embeddings(...)`를 호출하고 KO는 임베딩하지
+않는다.
 
-### 이미 저장된 KO를 나중에 임베딩 — `knowledge-forge embed` 백필
+```bash
+# 추출 없이 청크만 저장 + 임베딩 (KO 선택 생략 경로)
+uv run knowledge-forge extract ./big-dump/ --store --no-extract --embed --embedding-source chunk
+```
+
+### 이미 저장된 KO/청크를 나중에 임베딩 — `knowledge-forge embed` 백필
 
 ```bash
 export KF_DATABASE_URL="postgresql://kf:kf@localhost:15432/knowledge_forge"
 export OPENAI_API_KEY=sk-...
 uv run knowledge-forge embed --project-id my-project --batch-size 64
+uv run knowledge-forge embed --project-id my-project --embedding-source chunk   # 청크 grain 백필
 ```
 
 `KF_EMBEDDING_ENABLED`를 나중에 켰거나, `extract --no-embed`로 저장만 해뒀던 KnowledgeObject를
 소급 임베딩할 때 쓴다. `PostgresStore.list_knowledge_objects_missing_embedding(embedding_model,
 project_id, limit)`이 `knowledge_objects` LEFT JOIN `knowledge_object_embeddings`로 **해당
-`embedding_model`에 대해 임베딩 행이 아예 없는 KO만** 찾아 배치 단위로 돌며 채운다. `worker`
-명령처럼 `KF_DATABASE_URL`이 없으면 에러로 종료한다.
+`embedding_model`에 대해 임베딩 행이 아예 없는 KO만** 찾아 배치 단위로 돌며 채운다.
+`--embedding-source chunk`면 같은 모양의 `list_chunks_missing_embedding()`이 `chunks` 기준으로
+돈다(청크는 `project_id`를 갖지 않아 `sources`를 join해 `(chunk, project_id)` 쌍으로 돌려준다).
+`worker` 명령처럼 `KF_DATABASE_URL`이 없으면 에러로 종료한다.
 
 **주의: 이미 임베딩이 있는 KO는 이 명령으로 재임베딩되지 않는다** — 아래 staleness 절 참고.
 
@@ -194,14 +275,22 @@ psql "postgresql://kf:kf@localhost:15432/knowledge_forge" -c \
 
 ## 테스트
 
-- `tests/embedding/`(신규) — `test_embedding_text.py`(`build_embedding_text()` 단위 테스트),
-  `test_openai_embedding_provider.py`(OpenAI 클라이언트를 모킹한 `OpenAIEmbeddingProvider` 단위
-  테스트). [`llm-providers.md`](llm-providers.md)의 "검증 상태" 절과 같은 철학 — 이 환경엔
-  `OPENAI_API_KEY`가 없어 라이브 검증은 못했다.
+- `tests/embedding/` — `test_embedding_text.py`(`build_embedding_text()`/
+  `build_chunk_embedding_text()` 단위 테스트), `test_embedding_record.py`(grain XOR 검증과
+  `embedding_id` 결정성), `test_openai_embedding_provider.py`(OpenAI 클라이언트를 모킹한
+  `OpenAIEmbeddingProvider` 단위 테스트). [`llm-providers.md`](llm-providers.md)의 "검증 상태"
+  절과 같은 철학 — 이 환경엔 `OPENAI_API_KEY`가 없어 라이브 검증은 못했다.
 - `tests/storage/test_postgres_store.py` — `test_save_embeddings_upsert_is_idempotent`(같은
-  PK로 다시 저장하면 갱신되고 행이 늘지 않는지), `test_list_knowledge_objects_missing_embedding`
-  (모델별/프로젝트별 필터링이 맞는지). `KF_TEST_DATABASE_URL`이 없으면 자동 skip([`storage.md`](storage.md)
-  "테스트" 절과 동일한 관례).
+  대상+모델로 다시 저장하면 갱신되고 행이 늘지 않는지), `test_list_knowledge_objects_missing_embedding`
+  / `test_list_chunks_missing_embedding_filters_by_model_and_project`(모델별/프로젝트별 필터링),
+  `test_search_by_embedding_mixes_grains_by_default_and_narrows_on_target_kind`(두 grain 혼합
+  랭킹, `target_kind` 필터, 히트 모양), `test_schema_rejects_a_row_whose_ids_do_not_match_its_target_kind`
+  (CHECK 제약), `test_init_schema_migrates_the_pre_chunk_embeddings_table_in_place`(옛 PK 모양
+  테이블의 자동 재생성). `KF_TEST_DATABASE_URL`이 없으면 자동 skip([`storage.md`](storage.md)
+  "테스트" 절과 동일한 관례). "임베딩 없는 대상" 스캔 테스트는 `limit`에 가려지지 않도록 테스트
+  전용 `project_id`로 범위를 좁힌다 — 데이터가 쌓인 개발 DB에서도 돌아가야 해서.
 - `tests/test_pipeline_dedup_and_supersedes.py` — `embedder`가 주어지면 문서당 병합이 끝난
   **최종** `merged_outcome.objects`로, 저장 이후 시점에 정확히 호출되는지(`embedder=None`이면
-  `store`가 있어도 호출되지 않는지)를 가짜 `EmbeddingProvider`/`PipelineStore`로 검증한다.
+  `store`가 있어도 호출되지 않는지), `embedding_source="chunk"`면 추출 전에 청크만 임베딩하고
+  KO는 임베딩하지 않는지, `extractor=None`이면 추출을 건너뛰고도 청크 저장/임베딩과 문서당 빈
+  outcome yield가 되는지를 가짜 `EmbeddingProvider`/`PipelineStore`로 검증한다.

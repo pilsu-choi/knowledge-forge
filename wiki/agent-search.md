@@ -79,8 +79,8 @@ POST /search/vector   # 이 HTTP 경로 자체는 여전히 미구현 - 아래�
   `knowledge_object_id`로 `read_file`/`file_search`를 걸어 확인하면 된다는 판단(HTTP
   엔드포인트를 나중에 추가할 때는 원래 설계대로 `KnowledgeObjectResponse` 모양을 쓸 수도
   있다 - 이 얇은 dict는 agent 도구 전용 응답 모양).
-- `embedding_model`을 요청에 받는 이유: `knowledge_object_embeddings`의 PK가
-  `(knowledge_object_id, embedding_model)`이라 여러 모델의 벡터가 동시에 존재할 수 있다
+- `embedding_model`을 요청에 받는 이유: `knowledge_object_embeddings`가 `(대상,
+  embedding_model)` 단위로 유일해서 여러 모델의 벡터가 동시에 존재할 수 있다
   ([`embeddings.md`](embeddings.md) "왜 별도 테이블인가" 참고) — 검색도 어느 모델의
   벡터 공간에서 비교할지 명시해야 한다. 생략 시 `KF_EMBEDDING_MODEL`(현재 활성 모델)로
   기본값을 잡는다. agent 도구는 이 파라미터를 도구 입력 스키마에 노출하지 않는다 - 모델이
@@ -90,6 +90,12 @@ POST /search/vector   # 이 HTTP 경로 자체는 여전히 미구현 - 아래�
   결과에 그냥 나오지 않는다 - `knowledge_object_embeddings`에 INNER JOIN하는 쿼리라 애초에
   후보에 없다. 에러도 경고도 없다 - `file_search`가 매치 없을 때 빈 리스트를 반환하는 것과
   같은 "결과 없음"으로 취급.
+- 청크 grain(`KF_EMBEDDING_SOURCE=chunk`, [`embeddings.md`](embeddings.md) "청크 기반 vs
+  KnowledgeObject 기반")의 행도 같은 쿼리로 함께 랭킹된다 — 히트마다 `target_kind`/
+  `document_id`/`knowledge_object_id`/`chunk_id`가 실리고, 청크 히트는 `type="chunk"`에
+  `summary`=원문 앞 500자다. `vector_search(target_kind=...)`로 한 grain만 볼 수 있지만 agent
+  도구 스키마에는 노출하지 않는다(평가/A-B 전용). `search/rerank.py`는 `chunk_id`도 dedup
+  키로 인식한다.
 
 ### Query Planning + Query Routing (`plan_search` agent 도구) — **구현됨**
 

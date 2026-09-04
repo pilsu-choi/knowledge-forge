@@ -78,7 +78,7 @@ async def run_pipeline(
     collector: Collector,
     parser_registry: ParserRegistry,
     chunker: Chunker,
-    extractor: Extractor,
+    extractor: Extractor | None,
     cursor=None,
     store: "PipelineStore | None" = None,
     context_reconstructor: ContextReconstructor | None = None,
@@ -87,6 +87,7 @@ async def run_pipeline(
     since: datetime | None = None,
     until: datetime | None = None,
     embedder: EmbeddingProvider | None = None,
+    embedding_source: str | None = None,
 ) -> AsyncIterator[ExtractionOutcome]:
     """Run the full pipeline over everything a Collector yields.
 
@@ -109,11 +110,24 @@ async def run_pipeline(
     persistence side effects.
 
     When `embedder` is also given (requires `store` - there is nowhere to
-    write embeddings otherwise), each document's merged, deduped, final
-    KnowledgeObjects are embedded and stored to `knowledge_object_embeddings`
-    right after `store.record_knowledge_objects()` - see
-    `knowledge_forge.embedding` and wiki/embeddings.md. `embedder=None`
-    (the default) skips embedding entirely, same opt-in shape as `store`.
+    write embeddings otherwise), what gets embedded depends on
+    `embedding_source` (default `settings.embedding_source`,
+    `KF_EMBEDDING_SOURCE`, see wiki/embeddings.md "청크 기반 vs
+    KnowledgeObject 기반"): `"knowledge_object"` embeds each document's
+    merged, deduped, final KnowledgeObjects right after
+    `store.record_knowledge_objects()`; `"chunk"` embeds the raw chunks
+    right after `store.record_chunks()` - i.e. *before* extraction, so the
+    document is vector-searchable as soon as it is chunked, whether or not
+    extraction runs at all. `embedder=None` (the default) skips embedding
+    entirely, same opt-in shape as `store`.
+
+    `extractor=None` skips Knowledge Extraction altogether: the document is
+    still collected, parsed, chunked, stored and (in chunk mode) embedded,
+    and an empty `ExtractionOutcome` is yielded for it so callers still see
+    one outcome per processed document. This is the "KnowledgeObjects are
+    optional" path for sources where LLM extraction is too slow/expensive to
+    gate retrieval on - pair it with `embedding_source="chunk"`, otherwise
+    nothing gets embedded (there are no KOs to embed).
 
     When `okf_writer` is given, the same artifacts are additionally written
     into a file-based OKF Knowledge Base tree (see knowledge_forge.okf) -
@@ -162,6 +176,17 @@ async def run_pipeline(
     """
     reconstructor = context_reconstructor or default_reconstructor_for(collector.source_type)
     items = collector.backfill_sync(since, until) if since is not None else collector.sync(cursor)
+    embedding_source = embedding_source or settings.embedding_source
+    if embedding_source not in ("knowledge_object", "chunk"):
+        raise ValueError(f"unknown embedding_source: {embedding_source!r}")
+    embed_chunks = embedder is not None and store is not None and embedding_source == "chunk"
+    embed_objects = embedder is not None and store is not None and embedding_source == "knowledge_object"
+    if extractor is None and embedder is not None and not embed_chunks:
+        logger.warning(
+            "extractor=None with embedding_source=%r - nothing will be embedded (no KnowledgeObjects); "
+            "use embedding_source='chunk' to embed the raw chunks instead",
+            embedding_source,
+        )
     link_endpoints_by_uri: dict[str, LinkEndpoint] = {}
     for item in reconstructor.reconstruct(items):
         if item.deleted:
@@ -197,6 +222,13 @@ async def run_pipeline(
         chunks = chunker.chunk(document)
         if store is not None:
             await store.record_chunks(chunks)
+            if embed_chunks:
+                assert embedder is not None
+                await store.record_chunk_embeddings(chunks, source.project_id, embedder, settings.embedding_model)
+
+        if extractor is None:
+            yield ExtractionOutcome(objects=[], relations=[])
+            continue
 
         chunk_groups = group_chunks(chunks, settings.extraction_chunk_group_size)
 
@@ -241,7 +273,8 @@ async def run_pipeline(
             if store is not None:
                 await store.record_knowledge_objects(merged_outcome.objects)
                 await store.record_relations(merged_outcome.relations)
-                if embedder is not None:
+                if embed_objects:
+                    assert embedder is not None
                     await store.record_embeddings(merged_outcome.objects, embedder, settings.embedding_model)
             if okf_writer is not None:
                 okf_writer.write_objects(merged_outcome.objects)

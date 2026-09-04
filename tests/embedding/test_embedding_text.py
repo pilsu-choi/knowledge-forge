@@ -87,3 +87,20 @@ def test_skips_empty_values():
     text = build_embedding_text(ko)
 
     assert text == "kept kept-topic"
+
+
+def test_build_chunk_embedding_text_normalizes_whitespace_and_keeps_case():
+    from knowledge_forge.embedding.text import build_chunk_embedding_text
+    from knowledge_forge.models.chunk import Chunk, HierarchyLevel
+
+    chunk = Chunk(
+        chunk_id="c1",
+        document_id="d1",
+        source_id="s1",
+        hierarchy_level=HierarchyLevel.PARAGRAPH,
+        sequence_index=0,
+        text="  Acme  signed\n\nthe   agreement.\t",
+        token_count=4,
+    )
+
+    assert build_chunk_embedding_text(chunk) == "Acme signed the agreement."

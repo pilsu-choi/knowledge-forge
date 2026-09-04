@@ -153,6 +153,15 @@ groundedness_score=1.0으로 정상 채점된다 - 이 둘을 구분하지 않�
 사람 노동(큐레이션)이 선행돼야 해서 (A)/(B)보다 뒤 순위 — 하지만 (A)가 로그 스키마를 이미
 `evidence` JSONB로 잡아두므로, (C)를 시작할 때 스키마 변경은 필요 없다.
 
+**채점 단위는 `document_id`** — `knowledge_object_embeddings`가 KO grain과 청크 grain
+(`KF_EMBEDDING_SOURCE`, [`embeddings.md`](embeddings.md)) 두 모드를 담게 되면서, 골든셋의 정답을
+`knowledge_object_id`로만 잡으면 청크 모드 검색은 채점할 수 없다(히트에 KO id가 없다). 두 grain이
+공유하는 `document_id`를 정답의 기본 단위로 두고, 모드가 지원할 때만 `chunk_id`/`knowledge_object_id`로
+엄격 채점을 덧붙이는 게 맞다 — 그래야 "KO 임베딩 vs 청크 임베딩" 자체를 같은 골든셋으로 A/B할 수
+있다. `vector_search(target_kind=...)`가 한 grain만 따로 재기 위한 파라미터다. 골든셋 자동 생성은
+청크 원문(`chunks.text`)에서 질의를 만들면 추출 품질 상한도 피한다 — 정답 저장 모양은
+`{chunk_id, document_id, knowledge_object_ids: [...]}`.
+
 ## (D) 명시적 Groundedness Gate — Iterative Retrieval 강화, 옵션
 
 `search-architecture.md`는 "한 번 검색하고 끝내지 않는다"는 요구사항이 `agent/loop.py`의

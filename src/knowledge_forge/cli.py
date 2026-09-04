@@ -139,22 +139,46 @@ def extract(
     embed: bool = typer.Option(
         settings.embedding_enabled,
         "--embed/--no-embed",
-        help="Embed each document's KnowledgeObjects into knowledge_object_embeddings right after storing them "
-        "(default from KF_EMBEDDING_ENABLED, see wiki/embeddings.md). Requires --store - ignored with a warning "
+        help="Embed into knowledge_object_embeddings right after storing (default from KF_EMBEDDING_ENABLED, see "
+        "wiki/embeddings.md). What gets embedded is --embedding-source. Requires --store - ignored with a warning "
         "otherwise, since there is nowhere to persist embeddings without a database.",
+    ),
+    embedding_source: str = typer.Option(
+        settings.embedding_source,
+        "--embedding-source",
+        help="What --embed embeds: 'knowledge_object' (the extracted KO summary/content/topics, after extraction) "
+        "or 'chunk' (the raw chunk text, right after chunking - available without waiting for extraction). "
+        "Default from KF_EMBEDDING_SOURCE.",
+    ),
+    extract_objects: bool = typer.Option(
+        True,
+        "--extract/--no-extract",
+        help="Run LLM Knowledge Extraction (the default). --no-extract stops after chunking - no KnowledgeObjects "
+        "are produced; pair it with --embed --embedding-source chunk to still make the documents "
+        "vector-searchable (see wiki/embeddings.md).",
     ),
 ) -> None:
     """Run a local file/directory (or a SaaS source, via --source) through the full pipeline and emit Knowledge Objects."""
-    _ensure_authenticated()
+    if embedding_source not in ("knowledge_object", "chunk"):
+        typer.echo(f"--embedding-source는 knowledge_object 또는 chunk여야 합니다: {embedding_source!r}", err=True)
+        raise typer.Exit(2)
+    if extract_objects:
+        _ensure_authenticated()
     collector = _build_collector(source, path)
     registry = default_registry()
     chunker = AdaptiveChunker(max_tokens_per_chunk=max_tokens)
-    extractor = get_extractor(model=model)
+    extractor = get_extractor(model=model) if extract_objects else None
     pipeline_store = _open_store() if store else None
     okf_writer = OKFWriter(okf_dir, project_id=project_id) if okf_dir else None
     if embed and pipeline_store is None:
         typer.echo("--embed는 --store(및 KF_DATABASE_URL)가 있어야 동작합니다 - 임베딩을 건너뜁니다.", err=True)
     embedder = get_embedding_provider() if embed and pipeline_store is not None else None
+    if not extract_objects and embedder is not None and embedding_source != "chunk":
+        typer.echo(
+            "--no-extract에 --embedding-source knowledge_object를 함께 주면 임베딩할 KnowledgeObject가 없습니다 - "
+            "--embedding-source chunk를 쓰세요.",
+            err=True,
+        )
 
     async def _run():
         if pipeline_store is not None:
@@ -171,6 +195,7 @@ def extract(
                         okf_writer=okf_writer,
                         project_id=project_id,
                         embedder=embedder,
+                        embedding_source=embedding_source,
                     )
                 ]
         return [
@@ -474,19 +499,28 @@ def embed(
     project_id: str | None = typer.Option(
         None, "--project-id", help="Only embed this project's KnowledgeObjects. Omit to scan every project."
     ),
-    batch_size: int = typer.Option(64, "--batch-size", help="KnowledgeObjects fetched/embedded per API call."),
+    batch_size: int = typer.Option(64, "--batch-size", help="KnowledgeObjects/chunks fetched/embedded per API call."),
     model: str | None = typer.Option(
         None, "--model", help="Embedding model. Defaults to KF_EMBEDDING_MODEL (text-embedding-3-small)."
     ),
+    embedding_source: str = typer.Option(
+        settings.embedding_source,
+        "--embedding-source",
+        help="Which grain to backfill: 'knowledge_object' (KOs with no embedding yet) or 'chunk' (chunks with "
+        "no embedding yet). Default from KF_EMBEDDING_SOURCE.",
+    ),
 ) -> None:
-    """Backfill embeddings for KnowledgeObjects already in Postgres that have none yet for the
-    active embedding model (see wiki/embeddings.md) - e.g. after turning on KF_EMBEDDING_ENABLED
-    for the first time, or after `extract --no-embed` runs. Does NOT re-embed KnowledgeObjects
-    that already have an embedding for this model, even if their summary/content has since
-    changed (see wiki/embeddings.md's staleness section) - only fills in what's missing."""
+    """Backfill embeddings for KnowledgeObjects (or, with --embedding-source chunk, raw chunks) already
+    in Postgres that have none yet for the active embedding model (see wiki/embeddings.md) - e.g. after
+    turning on KF_EMBEDDING_ENABLED for the first time, or after `extract --no-embed` runs. Does NOT
+    re-embed rows that already have an embedding for this model, even if their text has since changed
+    (see wiki/embeddings.md's staleness section) - only fills in what's missing."""
     if not settings.database_url:
         typer.echo("KF_DATABASE_URL이 설정되지 않았습니다 - embed는 Postgres가 필수입니다.", err=True)
         raise typer.Exit(1)
+    if embedding_source not in ("knowledge_object", "chunk"):
+        typer.echo(f"--embedding-source는 knowledge_object 또는 chunk여야 합니다: {embedding_source!r}", err=True)
+        raise typer.Exit(2)
     database_url = settings.database_url
 
     embedding_model = model or settings.embedding_model
@@ -497,18 +531,34 @@ def embed(
         async with PipelineStore(database_url, settings.data_dir) as store:
             await store.init_schema()
             while True:
-                batch = await store.list_knowledge_objects_missing_embedding(
-                    embedding_model, project_id=project_id, limit=batch_size
-                )
-                if not batch:
-                    break
-                await store.record_embeddings(batch, embedder, embedding_model)
-                total += len(batch)
+                if embedding_source == "chunk":
+                    pairs = await store.list_chunks_missing_embedding(
+                        embedding_model, project_id=project_id, limit=batch_size
+                    )
+                    if not pairs:
+                        break
+                    # One backfill batch can straddle projects (project_id
+                    # filter omitted) - group so each record gets its own.
+                    by_project: dict[str, list] = {}
+                    for chunk, chunk_project in pairs:
+                        by_project.setdefault(chunk_project, []).append(chunk)
+                    for chunk_project, chunks in by_project.items():
+                        await store.record_chunk_embeddings(chunks, chunk_project, embedder, embedding_model)
+                    total += len(pairs)
+                else:
+                    batch = await store.list_knowledge_objects_missing_embedding(
+                        embedding_model, project_id=project_id, limit=batch_size
+                    )
+                    if not batch:
+                        break
+                    await store.record_embeddings(batch, embedder, embedding_model)
+                    total += len(batch)
                 typer.echo(f"{total}개 임베딩 완료...", err=True)
         return total
 
     total = asyncio.run(_run())
-    typer.echo(f"{total}개의 KnowledgeObject 임베딩 완료 (모델: {embedding_model})", err=True)
+    unit = "청크" if embedding_source == "chunk" else "KnowledgeObject"
+    typer.echo(f"{total}개의 {unit} 임베딩 완료 (모델: {embedding_model})", err=True)
 
 
 @app.command()
