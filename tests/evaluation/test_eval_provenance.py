@@ -362,6 +362,20 @@ def test_compare_warns_when_only_one_run_used_a_strategies_override():
     assert any("count_match" in w for w in report["warnings"])  # 한쪽에만 있는 지표
 
 
+def test_compare_warns_when_the_two_runs_scored_different_query_sets():
+    """`--query-id`로 한 질의만 돈 run과 전체 run을 비교하면 델타는 공통 1개짜리다 -
+    표의 overall끼리 비교하면 안 된다."""
+    a, b = _eval_run("a"), _eval_run("b")
+    rows_a = _rows("a", {"ndcg@10": 0.5}) + [
+        EvalRunQuery(
+            run_id="a", query_id="q2", query_text="q2", primary_type="factoid", types=["factoid"], metrics={"ndcg@10": 1.0}
+        )
+    ]
+    report = compare_runs(a, rows_a, b, _rows("b", {"ndcg@10": 0.6}))
+    assert report["n"] == 1
+    assert any("채점된 질의 집합이 다르다" in w and "공통 1개" in w for w in report["warnings"])
+
+
 def test_compare_surfaces_each_runs_index_health():
     a = _eval_run(
         "a",

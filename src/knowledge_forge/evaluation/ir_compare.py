@@ -106,14 +106,26 @@ def _pipeline_warnings(
             f"strategies_override가 다르다 (A={ov_a!r}, B={ov_b!r}) - override는 후보 생성뿐 아니라 후처리 "
             "전략까지 통째로 교체하므로 이 비교는 'arm 둘'이 아니라 '파이프라인 둘'의 비교다"
         )
-    names_a = {m for r in queries_a for m in r.metrics}
-    names_b = {m for r in queries_b for m in r.metrics}
-    only_a, only_b = sorted(names_a - names_b), sorted(names_b - names_a)
-    if only_a or only_b:
+    ids_a = {r.query_id for r in queries_a if r.error is None and r.metrics}
+    ids_b = {r.query_id for r in queries_b if r.error is None and r.metrics}
+    if ids_a != ids_b:
+        # 페어드 비교는 교집합만 쓴다(`n`이 그 크기다). 한쪽이 `--query-id`/`--type`으로
+        # 일부만 돌았거나 질의가 실패했으면, 두 run의 "전체 평균"은 애초에 다른
+        # 모집단의 평균이라 표의 overall끼리 비교하면 안 된다.
         out.append(
-            f"한쪽에만 있는 지표가 있다 (A만: {only_a or '-'}, B만: {only_b or '-'}) - 두 run이 같은 규칙으로 "
-            "채점되지 않았다는 증거다(대개 strategies_override 때문이다)"
+            f"채점된 질의 집합이 다르다 (A {len(ids_a)}개, B {len(ids_b)}개, 공통 {len(ids_a & ids_b)}개) - "
+            "델타는 공통 질의만의 것이고, 두 run의 overall 평균끼리는 비교할 수 없다"
         )
+    else:
+        names_a = {m for r in queries_a for m in r.metrics}
+        names_b = {m for r in queries_b for m in r.metrics}
+        only_a, only_b = sorted(names_a - names_b), sorted(names_b - names_a)
+        if only_a or only_b:
+            out.append(
+                f"같은 질의인데 한쪽에만 있는 지표가 있다 (A만: {only_a or '-'}, B만: {only_b or '-'}) - "
+                "두 run이 같은 규칙으로 채점되지 않았다는 증거다(대개 strategies_override가 후처리 전략까지 "
+                "갈아치웠기 때문이다)"
+            )
     return out
 
 

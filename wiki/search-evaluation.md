@@ -1245,3 +1245,153 @@ agent_groundedness_gate_max_retries: int = 2
   지금 범위 밖.
 - **Graph/SQL search가 라우팅에 추가될 때의 스키마 변경** — `evidence`/`tool_calls`가 이미
   JSONB라 소스 종류가 늘어도 컬럼 추가 없이 흡수된다.
+
+## eval_run 프로버넌스 — "이 숫자는 무엇으로 잰 것인가" (2026-09-05, `fix/eval-provenance`)
+
+`eval_run` 표는 A/B 비교의 유일한 근거인데, 세 군데에서 조용히 거짓말을 하고 있었다.
+셋 다 "틀린 숫자"가 아니라 **"어떤 조건에서 잰 숫자인지 알 수 없다"** 쪽의 결함이라
+지표만 봐서는 절대 드러나지 않는다.
+
+### 1. `config_hash`가 랭킹 노브를 담지 않았다
+
+`config_hash`는 CLI 인자(`provider`/`model`/`limit`/`strategies_override`/
+`use_llm_constraints`/`k_values`)만 해싱했다. `KF_VECTOR_MIN_SCORE`, `KF_TERM_COVERAGE_*`,
+`KF_TERM_RARE_DF_MAX`, `KF_LATEST_RELEVANCE_POOL`처럼 **랭킹을 실제로 바꾸는 값**은
+전부 환경변수라 해시 밖이었다. 결과: 지난 세션의 스윕 11회(`raredf-3` … `rare-term-gate-default`)가
+전부 `config_hash = 54d9a917f28c`다. 그 표만으로는 어느 행이 어느 설정이었는지, 그래서
+채택한 값이 무엇이었는지 복원할 수 없고, `--label`에 사람이 손으로 박은 문자열이
+유일한 기록이었다(오타가 나도 아무도 모른다).
+
+**고친 방식**: `ir_runner.ranking_settings()`가 화이트리스트(`RANKING_SETTING_FIELDS`)의
+현재 값을 읽어 `config["settings"]`에 넣는다. 해시가 반응하는 동시에 **원본 key/value가
+그대로 남는다** — 해시만 있으면 "달랐다"는 알아도 "무엇이 달랐는지"는 모르기 때문이다
+(`dirty_files`를 따로 둔 것과 같은 이유, 커밋 `2c29fb0`).
+
+- **왜 `Settings` 통째가 아니라 화이트리스트인가**: 통째로 넣으면 자격증명
+  (`embedding_api_key`, `slack_bot_token`, …)이 `eval_run`에 평문으로 쌓이고, 랭킹과
+  무관한 값(`redis_url`, `data_dir`)이 바뀔 때마다 해시가 흔들려 "설정이 달랐다" 경고가
+  늑대소년이 된다.
+- **화이트리스트가 낡는 문제**는 테스트로 막는다. `tests/evaluation/test_eval_provenance.py::
+  test_every_setting_search_reads_is_classified`가 `src/knowledge_forge/search/` 전체를 훑어
+  `settings.<이름>` 참조를 모으고, `RANKING_SETTING_FIELDS`에도 `NON_RANKING_SETTING_FIELDS`에도
+  없으면 실패한다. 새 노브를 추가하는 쪽이 분류를 강제당한다.
+- 임베딩 4종(`embedding_provider`/`embedding_model`/`embedding_dimensions`/`embedding_base_url`)도
+  넣었다. 모델 이름은 사실상 파티션 키라(`search/service.py::vector_search`) 한 글자만
+  달라도 벡터 arm이 **에러 없이 0히트**가 되는데, 그 run과 정상 run이 같은 해시면 안 된다.
+
+실측(같은 코드, v0 76질의, `--no-llm`):
+
+| label | `KF_VECTOR_MIN_SCORE` | config_hash | ndcg@10 |
+|---|---|---|---|
+| `prov-regression-default` | 0.45 | `effbdb404c9e` | 0.8490 |
+| `prov-knob-vms-0.42` | 0.42 | `fee3ca2a88e8` | 0.8577 |
+
+고치기 전이라면 둘 다 `54d9a917f28c`였다.
+
+### 2. 코퍼스가 런 도중에 변해도 아무도 몰랐다
+
+`index_snapshot` 컬럼은 처음부터 있었지만 **런 시작에 한 번 찍고 아무도 다시 보지
+않았다**. 실제 사고(2026-09-04): 한 세션이 v0을 재는 동안 다른 세션이 계속 인제스트해
+263 → 326 → 358 docs, 936 → 1891 → 2856 chunks가 됐고 **임베딩만 936에 멈춰 있었다**.
+같은 코드가 ndcg@10 0.893 → 0.879, `none_correct` 1.000 → 0.667이 됐다. 어휘 arm은
+1891 청크를 보고 벡터 arm은 936만 보는 **파이프라인 내부 불일치**였는데 에러도 경고도
+없었고, 한 에이전트가 이 하락을 자기 코드 변경 탓으로 잘못 귀속했다가 정정했다.
+
+**고친 방식** — 두 가지를 나눠서 한다:
+
+- **시작·종료 스냅샷을 둘 다 찍는다.** 다르면 `index_snapshot.changed_during_run = true`와
+  `drift = {키: [시작, 종료]}`가 붙고 경고가 나간다. 런이 끝난 뒤에야 알 수 있는 사실이라
+  "막는다"가 아니라 "표시한다"이다 — 그런 런은 질의마다 다른 인덱스를 본 셈이라 다른
+  런과의 비교는 물론 그 런 내부의 유형별 비교도 못 믿는다.
+- **임베딩/청크 정합은 시작 시점에 검사하고 크게 경고한다.** 여기가 사람이 멈출 수 있는
+  유일한 지점이다. 판정은 grain 합계가 아니라 **활성 `embedding_model` 기준**이다:
+  검색이 `WHERE embedding_model = %s`로 거르므로 다른 모델의 벡터는 이번 런의 벡터 arm에
+  존재하지 않는 것과 같은데, 합계만 보면 그 상황이 "정합"으로 보인다. 그래서
+  `snapshot_index()`가 `embeddings_by_model_and_kind`(모델 × grain)를 같이 센다.
+  상태는 `ok` / `mismatch`(부분 백필) / `missing`(활성 모델 벡터가 0) / `unknown`(모델별
+  카운트가 없는 옛 스냅샷 — 판정하지 않는다).
+
+실제 출력(모델 이름을 일부러 틀리게 준 런):
+
+```
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+eval-ir: 인덱스 상태 경고 - 이 상태로 잰 점수는 코드 변경의 결과가 아닐 수 있다 (run_id=67a888fa…)
+  - 임베딩 모델 'openai/text-embedding-3-large'의 벡터가 인덱스에 하나도 없다 - 벡터 arm이
+    통째로 죽은 채 측정된다(에러도 0히트도 구분되지 않는다). 다른 모델의 벡터는 있다:
+    openai/text-embedding-3-small=2856
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+```
+
+경고는 `logging`으로 나간다(`search/retrieve.py`의 경고들과 같은 경로). CLI가 로깅을
+설정하지 않아 WARNING이 파이썬 기본 handler를 타고 stderr로 나오고, `cli.py`를 건드리지
+않아도 사람이 보는 자리에 뜬다 — 이 저장소에서 여러 에이전트가 동시에 작업할 때
+`cli.py` 충돌을 피하려는 실용적 선택이기도 하다.
+
+### 3. `--compare`가 비교 가능성을 검증하지 않았다
+
+`golden_version`이 다르면 `ValueError`였지만, 그 밖에는 다른 코퍼스·다른 설정·다른
+골든셋 파일의 두 런을 아무 말 없이 페어드 비교해 줬다. 이제 **막지는 않고 경고한다**
+(정당한 비교도 있다):
+
+- 코퍼스 카운트 차이 — 숫자까지 찍는다(`documents: 263 vs 358`).
+- 설정 차이 — **어떤 키가 무슨 값에서 무슨 값으로** 바뀌었는지(`config_diff`).
+  `config_hash`는 "달랐다"만 말한다. 노브 값까지 `config["settings"]`에 남기는 이유가 이것이다.
+- 각 런의 인덱스 건강 상태 — 런 중 코퍼스 변화, 임베딩 불일치. 비교는 며칠 뒤에 다른
+  사람이 하는 일이라 그 자리에서 다시 보여야 한다.
+- 골든셋 파일 경로 차이 — `golden_version`이 같아도 파일 내용이 같다는 보장은 없다.
+- **`--strategies` override가 한쪽만 걸린 비교.** override는 후보 생성뿐 아니라 **후처리
+  전략까지 통째로** 교체한다 — override 런에는 `count_match`가 아예 없다. 그래서 이건
+  "arm 둘"이 아니라 **"파이프라인 둘"**의 비교다. 실제로 한쪽에만 있는 지표를 찾아서
+  근거로 같이 보여준다.
+- 채점된 질의 집합 차이 — `--query-id`/`--type`으로 일부만 돈 런과 전체 런은 overall
+  평균끼리 비교할 수 없다(델타는 교집합만의 것이고 `n`이 그 크기다).
+
+경고 하나를 일부러 **약하게** 만든 곳이 있다: 코퍼스 비교는 **양쪽 스냅샷에 다 있는
+키만** 본다. 옛 행에는 새로 추가한 `embeddings_by_model_and_kind`가 없어서, 그걸 차이로
+세면 옛 런과의 모든 비교에 가짜 경고가 붙고 진짜 코퍼스 변화 경고까지 같이 무시당한다.
+같은 이유로 `settings_diff`는 "없는 키"를 `None`으로 뭉개지 않고 `<미기록>`으로 적는다 —
+"`vector_min_score`가 `None`이었다"는 없는 사실이고, 실제로는 "그 런이 노브를 기록하기
+전에 돌았다"이다.
+
+### 스키마를 안 건드린 이유
+
+`eval-ir`은 `init_schema()`를 부르지 않으므로 컬럼을 추가하면 `knowledge-forge db init`을
+한 번 돌려야 하는데, **같은 DB로 다른 에이전트들이 동시에 측정 중이면 그 DDL이 그들의
+eval-ir를 `DeadlockDetected`로 죽인다**. 그래서 새 정보는 전부 기존 JSONB 컬럼 안에 넣었다:
+랭킹 노브는 `config.settings`, 스냅샷/정합/드리프트/경고는 `index_snapshot`의 새 키.
+DDL 0줄이라 `db init`도, 진행 중인 런 확인도 필요 없다.
+
+`index_snapshot`의 **상위 키**(`documents`/`chunks`/`knowledge_objects`/`embeddings_by_kind`)는
+**시작 시점 값 그대로** 남겼다. 이 코드를 모르는 생 SQL 조회와 옛 행이 그대로 살아 있고,
+새 정보는 그 옆의 새 키(`finished`/`drift`/`changed_during_run`/`embedding_coverage`/
+`warnings`)로만 붙는다.
+
+### 회귀 없음 증거
+
+이 변경은 랭킹 경로를 건드리지 않는다(수집은 런 시작·종료에 한 번씩). 같은 시점의
+공유 DB에서:
+
+| label | 코드 | config_hash | ndcg@10 |
+|---|---|---|---|
+| `prov-control-da64fac-unmodified` | `da64fac` (수정 전) | `54d9a917f28c` | 0.8490350592986586 |
+| `prov-regression-default` | `a550944` (이 브랜치) | `effbdb404c9e` | 0.8490350592986586 |
+
+overall 지표 전체가 비트 단위로 같다.
+
+한 가지 덧: 이 두 런은 3시간 전 baseline(`c729471`, 0.8515670491098594)보다 낮다.
+`--compare`가 70질의 중 **1개만 움직였다**고 짚어 줬고(`v0-sequence-001` 0.177 → 0.000,
+나머지 69개 동률), **수정 전 `da64fac`을 다시 돌려도 같은 0.000**이 나왔다 — 코드가 아니라
+코퍼스 쪽에서 그 사이에 무언가 바뀐 것이다. 이게 정확히 이 작업이 만들려던 상황이다:
+지표가 움직였을 때 "내 변경 탓인가"를 표에서 바로 판정할 수 있어야 한다.
+
+### 안 한 것
+
+- **런 중 코퍼스 변화 경고의 실제 실행 시연**은 못 했다. 재현하려면 측정 도중 코퍼스에
+  써야 하는데(공유 DB의 corpus 테이블은 쓰기 금지) 단위 테스트로만 고정했다
+  (`test_runner_snapshots_start_and_finish_and_flags_drift`).
+- **옛 60여 행의 소급 복원**은 하지 않았다. 그 런들이 어떤 노브로 돌았는지는 어디에도
+  기록이 없어 되살릴 방법이 없다 — `--label`의 문자열이 전부다. 이 브랜치 이후의 런부터
+  복원 가능하다.
+- `cli.py`는 건드리지 않았다(다른 에이전트와의 충돌 회피). 새 경고는 `--compare` 출력의
+  기존 `경고:` 줄과 `logging`을 타고 나온다. `eval-ir` 실행 요약 본문에 인덱스 경고를
+  한 줄 더 박는 건 남은 개선이다.
