@@ -194,6 +194,34 @@ CASES = [
     ),
     # 날짜형 토큰은 식별자가 아니다
     Case("2025-03-15 회의", identifiers=[], document_reference=None),
+    # --- v0 골든셋 실측 회귀 케이스 ---------------------------------------------
+    # 아래 세 질의는 v0 baseline에서 규칙 단계가 제약을 못 뽑아 검색이 헛돌았던 실물이다.
+    # `v0-relative_temporal-003`: "일주일"을 못 읽어 SQL에 since가 안 붙었다(steps에서 since=null).
+    Case(
+        "최근 일주일 내 받은 Google Drive 공유 요청 메일",
+        time_label="최근 1주",
+        source_types=["gmail", "google_drive"],
+        document_types=["메일"],
+        strategies_include={"metadata_filter"},
+        # "최근 <수량>"은 범위(temporal)지 정렬(latest) 신호가 아니다.
+        strategies_exclude={"latest"},
+    ),
+    # `v0-aggregation-002`: "몇 통"을 못 읽어 count 전략이 아예 안 뽑혔다(predicted_count=None).
+    Case(
+        "Google Drive 공유 요청 메일은 총 몇 통인가?",
+        flags={"wants_count"},
+        strategies_include={"count", "metadata_filter"},
+    ),
+    # `v0-metadata_filter-001`: authors=["발신자"]로 0행이 나와 필터가 통째로 무시됐고
+    # (applied="filter_empty_ignored"), 정작 도메인은 아무 필드에도 안 실렸다.
+    Case(
+        "nonghyup.com 도메인 발신자가 보낸 메일",
+        authors=[],
+        participants=["nonghyup.com"],
+        source_types=["gmail"],
+        document_types=["메일"],
+        strategies_include={"metadata_filter"},
+    ),
 ]
 
 
@@ -267,6 +295,118 @@ def test_origins_mark_rule_populated_fields():
     assert c.origins["wants_exhaustive"] == ORIGIN_RULE
     assert "wants_count" not in c.origins
     assert "query" not in c.origins
+
+
+# --- 역할 명사 / 연락처 (v0-metadata_filter-001) ---------------------------------
+
+
+def test_role_nouns_are_not_parsed_as_author_names():
+    """'발신자가 보낸'의 '발신자'는 사람 이름이 아니라 역할이다. v0-metadata_filter-001에서
+    authors=["발신자"]가 실려 ILIKE '%발신자%'가 0행 → 필터가 통째로 무시됐다."""
+    for query in (
+        "발신자가 보낸 메일",
+        "수신자가 받은 메일",
+        "보낸사람이 작성한 문서",
+        "받는사람이 공유한 자료",
+        "참조가 보낸 메일",
+    ):
+        assert extract_constraints_rules(query, now=NOW).authors == [], query
+
+
+def test_email_domain_becomes_a_participant_filter():
+    """도메인은 sources.metadata->>'participants'("이름 <주소>" 배열의 JSON 텍스트)에
+    ILIKE로 걸린다 - `search/retrieve.py::_metadata_filter_where`의 기존 계약."""
+    c = extract_constraints_rules("nonghyup.com 도메인 발신자가 보낸 메일", now=NOW)
+    assert c.participants == ["nonghyup.com"]
+    assert "nonghyup.com" in c.entities
+    assert "metadata_filter" in suggest_strategies(c)
+
+
+def test_email_address_becomes_a_participant_filter():
+    """주소 전체가 적힌 형태도 같은 필드로. 조사가 바로 붙어도 주소만 떼어낸다."""
+    c = extract_constraints_rules("hong@nonghyup.com이 보낸 메일", now=NOW)
+    assert c.participants == ["hong@nonghyup.com"]
+
+
+def test_email_local_part_is_not_mistaken_for_an_identifier():
+    """'hong_gil@...'의 로컬 파트는 `_CODE_ID_RE`가 코드형 식별자로 오인해 document_lookup을
+    켠다. 주소를 먼저 걷어내야 한다."""
+    c = extract_constraints_rules("hong_gil@nonghyup.co.kr 메일", now=NOW)
+    assert c.participants == ["hong_gil@nonghyup.co.kr"]
+    assert c.identifiers == []
+
+
+def test_non_domain_dotted_tokens_are_left_alone():
+    """회귀 방지: 파일명/버전 표기가 도메인으로 오인되면 안 된다."""
+    c = extract_constraints_rules("매출현황.xlsx 파일 내용 전체 보여줘", now=NOW)
+    assert c.participants == []
+    assert c.identifiers == ["매출현황.xlsx"]
+
+
+# --- 수 분류사 (v0-aggregation-002) ----------------------------------------------
+
+
+def test_korean_counter_words_turn_on_wants_count():
+    """COUNT_MARKERS가 "몇 개/건/명"만 알아서 COUNT_MARKERS가 "몇 통"을 놓쳐 v0-aggregation-002에서 count 전략이
+    아예 안 뽑혔다. 한국어 수 분류사는 세는 대상마다 달라진다."""
+    for query in (
+        "Google Drive 공유 요청 메일은 총 몇 통인가?",
+        "첨부 파일이 몇 장이야?",
+        "보고서 몇 부 필요해?",
+        "거래처가 몇 곳이지?",
+    ):
+        c = extract_constraints_rules(query, now=NOW)
+        assert c.wants_count, query
+        assert "count" in suggest_strategies(c), query
+
+
+def test_ambiguous_counters_stay_off():
+    """분류사를 넓히다 실제로 오탐이 났던 것들. "몇 년 전"/"몇 달 전"은 시점 표현이고,
+    "총 몇 팀으로 구성되어 있나"(v0-factoid-004)는 코퍼스 개수가 아니라 문서 안에 적힌
+    사실을 묻는 factoid다 - count 전략으로 새면 답이 숫자 하나로 바뀐다."""
+    for query in (
+        "몇 년 전에 있었던 장애",
+        "몇 달 전 회의록",
+        "NH MVP 프로젝트의 투입 인력은 총 몇 팀으로 구성되어 있나?",
+    ):
+        assert not extract_constraints_rules(query, now=NOW).wants_count, query
+
+
+def test_full_hostname_is_an_exact_match_target_not_a_mail_domain():
+    """회귀 방지: 서브도메인까지 붙은 호스트명/URL은 발신 도메인이 아니라 정확 일치 대상이다.
+    v0-exact_match-002/003을 participants로 빨아들이면 lexical 후보가 통째로 사라진다."""
+    for query in (
+        "prepay-docs.168-107-13-173.sslip.io",
+        "git.sparklingsoda.ai:8443/nhbank/apps/card-reco.git",
+    ):
+        c = extract_constraints_rules(query, now=NOW)
+        assert c.participants == [], query
+        assert "lexical" in suggest_strategies(c), query
+
+
+# --- "최근 <한글 수사>" (v0-relative_temporal-003) --------------------------------
+
+
+def test_recent_korean_word_quantity_is_a_time_range_not_a_latest_sort():
+    """LATEST_MARKERS의 "최근"은 숫자가 뒤따를 때만 제외됐다. "최근 일주일"은 범위 표현이므로
+    wants_latest를 켜면 안 되고(정렬로 상위 몇 건만 남으면 set query가 깨진다), time_range가
+    실려야 한다."""
+    c = extract_constraints_rules("최근 일주일 내 받은 Google Drive 공유 요청 메일", now=NOW)
+    assert not c.wants_latest
+    assert c.time_range is not None and c.time_range.label == "최근 1주"
+    assert "latest" not in suggest_strategies(c)
+
+
+def test_recent_korean_word_quantity_is_stripped_from_semantic_query():
+    """시간 구절은 벡터 검색어에 남으면 노이즈다 - 숫자 표기와 같게 걷어내야 한다."""
+    c = extract_constraints_rules("최근 한 달 장애 원인", now=NOW)
+    assert c.semantic_query == "장애 원인"
+
+
+def test_bare_recent_still_means_latest():
+    """회귀 방지: 수량 없는 "최근"은 여전히 정렬 신호다."""
+    c = extract_constraints_rules("최근 업무보고서", now=NOW)
+    assert c.wants_latest and c.time_range is None
 
 
 def test_to_dict_serializes_time_range_as_iso_strings():
