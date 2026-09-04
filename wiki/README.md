@@ -35,7 +35,7 @@
 | [`agent-search.md`](agent-search.md) | 에이전트 검색 설계 — pgvector/임베딩과 `vector_search`/`plan_search`/`sql_search`(Query Planning+Routing+Text-to-SQL) agent 도구(구현됨), `POST /search/vector` HTTP 엔드포인트/`depth>1` 그래프 확장/MCP 서버/검색 skill(설계만, 미구현) |
 | [`agent-runtime.md`](agent-runtime.md) | 모델 벤더 중립 Agent Runtime(harness) — `file_search`/`vector_search`/`sql_search`/`plan_search`/FileSystem/Memory/SubAgents 도구를 실제로 쥐고 도는 `knowledge-forge agent` CLI(구현됨), 자체 `ChatProvider` 추상화(Anthropic 네이티브 + OpenAI-호환) |
 | [`search-architecture.md`](search-architecture.md) | 넓은 엔터프라이즈 RAG 아키텍처 레이어별 상태 — Query Planning/Routing/Reranking(RRF+cross-source dedup)/Temporal Search/Text-to-SQL(entity 필터+temporal join+graph 1-hop 대체)는 구현됨, Context Engineering 나머지/Map-Reduce/Evidence Grounding/Feedback Loop는 설계만·미구현, Iterative Retrieval은 이미 tool-calling 루프로 충족 |
-| [`search-evaluation.md`](search-evaluation.md) | Search Evaluation/Feedback Loop 설계(설계만, 미구현) — 로깅 스키마(`search_log`/`search_feedback`), 골드셋 불필요한 LLM-judge 기반 groundedness/citation 자동 평가, 골드셋 필요한 Recall/Precision/MRR/NDCG 트랙, Iterative Retrieval용 온라인 groundedness gate(옵션) |
+| [`search-evaluation.md`](search-evaluation.md) | Search Evaluation/Feedback Loop — 로깅(`search_log`/`search_feedback`, `EvalStore`)과 LLM-judge 기반 groundedness/citation 자동 평가(`evaluation/judge.py`, `knowledge-forge eval`/`feedback`)는 구현됨, 골드셋 필요한 Recall/Precision/MRR/NDCG와 온라인 groundedness gate(옵션)는 설계만 |
 | [`okf.md`](okf.md) | `OKFWriter` — manifest.yaml + resources/objects/relations 파일 트리로 된 Knowledge Base, Postgres와 독립적인 opt-in 출력 |
 | [`ui.md`](ui.md) | `/ui` — React+Vite 기반 OKF 뷰어(마크다운+그래프). Tailwind+shadcn/ui 기반 Obsidian풍 비주얼, 디렉터리 구조, 알려진 CSS/타입 함정 |
 | [`scheduling.md`](scheduling.md) | `knowledge-forge schedule`의 tick/interval 모델, 실패 격리 |

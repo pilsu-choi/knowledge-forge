@@ -1,35 +1,38 @@
-# Search Evaluation / Feedback Loop + Groundedness Gate (설계 문서)
+# Search Evaluation / Feedback Loop + Groundedness Gate
 
 `search-architecture.md`가 "Search Evaluation / Feedback Loop — 설계만, 미구현"과
-"Iterative / Agentic Retrieval — 이미 구현됨(암묵적 판단에 의존)"으로 남겨둔 두 항목을 구체적인
-설계로 채운다. 이 저장소에는 지금 쿼리/답변/근거를 기록하는 테이블이 하나도 없고, "검색이 잘
-됐는가"를 코드로 판단할 방법도 없다 — 아래는 그 공백을 메우는 네 조각의 설계이며, 서로
-독립적으로 구현 가능하지만 (A)가 나머지 전부의 전제조건이다.
+"Iterative / Agentic Retrieval — 이미 구현됨(암묵적 판단에 의존)"으로 남겨둔 두 항목을 채우는
+네 조각 - (A)/(B)는 구현됨, (C)/(D)는 여전히 설계만이다. (A)가 나머지 전부의 전제조건이다.
 
 ## 스코프: 독립적인 네 조각
 
-| 조각 | 내용 | 골드셋 필요 여부 | 우선순위 |
+| 조각 | 내용 | 골드셋 필요 여부 | 상태 |
 |---|---|---|---|
-| (A) 로깅 인프라 | query/answer/evidence를 Postgres에 기록 | 불필요 | 1 — 전제조건 |
-| (B) Groundedness/Citation 자동 평가 | LLM-as-judge로 claim-evidence 매칭, 비동기 배치 | 불필요 | 2 — 바로 가치 |
-| (C) Recall/Precision/MRR/NDCG | relevance judgment 필요 | **필요** | 3 — 사람 큐레이션 선행 |
-| (D) 명시적 Groundedness Gate | (B)의 판정기를 온라인 게이트로 재사용, iterative retrieval 강화 | 불필요 | 4 — (B) 데이터로 필요성 확인 후 |
+| (A) 로깅 인프라 | query/answer/evidence를 Postgres에 기록 | 불필요 | **구현됨** |
+| (B) Groundedness/Citation 자동 평가 | LLM-as-judge로 claim-evidence 매칭, 비동기 배치 | 불필요 | **구현됨** |
+| (C) Recall/Precision/MRR/NDCG | relevance judgment 필요 | **필요** | 설계만, 미구현 |
+| (D) 명시적 Groundedness Gate | (B)의 판정기를 온라인 게이트로 재사용, iterative retrieval 강화 | 불필요 | 설계만, 미구현 |
 
-## (A) 로깅 인프라 — `search_log` / `search_feedback`
+## (A) 로깅 인프라 — **구현됨**, `storage/eval_store.py::EvalStore`
+
+`search_log`/`search_feedback` 테이블(`storage/schema.sql`) - `JobStore`와 같은 이유로
+`PostgresStore`와 별도 클래스(`EvalStore`)를 뒀다: 저 둘은 Knowledge Graph 콘텐츠를 다루지만
+이건 이벤트 로그이고 호출자/lifecycle이 다르다. PK가 `knowledge_objects`류와 달리 stable_id가
+아니라 uuid4인 것도 `jobs.job_id`와 같은 이유(이벤트라 재실행 idempotency가 의미 없음).
 
 ```sql
--- 이벤트 로그라 knowledge_objects류와 달리 PK가 stable_id가 아니라 uuid4
--- (jobs 테이블과 같은 이유 - storage/schema.sql 참고).
 CREATE TABLE IF NOT EXISTS search_log (
     log_id        TEXT PRIMARY KEY,
     project_id    TEXT NOT NULL DEFAULT 'default',
     query         TEXT NOT NULL,
     answer        TEXT NOT NULL,
-    -- 실제 검색된 근거: [{source, path|knowledge_object_id, rank, score}, ...]
-    -- - eval_score.unsupported_claims가 이 목록의 원소를 가리킨다.
+    -- [{tool, iteration, payload}, ...] - 최초 설계는 {source, path|
+    -- knowledge_object_id, rank, score}로 정규화하려 했지만, sql_search의
+    -- {columns, rows}/plan_search의 {subqueries, evidence}가 file_search/
+    -- vector_search의 hit 모양과 아예 다르다는 걸 구현 중에 발견 - 강제로
+    -- 맞추는 대신 각 도구의 원본 반환 모양을 그대로 담는다. (B)의 judge가
+    -- 이걸 고정 스키마가 아니라 자유 형식 JSON 컨텍스트로 읽으므로 문제 없다.
     evidence      JSONB NOT NULL DEFAULT '[]'::jsonb,
-    -- 실행된 도구 호출 시퀀스: [{tool, arguments, iteration}, ...]
-    -- - 반복 횟수/재검색 여부를 나중에 여기서 재구성한다(별도 카운터 컬럼 불필요).
     tool_calls    JSONB NOT NULL DEFAULT '[]'::jsonb,
     latency_ms    INT NOT NULL,
     created_at    TIMESTAMPTZ NOT NULL
@@ -47,46 +50,57 @@ CREATE TABLE IF NOT EXISTS search_feedback (
 CREATE INDEX IF NOT EXISTS idx_search_feedback_log_id ON search_feedback(log_id);
 ```
 
-**어디서 기록하는가**: `agent/loop.py::run_agent`는 건드리지 않는다 — 이 함수는 벤더/모드
-중립 공유 루프라는 게 `agent-runtime.md`가 세운 원칙이고, 로깅처럼 그 루프의 책임이 아닌 걸
-안에 넣으면 원칙이 깨진다. 대신 `run_agent`가 이미 반환하는 `(answer, messages)`의 `messages`
-안에 모든 tool call/tool result가 들어있으므로, 호출부(`agent/runtime.py::run_query`,
-`AgentSession.ask`)에서 턴이 끝난 뒤 `messages`를 파싱해 `search_log` 한 행으로 남긴다 —
-`run_agent` 자체는 로깅의 존재를 전혀 모른다.
+**`evidence`/`tool_calls`를 어떻게 재구성하는가**: `agent/loop.py::run_agent`는 여전히
+로깅을 전혀 모른다 - 대신 `_wrap_untrusted`(도구 결과를 `<tool_result tool="...">...
+</tool_result>`로 감싸는 함수)의 역변환인 `parse_tool_result()`를 같은 파일에 추가했다.
+`evaluation/search_log.py::extract_evidence`/`extract_tool_calls`가 턴이 끝난 뒤
+`messages`를 순회하며 이걸로 각 tool_result를 다시 구조화된 값으로 복원한다
+(`file_search`/`vector_search`/`sql_search`/`plan_search`만 "evidence"로 취급 -
+`write_memory`/`read_file` 같은 부수효과 도구는 제외). 호출부는
+`evaluation/search_log.py::save_search_log()`이고, `agent/runtime.py::run_query`/
+`AgentSession.ask`가 턴이 끝날 때마다 이걸 호출한다 - `KF_DATABASE_URL`이 없으면
+아무 것도 하지 않고(`vector_search`/`sql_search`와 같은 "설정 안 되면 조용히 빠짐" 컨벤션),
+로깅 자체가 실패해도(DB 다운, 스키마 미적용) 예외를 삼키고 경고만 남긴다 - 이미 만들어진
+답변을 로깅 실패로 날릴 수는 없다.
 
-**피드백 캡처 지점**:
-- `--interactive` REPL: `AgentSession`이 직전 턴의 `log_id`를 들고 있으니 `/feedback up|down
-  [comment]` 커맨드를 추가해 그 자리에서 붙인다.
-- 일회성 `run_query`: 프로세스가 답변 출력 후 바로 끝나 나중에 피드백을 붙일 방법이 필요하다 —
-  `run_query`가 `log_id`를 stdout에 같이 찍고(`--json` 출력 모드), 별도 `knowledge-forge
-  feedback <log_id> up|down [--comment ...]` CLI 커맨드로 사후에 붙이는 방식을 제안한다.
-- HTTP 경로는 스코프 밖 — `api.md`에는 아직 채팅/검색 엔드포인트 자체가 없다(`agent-search.md`가
-  `POST /search/vector`를 설계만으로 남겨둔 것과 동일한 이유). 그게 생기면 그 엔드포인트 응답에
-  `log_id`를 얹고 `POST /search/feedback`을 추가하는 확장이 된다.
+**API 변화**: `run_query()`가 이제 `answer` 대신 `(answer, log_id)`를 반환한다(`log_id`는
+로깅이 꺼져있거나 실패하면 `None`). `AgentSession`은 `session.plan`과 같은 패턴으로
+`session.last_log_id` 프로퍼티를 노출한다.
 
-## (B) Answer Groundedness / Citation Accuracy — LLM-as-judge, 골드셋 불필요
+**피드백 캡처 지점** (설계 문서가 제안한 그대로 구현):
+- `--interactive` REPL: `/feedback up|down [코멘트]` - `session.last_log_id`에 붙인다
+  (`cli.py::_handle_feedback_command`).
+- 일회성 `knowledge-forge agent <질문>`: 답변과 함께 `[log_id=... - knowledge-forge feedback
+  <log_id> up|down로 평가 가능]`을 stderr에 출력하고, 신규 `knowledge-forge feedback <log_id>
+  up|down [--comment ...]` 커맨드로 사후에 붙인다.
+- HTTP 경로는 여전히 스코프 밖 - `api.md`에 채팅/검색 엔드포인트 자체가 아직 없다.
 
-지금 당장 시작 가능한 조각 — "정답"이 있어야 하는 (C)와 달리, judge는 로그에 이미 있는
-`(query, answer, evidence)`만으로 채점한다.
+## (B) Answer Groundedness / Citation Accuracy — **구현됨**, `evaluation/judge.py`
+
+`(query, answer, evidence)`만으로 채점한다 - "정답"이 있어야 하는 (C)와 달리 골드셋이 필요
+없다.
 
 ```text
-search_log (미채점 행들)
+search_log (미채점 행들, EvalStore.list_unscored_search_logs)
       │
       ▼
-1) Claim Extraction  ── LLM 호출: 답변 문장들을 개별 주장(claim) 목록으로 분해
+judge_search_log() - ChatProvider.send() 1회 호출
+      │  (claim extraction과 evidence matching을 한 프롬프트/한 호출로 처리 -
+      │   최초 설계는 이 둘을 별도 LLM 호출 2개로 나눴지만, 구현하면서 한
+      │   구조화 출력 호출로 합쳤다: 모델이 claim과 evidence를 같은 컨텍스트에서
+      │   보게 되고, 배치로 여러 로그를 돌 때 라운드트립이 절반으로 준다)
+      ▼
+{"claims": [{text, verdict: supported|unsupported|contradicted, reason, citation_valid}]}
       │
       ▼
-2) Evidence Matching  ── LLM 호출: 각 claim이 evidence 중 어느 것으로
-      │                   지지되는지 판정 — 지지됨 / 미지지 / 모순, 3-way
-      ▼
-3) 점수 집계
-      groundedness_score   = 지지된 claim 수 / 전체 claim 수
-      citation_precision   = (인용된 path/knowledge_object_id 중 evidence에
-                               실제로 존재하고, 그 claim을 실제로 지지하는 것) / 전체 인용 수
+groundedness_score = 지지된 claim 수 / 전체 claim 수 (claim이 하나도 없으면 1.0 -
+                      "근거를 찾지 못했습니다"류 답변은 애초에 뒷받침할 게 없으므로)
+citation_precision  = citation_valid가 non-null인 claim 중 true 비율 (아무 claim도
+                      인용을 달지 않았으면 None)
       │
       ▼
-eval_score 테이블에 저장 (unsupported_claims에 미지지 claim 원문 + 이유 기록
- → 사람이 나중에 "왜 이 질의가 실패했는지" 바로 읽을 수 있게)
+eval_score.claims에 전체 claim 저장(미지지 것만이 아니라 전부 - 사람이 나중에
+judge 정확도 자체를 샘플링 검증할 수 있게)
 ```
 
 ```sql
@@ -94,19 +108,29 @@ CREATE TABLE IF NOT EXISTS eval_score (
     log_id              TEXT PRIMARY KEY REFERENCES search_log(log_id),
     groundedness_score  DOUBLE PRECISION NOT NULL,
     citation_precision  DOUBLE PRECISION,
-    unsupported_claims  JSONB NOT NULL DEFAULT '[]'::jsonb,
+    claims              JSONB NOT NULL DEFAULT '[]'::jsonb,
     judge_model         TEXT NOT NULL,
     judged_at           TIMESTAMPTZ NOT NULL
 );
 ```
 
-**실행 방식**: `embeddings.md`의 `--embed`/`knowledge-forge embed`와 같은 패턴 — 별도
-동기 경로에 끼워 넣지 않고, 아직 채점 안 된 `search_log` 행을 가져와 배치로 도는 `knowledge-forge
-eval` CLI/스케줄 잡. 답변 지연시간에 영향을 주지 않는다.
+**실행 방식**: `embeddings.md`의 `--embed`/`knowledge-forge embed`와 같은 패턴 - 신규
+`knowledge-forge eval [--project-id] [--batch-size] [--max-batches] [--provider] [--model]`
+이 `EvalStore.list_unscored_search_logs()`로 미채점 행을 배치로 가져와 채점하고
+`eval_score`에 저장한다. 답변 생성 경로와 완전히 분리된 오프라인 배치라 지연시간에 영향이
+없다.
 
-**한계**: judge도 LLM이라 오판할 수 있다 — 이건 golden truth가 아니라 프로덕션에서 흔히 쓰는
-저비용 근사치(RAG 평가에서 표준적인 완화책)다. `unsupported_claims`를 사람이 주기적으로
-샘플링해 judge 정확도 자체를 검증하는 루틴이 있어야 신뢰도를 유지한다.
+**실패 처리**: `judge_search_log()`는 provider 호출이 실패하거나(네트워크 에러) 응답이
+파싱 불가능한 JSON이면 점수를 저장하지 않고 `None`을 반환한다 - `eval` 커맨드는 그 로그를
+그냥 건너뛰고(허위 점수를 저장하지 않음), `list_unscored_search_logs()`가 여전히 그 로그를
+미채점으로 보므로 다음 `eval` 실행에서 자동으로 재시도된다. 반대로 judge가 정상적으로
+`{"claims": []}`를 반환한 경우(진짜로 채점할 claim이 없는 답변)는 실패가 아니라
+groundedness_score=1.0으로 정상 채점된다 - 이 둘을 구분하지 않으면 네트워크 장애가 조용히
+"완벽하게 grounded"로 잘못 기록될 뻔했다.
+
+**한계**: judge도 LLM이라 오판할 수 있다 - 이건 golden truth가 아니라 프로덕션에서 흔히 쓰는
+저비용 근사치(RAG 평가에서 표준적인 완화책)다. `eval_score.claims`(실패한 것만이 아니라 전부)를
+사람이 주기적으로 샘플링해 judge 정확도 자체를 검증하는 루틴이 있어야 신뢰도를 유지한다.
 
 ## (C) Recall / Precision / MRR / NDCG — relevance judgment 필요, 별도 트랙
 
@@ -133,8 +157,9 @@ eval` CLI/스케줄 잡. 답변 지연시간에 영향을 주지 않는다.
 
 `search-architecture.md`는 "한 번 검색하고 끝내지 않는다"는 요구사항이 `agent/loop.py`의
 tool-calling 루프로 이미 충족된다고 판단했다 — 다만 "근거가 충분한가"는 전적으로 모델의 암묵적
-자기평가에 의존하고, 강제되는 검증 단계는 없다. (B)에서 만든 claim-evidence 판정기를 그대로
-재사용하면, 답변을 확정하기 직전에 한 번 더 검증하는 게이트를 추가할 수 있다.
+자기평가에 의존하고, 강제되는 검증 단계는 없다. (B)에서 이미 구현한
+`evaluation/judge.py::judge_search_log`를 그대로 재사용하면, 답변을 확정하기 직전에 한 번 더
+검증하는 게이트를 추가할 수 있다 - 이 조각 자체는 아직 미구현이다.
 
 ```text
 run_agent 루프: tool_calls 없는 turn 도착 (= 최종 답변 후보)
@@ -172,15 +197,17 @@ agent_groundedness_gate_max_retries: int = 2
 늘어난다 — 지금 규모에서 이게 필요한지는 (B)의 오프라인 배치로 실사용 hallucination/citation
 오류 빈도를 먼저 관찰한 뒤 판단하는 게 맞다. 데이터 없이 미리 켜두면 근거 없는 비용 증가가 된다.
 
-## 우선순위
+## 상태와 다음 순서
 
-1. **(A) 로깅 인프라** — 나머지 전부의 전제조건, 다른 조각 없이도 그 자체로 "질의별 실패 원인
-   추적"의 최소 형태(사람이 `search_log`를 직접 읽는 것)를 제공한다.
-2. **(B) Groundedness/Citation LLM-judge 배치** — 골드셋 없이 바로 가치, 실패 유형 데이터가
-   쌓이기 시작한다.
-3. **(C) 골드셋 기반 Recall/Precision/MRR/NDCG** — 회귀 테스트로 먼저 도입, 실트래픽 근사는
-   그 다음.
-4. **(D) 온라인 Groundedness Gate** — (B) 데이터로 실제 필요성이 확인된 뒤 켜는 옵션.
+1. **(A) 로깅 인프라 — 구현됨.** 나머지 전부의 전제조건, 다른 조각 없이도 그 자체로 "질의별
+   실패 원인 추적"의 최소 형태(사람이 `search_log`를 직접 읽는 것)를 제공한다.
+2. **(B) Groundedness/Citation LLM-judge 배치 — 구현됨.** `knowledge-forge eval`을 주기적으로
+   돌리기 시작하면 실패 유형 데이터가 쌓인다.
+3. **(C) 골드셋 기반 Recall/Precision/MRR/NDCG — 설계만.** 회귀 테스트로 먼저 도입, 실트래픽
+   근사는 그 다음 - 사람 큐레이션(대표 질의 30~50개 + relevant id 목록)이 선행돼야 한다.
+4. **(D) 온라인 Groundedness Gate — 설계만.** `knowledge-forge eval`을 몇 주 돌려 실사용
+   hallucination/citation 오류 빈도가 실제로 문제 될 만큼 나오는지 (B)의 데이터로 먼저
+   확인한 뒤 켜는 옵션 - 데이터 없이 미리 만들면 근거 없는 지연시간/비용 증가가 된다.
 
 ## 스코프 밖
 
