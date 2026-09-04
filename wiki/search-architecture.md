@@ -154,13 +154,21 @@ conversation_thread(0.250)/sequence(0.343)가 낮았던 실제 원인이 이것�
 더하므로, 나누면 "질의의 term을 더 많이 담은 문서"가 자동으로 위로 온다. 한 리스트에 몰아넣으면
 그 신호가 사라진다.
 
-두 개의 안전장치가 붙어 있다. 둘 다 실측으로 필요성이 확인된 것이다(수치는
+세 개의 안전장치가 붙어 있다. 전부 실측으로 필요성이 확인된 것이다(수치는
 `search-evaluation.md`의 스윕 표):
 
 - **coverage 임계값** (`KF_TERM_COVERAGE_RATIO` 기본 2/3, `KF_TERM_COVERAGE_MIN` 기본 2):
   질의의 term을 `ceil(term수 × ratio)`개 이상 담은 문서만 후보로 남긴다. 없으면 term 하나만 스친
   문서까지 전부 후보가 되어, "관련 문서 없음"이 정답인 질의(null/negative)가 전부 무언가를
   돌려주고(`none_correct` 1.000 → 0.000) 개수 질의가 부풀었다(`count_match` 0.500 → 0.000).
+- **변별력 게이트** (`KF_TERM_RARE_DF_MAX` 기본 0, `_required_terms`): 위 임계값과 **AND**로
+  걸린다. 질의에서 문서 빈도(df)가 **가장 낮은 term(동점이면 전부)** 을 담고 있어야 후보로
+  남는다. 개수만 세는 임계값은 코퍼스가 커질수록 반드시 무너지기 때문이다 — 흔한 term끼리
+  우연히 겹치는 문서는 코퍼스 크기에 비례해 늘어난다. 실제로 **코드 변경 없이** 263 → 326
+  문서(24% 증가)만으로 `none_correct`가 1.000 → 0.667로 떨어졌다("Kubernetes 클러스터 구성
+  가이드"가 흔한 `클러스터`/`구성`/`가이드` 세 개만 겹친 무관한 문서를 물어 왔다). df=0인
+  term(코퍼스에 아예 없는 개념)은 어떤 문서도 담을 수 없으니 **전부 기각**이 된다 — 의도한
+  동작이다. `KF_TERM_RARE_DF_MAX`는 최소 df 위에 얹는 절대 하한이고, 음수면 게이트를 끈다.
 - **1단계가 빈손일 때만 실행**: 질의 문자열이 통째로 걸렸으면 그게 term 하나하나보다 강한 신호다.
   항상 돌리면 제목이 정확히 맞은 질의를 term 히트가 밀어낸다(`v0-navigational-002` "codex README":
   ndcg@10 1.000 → 0.356).
@@ -168,6 +176,26 @@ conversation_thread(0.250)/sequence(0.343)가 낮았던 실제 원인이 이것�
 term당 조회는 `_TERM_FETCH_LIMIT`(20)으로 따로 막는다 — exhaustive/negative/count 질의는
 `fetch_limit`이 200이고 최종 컷오프도 없어서, term 열 개 × 200이 그대로 답에 실리면 재현율보다
 정밀도를 더 깎는다.
+
+**df는 term별 히트 수로 근사하면 안 된다.** term마다 `lexical_search`를 이미 부르고 있어 그
+히트에서 세면 추가 질의가 0회지만, `search_chunks_lexical`이 `LIMIT`(=20)을
+`is_substring DESC, sim DESC, document_id` 순으로 자르기 때문에 **흔한 term일수록 상위 20청크가
+같은 문서 몇 개에 몰려** df가 극단적으로 과소평가된다(실측: `인터뷰` 절단 df=3 / 실제 37,
+`OCR` 1 / 34, `애자일소다` 1 / 33, `risk-agent` 4 / 51). v0의 per_term 질의 26개 중 **7개에서
+"가장 희귀한 term"의 신원이 뒤집혔다** — 판정 자체가 바뀌므로 별도 count가 필요하다. 그래서
+`_term_document_frequency_sql`이 term 전부의 df를 **읽기 전용 질의 한 번**(UNION ALL)으로 세고,
+그 값과 실측 df의 `max`를 쓴다. `max`인 이유: SQL은 substring 티어만 세어 fuzzy로만 걸린 term을
+0으로 보고, 실측은 절단으로 흔한 term을 낮게 본다 — 둘 다 과소평가만 하므로 큰 쪽이 진실에
+가깝고, 무엇보다 "히트는 있는데 df=0이라 전부 기각"이라는 모순(오타/동의어 질의가 통째로 빈손이
+되는 경로)이 생기지 않는다.
+
+**1단계(`lexical_search#semantic`, 질의 문자열 통째)에는 같은 취약점이 없다.**
+`search_chunks_lexical`의 3티어 중 1·2티어는 "질의 전체가 한 청크의 substring" /
+"질의의 모든 토큰(최대 8개)이 **한 청크 안에** 전부 있음"이라 **흔한 term만으로는 성립할 수
+없고**(희귀 term도 반드시 포함해야 한다), 3티어는 질의 전체에 대한 `word_similarity ≥ 0.5`라
+개수가 아니라 관련도 하한이다. 즉 "코퍼스가 커지면 우연한 겹침이 늘어난다"는 메커니즘이 여기엔
+적용되지 않는다. 실측으로도 v0의 none 질의 6개 전부 이 경로가 limit=200에서도 0히트다(그래서
+term 분해로 내려간 것이다). 게이트를 여기까지 확장하지 않은 이유다.
 
 
 **`latest`가 관련도를 버리지 않게 하는 이유**:
@@ -191,10 +219,25 @@ term당 조회는 `_TERM_FETCH_LIMIT`(20)으로 따로 막는다 — exhaustive/
   소스의 다수결로 이걸 밀어내면 Navigational/Specific-document QA가 무너진다. 고정은 순서를 지키는
   partition이라 나머지 랭킹은 그대로다.
 - **metadata_filter 교집합**: 필터는 랭킹 신호가 아니라 범위다(작성자/기간이 틀린 문서는 아무리
-  유사해도 오답). 그래서 RRF 점수에 섞지 않고 병합 뒤 교집합으로 건다. 단 (a) 필터 질의 결과가 0행이면
-  필터 자체가 틀린 것으로 보고 무시(`applied="filter_empty_ignored"`), (b) 후보 생성 전략이 없거나
-  교집합이 비면 필터 집합 자체를 최신순 결과로 쓴다(`filter_only`/`no_overlap_fallback_to_filter`) -
-  "지난주 김철수 메일"은 필터만으로 답이 되는 질의라서.
+  유사해도 오답). 그래서 RRF 점수에 섞지 않고 병합 뒤 교집합으로 건다. **단 필터를 얼마나 믿을지는
+  필터 안에 든 술어의 종류로 가른다** - 아래 표. `applied` 값은 `metadata_filter` step의 detail에
+  그대로 남아서 실패를 추적할 수 있다.
+
+  | 상황 | `applied` | 결과 |
+  |---|---|---|
+  | 필터 질의가 0행 | `filter_empty_ignored` | 필터 무시, 관련도 랭킹 그대로 |
+  | 후보 생성 전략이 하나도 히트 없음 | `filter_only` | 필터 집합을 최신순으로 - "지난주 김철수 메일"은 필터만으로 답이 되는 질의다 |
+  | 필터가 **어휘 힌트뿐**(`source_type IN (...)` 하나) | `source_hint_not_applied` | 필터 무시, 관련도 랭킹 그대로 |
+  | 그 밖에 교집합이 있음 | `intersected:N->M` | 교집합 |
+  | 그 밖에 교집합이 0 | `no_overlap_fallback_to_filter` | 필터 집합을 최신순으로 |
+
+  **어휘 힌트뿐인 필터를 하드 필터에서 뺀 이유**(`_is_source_hint_only_filter`): `source_types`는
+  `SOURCE_TYPE_MARKERS` 정규식이 질의 표면 어휘만 보고 찍은 추측이고 - LLM 보강 대상 필드도 아니다
+  (`LLM_ENRICHABLE_FIELDS`) - 그 어휘 → source_type 매핑은 방향이 자주 반대다. 개발 코퍼스 실측으로
+  본문에 "Google Drive"/"드라이브"를 언급하는 문서의 source_type은 **gmail 11건 / slack 4건 /
+  google_drive 3건**이었다. Drive에 저장된 파일은 본문에 "Google Drive"라고 쓸 이유가 없고, Drive
+  공유요청 알림 메일은 항상 쓴다. 반대로 작성자/참여자/시간/제목 종류는 질의가 명시한 구조적
+  술어라 교집합이 0이어도 필터 쪽을 믿는다(자세한 근거는 wiki/search-evaluation.md의 회귀 기록).
 - `limit`은 최종 `document_ids` 길이다. 소스별 조회는 3배 over-fetch해서 필터/anchor 좁히기 뒤에도
   limit개가 남게 한다.
 - `strategies_override`는 목록에 적힌 전략**만** 돌린다 - 어휘 arm도 `"keyword_arm"`으로 적어야

@@ -183,9 +183,21 @@ MULTIHOP_MARKERS: tuple[str, ...] = (
 )
 
 # 소스 타입 힌트 → sources.source_type 값(local_file/slack/gmail/google_drive/notion)
+#
+# 이 정규식은 두 곳에서 쓰인다: (1) source_type 판정, (2) `_strip_source_type_markers`가
+# semantic_query에서 마커 문구를 걷어내는 것. (2) 때문에 **매치 범위는 "지워도 되는 구절 전체"여야
+# 한다** - 반쪽만 지우면 판정에도 검색에도 도움이 안 되는 파편이 남는다. "구글 메일"에서 "메일"만
+# 지우고 "구글"을 남기지 않도록 두 단어 형태를 alternation 앞에 둔 이유가 그것이다(파이썬 `|`는
+# leftmost-first라 긴 쪽이 앞에 있어야 먼저 소비된다). "Google Drive"도 같은 파편 문제가 있었지만
+# 그쪽은 아예 지우지 않는 쪽이 낫다 - `_MARKER_KEEP_PATTERN` 주석 참고.
+#
+# 주의: 이 어휘 → source_type 매핑은 **질의 표면형 추측일 뿐이고 방향이 자주 반대다.** 개발
+# 코퍼스 실측으로 본문에 "Google Drive"/"드라이브"를 언급하는 문서의 source_type은 gmail 11건 /
+# slack 4건 / google_drive 3건이었다. 그래서 `search/retrieve.py`는 이 힌트만으로 만들어진 필터를
+# 하드 `WHERE IN`으로 쓰지 않는다(`_is_source_hint_only_filter`).
 SOURCE_TYPE_MARKERS: tuple[tuple[str, str], ...] = (
     (r"슬랙|\bslack\b|채널|스레드|\bDM\b", "slack"),
-    (r"이메일|메일|\bg?mail\b|\be-?mail\b|수신함", "gmail"),
+    (r"(?:구글|google)\s*(?:메일|g?mail)\b|이메일|메일|\bg?mail\b|\be-?mail\b|수신함", "gmail"),
     (r"드라이브|\bg?drive\b|구글\s*(?:독스|문서|시트)|스프레드시트", "google_drive"),
     (r"노션|\bnotion\b", "notion"),
     (r"로컬\s*파일|\blocal\s+file", "local_file"),
@@ -221,6 +233,15 @@ _TEMPORAL_SPAN_RE = re.compile(
     r"|오늘|어제|그저께|그제|올해|금년|작년|재작년"
     r"|\bthis\s+year\b|\blast\s+year\b|\bthis\s+month\b|\blast\s+month\b"
 )
+
+# semantic_query에서 **지우면 안 되는** 마커 구절 - 마커이면서 동시에 코퍼스 본문의 내용어인
+# 제품 고유명. Drive 공유요청 알림 메일 본문에는 "Google Drive"가 그대로 쓰여 있어서, 이 구절까지
+# 지우면 벡터/어휘 arm이 그 문서를 못 집는다. v0에서 실측한 차이(다른 조건 동일):
+# 지울 때 hit@1 0.814 / ndcg@10 0.890, 남길 때 hit@1 0.857 / ndcg@10 0.897.
+# "드라이브"/"메일"/"슬랙" 같은 맨 종류어에는 이 예외를 주지 않는다 - 검색어로서 정보량이 거의
+# 없다. 슬랙/노션 고유명까지 넓히는 건 아직 측정하지 않았다.
+_MARKER_KEEP_PATTERN = r"(?:구글|google)\s*(?:드라이브|g?drive)\b"
+
 _THIS_YEAR_RE = re.compile(r"올해|금년|\bthis\s+year\b")
 _LAST_YEAR_RE = re.compile(r"작년|\blast\s+year\b")
 _YEAR_BEFORE_LAST_RE = re.compile(r"재작년")
@@ -368,6 +389,23 @@ class QueryConstraints:
 
 def _any_marker(markers: tuple[str, ...], text: str) -> bool:
     return any(re.search(pattern, text, re.IGNORECASE) for pattern in markers)
+
+
+def _strip_source_type_markers(text: str) -> str:
+    """semantic_query에서 source_type 마커 구절을 걷어낸다 - 단 `_MARKER_KEEP_PATTERN`에 걸리는
+    구절은 그대로 둔다.
+
+    keep 쪽을 alternation **앞**에 두고, 그쪽이 매치되면 원문을 되돌려주는 방식이다. 파이썬 `|`는
+    leftmost-first라 keep이 그 구간을 먼저 먹고 뒤의 마커 패턴은 그 안을 다시 물지 못한다 -
+    자리표시자로 마스킹했다가 되돌리는 것보다 짧고, 되돌리기 전에 자리표시자가 다른 정리 단계에
+    씹힐 위험도 없다."""
+
+    def _keep_or_blank(m: re.Match[str]) -> str:
+        return m.group("keep") or " "
+
+    for pattern, _label in SOURCE_TYPE_MARKERS:
+        text = re.sub(rf"(?P<keep>{_MARKER_KEEP_PATTERN})|(?:{pattern})", _keep_or_blank, text, flags=re.IGNORECASE)
+    return text
 
 
 def _strip_markers(markers: tuple[str, ...], text: str) -> str:
@@ -543,8 +581,7 @@ def extract_constraints_rules(query: str, *, now: datetime | None = None) -> Que
 
     # 8) semantic_query - 제약 표현을 걷어낸 나머지
     semantic = _TEMPORAL_SPAN_RE.sub(" ", working)
-    for pattern, _label in SOURCE_TYPE_MARKERS:
-        semantic = re.sub(pattern, " ", semantic, flags=re.IGNORECASE)
+    semantic = _strip_source_type_markers(semantic)
     for markers in (
         LATEST_MARKERS,
         EXHAUSTIVE_MARKERS,
