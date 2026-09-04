@@ -1,0 +1,640 @@
+"""`search/retrieve.py::retrieve` - the retrieval plan executor.
+
+The fake-store tests pin down each strategy's branching (anchor pinning,
+metadata-filter intersection / empty-filter fallback, latest ordering +
+version-family compression, exhaustive/count, whole_document reading,
+comparison targets, multihop gating on `provider`, `strategies_override`)
+without a database. `vector_search` is monkeypatched at the module level
+because the real one needs an embedding provider. `TestAgainstPostgres`
+seeds rows under a test-only project_id and deletes them on teardown (the
+dev DB holds real data), skipped unless KF_TEST_DATABASE_URL is set.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime, timezone
+
+import pytest
+import pytest_asyncio
+
+from knowledge_forge.chat_provider import AssistantTurn, ChatProvider
+from knowledge_forge.models.chunk import Chunk, HierarchyLevel
+from knowledge_forge.models.document import Document, DocumentMetadata, TextBlock
+from knowledge_forge.models.source import Source, SourceRef, SourceType
+from knowledge_forge.search import retrieve as retrieve_module
+from knowledge_forge.search.retrieve import EXHAUSTIVE_LIMIT, retrieve
+
+DSN = os.environ.get("KF_TEST_DATABASE_URL")
+_NOW = datetime(2026, 9, 4, tzinfo=timezone.utc)
+
+
+def _doc_hit(document_id: str, score: float, content_at: str = "2026-08-01T00:00:00+00:00", title: str | None = None) -> dict:
+    return {
+        "target_kind": "document",
+        "document_id": document_id,
+        "title": title or document_id,
+        "source_type": "google_drive",
+        "uri": f"test://{document_id}",
+        "modified_at": content_at,
+        "content_at": content_at,
+        "project_id": "p",
+        "score": score,
+    }
+
+
+def _chunk_hit(document_id: str, chunk_id: str, score: float = 1.0, content_at: str = "2026-08-01T00:00:00+00:00") -> dict:
+    return {
+        "target_kind": "chunk",
+        "knowledge_object_id": None,
+        "chunk_id": chunk_id,
+        "document_id": document_id,
+        "summary": f"…{chunk_id}…",
+        "content_at": content_at,
+        "modified_at": content_at,
+        "score": score,
+    }
+
+
+class _FakeStore:
+    """Answers each store call from canned tables. `title_hits`/`chunk_hits`
+    map a query string to its hit list (`None` key = default for any query).
+    `execute_readonly_query` dispatches on the SQL shape the executor
+    writes: COUNT(*) -> `count_value`, the version-family lookup ->
+    `version_rows`, anything else -> `filter_rows`."""
+
+    def __init__(
+        self,
+        *,
+        title_hits: dict[str | None, list[dict]] | None = None,
+        chunk_hits: dict[str | None, list[dict]] | None = None,
+        filter_rows: list[tuple] | None = None,
+        version_rows: list[tuple] | None = None,
+        count_value: int = 0,
+        documents: dict[str, tuple[Document, Source, list[Chunk]]] | None = None,
+    ) -> None:
+        self.title_hits = title_hits or {}
+        self.chunk_hits = chunk_hits or {}
+        self.filter_rows = filter_rows or []
+        self.version_rows = version_rows or []
+        self.count_value = count_value
+        self.documents = documents or {}
+        self.title_calls: list[tuple[str, int]] = []
+        self.chunk_calls: list[tuple[str, int]] = []
+        self.sql_calls: list[tuple[str, int]] = []
+
+    @staticmethod
+    def _pick(table: dict[str | None, list[dict]], query: str) -> list[dict]:
+        hits = table.get(query, table.get(None, []))
+        return [dict(h) for h in hits]
+
+    async def search_documents_by_title(self, query, *, project_id=None, source_type=None, since=None, until=None, limit=10):
+        self.title_calls.append((query, limit))
+        return self._pick(self.title_hits, query)[:limit]
+
+    async def search_chunks_lexical(self, query, *, project_id=None, since=None, until=None, limit=10):
+        self.chunk_calls.append((query, limit))
+        return self._pick(self.chunk_hits, query)[:limit]
+
+    async def execute_readonly_query(self, sql: str, limit: int):
+        self.sql_calls.append((sql, limit))
+        if sql.startswith("SELECT COUNT(*)"):
+            return [(self.count_value,)], ["n"]
+        if "version_family" in sql:
+            return list(self.version_rows), ["document_id", "project_id", "family", "label", "number", "is_final"]
+        return list(self.filter_rows[:limit]), ["document_id", "title", "source_type", "uri", "modified_at", "content_at", "project_id"]
+
+    async def get_document(self, document_id: str):
+        entry = self.documents.get(document_id)
+        return entry[0] if entry else None
+
+    async def get_source(self, source_id: str):
+        for _doc, source, _chunks in self.documents.values():
+            if source.source_id == source_id:
+                return source
+        return None
+
+    async def list_chunks_by_document(self, document_id: str, *, hierarchy_level=None):
+        entry = self.documents.get(document_id)
+        return sorted(entry[2], key=lambda c: c.sequence_index) if entry else []
+
+
+def _patch_vector(monkeypatch, hits: list[dict] | Exception, calls: list | None = None):
+    async def _fake_vector_search(query, store, project_id=None, type=None, limit=10, embedding_model=None, since=None, until=None, target_kind=None):
+        if calls is not None:
+            calls.append((query, limit, since, until))
+        if isinstance(hits, Exception):
+            raise hits
+        return [dict(h) for h in hits]
+
+    monkeypatch.setattr(retrieve_module, "vector_search", _fake_vector_search)
+
+
+def _filter_row(document_id: str, content_at: datetime) -> tuple:
+    return (document_id, document_id, "gmail", f"test://{document_id}", content_at, content_at, "p")
+
+
+class _FakeProvider(ChatProvider):
+    async def send(self, messages, tools, system) -> AssistantTurn:
+        return AssistantTurn(text="{}", tool_calls=[], stop_reason="end_turn")
+
+
+# --- document_lookup / anchor --------------------------------------------------
+
+
+async def test_document_lookup_single_substring_match_becomes_anchor_and_narrows_lexical(monkeypatch):
+    store = _FakeStore(
+        title_hits={"report_v2.pdf": [_doc_hit("d1", 1.0), _doc_hit("d2", 0.6)]},
+        chunk_hits={"report_v2.pdf": [_chunk_hit("d2", "c2"), _chunk_hit("d1", "c1")]},
+    )
+    _patch_vector(monkeypatch, [_chunk_hit("d3", "c3", 0.9), _chunk_hit("d1", "c1b", 0.8)])
+
+    result = await retrieve("report_v2.pdf 에서 리스크 항목", store=store, now=_NOW)
+
+    lookup = next(s for s in result.steps if s.strategy == "document_lookup")
+    assert lookup.detail["anchor"] == "d1"
+    assert lookup.detail["anchor_reason"] == "single_substring_match"
+    assert result.document_ids[0] == "d1"
+    lexical = next(s for s in result.steps if s.strategy == "lexical")
+    assert lexical.detail["anchor_narrowing"] == "narrowed"
+    assert all(h["document_id"] == "d1" for h in result.hits if h.get("chunk_id") in {"c1", "c2"})
+    # vector hits were narrowed to the anchor too - d3 is gone
+    assert "d3" not in result.document_ids
+    assert "d2" in result.document_ids  # the ambiguous second title candidate still appears, below the anchor
+
+
+async def test_document_lookup_two_substring_matches_is_ambiguous_and_lists_both(monkeypatch):
+    store = _FakeStore(title_hits={"AGENTS.md": [_doc_hit("d1", 1.0), _doc_hit("d2", 1.0)]})
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("AGENTS.md", store=store, now=_NOW)
+
+    lookup = next(s for s in result.steps if s.strategy == "document_lookup")
+    assert lookup.detail["anchor"] is None
+    assert lookup.detail["anchor_reason"] == "ambiguous"
+    assert result.document_ids == ["d1", "d2"]
+
+
+# --- metadata_filter --------------------------------------------------------------
+
+
+async def test_metadata_filter_intersects_other_sources_and_records_sql(monkeypatch):
+    store = _FakeStore(filter_rows=[_filter_row("d2", datetime(2026, 8, 30, tzinfo=timezone.utc))])
+    _patch_vector(monkeypatch, [_chunk_hit("d1", "c1", 0.9), _chunk_hit("d2", "c2", 0.8), _chunk_hit("d3", "c3", 0.7)])
+
+    result = await retrieve("지난주 회의록에서 배포 일정", store=store, now=_NOW)
+
+    assert "metadata_filter" in result.strategies
+    step = next(s for s in result.steps if s.strategy == "metadata_filter")
+    assert "d.title ILIKE '%회의록%'" in step.detail["sql"]
+    assert "COALESCE(s.modified_at, s.collected_at) >=" in step.detail["sql"]
+    assert step.detail["applied"].startswith("intersected:")
+    assert result.document_ids == ["d2"]
+    assert store.sql_calls[0][1] == retrieve_module._FILTER_MAX_ROWS
+
+
+async def test_metadata_filter_with_no_rows_is_ignored(monkeypatch):
+    store = _FakeStore(filter_rows=[])
+    _patch_vector(monkeypatch, [_chunk_hit("d1", "c1", 0.9), _chunk_hit("d2", "c2", 0.8)])
+
+    result = await retrieve("지난주 회의록에서 배포 일정", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.strategy == "metadata_filter")
+    assert step.detail["applied"] == "filter_empty_ignored"
+    assert result.document_ids == ["d1", "d2"]
+
+
+async def test_metadata_filter_alone_returns_its_rows_newest_first(monkeypatch):
+    rows = [
+        _filter_row("new", datetime(2026, 9, 1, tzinfo=timezone.utc)),
+        _filter_row("old", datetime(2026, 7, 1, tzinfo=timezone.utc)),
+    ]
+    store = _FakeStore(filter_rows=rows)
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("김철수가 작성한 자료", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.strategy == "metadata_filter")
+    assert "s.metadata->>'participants' ILIKE '%김철수%'" in step.detail["sql"]
+    assert step.detail["applied"] == "filter_only"
+    assert result.document_ids == ["new", "old"]
+    assert result.scores == [1.0, 1.0]
+
+
+async def test_sql_literal_escapes_quotes_and_like_metacharacters():
+    assert retrieve_module._sql_literal("O'Brien") == "'O''Brien'"
+    assert retrieve_module._like_literal("a_b%c") == "'%a\\_b\\%c%'"
+
+
+# --- vector fallback --------------------------------------------------------------
+
+
+async def test_empty_vector_result_falls_back_to_keyword_search_on_semantic_query(monkeypatch):
+    store = _FakeStore(
+        title_hits={"codex README": [_doc_hit("d1", 0.8)]},
+        chunk_hits={"codex README": [_chunk_hit("d2", "c2", 0.6)]},
+    )
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("codex README", store=store, now=_NOW)
+
+    assert result.strategies == ["vector"]
+    fallbacks = [s for s in result.steps if s.detail.get("fallback_from") == "vector"]
+    assert [s.source for s in fallbacks] == ["document_search", "lexical_search"]
+    assert result.document_ids == ["d1", "d2"]
+
+
+async def test_vector_search_error_is_recorded_not_raised(monkeypatch):
+    store = _FakeStore()
+    _patch_vector(monkeypatch, RuntimeError("no embedder"))
+
+    result = await retrieve("배포 일정", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.strategy == "vector")
+    assert step.n_hits == 0
+    assert "no embedder" in step.detail["error"]
+    assert result.document_ids == []
+
+
+# --- latest -------------------------------------------------------------------------
+
+
+async def test_latest_orders_by_time_and_keeps_only_the_newest_of_a_version_family(monkeypatch):
+    store = _FakeStore(
+        version_rows=[
+            ("d1", "p", None, None, None, None),
+            ("d2", "p", "fam", None, None, False),
+            ("d3", "p", "fam", "최종", None, True),
+        ]
+    )
+    _patch_vector(
+        monkeypatch,
+        [
+            _chunk_hit("d3", "c3", 0.9, "2026-07-01T00:00:00+00:00"),
+            _chunk_hit("d1", "c1", 0.8, "2026-08-01T00:00:00+00:00"),
+            _chunk_hit("d2", "c2", 0.7, "2026-09-01T00:00:00+00:00"),
+        ],
+    )
+
+    result = await retrieve("배포 일정", store=store, now=_NOW, strategies_override=["vector", "latest"])
+
+    # time order alone would give d2, d1, d3 - but d2/d3 share a family and d3 is the 최종 version
+    assert result.document_ids == ["d1", "d3", "d2"]
+    step = next(s for s in result.steps if s.strategy == "latest")
+    assert step.detail["demoted"] == ["d2"]
+    assert step.detail["families"] == {"fam": ["d2", "d3"]}
+
+
+# --- exhaustive / count -------------------------------------------------------------
+
+
+async def test_count_widens_limits_keeps_everything_and_predicts_the_document_count(monkeypatch):
+    chunk_hits = [_chunk_hit(f"d{i}", f"c{i}") for i in range(5)]
+    store = _FakeStore(chunk_hits={"caddy-drift": chunk_hits})
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("caddy-drift 알림이 몇 건인가?", store=store, now=_NOW, limit=2)
+
+    assert "count" in result.strategies
+    assert store.chunk_calls[0][1] == EXHAUSTIVE_LIMIT
+    assert len(result.document_ids) == 5  # no cut-off at limit=2
+    assert result.predicted_count == 5
+    count_step = next(s for s in result.steps if s.strategy == "count")
+    assert count_step.detail["via"] == "document_ids"
+
+
+async def test_count_over_a_filter_only_result_uses_sql_count(monkeypatch):
+    store = _FakeStore(filter_rows=[_filter_row("d1", datetime(2026, 8, 5, tzinfo=timezone.utc))], count_value=23)
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("2026년 8월 메일 몇 건", store=store, now=_NOW)
+
+    assert result.predicted_count == 23
+    count_step = next(s for s in result.steps if s.strategy == "count")
+    assert count_step.detail["via"] == "sql_count"
+    assert count_step.detail["sql"].startswith("SELECT COUNT(*)")
+
+
+async def test_non_exhaustive_result_is_cut_to_limit_documents(monkeypatch):
+    _patch_vector(monkeypatch, [_chunk_hit(f"d{i}", f"c{i}", 1.0 - i / 10) for i in range(6)])
+
+    result = await retrieve("배포 일정", store=_FakeStore(), now=_NOW, limit=3)
+
+    assert result.document_ids == ["d0", "d1", "d2"]
+    assert len(result.scores) == 3
+    assert {h["document_id"] for h in result.hits} == {"d0", "d1", "d2"}
+
+
+# --- whole_document -----------------------------------------------------------------
+
+
+def _seed_document(document_id: str, texts: list[str]) -> tuple[Document, Source, list[Chunk]]:
+    source = Source(
+        source_id=f"s-{document_id}",
+        source_type=SourceType.LOCAL_FILE,
+        uri=f"file:///{document_id}.md",
+        content_hash="h",
+        collected_at=_NOW,
+        modified_at=_NOW,
+        project_id="p",
+    )
+    document = Document(
+        document_id=document_id,
+        source=SourceRef.from_source(source),
+        elements=[TextBlock(element_id="e1", text="x")],
+        metadata=DocumentMetadata(title=f"{document_id} title"),
+    )
+    chunks = [
+        Chunk(
+            chunk_id=f"{document_id}-c{i}",
+            document_id=document_id,
+            source_id=source.source_id,
+            hierarchy_level=HierarchyLevel.PARAGRAPH,
+            sequence_index=i,
+            text=text,
+            token_count=len(text),
+            element_ids=["e1"],
+        )
+        for i, text in enumerate(texts)
+    ]
+    return document, source, chunks
+
+
+async def test_whole_document_reads_the_anchor_and_leads_with_its_chunks_in_order(monkeypatch):
+    store = _FakeStore(
+        title_hits={"report_v2.pdf": [_doc_hit("d1", 1.0)]},
+        documents={"d1": _seed_document("d1", ["첫째", "둘째", "셋째"])},
+    )
+    _patch_vector(monkeypatch, [_chunk_hit("d9", "c9", 0.9)])
+
+    result = await retrieve("report_v2.pdf 요약해줘", store=store, now=_NOW)
+
+    assert "whole_document" in result.strategies
+    assert result.documents_read == ["d1"]
+    assert [h["chunk_id"] for h in result.hits[:3]] == ["d1-c0", "d1-c1", "d1-c2"]
+    assert result.hits[0]["summary"] == "첫째"
+    assert result.document_ids[0] == "d1"
+    step = next(s for s in result.steps if s.strategy == "whole_document")
+    assert step.source == "read_document" and step.n_hits == 3
+
+
+async def test_whole_document_without_anchor_reads_the_top_two_documents(monkeypatch):
+    store = _FakeStore(
+        documents={"d1": _seed_document("d1", ["a"]), "d2": _seed_document("d2", ["b"]), "d3": _seed_document("d3", ["c"])}
+    )
+    _patch_vector(monkeypatch, [_chunk_hit("d1", "x1", 0.9), _chunk_hit("d2", "x2", 0.8), _chunk_hit("d3", "x3", 0.7)])
+
+    result = await retrieve("보고서 전문 보여줘", store=store, now=_NOW, strategies_override=["vector", "whole_document"])
+
+    assert result.documents_read == ["d1", "d2"]
+    assert result.document_ids == ["d1", "d2", "d3"]
+
+
+# --- comparison ---------------------------------------------------------------------
+
+
+async def test_comparison_pins_the_top_document_of_every_target(monkeypatch):
+    store = _FakeStore(
+        title_hits={
+            "2024년 사업계획": [_doc_hit("plan-2024", 0.9)],
+            "2025년 사업계획": [_doc_hit("plan-2025", 0.9)],
+        }
+    )
+    _patch_vector(monkeypatch, [_chunk_hit("other", "c0", 0.99)])
+
+    result = await retrieve("2024년과 2025년 사업계획의 차이", store=store, now=_NOW)
+
+    assert "comparison" in result.strategies
+    step = next(s for s in result.steps if s.strategy == "comparison")
+    assert [t["document_id"] for t in step.detail["targets"]] == ["plan-2024", "plan-2025"]
+    assert result.document_ids[:2] == ["plan-2024", "plan-2025"]
+    assert "other" in result.document_ids
+
+
+async def test_comparison_falls_back_to_lexical_when_a_target_has_no_title_match(monkeypatch):
+    store = _FakeStore(
+        title_hits={"2025년 사업계획": [_doc_hit("plan-2025", 0.9)]},
+        chunk_hits={"2024년 사업계획": [_chunk_hit("plan-2024", "c24")]},
+    )
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("2024년과 2025년 사업계획의 차이", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.strategy == "comparison")
+    assert step.detail["targets"][0]["via"] == "lexical_search"
+    assert set(result.document_ids[:2]) == {"plan-2024", "plan-2025"}
+
+
+# --- multihop -----------------------------------------------------------------------
+
+
+async def test_multihop_is_skipped_without_a_provider(monkeypatch):
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("프로젝트 중에서 담당자가 작성한 문서", store=_FakeStore(), now=_NOW)
+
+    assert "multihop" in result.strategies
+    step = next(s for s in result.steps if s.strategy == "multihop")
+    assert step.detail == {"skipped": "no_provider"}
+
+
+async def test_multihop_joins_planner_evidence_and_drops_hits_without_document_id(monkeypatch):
+    _patch_vector(monkeypatch, [])
+    captured = {}
+
+    async def _fake_plan_and_search(query, provider, *, store=None, project_id=None, limit_per_subquery=5):
+        captured.update(query=query, provider=provider, limit=limit_per_subquery)
+        return {
+            "subqueries": [{"id": 1, "query": "q1", "depends_on": []}],
+            "evidence": [
+                {
+                    "subquery_id": 1,
+                    "subquery": "q1",
+                    "results": [{"path": "p/okf.md", "snippet": "no document id"}, _chunk_hit("d7", "c7")],
+                    "time_range": None,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(retrieve_module, "plan_and_search", _fake_plan_and_search)
+    provider = _FakeProvider()
+
+    result = await retrieve(
+        "프로젝트 중에서 담당자가 작성한 문서", store=_FakeStore(), provider=provider, now=_NOW, use_llm_constraints=False
+    )
+
+    assert captured["provider"] is provider
+    step = next(s for s in result.steps if s.strategy == "multihop")
+    assert step.n_hits == 1 and step.detail["dropped_without_document_id"] == 1
+    assert result.document_ids == ["d7"]
+    assert result.hits[0]["subquery_id"] == 1
+    # use_llm_constraints=False: the rule-based constraints were used untouched
+    assert result.constraints["origins"].get("is_multihop") == "rule"
+
+
+# --- strategies_override / contract --------------------------------------------------
+
+
+async def test_strategies_override_runs_only_the_given_strategies(monkeypatch):
+    store = _FakeStore(title_hits={None: [_doc_hit("title-only", 1.0)]})
+    calls: list = []
+    _patch_vector(monkeypatch, [_chunk_hit("d1", "c1", 0.9)], calls)
+
+    result = await retrieve("report_v2.pdf 리스크 항목 요약해줘", store=store, now=_NOW, strategies_override=["vector"])
+
+    assert result.strategies == ["vector"]
+    assert [s.strategy for s in result.steps] == ["vector"]
+    assert store.title_calls == []
+    assert result.documents_read == []
+    assert result.document_ids == ["d1"]
+    assert calls[0][0] == result.constraints["semantic_query"]
+
+
+async def test_result_to_dict_is_json_serializable_and_carries_the_contract_fields(monkeypatch):
+    _patch_vector(monkeypatch, [_chunk_hit("d1", "c1", 0.9)])
+
+    result = await retrieve("지난주 배포 일정", store=_FakeStore(filter_rows=[_filter_row("d1", _NOW)]), now=_NOW)
+    payload = json.loads(json.dumps(result.to_dict(), ensure_ascii=False))
+
+    assert set(payload) == {
+        "query", "constraints", "strategies", "steps", "hits", "document_ids", "scores",
+        "predicted_count", "documents_read", "elapsed_ms",
+    }
+    assert payload["document_ids"] == ["d1"]
+    assert len(payload["scores"]) == len(payload["document_ids"])
+    assert all({"document_id", "target_kind", "score"} <= set(h) for h in payload["hits"])
+    assert payload["elapsed_ms"] >= 0
+
+
+# --- against Postgres --------------------------------------------------------------
+
+_PROJECT = "test-retrieve"
+
+
+@pytest.mark.skipif(not DSN, reason="KF_TEST_DATABASE_URL not set - no Postgres to test against")
+class TestAgainstPostgres:
+    @pytest_asyncio.fixture
+    async def store(self, tmp_path):
+        from knowledge_forge.storage.postgres_store import PostgresStore
+        from knowledge_forge.storage.store import PipelineStore
+
+        aug = datetime(2026, 8, 20, tzinfo=timezone.utc)
+        jun = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        mail_src = Source(
+            source_id="test-rt-s1",
+            source_type=SourceType.GMAIL,
+            uri="gmail://thread/test-rt-1",
+            content_hash="h-rt-1",
+            collected_at=aug,
+            modified_at=aug,
+            metadata={"subject": "주간 업무 보고", "participants": ['"김철수" <kim@example.com>']},
+            project_id=_PROJECT,
+        )
+        drive_src = Source(
+            source_id="test-rt-s2",
+            source_type=SourceType.GOOGLE_DRIVE,
+            uri="gdrive://file/test-rt-2",
+            content_hash="h-rt-2",
+            collected_at=jun,
+            modified_at=jun,
+            metadata={"name": "2025_SH_업무_보고서.pdf"},
+            project_id=_PROJECT,
+        )
+        docs = [
+            Document(
+                document_id="test-rt-d1",
+                source=SourceRef.from_source(mail_src),
+                elements=[TextBlock(element_id="e1", text="x")],
+                metadata=DocumentMetadata(title="주간 업무 보고"),
+            ),
+            Document(
+                document_id="test-rt-d2",
+                source=SourceRef.from_source(drive_src),
+                elements=[TextBlock(element_id="e1", text="x")],
+                metadata=DocumentMetadata(title="2025_SH_업무_보고서.pdf"),
+            ),
+        ]
+        chunks = [
+            Chunk(
+                chunk_id="test-rt-c1",
+                document_id="test-rt-d1",
+                source_id="test-rt-s1",
+                hierarchy_level=HierarchyLevel.PARAGRAPH,
+                sequence_index=0,
+                text="배포 중 ERR_XYZ_123 오류가 발생해 롤백했습니다.",
+                token_count=20,
+                element_ids=["e1"],
+            ),
+            Chunk(
+                chunk_id="test-rt-c2",
+                document_id="test-rt-d2",
+                source_id="test-rt-s2",
+                hierarchy_level=HierarchyLevel.PARAGRAPH,
+                sequence_index=0,
+                text="상반기 실적 요약 및 하반기 계획",
+                token_count=12,
+                element_ids=["e1"],
+            ),
+            Chunk(
+                chunk_id="test-rt-c3",
+                document_id="test-rt-d2",
+                source_id="test-rt-s2",
+                hierarchy_level=HierarchyLevel.PARAGRAPH,
+                sequence_index=1,
+                text="리스크: 일정 지연",
+                token_count=8,
+                element_ids=["e1"],
+            ),
+        ]
+        async with PostgresStore(DSN) as db:
+            await db.init_schema()
+            await db.save_source(mail_src, None)
+            await db.save_source(drive_src, None)
+            for doc in docs:
+                await db.save_document(doc)
+            await db.save_chunks(chunks)
+        try:
+            async with PipelineStore(DSN, tmp_path) as pipeline_store:
+                yield pipeline_store
+        finally:
+            async with PostgresStore(DSN) as db:
+                await db.conn.execute("DELETE FROM chunks WHERE chunk_id LIKE 'test-rt-%'")
+                await db.conn.execute("DELETE FROM document_links WHERE from_document_id LIKE 'test-rt-%' OR to_document_id LIKE 'test-rt-%'")
+                await db.conn.execute("DELETE FROM documents WHERE document_id LIKE 'test-rt-%'")
+                await db.conn.execute("DELETE FROM sources WHERE source_id LIKE 'test-rt-%'")
+
+    async def test_title_reference_with_summary_anchors_and_reads_the_document(self, store, monkeypatch):
+        _patch_vector(monkeypatch, [])
+
+        result = await retrieve("2025_SH_업무_보고서 요약해줘", store=store, project_id=_PROJECT, now=_NOW)
+
+        assert result.document_ids[0] == "test-rt-d2"
+        assert result.documents_read == ["test-rt-d2"]
+        assert [h["chunk_id"] for h in result.hits[:2]] == ["test-rt-c2", "test-rt-c3"]
+
+    async def test_identifier_is_found_lexically_in_chunk_text(self, store, monkeypatch):
+        _patch_vector(monkeypatch, [])
+
+        result = await retrieve("ERR_XYZ_123 문서", store=store, project_id=_PROJECT, now=_NOW)
+
+        lexical = next(s for s in result.steps if s.strategy == "lexical" and "fallback_from" not in s.detail)
+        assert lexical.n_hits >= 1
+        assert result.document_ids[0] == "test-rt-d1"
+        assert result.hits[0]["chunk_id"] == "test-rt-c1"
+
+    async def test_time_and_source_filter_selects_only_the_matching_document(self, store, monkeypatch):
+        _patch_vector(monkeypatch, [])
+
+        result = await retrieve("2026년 8월에 온 메일", store=store, project_id=_PROJECT, now=_NOW)
+
+        step = next(s for s in result.steps if s.strategy == "metadata_filter")
+        assert "s.source_type IN ('gmail')" in step.detail["sql"]
+        assert result.document_ids == ["test-rt-d1"]
+
+    async def test_author_filter_matches_gmail_participants(self, store, monkeypatch):
+        _patch_vector(monkeypatch, [])
+
+        result = await retrieve("김철수가 보낸 자료", store=store, project_id=_PROJECT, now=_NOW)
+
+        assert result.document_ids == ["test-rt-d1"]
