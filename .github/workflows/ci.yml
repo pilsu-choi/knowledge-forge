@@ -1,0 +1,136 @@
+# Knowledge Forge CI - ruff / mypy / pytest, pytest 쪽은 진짜 Postgres를 붙여서 돌린다.
+#
+# 이 워크플로가 존재하는 이유는 "테스트가 없어서"가 아니라 "테스트가 조용히
+# 안 돌아서"다. tests/storage/, tests/search/test_retrieve.py,
+# tests/test_worker.py 등 89개 테스트는 `KF_TEST_DATABASE_URL`이 있을 때만
+# 실행되는데, 그게 없으면 실패가 아니라 skip이라 `789 passed, 89 skipped`가
+# 초록불로 지나간다. 결과적으로 storage/postgres_store.py(리포지토리 최대
+# 모듈이자 pgvector/pg_trgm 검색 SQL 전부)가 회귀 방어 없이 방치돼 있었다.
+# 그래서 아래 job은 DSN을 넣어 89개를 실제로 돌리고, `KF_REQUIRE_DB_TESTS`로
+# "그 89개가 다시 skip되면 빌드를 깨뜨린다"까지 못 박는다(tests/conftest.py).
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# 같은 브랜치에 연속 push가 나면 앞선 실행은 취소한다.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # pyproject.toml의 `requires-python = ">=3.10"`은 실제로 지켜지는지
+        # 아무도 확인하지 않으면 그냥 주장일 뿐이라 하한(3.10)과 개발 버전
+        # (3.13) 양쪽을 다 돌린다. 전체 스위트가 ~17초라 두 job이 병렬로
+        # 돌아도 체감 비용이 없다시피 하고, 3.10에서 mypy/pytest가 모두
+        # 통과하는 것은 로컬에서 확인했다. 나중에 스위트가 무거워져 매트릭스가
+        # 부담이 되면 3.13만 남기고 하한 검증은 릴리스 전으로 미루면 된다.
+        python-version: ["3.10", "3.13"]
+
+    services:
+      # docker-compose.yml의 postgres 서비스와 같은 이미지. 평범한
+      # `postgres:16`으로 바꾸면 schema.sql의 `CREATE EXTENSION vector`가
+      # 실패한다 - pgvector는 contrib이 아니라 이미지에 따로 실려 있어야 한다
+      # (pg_trgm은 stock contrib이라 어느 이미지든 있다).
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: kf
+          POSTGRES_PASSWORD: kf
+          POSTGRES_DB: knowledge_forge
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kf"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      # tests/api/test_api.py는 주석상 "no real Postgres needed"지만 실제로는
+      # `POST /ingest`가 Celery `apply_async`를 타면서 살아 있는 브로커를
+      # 요구한다(브로커가 없으면 20회 재시도 후 RuntimeError로 9개가 깨진다).
+      # 개발자 로컬에서는 `docker compose up`의 redis가 떠 있어서 안 보이던
+      # 의존성이라, CI에도 같은 이미지를 띄워 표면을 맞춘다.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      # 이 두 줄이 이 워크플로의 핵심이다. 위는 89개 DB 테스트가 Postgres를
+      # 찾는 경로, 아래는 그 89개가 (DSN 오타든 서비스 컨테이너 장애든)
+      # 다시 skip으로 새면 run을 실패시키는 스위치 - tests/conftest.py 참고.
+      KF_TEST_DATABASE_URL: postgresql://kf:kf@localhost:5432/knowledge_forge
+      KF_REQUIRE_DB_TESTS: "1"
+      # config.py의 기본값과 같은 값이지만 명시한다 - 위 redis 서비스가
+      # 우연이 아니라 이 스위트가 요구하는 것이라는 표시.
+      KF_REDIS_URL: redis://localhost:6379/0
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv and Python ${{ matrix.python-version }}
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # `--frozen`: uv.lock을 그대로 쓰고 재해결(re-resolve)하지 않는다.
+      # 락파일이 pyproject.toml과 어긋나면 조용히 다른 버전을 설치하는 대신
+      # 여기서 실패하는 게 맞다. extra 목록은 wiki/dev-guide.md의 개발자
+      # 셋업 명령과 동일하다 - 파서/커넥터 extra가 빠지면 해당 테스트가 또
+      # 조용히 skip되기 때문에 CI는 개발자 로컬과 같은 표면을 설치한다.
+      # (`korean`/`kss`는 첫 호출에 모델을 내려받아 느리고, 어떤 테스트도
+      # 요구하지 않으므로 제외.)
+      - name: Install dependencies
+        run: >-
+          uv sync --frozen
+          --extra xlsx --extra pptx --extra hwpx
+          --extra slack --extra google --extra notion
+          --extra dev
+
+      # schema.sql이 `CREATE EXTENSION IF NOT EXISTS vector / pg_trgm`을
+      # 직접 하므로 엄밀히는 없어도 스위트는 통과한다(로컬에서 확장 없는 빈
+      # DB로 검증). 그럼에도 미리 만드는 이유는 두 가지다:
+      #   1. 이미지가 잘못 바뀌면 878개 테스트가 줄줄이 깨지는 대신 여기서
+      #      "확장이 없다" 한 줄로 죽는다.
+      #   2. postgres_store.py의 `_register_vector_types()`는 첫 connect()
+      #      시점에 `vector` 타입이 없으면 등록을 조용히 건너뛰고
+      #      `init_schema()` 뒤에 다시 시도하는 구조다(닭-달걀 회피).
+      #      확장을 미리 깔아두면 CI는 그 재시도 경로가 아니라 실제 운영과
+      #      같은 "확장이 이미 있는 DB" 경로로 돌게 된다.
+      - name: Enable pgvector / pg_trgm extensions
+        env:
+          PGPASSWORD: kf
+        run: |
+          psql -h localhost -U kf -d knowledge_forge \
+            -v ON_ERROR_STOP=1 \
+            -c "CREATE EXTENSION IF NOT EXISTS vector;" \
+            -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
+
+      - name: Lint (ruff)
+        run: uv run ruff check .
+
+      - name: Type check (mypy)
+        run: uv run mypy
+
+      # `.env` 없이 도는 게 정상이다 - 저장소에 없는 파일이고, 스위트가 개발자
+      # 로컬 설정에 의존하지 않는다는 것 자체가 tests/conftest.py가 지키는
+      # 성질이다. DB 유무에 따른 기대값: DSN 없으면 789 passed / 89 skipped,
+      # 여기처럼 DSN 있으면 878 passed / 0 skipped.
+      - name: Test (pytest, with Postgres)
+        run: uv run pytest -q
