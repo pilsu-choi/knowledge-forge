@@ -473,3 +473,60 @@ async def test_search_knowledge_objects_by_embedding_filters_by_extracted_at(sto
         until=datetime(2027, 1, 1, tzinfo=timezone.utc),
     )
     assert {r["knowledge_object_id"] for r in both_bounds} == {old_ko.knowledge_object_id, new_ko.knowledge_object_id}
+
+
+async def test_execute_readonly_query_returns_rows_and_columns(store):
+    src, doc, chunk, objects, _relation = _sample_records()
+    await store.save_source(src, raw_path=None)
+    await store.save_document(doc)
+    await store.save_chunks([chunk])
+    await store.save_knowledge_objects(objects)
+
+    rows, columns = await store.execute_readonly_query(
+        "SELECT knowledge_object_id, type FROM knowledge_objects WHERE knowledge_object_id LIKE 'test-%' ORDER BY knowledge_object_id",
+        limit=50,
+    )
+
+    assert columns == ["knowledge_object_id", "type"]
+    assert rows == [(objects[0].knowledge_object_id, "entity"), (objects[1].knowledge_object_id, "fact")]
+
+
+async def test_execute_readonly_query_enforces_the_limit_regardless_of_the_querys_own_limit(store):
+    src, doc, chunk, objects, _relation = _sample_records()
+    await store.save_source(src, raw_path=None)
+    await store.save_document(doc)
+    await store.save_chunks([chunk])
+    await store.save_knowledge_objects(objects)
+
+    rows, _columns = await store.execute_readonly_query(
+        "SELECT knowledge_object_id FROM knowledge_objects WHERE knowledge_object_id LIKE 'test-%' LIMIT 1000",
+        limit=1,
+    )
+
+    assert len(rows) == 1
+
+
+async def test_execute_readonly_query_rejects_a_write_at_the_database_level(store):
+    """search/sql.py's `_validate_readonly_sql` would already reject this by
+    string alone (it contains "UPDATE"), but this test calls the store
+    method directly - bypassing that check on purpose - with a write
+    disguised as a data-modifying CTE (`WITH x AS (UPDATE ... RETURNING ...)
+    SELECT ...`, syntactically a query expression so it survives being
+    wrapped as a subquery) to prove the second independent defense layer
+    (`SET TRANSACTION READ ONLY`) rejects it entirely on its own."""
+    src, doc, chunk, objects, _relation = _sample_records()
+    await store.save_source(src, raw_path=None)
+    await store.save_document(doc)
+    await store.save_chunks([chunk])
+    await store.save_knowledge_objects(objects)
+
+    disguised_write = (
+        "WITH x AS (UPDATE knowledge_objects SET summary = 'hacked' "
+        f"WHERE knowledge_object_id = '{objects[0].knowledge_object_id}' RETURNING knowledge_object_id) "
+        "SELECT * FROM x"
+    )
+    with pytest.raises(Exception):
+        await store.execute_readonly_query(disguised_write, limit=10)
+
+    unchanged = await store.get_knowledge_object(objects[0].knowledge_object_id)
+    assert unchanged.summary != "hacked"

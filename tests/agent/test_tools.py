@@ -233,12 +233,14 @@ async def test_default_tools_omits_vector_search_without_database_url():
     assert [t.name for t in tools] == _EXPECTED_BASE_TOOL_NAMES
 
 
-async def test_default_tools_includes_vector_search_right_after_file_search_when_database_url_set(monkeypatch):
+async def test_default_tools_includes_vector_search_and_sql_search_right_after_file_search_when_database_url_set(
+    monkeypatch,
+):
     monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
 
     tools = default_tools()
 
-    assert [t.name for t in tools] == ["file_search", "vector_search"] + _EXPECTED_BASE_TOOL_NAMES[1:]
+    assert [t.name for t in tools] == ["file_search", "vector_search", "sql_search"] + _EXPECTED_BASE_TOOL_NAMES[1:]
 
 
 class _FakeConnectedStore:
@@ -314,12 +316,17 @@ async def test_default_tools_includes_plan_search_right_after_file_search_when_p
     assert [t.name for t in tools] == ["file_search", "plan_search"] + _EXPECTED_BASE_TOOL_NAMES[1:]
 
 
-async def test_default_tools_orders_vector_search_before_plan_search(monkeypatch):
+async def test_default_tools_orders_vector_search_and_sql_search_before_plan_search(monkeypatch):
     monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
 
     tools = default_tools(provider=_FakeProvider())
 
-    assert [t.name for t in tools] == ["file_search", "vector_search", "plan_search"] + _EXPECTED_BASE_TOOL_NAMES[1:]
+    assert [t.name for t in tools] == [
+        "file_search",
+        "vector_search",
+        "sql_search",
+        "plan_search",
+    ] + _EXPECTED_BASE_TOOL_NAMES[1:]
 
 
 async def test_default_tools_plan_search_forwards_arguments_without_database_url(monkeypatch):
@@ -435,3 +442,44 @@ async def test_default_tools_vector_search_resolves_a_natural_language_time_rang
 
     assert captured["since"] is not None
     assert captured["until"] is not None
+
+
+async def test_default_tools_omits_sql_search_without_database_url():
+    tools = default_tools()
+
+    assert "sql_search" not in [t.name for t in tools]
+
+
+async def test_default_tools_sql_search_description_embeds_the_schema(monkeypatch):
+    monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
+
+    tool = next(t for t in default_tools() if t.name == "sql_search")
+
+    assert "knowledge_objects" in tool.description
+    assert "relations" in tool.description
+    assert "SELECT" in tool.description
+
+
+async def test_default_tools_sql_search_opens_a_store_and_forwards_the_query(monkeypatch):
+    captured = {}
+    sentinel_store = object()
+
+    def _fake_pipeline_store(database_url, data_dir):
+        captured["database_url"] = database_url
+        return _FakeConnectedStore(sentinel_store)
+
+    async def _fake_sql_search(sql, store, limit=200):
+        captured.update(sql=sql, store=store)
+        return {"columns": ["x"], "rows": [{"x": 1}], "row_count": 1, "truncated": False}
+
+    monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
+    monkeypatch.setattr("knowledge_forge.storage.store.PipelineStore", _fake_pipeline_store)
+    monkeypatch.setattr("knowledge_forge.agent.tools.sql_search", _fake_sql_search)
+
+    tool = next(t for t in default_tools() if t.name == "sql_search")
+    result = await tool.handler({"sql": "SELECT 1 AS x"})
+
+    assert result == {"columns": ["x"], "rows": [{"x": 1}], "row_count": 1, "truncated": False}
+    assert captured["database_url"] == "postgresql://kf:kf@localhost/kf"
+    assert captured["store"] is sentinel_store
+    assert captured["sql"] == "SELECT 1 AS x"

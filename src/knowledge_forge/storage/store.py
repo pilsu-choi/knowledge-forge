@@ -108,6 +108,10 @@ class PipelineStore:
             embedding, embedding_model, project_id, type, limit, since, until
         )
 
+    async def execute_readonly_query(self, sql: str, limit: int) -> tuple[list[tuple[Any, ...]], list[str]]:
+        """`search/sql.py::sql_search`'s single entry point into storage."""
+        return await self._db.execute_readonly_query(sql, limit)
+
     async def get_sync_cursor(self, source: str) -> dict[str, Any] | None:
         return await self._db.get_sync_cursor(source)
 

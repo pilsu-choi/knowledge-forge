@@ -23,6 +23,7 @@ from knowledge_forge.config import settings
 from knowledge_forge.okf.fs_service import edit_file, list_dir, read_file, write_file
 from knowledge_forge.search.planner import DEFAULT_LIMIT_PER_SUBQUERY, plan_and_search
 from knowledge_forge.search.service import file_search, vector_search
+from knowledge_forge.search.sql import describe_schema, sql_search
 from knowledge_forge.search.temporal import parse_temporal_expression
 
 FILE_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
@@ -94,6 +95,17 @@ PLAN_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
         },
     },
     "required": ["query"],
+}
+
+SQL_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "sql": {
+            "type": "string",
+            "description": "실행할 읽기 전용 SQL(SELECT 또는 WITH ... SELECT). 도구 설명의 스키마를 참고해 작성할 것.",
+        },
+    },
+    "required": ["sql"],
 }
 
 READ_FILE_INPUT_SCHEMA: dict[str, Any] = {
@@ -235,6 +247,36 @@ def _make_vector_search_tool(database_url: str) -> ToolSpec:
     )
 
 
+def _make_sql_search_tool(database_url: str) -> ToolSpec:
+    """`sql_search`(Text-to-SQL, `search/sql.py`)는 `vector_search`와 같은
+    이유로 `KF_DATABASE_URL`이 있을 때만 추가되고 호출마다 `PipelineStore`를
+    열고 닫는다. `file_search`/`vector_search`가 다루기 어려운 구조화된
+    질문(특정 사람이 언급된 항목, 여러 조건의 AND/OR, 집계, 시간 범위 +
+    속성값을 함께 거는 temporal join)을 모델이 직접 쓴 SQL로 풀게 한다 -
+    별도 자연어→SQL 변환 LLM 호출 없이, 이 도구를 호출하는 모델 자신이
+    이미 그 번역을 한다(도구 설명에 스키마를 실어 보내는 것만으로 충분).
+    안전장치(읽기 전용 강제, 행 수 제한)는 `search/sql.py`/
+    `storage/postgres_store.py::execute_readonly_query`에 있다."""
+    from knowledge_forge.storage.store import PipelineStore
+
+    async def _handler(args: dict[str, Any]) -> dict[str, Any]:
+        async with PipelineStore(database_url, settings.data_dir) as store:
+            return await sql_search(args["sql"], store)
+
+    return ToolSpec(
+        name="sql_search",
+        description=(
+            "Knowledge Base를 PostgreSQL SQL로 직접 조회한다(Text-to-SQL) - file_search/"
+            "vector_search로 표현하기 어려운 구조화된 질문(특정 사람/속성이 언급된 항목, 여러 "
+            "조건의 AND/OR, 집계(COUNT 등), 시간 범위와 속성값을 함께 거는 조건)에 쓸 것. "
+            "단순 키워드/의미 검색에는 file_search/vector_search가 더 적합하다. 읽기 전용만 "
+            f"허용된다(쓰기/DDL은 거부).\n\n{describe_schema()}"
+        ),
+        input_schema=SQL_SEARCH_INPUT_SCHEMA,
+        handler=_handler,
+    )
+
+
 def _make_plan_search_tool(*, provider: ChatProvider, database_url: str | None, project_id: str | None) -> ToolSpec:
     """`plan_search`(Query Planning + Query Routing, `search/planner.py`)는
     `vector_search`처럼 `database_url`이 있을 때만 vector_search 소스를 함께
@@ -330,10 +372,10 @@ def default_tools(
 ) -> list[ToolSpec]:
     """The full tool set: file_search + read_file/write_file/edit_file/
     list_dir (OKF-root-scoped, `okf/fs_service.py`) + write_memory
-    (project-scoped, `agent/memory.py`) + write_plan, plus vector_search when
-    `KF_DATABASE_URL` is configured, plan_search (Query Planning/Routing)
-    when a `provider` is given, and delegate_task (SubAgents) when a
-    `provider`/`system` are both given.
+    (project-scoped, `agent/memory.py`) + write_plan, plus vector_search/
+    sql_search when `KF_DATABASE_URL` is configured, plan_search (Query
+    Planning/Routing) when a `provider` is given, and delegate_task
+    (SubAgents) when a `provider`/`system` are both given.
 
     `plan_state`를 넘기지 않으면 이 호출 하나에서만 쓰이고 버려지는 새
     `PlanState()`가 생긴다(run_query 같은 1회성 경로에 충분). `--interactive`
@@ -341,9 +383,9 @@ def default_tools(
     넘겨서 turn 사이에 계획이 유지되게 한다 - `history`가 유지되는 것과 같은
     이유.
 
-    `vector_search`는 `settings.database_url`(`KF_DATABASE_URL`)이 설정되어
-    있을 때만 도구 목록에 추가된다 - `file_search`/파일시스템 도구와 달리
-    Postgres+pgvector 없이는 아예 실행할 수 없는 도구라, `embedding_enabled`
+    `vector_search`/`sql_search`는 `settings.database_url`(`KF_DATABASE_URL`)
+    이 설정되어 있을 때만 도구 목록에 추가된다 - `file_search`/파일시스템
+    도구와 달리 Postgres 없이는 아예 실행할 수 없는 도구라, `embedding_enabled`
     (`--embed`)와 같은 "설정 안 되어 있으면 조용히 빠짐" 컨벤션을 따른다.
 
     `plan_search`(Query Planning + Query Routing, `search/planner.py`)는
@@ -360,9 +402,10 @@ def default_tools(
     추가된다 - 자식 에이전트 턴을 실제로 돌리려면 둘 다 필요하기 때문이다.
     자식에게 넘기는 도구 집합은 `include_delegate=False`로 만든
     `default_tools()`를 그대로 쓴다 - **delegate_task 자신만 빠지고
-    나머지(file_search/vector_search/plan_search/파일시스템/write_plan/
-    write_memory)는 부모와 동일** - 이렇게 위임 한 단계 안에서 재귀적 위임을
-    구조적으로 차단한다(자식의 도구 목록에는 애초에 delegate_task가 없으므로)."""
+    나머지(file_search/vector_search/sql_search/plan_search/파일시스템/
+    write_plan/write_memory)는 부모와 동일** - 이렇게 위임 한 단계 안에서
+    재귀적 위임을 구조적으로 차단한다(자식의 도구 목록에는 애초에
+    delegate_task가 없으므로)."""
     tools = [
         ToolSpec(
             name="file_search",
@@ -376,6 +419,7 @@ def default_tools(
     ]
     if settings.database_url:
         tools.append(_make_vector_search_tool(settings.database_url))
+        tools.append(_make_sql_search_tool(settings.database_url))
     if provider is not None:
         tools.append(_make_plan_search_tool(provider=provider, database_url=settings.database_url, project_id=project_id))
     tools.extend(

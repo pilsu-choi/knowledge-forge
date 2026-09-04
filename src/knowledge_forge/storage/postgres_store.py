@@ -683,3 +683,31 @@ class PostgresStore:
             }
             for row in rows
         ]
+
+    async def execute_readonly_query(self, sql: str, limit: int) -> tuple[list[tuple[Any, ...]], list[str]]:
+        """Runs an already-validated, single read-only SELECT/WITH statement
+        (`search/sql.py`'s Text-to-SQL tool - `sql` has already passed that
+        module's string-level checks by the time it reaches here) with two
+        more independent layers of defense against it turning out to be a
+        write after all:
+
+        1. `SET TRANSACTION READ ONLY` - Postgres itself rejects any write
+           statement inside this transaction, regardless of what the
+           string-level check upstream missed.
+        2. `force_rollback=True` - the transaction is rolled back at the end
+           of the block unconditionally, even on success, so nothing this
+           query does can persist even in some edge case neither (1) nor the
+           upstream check anticipated.
+
+        `limit` is enforced by wrapping the caller's query as a subquery
+        (`SELECT * FROM (sql) AS sql_search LIMIT %s`) rather than trusting
+        whatever `LIMIT` (if any) `sql` itself contains - a result set is
+        capped no matter what the caller wrote or forgot to write."""
+        wrapped = f"SELECT * FROM (\n{sql}\n) AS sql_search LIMIT %s"
+        async with self.conn.transaction(force_rollback=True):
+            await self.conn.execute("SET TRANSACTION READ ONLY")
+            async with self.conn.cursor() as cur:
+                await cur.execute(wrapped, (limit,))
+                rows = await cur.fetchall()
+                columns = [d.name for d in cur.description] if cur.description else []
+        return rows, columns
