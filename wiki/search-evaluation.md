@@ -132,7 +132,7 @@ groundedness_score=1.0으로 정상 채점된다 - 이 둘을 구분하지 않�
 저비용 근사치(RAG 평가에서 표준적인 완화책)다. `eval_score.claims`(실패한 것만이 아니라 전부)를
 사람이 주기적으로 샘플링해 judge 정확도 자체를 검증하는 루틴이 있어야 신뢰도를 유지한다.
 
-## (C) Recall / Precision / MRR / NDCG — 골든셋 스키마·지표 모듈 구현됨, `eval-ir` CLI는 다음 단계
+## (C) Recall / Precision / MRR / NDCG — 골든셋·지표·`eval-ir` CLI 구현됨, `eval-gen` v1은 다음 단계
 
 **왜 로그만으로 계산 불가능한가**: 이 지표들은 "이 질의에 어떤 문서가 관련 있는가"라는 정답이
 있어야 정의된다. 실 트래픽 로그에는 이 정답이 없다 — 사용자가 본 적 없는 관련 문서를 놓친
@@ -149,6 +149,11 @@ groundedness_score=1.0으로 정상 채점된다 - 이 둘을 구분하지 않�
 | `tests/eval/golden/v0.json` | 손으로 쓴 v0 골든셋(76개, 아래 참고) |
 | `tests/eval/golden/validate_v0.py` | 실 DB 대조 검증 스크립트(id 존재·소속, `source_hash` 일치) — DB가 필요하므로 pytest 밖 |
 | `tests/evaluation/test_golden.py`, `test_ir_metrics.py` | 로더 불변식·지표 손계산·집계·bootstrap 결정론 (DB 불필요, v0.json 로딩 포함) |
+| `evaluation/ir_runner.py` | `run_ir_eval`: 골든셋 질의마다 `search/retrieve.py::retrieve` 호출 → `score_query` → `aggregate`, 결과를 `EvalRun`으로. retriever는 `retrieve_fn`으로 주입(기본값은 지연 import) |
+| `evaluation/ir_compare.py` | `compare_runs`: 두 run의 paired delta + bootstrap CI + win/loss/tie + 유형별 delta |
+| `storage/eval_store.py` (`EvalRun`/`EvalRunQuery`) | `save_eval_run`/`save_eval_run_queries`/`get_eval_run`/`list_eval_runs`/`list_eval_run_queries`, `snapshot_index`, `content_hashes_for` |
+| `cli.py::eval-ir` | 실행·`--compare`·`--list` 세 모드 |
+| `tests/evaluation/test_ir_runner.py`, `test_ir_compare.py`, `tests/storage/test_eval_store_ir.py`, `tests/test_cli.py` | fake retriever로 러너 로직, 손계산 비교, DB 왕복(테스트 전용 `test-ir-` id), CLI 스모크 |
 
 ### 골든셋 스키마
 
@@ -249,20 +254,72 @@ groundedness_score=1.0으로 정상 채점된다 - 이 둘을 구분하지 않�
 유형별 개수(primary_type 기준): factoid 10, navigational 4, specific_document_qa 4,
 metadata_filter 4, 나머지 18개 유형 각 3 (negative/null 각 3 = "정답 없음" 6개, ~8%).
 
+### `knowledge-forge eval-ir` — 실행 기록과 A/B 비교
+
+```bash
+# 실행: v0 전체, LLM 제약 추출 없이, 결과를 DB + JSON에 기록
+knowledge-forge eval-ir --golden tests/eval/golden/v0.json --no-llm --label baseline --json out/v0-baseline.json
+# 일부만: 유형·질의 id 필터, 전략 override, 결과 수
+knowledge-forge eval-ir --golden tests/eval/golden/v0.json --type set_query,aggregation --strategies lexical --limit 20
+# 비교 / 목록
+knowledge-forge eval-ir --compare <run_a> <run_b> --metric ndcg@10
+knowledge-forge eval-ir --list --golden-version v0
+```
+
+옵션: `--project-id`(골든셋의 `project_id`가 있으면 그쪽 우선), `--limit 10`, `--k 1,3,5,10`,
+`--strategies vector,lexical`(라우팅 무시), `--no-llm`(provider 생성 안 함,
+`use_llm_constraints=False`), `--provider/--model`(`eval`과 동일), `--label`, `--type`(multi-label
+`types` 중 하나라도 맞으면 포함), `--query-id`(반복), `--concurrency 4`, `--no-store`(DB 미기록 —
+`index_snapshot`/staleness 검사도 생략), `--json PATH`. `KF_DATABASE_URL`은 세 모드 모두 필수.
+출력은 전체 지표 한 줄 + 유형별 표(n, hit@1, recall@5, mrr, ndcg@10, exhaustive_recall,
+count_match, none_correct 중 존재하는 열) + 실패 질의 + stale 질의 + `run_id`.
+
+러너(`evaluation/ir_runner.py::run_ir_eval`)가 하는 일, 순서대로:
+
+1. `eval_store.snapshot_index(project_id)`로 **실측** `index_snapshot`(documents/chunks/
+   knowledge_objects + `knowledge_object_embeddings`를 target_kind별로) — 골든셋 파일의 값을
+   복사하지 않는다. 드리프트를 잡는 건 실측값이다.
+2. 정답 문서들의 `sources.content_hash`를 가져와 `check_staleness` — stale 항목은 **경고만**
+   (`summary.stale_queries`)하고 집계에서 빼지 않는다. 빼면 이전 run과 비교가 안 되고,
+   표시하면 점수 하락을 드리프트 탓으로 돌릴 수 있다.
+3. 질의마다 `retrieve(q.query, store=, provider=, project_id=, now=q.as_of, limit=, strategies_override=)`.
+   `exhaustive`/`count` 질의는 **limit을 200으로 승격** — 전체 결과 대비 채점인데 10개로 자르면
+   검색 품질과 무관하게 실패한다. 예외는 그 질의의 `error`에 담고 계속(전체 실패 아님).
+4. `score_query(result.document_ids, expected, k_values, predicted_count=, scores=)` →
+   `aggregate` → `eval_run.summary`. `config_hash`는 config JSON(정렬 직렬화)의 sha256 앞 12자,
+   `git_commit`은 `git rev-parse HEAD`(실패 시 NULL).
+
+**스키마** (`storage/schema.sql`):
+
+| 테이블 | 열 |
+|---|---|
+| `eval_run` | `run_id` PK, `golden_version`, `golden_path`, `project_id`, `config` JSONB(provider/model/limit/strategies_override/use_llm_constraints/k_values), `config_hash`, `index_snapshot` JSONB, `git_commit`, `label`, `started_at`, `finished_at`, `summary` JSONB(`aggregate` 결과 + errors/stale_queries) |
+| `eval_run_query` | PK(`run_id` FK CASCADE, `query_id`), `query_text`, `primary_type`, `types`, `ranked_document_ids`, `scores`, `predicted_count`, `metrics`, `strategies`, `steps`, `elapsed_ms`, `error` |
+
+run 행은 시작 시 한 번(summary 비움), 종료 시 한 번 더 upsert — 중간에 죽어도
+`finished_at IS NULL`인 흔적이 남는다. 질의별 랭킹과 step을 통째로 남기는 이유는 회귀가 났을 때
+검색을 다시 돌리지 않고 어느 전략이 무엇을 반환했는지 볼 수 있어야 해서다.
+
+**A/B 비교 규칙** (`evaluation/ir_compare.py::compare_runs`):
+
+- 같은 `golden_version`이 아니면 `ValueError` — 질의 모집단이 다르면 paired delta가 무의미하다.
+- `index_snapshot`이 다르면 비교는 하되 `snapshot_mismatch`/`warnings`로 표시 — 재인제스트로
+  검색 가능한 것 자체가 바뀌었을 수 있다. 같은 `config_hash`끼리 비교하면 "run-to-run 노이즈"
+  경고.
+- 두 run이 모두 채점한 질의만 짝지어 B−A(`ir_metrics.paired_delta`), 헤드라인 지표(기본
+  `ndcg@10`)에 `bootstrap_ci`(seed 고정, 결정론) + win/loss/tie + 유형별 delta, 나머지 공유
+  지표는 `per_metric`에 평균 delta만. `error`가 난 질의는 짝에서 빠진다(`n`이 알려줌).
+
 ### 다음 단계
 
-1. **`knowledge-forge eval-ir`** — `load_golden`으로 파일을 읽고 질의마다 `search/retrieve.py`
-   (또는 `search/service.py`, 에이전트 루프 없이 temperature 0)를 호출해 document_id 순서를
-   얻은 뒤 `score_query` → `aggregate`. 결과는 `eval_run`(golden_version, config_hash,
-   index_snapshot, per_query)로 기록. 실행 전 `check_staleness`로 드리프트를 경고.
-   `--compare <runA> <runB>`는 `paired_delta` + `bootstrap_ci`로 질의별 win/loss/tie와 CI를 낸다 —
-   같은 golden_version + 같은 index_snapshot인 두 run만 비교.
-2. **`knowledge-forge eval-gen`** — `chunks.text`에서 층화 샘플링(type/document_type/source) →
+1. **`knowledge-forge eval-gen`** — `chunks.text`에서 층화 샘플링(type/document_type/source) →
    LLM 질의 생성 → 자동 필터 → `origin: "synthetic"`으로 **v1 발행**. v0는 그대로 두고 v1이
    사람 검수(Tier A)를 거친 첫 절대값 기준이 된다.
-3. **`eval-gen --from-traffic`** — `search_feedback.rating='up' ∧ groundedness ≥ 0.9`인
+2. **`eval-gen --from-traffic`** — `search_feedback.rating='up' ∧ groundedness ≥ 0.9`인
    `search_log`의 evidence를 `origin: "feedback"`으로 편입(Tier C). 노이즈가 크므로 큐레이션 셋을
    대체하지 않는다.
+3. **v0 첫 실측 baseline** — `search/retrieve.py`가 합류하면 `--label baseline`으로 한 번 돌려
+   `run_id`를 이 문서에 기록, 이후 전략 변경은 그 run과 `--compare`.
 
 ## (D) 명시적 Groundedness Gate — Iterative Retrieval 강화, 옵션
 
@@ -314,10 +371,11 @@ agent_groundedness_gate_max_retries: int = 2
    실패 원인 추적"의 최소 형태(사람이 `search_log`를 직접 읽는 것)를 제공한다.
 2. **(B) Groundedness/Citation LLM-judge 배치 — 구현됨.** `knowledge-forge eval`을 주기적으로
    돌리기 시작하면 실패 유형 데이터가 쌓인다.
-3. **(C) 골드셋 기반 Recall/Precision/MRR/NDCG — 스키마·v0·지표 모듈 구현됨, CLI 다음.**
-   `evaluation/golden.py`/`ir_metrics.py`와 `tests/eval/golden/v0.json`(손 작성 76개, 미검수)까지
-   있고, `eval-ir`가 `search/retrieve.py`를 호출해 이 파일로 채점하는 배선과 `eval-gen`의 v1
-   발행이 남았다.
+3. **(C) 골드셋 기반 Recall/Precision/MRR/NDCG — 스키마·v0·지표·`eval-ir` CLI 구현됨,
+   `eval-gen` v1 다음.** `evaluation/golden.py`/`ir_metrics.py`/`ir_runner.py`/`ir_compare.py`,
+   `eval_run`/`eval_run_query` 테이블, `knowledge-forge eval-ir`(실행·`--compare`·`--list`)까지
+   있다. `search/retrieve.py`가 합류하면 v0 baseline run을 남기고, `eval-gen`으로 사람 검수를
+   거친 v1을 발행하는 것이 다음이다.
 4. **(D) 온라인 Groundedness Gate — 설계만.** `knowledge-forge eval`을 몇 주 돌려 실사용
    hallucination/citation 오류 빈도가 실제로 문제 될 만큼 나오는지 (B)의 데이터로 먼저
    확인한 뒤 켜는 옵션 - 데이터 없이 미리 만들면 근거 없는 지연시간/비용 증가가 된다.
