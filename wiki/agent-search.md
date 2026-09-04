@@ -12,14 +12,20 @@
 |---|---|
 | pgvector 스키마(`knowledge_object_embeddings`) | **구현됨** — [`embeddings.md`](embeddings.md) |
 | 임베딩 생성 파이프라인(`--embed`, `knowledge-forge embed`) | **구현됨** — [`embeddings.md`](embeddings.md) |
-| `vector_search` (agent 도구) | **구현됨** — [`agent-runtime.md`](agent-runtime.md), 아래 절 참고. `POST /search/vector` HTTP 엔드포인트 자체는 여전히 미구현 |
-| Query Planning + Query Routing (`plan_search` agent 도구) | **구현됨** — [`search-architecture.md`](search-architecture.md), [`agent-runtime.md`](agent-runtime.md) |
+| `search` (통합 검색 agent 도구, `search/retrieve.py`) | **구현됨** — [`search-architecture.md`](search-architecture.md) "Retrieval Plan 실행기", [`agent-runtime.md`](agent-runtime.md) "도구 표면". **에이전트에게 기본으로 노출되는 유일한 검색 도구**이자 골든셋 IR 평가가 재는 경로 |
+| `vector_search` (agent 도구) | **구현됨** — [`agent-runtime.md`](agent-runtime.md), 아래 절 참고. 다만 기본 도구 표면에서는 빠져 있고(`KF_AGENT_TOOL_SURFACE=full`에서만 노출), 기본값에서는 `search`의 `vector` 전략으로 안에서 돈다. `POST /search/vector` HTTP 엔드포인트 자체는 여전히 미구현 |
+| Query Planning + Query Routing (`plan_search` agent 도구) | **구현됨** — [`search-architecture.md`](search-architecture.md), [`agent-runtime.md`](agent-runtime.md). `vector_search`와 같이 `full` 표면 전용 - 기본값에서는 `search`의 `multihop` 전략이 같은 `plan_and_search()`를 부른다 |
 | Text-to-SQL (`sql_search` agent 도구) | **구현됨** — [`search-architecture.md`](search-architecture.md), [`agent-runtime.md`](agent-runtime.md). Temporal join, entity/속성 필터, graph 1-hop 조회를 이걸로 대체 |
 | `read_document` (agent 도구, document expansion) + `GET /documents/{id}/chunks` | **구현됨** — [`search-architecture.md`](search-architecture.md) ⑤ "Document Expansion". 검색으로 특정한 문서 하나의 청크 전체를 순서대로 읽는다(전체 요약/부재 확인/순서 비교용) |
 | `GET /relations/expand` (graph_search, `depth>1` 재귀 탐색) | 설계만, 미구현 (1-hop 조회는 `sql_search`로 이미 가능) |
-| `GET /okf/search` (file_search, OKF 트리 기반) | 설계만, 미구현 (agent 도구 `file_search`는 이미 구현됨 — [`agent-runtime.md`](agent-runtime.md)) |
+| `GET /okf/search` (file_search, OKF 트리 기반) | 설계만, 미구현 (agent 도구 `file_search`는 이미 구현됨 — [`agent-runtime.md`](agent-runtime.md). Postgres 없는 OKF 전용 배포에서는 여전히 기본 표면의 유일한 검색 도구다) |
 | `knowledge-forge mcp-server` | 설계만, 미구현 |
 | Claude Code용 검색 skill | 설계만, 미구현 |
+
+**도구가 구현돼 있다는 것과 에이전트에게 기본으로 보인다는 것은 다르다** — 어떤 검색 도구가
+`default_tools()`에 실리는지는 `KF_AGENT_TOOL_SURFACE`가 정한다
+([`agent-runtime.md`](agent-runtime.md)의 "도구 표면" 절에 표가 있다). 기본값은
+`search` + `read_document` + `sql_search`(DB 없으면 `file_search`)뿐이다.
 
 이 문서의 나머지 절 중 "구현됨"이라고 표시되지 않은 것은 전부 설계 스케치이며, 실제로 동작하는
 코드가 없다. 코드로 이미 존재하는 부분(스키마/파이프라인/agent 도구)은 이 문서가 아니라

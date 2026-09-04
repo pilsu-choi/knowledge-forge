@@ -209,7 +209,7 @@ READ_DOCUMENT_INPUT_SCHEMA: dict[str, Any] = {
     "properties": {
         "document_id": {
             "type": "string",
-            "description": "읽을 문서의 document_id - document_search/vector_search 결과의 document_id를 그대로 쓸 것.",
+            "description": "읽을 문서의 document_id - search 결과의 document_id를 그대로 쓸 것.",
         },
         "offset": {
             "type": "integer",
@@ -267,7 +267,7 @@ SQL_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
 READ_FILE_INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "path": {"type": "string", "description": "OKF 루트 기준 상대 경로 - file_search 결과의 path를 그대로 쓸 것."},
+        "path": {"type": "string", "description": "OKF 루트 기준 상대 경로 - file_search/list_dir 결과의 path를 그대로 쓸 것."},
     },
     "required": ["path"],
 }
@@ -368,6 +368,25 @@ async def _list_dir_handler(args: dict[str, Any]) -> list[dict[str, Any]]:
     return await list_dir(path=args.get("path", ""))
 
 
+def _make_file_search_tool() -> ToolSpec:
+    """`file_search`(`search/service.py`)는 Postgres를 전혀 요구하지 않는 유일한
+    검색 도구다 - OKF 루트 트리를 그냥 읽는다. 그래서 `KF_DATABASE_URL`이 없는
+    배포에서는 이것 하나가 남는 검색 경로이고, `default_tools()`의 "minimal"
+    표면은 정확히 그 경우에만 이걸 넣는다(자세한 이유는 그쪽 docstring).
+    다른 도구들처럼 factory로 뽑아 둔 것은 조립부에서 조건별로 같은 모양으로
+    다루기 위해서다."""
+    return ToolSpec(
+        name="file_search",
+        description=(
+            "OKF 지식 베이스 파일 트리(마크다운+frontmatter)를 키워드로 검색한다 - Postgres 없이 "
+            "동작하는 유일한 검색 도구라, search가 도구 목록에 없는 배포에서는 이것이 기본 검색 "
+            "경로다. 자연어 패러프레이즈보다 정확한 문자열 일치에 강하다."
+        ),
+        input_schema=FILE_SEARCH_INPUT_SCHEMA,
+        handler=_file_search_handler,
+    )
+
+
 def _make_vector_search_tool(database_url: str) -> ToolSpec:
     """`vector_search`는 `file_search`와 달리 자기 자신을 위한 Postgres 연결을
     묵시적으로 열 수 없다(OKF 루트처럼 그냥 경로를 읽는 게 아니라 커넥션이
@@ -433,7 +452,7 @@ def _make_read_document_tool(database_url: str) -> ToolSpec:
     return ToolSpec(
         name="read_document",
         description=(
-            "document_search/vector_search로 document_id를 특정한 뒤, 문서 전체 요약·문서 내부 질문·"
+            "search로 document_id를 특정한 뒤, 문서 전체 요약·문서 내부 질문·"
             "부재 확인('언급되지 않은 것은?')·순서 비교('처음 제안 vs 최종 결정')처럼 검색 top-k로는 답할 수 "
             "없는 질문에 쓴다 - 그 문서의 청크 전체를 원문 순서(sequence_index)로 돌려준다. 단순 사실 "
             "검색에는 쓰지 말 것. 긴 문서는 truncated: true와 next_offset이 돌아오므로 offset에 그 값을 "
@@ -493,7 +512,8 @@ def _make_search_tool(database_url: str, *, provider: ChatProvider | None, proje
             "어떤 도구를 쓸지 모르겠으면 이것부터. 질문을 자연어 그대로 넣으면 시간 표현·파일명·에러 코드·"
             "'요약해줘'/'전부'/'몇 건' 같은 의도를 읽어 필요한 검색을 골라 실행하고, 결과(document_id/"
             "chunk_id/summary)와 함께 어떤 전략을 어떻게 돌렸는지(steps)를 돌려준다. 결과가 부족하면 "
-            "steps를 보고 document_search/lexical_search/vector_search/sql_search/read_document로 보충할 것."
+            "steps를 보고 read_document(문서 전체 읽기)/sql_search(집계·속성 조건)로 보충할 것 - "
+            "그 둘로도 부족할 때만 도구 목록에 있는 개별 검색 도구를 쓸 것."
         ),
         input_schema=SEARCH_INPUT_SCHEMA,
         handler=_handler,
@@ -587,10 +607,10 @@ def _make_sql_search_tool(database_url: str) -> ToolSpec:
     return ToolSpec(
         name="sql_search",
         description=(
-            "Knowledge Base를 PostgreSQL SQL로 직접 조회한다(Text-to-SQL) - file_search/"
-            "vector_search로 표현하기 어려운 구조화된 질문(특정 사람/속성이 언급된 항목, 여러 "
-            "조건의 AND/OR, 집계(COUNT 등), 시간 범위와 속성값을 함께 거는 조건)에 쓸 것. "
-            "단순 키워드/의미 검색에는 file_search/vector_search가 더 적합하다. 읽기 전용만 "
+            "Knowledge Base를 PostgreSQL SQL로 직접 조회한다(Text-to-SQL) - search가 다루지 못하는 "
+            "구조화된 질문(특정 사람/속성이 언급된 항목, 여러 조건의 AND/OR, 집계(COUNT 등), "
+            "시간 범위와 속성값을 함께 거는 조건)에 쓸 것. 키워드/의미 검색이나 문서 찾기에는 "
+            "search가 더 빠르고 적합하다 - 먼저 search를 부르고, 그걸로 안 되는 것만 여기서 풀 것. 읽기 전용만 "
             f"허용된다(쓰기/DDL은 거부).\n\n{describe_schema()}"
         ),
         input_schema=SQL_SEARCH_INPUT_SCHEMA,
@@ -695,12 +715,46 @@ def default_tools(
     *,
     include_delegate: bool = True,
 ) -> list[ToolSpec]:
-    """The full tool set: file_search + read_file/write_file/edit_file/
-    list_dir (OKF-root-scoped, `okf/fs_service.py`) + write_memory
-    (project-scoped, `agent/memory.py`) + write_plan, plus vector_search/
-    sql_search/read_document when `KF_DATABASE_URL` is configured, plan_search (Query
-    Planning/Routing) when a `provider` is given, and delegate_task
-    (SubAgents) when a `provider`/`system` are both given.
+    """도구 집합 조립. **검색 도구 표면은 `settings.agent_tool_surface`
+    (`KF_AGENT_TOOL_SURFACE`, 기본 "minimal")가 정한다** - 나머지(파일시스템/
+    write_memory/write_plan/delegate_task)는 표면과 무관하게 항상 같다.
+
+    "minimal"(기본) + `KF_DATABASE_URL` 설정됨:
+        search, read_document, sql_search + 비검색 도구
+    "minimal" + DB 없음(OKF 전용 배포):
+        file_search + 비검색 도구
+    "full" + DB 설정됨:
+        search, file_search, read_document, sql_search, vector_search,
+        document_search, lexical_search, plan_search(provider 있을 때) + 비검색 도구
+    "full" + DB 없음:
+        file_search, plan_search(provider 있을 때) + 비검색 도구
+
+    왜 기본을 좁히는가: `search/retrieve.py`는 "어떤 검색을 어떤 순서로 돌릴지"를
+    LLM에게서 빼앗아 결정론적 함수로 만들려고 존재하는 모듈이고(그 docstring),
+    골든셋 IR 평가가 재는 유일한 경로다(wiki/search-evaluation.md). 그런데 도구
+    목록이 개별 검색 도구를 여덟 개 늘어놓으면 그 결정을 그대로 모델에게 되돌려
+    주는 셈이라 - 모델이 고른 조합은 측정된 적이 없고 재현되지도 않는다.
+    `sql_search`만 예외로 남긴 이유는 집계(COUNT/GROUP BY)와 임의 속성 조건이
+    `search`의 전략 목록에 없어서, 그게 필요한 질문은 다른 도구로는 아예 답이
+    안 나오기 때문이다(구조화 질의 비상구). `read_document`는 검색 도구가 아니라
+    검색으로 특정한 문서를 끝까지 읽는 후속 동작이라 남는다.
+
+    `file_search`가 "minimal"에서 DB가 없을 때만 들어가는 것도 같은 이유의 뒷면
+    이다: 그 구성에서는 `search`/`sql_search`/`read_document`가 전부 빠져
+    (Postgres 없이는 실행 자체가 불가능하므로 - `embedding_enabled`와 같은
+    "설정 안 되어 있으면 조용히 빠짐" 컨벤션) 도구 목록에 검색 경로가 하나도
+    남지 않는다. `file_search`는 Postgres를 전혀 요구하지 않는 유일한 검색
+    경로이므로(`search/service.py` docstring의 "OKF-only deployment") 그때는
+    반드시 남아야 한다. 반대로 DB가 있으면 `search`가 같은 OKF 코퍼스를 색인한
+    Postgres 쪽을 더 넓게 훑으므로 기본 표면에서는 뺀다 - `KF_OKF_DIR`이 안
+    잡힌 배포에서 `file_search`는 조용히 `[]`만 돌려주기까지 한다.
+
+    `plan_search`(Query Planning + Query Routing, `search/planner.py`)는 "full"
+    에서만, 그것도 `provider`가 주어졌을 때만 추가된다 - 하위 질의 분해에 그
+    `provider`로 LLM 호출을 한 번 더 하기 때문(`delegate_task`와 같은 이유로
+    `provider`가 필요, 다만 `system`은 필요 없다 - 분해 프롬프트는 자체 완결형).
+    "minimal"에서 빠져도 멀티홉 분해 자체는 사라지지 않는다: `search`가
+    `multihop` 전략으로 같은 `plan_and_search()`를 내부에서 부른다.
 
     `plan_state`를 넘기지 않으면 이 호출 하나에서만 쓰이고 버려지는 새
     `PlanState()`가 생긴다(run_query 같은 1회성 경로에 충분). `--interactive`
@@ -708,54 +762,38 @@ def default_tools(
     넘겨서 turn 사이에 계획이 유지되게 한다 - `history`가 유지되는 것과 같은
     이유.
 
-    `vector_search`/`sql_search`/`read_document`/`search`는 `settings.database_url`(`KF_DATABASE_URL`)
-    이 설정되어 있을 때만 도구 목록에 추가된다 - `file_search`/파일시스템
-    도구와 달리 Postgres 없이는 아예 실행할 수 없는 도구라, `embedding_enabled`
-    (`--embed`)와 같은 "설정 안 되어 있으면 조용히 빠짐" 컨벤션을 따른다.
-
-    `plan_search`(Query Planning + Query Routing, `search/planner.py`)는
-    `provider`가 주어졌을 때만 추가된다 - 하위 질의 분해에 그 `provider`로
-    LLM 호출을 한 번 더 하기 때문(`delegate_task`와 같은 이유로 `provider`가
-    필요, 다만 `system`은 필요 없다 - 분해 프롬프트는 자체 완결형). `vector_search`와
-    달리 `KF_DATABASE_URL` 없이도 추가된다 - file_search만으로도 동작하고,
-    DB 유무는 내부에서 사용 가능한 검색 소스 목록을 좁히는 것으로만 반영된다.
-
     `write_memory`는 `project_id`로 스코프된다 - `project_id`가 None이면
     "_global" 기억 파일에 쓴다(`agent/memory.py`).
 
     `delegate_task`(SubAgents)는 `provider`와 `system`이 둘 다 주어졌을 때만
     추가된다 - 자식 에이전트 턴을 실제로 돌리려면 둘 다 필요하기 때문이다.
     자식에게 넘기는 도구 집합은 `include_delegate=False`로 만든
-    `default_tools()`를 그대로 쓴다 - **delegate_task 자신만 빠지고
-    나머지(file_search/vector_search/sql_search/read_document/plan_search/파일시스템/
-    write_plan/write_memory)는 부모와 동일** - 이렇게 위임 한 단계 안에서
+    `default_tools()`를 그대로 쓴다 - **delegate_task 자신만 빠지고 나머지는
+    (같은 표면 설정 아래에서) 부모와 동일** - 이렇게 위임 한 단계 안에서
     재귀적 위임을 구조적으로 차단한다(자식의 도구 목록에는 애초에
     delegate_task가 없으므로)."""
-    tools = [
-        ToolSpec(
-            name="file_search",
-            description=(
-                "OKF 지식 베이스 파일 트리(마크다운+frontmatter)를 키워드로 검색한다. "
-                "자연어 패러프레이즈보다 정확한 문자열 일치에 강하다."
-            ),
-            input_schema=FILE_SEARCH_INPUT_SCHEMA,
-            handler=_file_search_handler,
-        ),
-    ]
-    if settings.database_url:
-        tools.append(_make_vector_search_tool(settings.database_url))
-        tools.append(_make_sql_search_tool(settings.database_url))
-        tools.append(_make_document_search_tool(settings.database_url))
-        tools.append(_make_lexical_search_tool(settings.database_url))
-        tools.append(_make_read_document_tool(settings.database_url))
-        tools.append(_make_search_tool(settings.database_url, provider=provider, project_id=project_id))
-    if provider is not None:
-        tools.append(_make_plan_search_tool(provider=provider, database_url=settings.database_url, project_id=project_id))
+    minimal = settings.agent_tool_surface != "full"
+    database_url = settings.database_url
+    tools: list[ToolSpec] = []
+    if database_url:
+        # 1순위 검색 도구를 목록 맨 앞에 둔다 - 도구 순서는 모델이 읽는 순서이기도 하다.
+        tools.append(_make_search_tool(database_url, provider=provider, project_id=project_id))
+    if not database_url or not minimal:
+        tools.append(_make_file_search_tool())
+    if database_url:
+        tools.append(_make_read_document_tool(database_url))
+        tools.append(_make_sql_search_tool(database_url))
+        if not minimal:
+            tools.append(_make_vector_search_tool(database_url))
+            tools.append(_make_document_search_tool(database_url))
+            tools.append(_make_lexical_search_tool(database_url))
+    if provider is not None and not minimal:
+        tools.append(_make_plan_search_tool(provider=provider, database_url=database_url, project_id=project_id))
     tools.extend(
         [
             ToolSpec(
                 name="read_file",
-                description="OKF 루트 트리 내부의 파일 전체 내용을 읽는다. file_search 결과는 스니펫뿐이므로 전체가 필요할 때 쓴다.",
+                description="OKF 루트 트리 내부의 파일 전체 내용을 읽는다. 검색 결과는 스니펫뿐이므로 전체가 필요할 때 쓴다.",
                 input_schema=READ_FILE_INPUT_SCHEMA,
                 handler=_read_file_handler,
             ),

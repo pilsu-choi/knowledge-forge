@@ -7,8 +7,8 @@ from knowledge_forge.agent.providers.base import AssistantTurn, ChatProvider, Me
 from knowledge_forge.agent.tools import default_tools
 from knowledge_forge.config import settings
 
+# 검색 도구 표면(`KF_AGENT_TOOL_SURFACE`)과 무관하게 항상 같은, 검색이 아닌 도구들.
 _EXPECTED_BASE_TOOL_NAMES = [
-    "file_search",
     "read_file",
     "write_file",
     "edit_file",
@@ -28,6 +28,18 @@ def _no_database_url(monkeypatch):
     monkeypatch.setattr(settings, "database_url", None)
 
 
+@pytest.fixture(autouse=True)
+def _default_tool_surface(monkeypatch):
+    """같은 이유로 `KF_AGENT_TOOL_SURFACE`도 기본값에 고정한다 - 개발자 로컬
+    `.env`가 "full"이면 이 파일의 목록 단언이 전부 흔들린다. "full"을 실제로
+    확인하는 테스트만 monkeypatch로 되돌린다."""
+    monkeypatch.setattr(settings, "agent_tool_surface", "minimal")
+
+
+def _full_surface(monkeypatch):
+    monkeypatch.setattr(settings, "agent_tool_surface", "full")
+
+
 async def test_default_tools_wraps_file_search_and_forwards_arguments(monkeypatch):
     captured = {}
 
@@ -38,7 +50,7 @@ async def test_default_tools_wraps_file_search_and_forwards_arguments(monkeypatc
     monkeypatch.setattr("knowledge_forge.agent.tools.file_search", _fake_file_search)
 
     tools = default_tools()
-    assert [t.name for t in tools] == _EXPECTED_BASE_TOOL_NAMES
+    assert [t.name for t in tools] == ["file_search"] + _EXPECTED_BASE_TOOL_NAMES
 
     spec = next(t for t in tools if t.name == "file_search")
     result = await spec.handler({"query": "auth", "project_id": "proj", "type": "decision", "limit": 5})
@@ -215,9 +227,7 @@ class _FakeProvider(ChatProvider):
 async def test_default_tools_includes_delegate_task_when_provider_and_system_given():
     tools = default_tools(provider=_FakeProvider(), system="system prompt")
 
-    assert [t.name for t in tools] == ["file_search", "plan_search"] + _EXPECTED_BASE_TOOL_NAMES[1:] + [
-        "delegate_task"
-    ]
+    assert [t.name for t in tools] == ["file_search"] + _EXPECTED_BASE_TOOL_NAMES + ["delegate_task"]
 
 
 async def test_default_tools_include_delegate_false_omits_it_even_with_provider():
@@ -249,20 +259,43 @@ async def test_delegate_task_runs_a_child_agent_and_returns_only_its_final_answe
     assert provider.calls[0][0].content == "investigate project X"
 
 
-async def test_default_tools_omits_vector_search_without_database_url():
-    tools = default_tools()
+async def test_default_tools_default_surface_exposes_only_search_read_document_and_sql_search(monkeypatch):
+    """**기본 표면 회귀 테스트.** `search/retrieve.py`가 "어떤 검색을 어떤 순서로"
+    결정을 LLM에게서 빼앗아 결정론적 함수로 만든 모듈인데(그 docstring), 도구
+    목록이 개별 검색 도구를 다시 늘어놓으면 그 결정이 모델에게 되돌아간다 -
+    이 단언이 그 재발(도구 목록이 조용히 다시 자라는 것)을 막는 자리다.
+    개별 도구를 되살리려면 `KF_AGENT_TOOL_SURFACE=full`을 써야 한다."""
+    monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
 
-    assert [t.name for t in tools] == _EXPECTED_BASE_TOOL_NAMES
+    tools = default_tools(provider=_FakeProvider())
+
+    assert [t.name for t in tools] == ["search", "read_document", "sql_search"] + _EXPECTED_BASE_TOOL_NAMES
 
 
-async def test_default_tools_includes_vector_search_and_sql_search_right_after_file_search_when_database_url_set(
-    monkeypatch,
-):
+async def test_default_tools_default_surface_falls_back_to_file_search_without_database_url():
+    """Postgres 없는 OKF 전용 배포 - search/read_document/sql_search가 전부 빠지므로
+    Postgres를 요구하지 않는 유일한 검색 경로인 file_search가 그 자리를 대신한다
+    (`search/service.py` docstring의 "OKF-only deployment")."""
+    tools = default_tools(provider=_FakeProvider())
+
+    assert [t.name for t in tools] == ["file_search"] + _EXPECTED_BASE_TOOL_NAMES
+
+
+async def test_default_tools_full_surface_restores_every_narrow_search_tool(monkeypatch):
+    _full_surface(monkeypatch)
     monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
 
     tools = default_tools()
 
-    assert [t.name for t in tools] == ["file_search", "vector_search", "sql_search", "document_search", "lexical_search", "read_document", "search"] + _EXPECTED_BASE_TOOL_NAMES[1:]
+    assert [t.name for t in tools] == [
+        "search",
+        "file_search",
+        "read_document",
+        "sql_search",
+        "vector_search",
+        "document_search",
+        "lexical_search",
+    ] + _EXPECTED_BASE_TOOL_NAMES
 
 
 class _FakeConnectedStore:
@@ -277,6 +310,7 @@ class _FakeConnectedStore:
 
 
 async def test_default_tools_vector_search_opens_a_store_and_forwards_arguments(monkeypatch):
+    _full_surface(monkeypatch)
     captured = {}
     sentinel_store = object()
 
@@ -308,6 +342,7 @@ async def test_default_tools_vector_search_opens_a_store_and_forwards_arguments(
 
 
 async def test_default_tools_document_search_opens_a_store_and_forwards_arguments(monkeypatch):
+    _full_surface(monkeypatch)
     captured = {}
     sentinel_store = object()
 
@@ -339,6 +374,7 @@ async def test_default_tools_document_search_opens_a_store_and_forwards_argument
 
 
 async def test_default_tools_lexical_search_opens_a_store_and_resolves_time_range(monkeypatch):
+    _full_surface(monkeypatch)
     captured = {}
     sentinel_store = object()
 
@@ -365,6 +401,7 @@ async def test_default_tools_lexical_search_opens_a_store_and_resolves_time_rang
 
 
 async def test_default_tools_vector_search_clamps_an_oversized_limit(monkeypatch):
+    _full_surface(monkeypatch)
     captured = {}
 
     def _fake_pipeline_store(database_url, data_dir):
@@ -387,6 +424,7 @@ async def test_default_tools_vector_search_clamps_an_oversized_limit(monkeypatch
 
 
 async def test_default_tools_vector_search_handler_uses_defaults_for_optional_arguments(monkeypatch):
+    _full_surface(monkeypatch)
     captured = {}
 
     async def _fake_vector_search(query, store, project_id=None, type=None, limit=10, since=None, until=None):
@@ -405,36 +443,52 @@ async def test_default_tools_vector_search_handler_uses_defaults_for_optional_ar
     assert captured == {"query": "auth", "project_id": None, "type": None, "limit": 10, "since": None, "until": None}
 
 
-async def test_default_tools_omits_plan_search_without_provider():
+async def test_default_tools_omits_plan_search_without_provider(monkeypatch):
+    _full_surface(monkeypatch)
+
     tools = default_tools()
 
     assert "plan_search" not in [t.name for t in tools]
 
 
-async def test_default_tools_includes_plan_search_right_after_file_search_when_provider_given():
+async def test_default_tools_omits_plan_search_on_the_default_surface_even_with_provider(monkeypatch):
+    """`plan_search`는 "full"에서만 나온다 - 멀티홉 분해 자체가 사라지는 건 아니고,
+    `search`가 multihop 전략으로 같은 `plan_and_search()`를 안에서 부른다."""
+    monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
+
     tools = default_tools(provider=_FakeProvider())
 
-    assert [t.name for t in tools] == ["file_search", "plan_search"] + _EXPECTED_BASE_TOOL_NAMES[1:]
+    assert "plan_search" not in [t.name for t in tools]
 
 
-async def test_default_tools_orders_vector_search_and_sql_search_before_plan_search(monkeypatch):
+async def test_default_tools_includes_plan_search_on_the_full_surface_when_provider_given(monkeypatch):
+    _full_surface(monkeypatch)
+
+    tools = default_tools(provider=_FakeProvider())
+
+    assert [t.name for t in tools] == ["file_search", "plan_search"] + _EXPECTED_BASE_TOOL_NAMES
+
+
+async def test_default_tools_orders_plan_search_after_every_other_search_tool(monkeypatch):
+    _full_surface(monkeypatch)
     monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
 
     tools = default_tools(provider=_FakeProvider())
 
     assert [t.name for t in tools] == [
+        "search",
         "file_search",
-        "vector_search",
+        "read_document",
         "sql_search",
+        "vector_search",
         "document_search",
         "lexical_search",
-        "read_document",
-        "search",
         "plan_search",
-    ] + _EXPECTED_BASE_TOOL_NAMES[1:]
+    ] + _EXPECTED_BASE_TOOL_NAMES
 
 
 async def test_default_tools_plan_search_clamps_an_oversized_limit_per_subquery(monkeypatch):
+    _full_surface(monkeypatch)
     captured = {}
 
     async def _fake_plan_and_search(query, given_provider, *, store=None, project_id=None, limit_per_subquery=5):
@@ -452,6 +506,7 @@ async def test_default_tools_plan_search_clamps_an_oversized_limit_per_subquery(
 
 
 async def test_default_tools_plan_search_forwards_arguments_without_database_url(monkeypatch):
+    _full_surface(monkeypatch)
     captured = {}
     provider = _FakeProvider()
 
@@ -477,6 +532,7 @@ async def test_default_tools_plan_search_forwards_arguments_without_database_url
 
 
 async def test_default_tools_plan_search_opens_a_store_when_database_url_configured(monkeypatch):
+    _full_surface(monkeypatch)
     captured = {}
     sentinel_store = object()
 
@@ -500,6 +556,7 @@ async def test_default_tools_plan_search_opens_a_store_when_database_url_configu
 
 
 async def test_default_tools_plan_search_query_project_id_overrides_default(monkeypatch):
+    _full_surface(monkeypatch)
     captured = {}
 
     async def _fake_plan_and_search(query, provider, *, store=None, project_id=None, limit_per_subquery=5):
@@ -547,6 +604,7 @@ async def test_default_tools_file_search_ignores_an_unrecognized_time_range(monk
 
 
 async def test_default_tools_vector_search_resolves_a_natural_language_time_range(monkeypatch):
+    _full_surface(monkeypatch)
     captured = {}
 
     async def _fake_vector_search(query, store, project_id=None, type=None, limit=10, since=None, until=None):

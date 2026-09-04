@@ -213,6 +213,24 @@ class Settings(BaseSettings):
     # tuning knob so much as a safety net against a model that keeps calling
     # tools without ever producing a final answer.
     agent_max_iterations: int = 8
+    # 에이전트에게 노출할 **검색 도구 표면**(agent/tools.py::default_tools).
+    #
+    # "minimal"(기본): 검색 도구는 `search`(통합 검색, search/retrieve.py) +
+    # `read_document` + `sql_search`뿐이다. `search/retrieve.py`가 존재하는 이유가
+    # "어떤 검색을 어떤 순서로 돌릴지"를 LLM에게서 빼앗아 결정론적 함수로 만드는
+    # 것인데(그 모듈 docstring), 도구 목록이 개별 검색 도구를 여덟 개 늘어놓으면
+    # 그 결정을 다시 모델에게 돌려주는 셈이다 - 게다가 골든셋 평가(eval-ir,
+    # wiki/search-evaluation.md)가 재는 경로는 `search` 하나뿐이라, 모델이 고른
+    # 다른 경로는 측정된 적이 없는 경로다. `sql_search`는 집계/속성 조건처럼
+    # `search`가 다루지 못하는 구조화 질의용 비상구로 남기고, `read_document`는
+    # 검색이 아니라 "특정한 문서를 끝까지 읽는" 후속 동작이라 남는다.
+    # Postgres가 없는 OKF 전용 배포에서는 이 셋이 전부 빠지므로 `file_search`가
+    # 대신 들어간다 - 그 구성에서 유일하게 동작하는 검색 경로다.
+    #
+    # "full": 예전 표면 그대로 - `file_search`/`vector_search`/`document_search`/
+    # `lexical_search`/`plan_search`까지 전부 노출한다. `search`가 놓치는 질의를
+    # 손으로 파고들 때(디버깅, A/B 비교)를 위해 지운 게 아니라 설정 뒤로 옮겼다.
+    agent_tool_surface: Literal["minimal", "full"] = "minimal"
     # Runtime context compaction (agent/compaction.py, ported from
     # refs/hermes-agent's trajectory_compressor.py) - once `messages` in
     # agent/loop.py::run_agent crosses this token budget, the oldest
