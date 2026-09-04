@@ -13,7 +13,13 @@ from knowledge_forge.embedding.openrouter_provider import OpenRouterEmbeddingPro
 
 
 def test_defaults_to_openai(monkeypatch):
-    monkeypatch.setattr("knowledge_forge.embedding.factory.settings", Settings())
+    # `_env_file=None` rather than a bare `Settings()`: this test is about the
+    # library default, and `Settings` normally loads the repo's `.env` - on a
+    # machine that has actually configured embeddings (KF_EMBEDDING_PROVIDER=
+    # openrouter, see wiki/embeddings.md) a plain `Settings()` returns that
+    # local config and the assertion below fails for no reason. tests/conftest.py
+    # pins the shared singleton for the same reason; this constructs its own.
+    monkeypatch.setattr("knowledge_forge.embedding.factory.settings", Settings(_env_file=None))
     assert isinstance(get_embedding_provider(), OpenAIEmbeddingProvider)
 
 
