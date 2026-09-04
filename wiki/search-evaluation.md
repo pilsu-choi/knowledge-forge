@@ -2,7 +2,7 @@
 
 `search-architecture.md`가 "Search Evaluation / Feedback Loop — 설계만, 미구현"과
 "Iterative / Agentic Retrieval — 이미 구현됨(암묵적 판단에 의존)"으로 남겨둔 두 항목을 채우는
-네 조각 - (A)/(B)는 구현됨, (C)는 골든셋·지표 모듈까지 구현되고 CLI 배선이 남았으며, (D)는 여전히 설계만이다. (A)가 나머지 전부의 전제조건이다.
+네 조각 - (A)/(B)는 구현됨, (C)는 골든셋·지표 모듈과 `eval-ir` CLI까지 구현됐고, (D)는 여전히 설계만이다. (A)가 나머지 전부의 전제조건이다.
 
 ## 스코프: 독립적인 네 조각
 
@@ -10,7 +10,7 @@
 |---|---|---|---|
 | (A) 로깅 인프라 | query/answer/evidence를 Postgres에 기록 | 불필요 | **구현됨** |
 | (B) Groundedness/Citation 자동 평가 | LLM-as-judge로 claim-evidence 매칭, 비동기 배치 | 불필요 | **구현됨** |
-| (C) Recall/Precision/MRR/NDCG | relevance judgment 필요 | **필요** | 골든셋 스키마·v0·지표 모듈 **구현됨**, `eval-ir` CLI 미구현 |
+| (C) Recall/Precision/MRR/NDCG | relevance judgment 필요 | **필요** | **구현됨**(골든셋 v0·지표 모듈·`eval-ir` CLI). `eval-gen` 자동 생성은 다음 단계 |
 | (D) 명시적 Groundedness Gate | (B)의 판정기를 온라인 게이트로 재사용, iterative retrieval 강화 | 불필요 | 설계만, 미구현 |
 
 ## (A) 로깅 인프라 — **구현됨**, `storage/eval_store.py::EvalStore`
