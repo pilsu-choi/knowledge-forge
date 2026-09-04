@@ -258,9 +258,11 @@ async def vector_search(
     쥐고 있어야 함 - `agent/tools.py`의 `_make_vector_search_tool` 참고).
 
     `embedding_model`을 생략하면 `KF_EMBEDDING_MODEL`(현재 활성 모델)을 쓴다 -
-    `knowledge_object_embeddings`의 PK가 `(knowledge_object_id,
-    embedding_model)`이라 여러 모델의 벡터가 동시에 존재할 수 있으므로, 검색도
-    어느 모델의 벡터 공간에서 비교할지 명시해야 한다(`embeddings.md` 참고).
+    `knowledge_object_embeddings`가 (대상, `embedding_model`)마다 한 행이라 여러 모델의
+    벡터가 동시에 존재할 수 있으므로, 검색도 어느 모델의 벡터 공간에서 비교할지 명시해야
+    한다(`embeddings.md` 참고). 이 이름은 사실상 파티션 키다: 적재할 때(`knowledge-forge
+    embed`)와 검색할 때의 `KF_EMBEDDING_MODEL`이 한 글자라도 다르면 에러 없이 0히트가 된다
+    (`PostgresStore.embedding_coverage`가 그걸 진단한다).
 
     `since`/`until`(둘 다 tz-aware, `until`은 배타적)이 주어지면 소스의 실제 시각
     (`COALESCE(sources.modified_at, sources.collected_at)` - `ko.extracted_at`이 아니다,

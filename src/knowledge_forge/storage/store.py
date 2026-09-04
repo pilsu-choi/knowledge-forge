@@ -158,6 +158,11 @@ class PipelineStore:
             embedding, embedding_model, project_id, type, limit, since, until, target_kind
         )
 
+    async def embedding_coverage(self, embedding_model: str, project_id: str | None = None) -> dict[str, Any]:
+        """임베딩 적재 현황 진단 - 벡터 검색 0히트의 세 가지 원인(행 없음 / 모델 이름 불일치 /
+        다른 프로젝트)을 한 번에 보여준다. `PostgresStore.embedding_coverage` 참고."""
+        return await self._db.embedding_coverage(embedding_model, project_id)
+
     async def get_document(self, document_id: str) -> Document | None:
         return await self._db.get_document(document_id)
 

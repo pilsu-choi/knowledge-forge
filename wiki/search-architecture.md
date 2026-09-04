@@ -380,6 +380,77 @@ Search Evaluation / Feedback Loop 절과 판정기를 공유하는 옵션 확장
     Slack 채널 ID → 채널 이름 해석(제목이 `#C0BGQEQG1L6 2026-08-11` 형태로 남는다 - 컬렉터가
     `channel_name`을 메타데이터에 넣으면 파생 로직은 이미 그걸 우선 쓴다).
 
+### 벡터 경로(pgvector) — 임베딩이 실제로 채워졌을 때 (2026-09-04 검증)
+
+`knowledge_object_embeddings`가 개발 DB에서 0행이라, `vector_search` → `search_by_embedding`
+→ `retrieve()`의 RRF까지 이어지는 경로는 **실데이터로 한 번도 실행된 적이 없었다**(골든셋 76개
+질의 전부에서 `vector_search` 0히트 - 버그가 아니라 데이터 부재). 임베딩을 채우기 전에 미리
+검증한 결과를 여기 남긴다. 재현 테스트는 `tests/search/test_vector_path.py`(결정론적
+`ConceptEmbedder`로 API 키 없이 돈다)와 `tests/storage/test_embedding_diagnostics.py`.
+
+**확인된 것** (모두 테스트로 고정):
+- 청크 grain 저장(`record_chunk_embeddings`) → `vector_search`가 **표면형이 전혀 겹치지 않는**
+  질의로 그 청크를 1위로 찾아낸다. `pgvector.Vector` 바인딩(INSERT/조회 양쪽), 코사인 거리
+  → 유사도(`1 - distance`) 부호, `ORDER BY`/`LIMIT`이 실제로 맞다.
+- `target_kind`(`chunk` / `knowledge_object` / 생략=혼합), `project_id`, `embedding_model`,
+  `since`/`until` 필터가 전부 벡터 경로에서도 실제로 걸린다. 특히 다른 모델 이름으로 저장된
+  같은 청크의 벡터는 랭킹에 절대 섞이지 않는다.
+- 청크 히트의 `summary`는 `embedded_text`를 500자(`_CHUNK_HIT_SUMMARY_CHARS`)로 자른 것,
+  KO 히트의 `summary`는 KO의 summary - 한 키로 통일된다.
+- `retrieve()`의 RRF(`merge_and_rerank`)에서 벡터 히트가 최종 랭킹에 실제로 반영된다. 소스
+  이름은 `vector_search`로 일치하고, 어휘 검색이 전혀 못 잡는 문서가 벡터 단독으로 결과에 남는다.
+
+**고친 버그: 필터가 걸린 ANN이 히트를 통째로 잃었다** (`PostgresStore._configure_ann_search`)
+
+HNSW 인덱스 스캔은 거리 순으로 그래프를 걸으며 대략 `hnsw.ef_search`(기본 40)개를 실행기에
+넘기고, WHERE는 **그 뒤에** 적용된다. 그래서 필터가 테이블의 소수만 고르면 후보가 전부 필터에
+지워지고 스캔은 "더 없음"을 반환한다 - 조건에 맞는 행이 분명히 있는데도 0히트. 이 스키마에서
+실측: 한 프로젝트에 4000행 + 다른 프로젝트에 3행을 넣고 작은 쪽으로 `search_by_embedding`을
+부르면 기본값(`hnsw.iterative_scan = off`)에서 **0행**, `strict_order`에서 정상적으로 3행.
+`EXPLAIN`상 `Index Scan using idx_koe_embedding_hnsw ... Rows Removed by Filter: 20`.
+
+가설이 아니라 상시 경로다: 실행기는 **항상** `project_id`로 거르고, temporal 질의는 거기에
+`since`/`until`을 더한다. 그래서 `connect()`(및 `init_schema()`)에서 세션 GUC
+`hnsw.iterative_scan = strict_order`를 켠다. `relaxed_order`가 아닌 이유는 `search_by_embedding`이
+거리를 그대로 `score`로 바꿔 호출자가 그 순서를 신뢰하기 때문. 작업량은 pgvector 자신의
+`hnsw.max_scan_tuples`(기본 20000)로 묶이고, 필터가 없는 질의의 지연시간은 실측상 차이가 없다.
+GUC가 없는 pgvector(<0.8)에서는 경고만 남기고 넘어간다.
+
+**고치지 않았지만 반드시 알고 있어야 하는 것 두 가지** — 둘 다 "임베딩 0행" 시절의 골든셋
+점수(v0 ndcg@10 0.865)를 임베딩을 채운 뒤와 비교할 때 지표를 움직인다. 임계값을 찍어 맞히는
+대신 `eval-ir`로 재고 나서 결정할 문제라 지금은 동작만 테스트로 고정해 두었다:
+
+1. **키워드 fallback이 사실상 영원히 안 돈다.** `_Run._keyword_fallback`/`_term_fallback`은
+   벡터가 0히트일 때만 도는 degrade 경로인데(임베딩 0행 상태를 위한 것), ANN은 관련도와 무관하게
+   항상 `limit`개를 돌려주므로 임베딩이 채워지는 순간 조건이 성립하지 않는다. term 분해 fallback은
+   v0에서 ndcg@10을 0.709 → 0.865로 올린 바로 그 경로다.
+2. **ANN에는 관련도 하한이 없다.** 코퍼스에 전혀 없는 주제를 물어도 유사도 0인 문서들이 후보로
+   올라온다. `exhaustive`/`count`/`negative`는 top-k 컷오프 없이 이 후보 집합을 그대로 답(문서
+   집합/개수)으로 쓰므로, `predicted_count`가 부풀고 "관련 문서 없음"이 정답인 질의가 무언가를
+   돌려주게 된다(`fetch_limit`이 `EXHAUSTIVE_LIMIT`=200인 것도 여기서 곱해진다).
+
+**`suggest_strategies`의 짧은 semantic_query** (확인만, 미수정): `semantic_query`가 비어 있지
+않기만 하면 `vector`가 붙는다. v0/v1-draft 골든셋 94개 질의에 규칙 추출을 돌려 보면 실제로
+"보낸"(`nonghyup.com 도메인 발신자가 보낸 메일`), "내용"(`… .pptx 내용을 요약해줘`)처럼 의미가
+남지 않은 잔여 토큰으로 벡터가 붙는 경우가 있다(6자 이하 7건). 다만 **길이 기준으로 막으면 안
+된다** - 같은 구간에 "동양생명"/"광주은행"/"인수인계"처럼 정상적인 4자 개념어가 섞여 있다.
+올바른 수정은 `_FILLER_RE`에 잔여 기능어를 더하는 쪽이고, 그건 `eval-ir` 회귀로 재고 나서 할 일.
+
+**실적재 확인** (2026-09-04, 청크 936개): 실제로 저장된 `embedding_model`은
+`openai/text-embedding-3-small`(OpenRouter의 모델 id)이고 `Settings.embedding_model`의 기본값은
+`text-embedding-3-small`이다 - 즉 **`.env`가 로드되지 않는 CWD에서 검색을 돌리면 그것만으로
+0히트가 된다**(pydantic의 `env_file=".env"`는 CWD 상대경로라 git worktree 안에서는 안 잡힌다).
+실데이터로 `search_by_embedding`을 돌려 히트 모양/`summary` 길이(496자)/`content_at`/self-match
+score 1.0까지 확인했다. 936행에서는 플래너가 아직 정확 Sort를 골라 위의 ANN 필터 문제가
+발동하지 않는다 - 비용 기반이라 행이 몇 천 개로 늘면 HNSW 경로로 넘어간다(그때가 바로 위
+`_configure_ann_search`가 막는 지점이다).
+
+**진단**: `PostgresStore.embedding_coverage(embedding_model, project_id)`(→ `PipelineStore`에도
+노출). 벡터 검색이 조용히 0히트가 되는 원인 세 가지 - 행이 없다 / 저장할 때와 검색할 때 모델
+이름이 다르다 / 다른 프로젝트에만 있다 - 를 한 번에 보여준다(`rows_by_model_and_kind`는 모델
+필터 없이 집계하므로 이름 불일치가 바로 드러난다). CLI 노출은 아직 없다(`cli.py`는 이 작업
+범위 밖) - `knowledge-forge db embedding-coverage` 정도로 얇게 감싸면 된다.
+
 ## ④ Context Engineering — 부분 구현
 
 `agent/compaction.py`가 **토큰 예산** 관점의 압축(오래된 turn을 요약으로 치환)은 이미 하고
