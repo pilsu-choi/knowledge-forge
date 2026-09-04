@@ -173,7 +173,7 @@ async def run_pipeline(
             await store.record_source(source, item)
 
         try:
-            parser = parser_registry.get_parser_for(item.uri)
+            parser = parser_registry.get_parser_for(item.uri, filename=item.metadata.get("name"))
             document = await parser.parse(item, source_ref)
         except NotImplementedError as exc:
             logger.warning("no working parser for %s, skipping: %s", item.uri, exc)

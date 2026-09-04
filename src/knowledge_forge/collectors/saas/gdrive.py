@@ -19,6 +19,8 @@ _EXPORT_MIME_TYPES = {
 }
 _DEFAULT_EXPORT_MIME_TYPE = "text/plain"
 
+_FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
+
 
 def _parse_rfc3339(value: str) -> datetime:
     if value.endswith("Z"):
@@ -70,15 +72,34 @@ class GoogleDriveCollector(SaaSCollector):
         response = self._client.changes().getStartPageToken().execute()
         self._start_page_token = response.get("startPageToken")
 
-    def initial_sync(self) -> Iterator[RawItem]:
-        query = f"'{self._folder_id}' in parents" if self._folder_id else None
-
+    def _list_files(self, query: str | None) -> Iterator[dict]:
         def request_fn(cursor: str | None) -> tuple[list[dict], str | None]:
             response = self._client.files().list(q=query, pageToken=cursor, fields=_LIST_FIELDS).execute()
             return response.get("files", []), response.get("nextPageToken")
 
-        for file in self._paginate(request_fn):
-            yield self._raw_item_for_file(file)
+        yield from self._paginate(request_fn)
+
+    def initial_sync(self) -> Iterator[RawItem]:
+        # `'{id}' in parents` only lists direct children (Drive has no
+        # recursive-list query), so a scoped folder_id needs a BFS walk of
+        # its subfolders - folders themselves have no downloadable content
+        # and must never be passed to export/get_media. With no folder_id,
+        # `files().list(q=None)` already returns every file the service
+        # account can see in one flat (non-recursive) pass, so a folder
+        # entry there is just skipped rather than re-queried - its children
+        # are already present in that same flat listing, and recursing
+        # into it would yield them a second time.
+        pending_folder_ids: list[str | None] = [self._folder_id] if self._folder_id else [None]
+
+        while pending_folder_ids:
+            parent_id = pending_folder_ids.pop(0)
+            query = f"'{parent_id}' in parents" if parent_id else None
+            for file in self._list_files(query):
+                if file.get("mimeType") == _FOLDER_MIME_TYPE:
+                    if parent_id is not None:
+                        pending_folder_ids.append(file["id"])
+                    continue
+                yield self._raw_item_for_file(file)
 
         self._refresh_start_page_token()
 

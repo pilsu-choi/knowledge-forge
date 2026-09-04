@@ -108,6 +108,45 @@ def test_initial_sync_paginates_downloads_and_exports_native_files():
     assert collector.get_cursor().data["start_page_token"] == "start-1"
 
 
+def test_initial_sync_recurses_into_subfolders_without_downloading_them():
+    # Drive's `'{id}' in parents` query only lists direct children, so a
+    # subfolder found under the scoped root must be walked separately - and
+    # never handed to export/get_media, which 403s on folder ids.
+    list_pages_by_query = {
+        "'root' in parents": [{
+            "files": [
+                {"id": "sub", "name": "Sub", "mimeType": "application/vnd.google-apps.folder", "modifiedTime": "2024-01-01T00:00:00Z"},
+                {"id": "f1", "name": "top.txt", "mimeType": "text/plain", "modifiedTime": "2024-01-01T00:00:00Z"},
+            ],
+            "nextPageToken": None,
+        }],
+        "'sub' in parents": [{
+            "files": [
+                {"id": "f2", "name": "nested.txt", "mimeType": "text/plain", "modifiedTime": "2024-01-02T00:00:00Z"},
+            ],
+            "nextPageToken": None,
+        }],
+    }
+
+    class _FakeFilesResourceByQuery(_FakeFilesResource):
+        def __init__(self, media_by_id):
+            super().__init__([], media_by_id=media_by_id)
+
+        def list(self, **kwargs):
+            self.list_calls.append(kwargs)
+            return _FakeExecutable(list_pages_by_query[kwargs["q"]].pop(0))
+
+    files = _FakeFilesResourceByQuery(media_by_id={"f1": b"top", "f2": b"nested"})
+    changes = _FakeChangesResource([], start_page_token="start-1")
+    client = _FakeDriveClient(files, changes)
+
+    collector = GoogleDriveCollector(client=client, folder_id="root")
+    items = list(collector.initial_sync())
+
+    assert {item.uri for item in items} == {"gdrive://f1", "gdrive://f2"}
+    assert not files.export_media_calls
+
+
 def test_incremental_sync_yields_changed_and_removed_files():
     change_pages = [
         {

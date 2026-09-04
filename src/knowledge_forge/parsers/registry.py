@@ -37,7 +37,7 @@ class ParserRegistry:
         for scheme in parser.supported_schemes:
             self._scheme_parsers[scheme] = parser
 
-    def get_parser_for(self, uri: str) -> Parser:
+    def get_parser_for(self, uri: str, filename: str | None = None) -> Parser:
         parsed = urlparse(uri)
         scheme_parser = self._scheme_parsers.get(parsed.scheme)
         if scheme_parser is not None:
@@ -46,6 +46,11 @@ class ParserRegistry:
         # urlparse handles both plain paths and uri schemes like file:// consistently.
         path = parsed.path or uri
         extension = PurePosixPath(path).suffix.lower()
+        if not extension and filename:
+            # SaaS collectors (e.g. Google Drive) can hand back an opaque
+            # webViewLink as uri - it carries no extension, so fall back to
+            # the original filename from RawItem.metadata["name"].
+            extension = PurePosixPath(filename).suffix.lower()
         parser = self._parsers.get(extension)
         if parser is None:
             raise UnsupportedFormatError(
