@@ -47,6 +47,27 @@ class EvalScore(BaseModel):
     judged_at: datetime
 
 
+class ChunkSample(BaseModel):
+    """`eval-gen`이 질의 생성의 원천으로 뽑아 오는 원문 청크 한 개
+    (wiki/search-evaluation.md (C)의 eval-gen). KnowledgeObject가 아니라
+    `chunks.text`를 쓰는 이유는 그쪽 문서에 적혀 있다 - 추출 품질이 골든셋
+    품질의 상한이 되는 걸 피하고, `--no-extract`로 인제스트한 코퍼스에서도
+    돌아야 하기 때문이다.
+
+    `content_hash`는 정답 문서의 `sources.content_hash` - `golden.py::
+    compute_source_hash`에 그대로 넣어 `source_hash`를 채운다."""
+
+    chunk_id: str
+    document_id: str
+    source_id: str
+    source_type: str
+    content_hash: str
+    text: str
+    token_count: int
+    title: str | None = None
+    uri: str = ""
+
+
 class EvalRunQuery(BaseModel):
     """One golden query's retrieval outcome inside an `EvalRun`
     (`eval_run_query` row). `metrics` is empty and `error` set when
@@ -480,3 +501,68 @@ class EvalStore:
             )
             rows = await cur.fetchall()
         return {document_id: content_hash for document_id, content_hash in rows}
+
+    async def sources_by_type(self, project_id: str | None = None) -> dict[str, int]:
+        """`{source_type: 개수}` - 골든셋 파일의 `index_snapshot.sources_by_type`을
+        채운다. `snapshot_index`가 documents/chunks/knowledge_objects만 세는 것과
+        달리 이건 층화 샘플링이 어느 소스에서 얼마나 뽑을 수 있는지를 보여주는 값이라
+        `eval-gen` 쪽에서만 필요하다."""
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT source_type, count(*) FROM sources
+                WHERE (%s::text IS NULL OR project_id = %s)
+                GROUP BY source_type ORDER BY source_type
+                """,
+                (project_id, project_id),
+            )
+            return {source_type: n for source_type, n in await cur.fetchall()}
+
+    async def list_chunk_candidates(
+        self,
+        *,
+        project_id: str | None = None,
+        min_token_count: int = 80,
+        source_types: list[str] | None = None,
+        limit: int = 5000,
+    ) -> list[ChunkSample]:
+        """`eval-gen`의 층화 샘플링 후보 풀. 층화 자체(소스 타입별 균등 배분,
+        문서당 상한, 시드)는 순수 함수 `evaluation/gen.py::stratified_sample`이
+        하고, 여기서는 **필터링된 후보를 결정적인 순서로** 돌려주기만 한다 -
+        그래야 같은 시드로 같은 샘플이 재현된다(`ORDER BY chunk_id`, DB의
+        기본 행 순서에 의존하지 않음).
+
+        `min_token_count`는 청크 노이즈 필터다: 목차 한 줄, 서명 블록, 빈
+        슬라이드 같은 짧은 청크로는 "이 청크로만 답할 수 있는 질문"이 나오지
+        않는다."""
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT c.chunk_id, c.document_id, c.source_id, s.source_type, s.content_hash,
+                       c.text, c.token_count, d.metadata->>'title', s.uri
+                FROM chunks c
+                JOIN documents d ON d.document_id = c.document_id
+                JOIN sources s ON s.source_id = c.source_id
+                WHERE c.token_count >= %s
+                  AND (%s::text IS NULL OR d.project_id = %s)
+                  AND (%s::text[] IS NULL OR s.source_type = ANY(%s))
+                ORDER BY c.chunk_id
+                LIMIT %s
+                """,
+                (min_token_count, project_id, project_id, source_types, source_types, limit),
+            )
+            rows = await cur.fetchall()
+        return [
+            ChunkSample(
+                chunk_id=chunk_id,
+                document_id=document_id,
+                source_id=source_id,
+                source_type=source_type,
+                content_hash=content_hash,
+                text=text,
+                token_count=token_count,
+                title=title,
+                uri=uri or "",
+            )
+            for chunk_id, document_id, source_id, source_type, content_hash, text, token_count, title, uri in rows
+        ]

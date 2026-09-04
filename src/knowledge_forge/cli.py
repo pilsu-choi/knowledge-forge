@@ -15,7 +15,8 @@ from knowledge_forge.collectors.local_file import LocalFileCollector
 from knowledge_forge.collectors.saas.factory import SAAS_COLLECTOR_BUILDERS
 from knowledge_forge.config import settings
 from knowledge_forge.embedding.factory import get_embedding_provider
-from knowledge_forge.evaluation.golden import load_golden
+from knowledge_forge.evaluation.gen import GenStats, generate_golden
+from knowledge_forge.evaluation.golden import GoldenSet, IndexSnapshot, load_golden, save_golden
 from knowledge_forge.evaluation.ir_compare import compare_runs
 from knowledge_forge.evaluation.ir_runner import run_ir_eval, run_to_dict
 from knowledge_forge.evaluation.judge import judge_search_log
@@ -1141,6 +1142,122 @@ def eval_ir(
         json_path.write_text(json.dumps(run_to_dict(run), ensure_ascii=False, indent=2), encoding="utf-8")
         typer.echo(f"JSON 저장: {json_path}", err=True)
     typer.echo(f"run_id={run.run_id}{' (--no-store: DB 미기록)' if no_store else ''}", err=True)
+
+
+def _format_gen_stats(stats: dict) -> str:
+    """생성 통계 한 덩어리 - "왜 20개 요청했는데 11개가 나왔나"를 한 화면에서
+    설명할 수 있어야 사람 검수가 시작된다."""
+    by_source = ", ".join(f"{k}={v}" for k, v in stats["sampled_by_source_type"].items()) or "-"
+    lines = [
+        f"후보 청크 {stats['candidates']}개 중 {stats['sampled_chunks']}개 샘플링 ({by_source})",
+        f"LLM 호출 {stats['llm_calls']}회 (실패 {stats['llm_failures']}회), 생성된 질의 {stats['raw_queries']}개",
+    ]
+    if stats["rejected"]:
+        lines.append("자동 필터로 버림: " + ", ".join(f"{k}={v}" for k, v in stats["rejected"].items()))
+    lines.append(
+        f"채택 {stats['accepted']}개 / 검색 검증 {stats['verified']}개 / "
+        f"[review:hard] 표시 {stats['flagged_hard']}개"
+    )
+    return "\n".join(lines)
+
+
+@app.command(name="eval-gen")
+def eval_gen(
+    out: Path = typer.Option(
+        Path("tests/eval/golden/v1-draft.json"), "--out", help="생성한 골든셋 초안을 쓸 경로."
+    ),
+    golden_version: str = typer.Option(
+        "v1-draft", "--golden-version", help="골든셋 버전 문자열. 사람 검수 전이므로 'draft'가 들어가야 한다."
+    ),
+    chunks: int = typer.Option(20, "--chunks", help="질의 원천으로 뽑을 청크 수(층화 샘플링)."),
+    per_chunk: int = typer.Option(2, "--per-chunk", help="청크 하나당 요청할 질의 수."),
+    max_queries: int | None = typer.Option(None, "--max-queries", help="채택 질의 수 상한."),
+    min_tokens: int = typer.Option(80, "--min-tokens", help="이 토큰 수 미만 청크는 후보에서 제외(노이즈 필터)."),
+    source_type: str | None = typer.Option(
+        None, "--source-type", help="이 소스 타입만 후보로(쉼표 구분, 예: slack,gmail)."
+    ),
+    project_id: str | None = typer.Option(None, "--project-id", help="이 프로젝트의 청크만 후보로."),
+    seed: int = typer.Option(0, "--seed", help="샘플링 시드 - 같은 시드는 같은 청크를 고른다."),
+    max_per_document: int = typer.Option(2, "--max-per-document", help="한 문서에서 뽑을 청크 수 상한."),
+    provider: str | None = typer.Option(
+        None, "--provider", help="질의 생성에 쓸 ChatProvider. 생략하면 KF_AGENT_PROVIDER(에이전트와 동일)."
+    ),
+    model: str | None = typer.Option(None, "--model", help="생성 모델. 생략하면 그 provider의 기본 모델."),
+    concurrency: int = typer.Option(4, "--concurrency", help="동시 LLM 호출/검증 수."),
+    no_verify: bool = typer.Option(False, "--no-verify", help="생성한 질의를 되돌려 검색하는 자동 검증을 건너뜀."),
+    verify_k: int = typer.Option(10, "--verify-k", help="자동 검증에서 정답 문서를 찾을 상위 k."),
+    force: bool = typer.Option(False, "--force", help="--out 파일이 이미 있어도 덮어씀."),
+    stats_json: Path | None = typer.Option(None, "--stats-json", help="생성 통계를 이 JSON 파일에도 저장."),
+) -> None:
+    """원문 청크(`chunks.text`)에서 LLM으로 골든셋 **초안**을 생성한다
+    (wiki/search-evaluation.md (C)의 eval-gen). 층화 샘플링 → 질의 생성 → 자동 필터 →
+    (선택) 검색 되돌리기 검증까지 돌고, 사람 검수는 이 커맨드 밖이다 - 그래서 결과는
+    항상 draft 버전으로만 나가고 `origin`은 "synthetic"이다. 손으로 쓴
+    `tests/eval/golden/v0.json`은 건드리지 않는다(별도 스모크셋)."""
+    if not settings.database_url:
+        typer.echo("KF_DATABASE_URL이 설정되지 않았습니다 - eval-gen은 Postgres가 필수입니다.", err=True)
+        raise typer.Exit(1)
+    database_url = settings.database_url
+
+    # 사람 검수를 거치지 않은 결과가 정식 버전 파일로 위장하는 걸 구조적으로 막는다.
+    if "draft" not in golden_version.lower():
+        typer.echo("--golden-version에는 'draft'가 들어가야 합니다 (사람 검수 전 초안이므로).", err=True)
+        raise typer.Exit(1)
+    if "draft" not in out.name.lower():
+        typer.echo("--out 파일명에도 'draft'가 들어가야 합니다 (예: tests/eval/golden/v1-draft.json).", err=True)
+        raise typer.Exit(1)
+    if out.exists() and not force:
+        typer.echo(f"{out}이(가) 이미 있습니다 - 덮어쓰려면 --force. (골든셋 버전 파일은 원칙적으로 불변입니다.)", err=True)
+        raise typer.Exit(1)
+
+    chat_provider = get_chat_provider(provider=provider, model=model)
+
+    async def _run() -> tuple[GoldenSet | None, GenStats]:
+        async with EvalStore(database_url) as eval_store:
+            candidates = await eval_store.list_chunk_candidates(
+                project_id=project_id,
+                min_token_count=min_tokens,
+                source_types=_parse_csv_option(source_type),
+            )
+            snapshot = await eval_store.snapshot_index(project_id)
+            by_type = await eval_store.sources_by_type(project_id)
+        index_snapshot = IndexSnapshot(
+            documents=snapshot["documents"],
+            chunks=snapshot["chunks"],
+            knowledge_objects=snapshot["knowledge_objects"],
+            sources_by_type=by_type,
+        )
+        async with PipelineStore(database_url, settings.data_dir) as store:
+            return await generate_golden(
+                candidates,
+                provider=chat_provider,
+                golden_version=golden_version,
+                n_chunks=chunks,
+                per_chunk=per_chunk,
+                seed=seed,
+                max_per_document=max_per_document,
+                max_queries=max_queries,
+                concurrency=concurrency,
+                project_id=project_id,
+                index_snapshot=index_snapshot,
+                store=None if no_verify else store,
+                verify=not no_verify,
+                verify_k=verify_k,
+            )
+
+    golden_set, stats = asyncio.run(_run())
+    stats_dict = stats.to_dict()
+    typer.echo(_format_gen_stats(stats_dict))
+    if stats_json is not None:
+        stats_json.parent.mkdir(parents=True, exist_ok=True)
+        stats_json.write_text(json.dumps(stats_dict, ensure_ascii=False, indent=2), encoding="utf-8")
+    if golden_set is None:
+        typer.echo("자동 필터를 통과한 질의가 하나도 없어 파일을 쓰지 않았습니다.", err=True)
+        raise typer.Exit(1)
+    save_golden(golden_set, out)
+    typer.echo(f"골든셋 초안 저장: {out} ({len(golden_set.queries)}개 질의)", err=True)
+    typer.echo("사람 검수 필요 - '[review:hard]' 표시가 붙은 항목부터 확인하세요.", err=True)
+
 
 
 if __name__ == "__main__":

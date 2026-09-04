@@ -80,7 +80,7 @@ class RetrieveFn(Protocol):
     ) -> Awaitable[RetrievalResultLike]: ...
 
 
-def _default_retrieve_fn() -> RetrieveFn:
+def default_retrieve_fn() -> RetrieveFn:
     from knowledge_forge.search.retrieve import retrieve
 
     return retrieve
@@ -217,7 +217,7 @@ async def run_ir_eval(
     `content_hashes` lets a caller (tests) supply the staleness input
     directly; otherwise it is fetched from `eval_store`, and skipped when
     there is no store at all."""
-    fn = retrieve_fn if retrieve_fn is not None else _default_retrieve_fn()
+    fn = retrieve_fn if retrieve_fn is not None else default_retrieve_fn()
     effective_project = golden.project_id or project_id
     queries = select_queries(golden, query_filter, type_filter)
     config = {

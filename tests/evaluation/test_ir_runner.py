@@ -290,6 +290,6 @@ async def test_missing_retriever_module_surfaces_as_import_error(monkeypatch):
     def _boom():
         raise ImportError("no retrieve module")
 
-    monkeypatch.setattr(ir_runner, "_default_retrieve_fn", _boom)
+    monkeypatch.setattr(ir_runner, "default_retrieve_fn", _boom)
     with pytest.raises(ImportError):
         await run_ir_eval(_golden([Q_NULL]), store=STORE, eval_store=None)  # type: ignore[arg-type]

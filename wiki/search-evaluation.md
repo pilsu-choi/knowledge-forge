@@ -10,7 +10,7 @@
 |---|---|---|---|
 | (A) 로깅 인프라 | query/answer/evidence를 Postgres에 기록 | 불필요 | **구현됨** |
 | (B) Groundedness/Citation 자동 평가 | LLM-as-judge로 claim-evidence 매칭, 비동기 배치 | 불필요 | **구현됨** |
-| (C) Recall/Precision/MRR/NDCG | relevance judgment 필요 | **필요** | **구현됨**(골든셋 v0·지표 모듈·`eval-ir` CLI). `eval-gen` 자동 생성은 다음 단계 |
+| (C) Recall/Precision/MRR/NDCG | relevance judgment 필요 | **필요** | **구현됨**(골든셋 v0·지표 모듈·`eval-ir`/`eval-gen` CLI). v1은 사람 검수 대기 |
 | (D) 명시적 Groundedness Gate | (B)의 판정기를 온라인 게이트로 재사용, iterative retrieval 강화 | 불필요 | 설계만, 미구현 |
 
 ## (A) 로깅 인프라 — **구현됨**, `storage/eval_store.py::EvalStore`
@@ -132,7 +132,7 @@ groundedness_score=1.0으로 정상 채점된다 - 이 둘을 구분하지 않�
 저비용 근사치(RAG 평가에서 표준적인 완화책)다. `eval_score.claims`(실패한 것만이 아니라 전부)를
 사람이 주기적으로 샘플링해 judge 정확도 자체를 검증하는 루틴이 있어야 신뢰도를 유지한다.
 
-## (C) Recall / Precision / MRR / NDCG — 골든셋·지표·`eval-ir` CLI 구현됨, `eval-gen` v1은 다음 단계
+## (C) Recall / Precision / MRR / NDCG — 골든셋·지표·`eval-ir`/`eval-gen` CLI 구현됨, v1 검수가 다음
 
 **왜 로그만으로 계산 불가능한가**: 이 지표들은 "이 질의에 어떤 문서가 관련 있는가"라는 정답이
 있어야 정의된다. 실 트래픽 로그에는 이 정답이 없다 — 사용자가 본 적 없는 관련 문서를 놓친
@@ -150,6 +150,8 @@ groundedness_score=1.0으로 정상 채점된다 - 이 둘을 구분하지 않�
 | `tests/eval/golden/validate_v0.py` | 실 DB 대조 검증 스크립트(id 존재·소속, `source_hash` 일치) — DB가 필요하므로 pytest 밖 |
 | `tests/evaluation/test_golden.py`, `test_ir_metrics.py` | 로더 불변식·지표 손계산·집계·bootstrap 결정론 (DB 불필요, v0.json 로딩 포함) |
 | `evaluation/ir_runner.py` | `run_ir_eval`: 골든셋 질의마다 `search/retrieve.py::retrieve` 호출 → `score_query` → `aggregate`, 결과를 `EvalRun`으로. retriever는 `retrieve_fn`으로 주입(기본값은 지연 import) |
+| `evaluation/gen.py` | `eval-gen`의 생성 파이프라인: `stratified_sample`/`generate_for_chunk`/`reject_reason`/`build_golden_query`/`verify_queries`/`generate_golden` (DB·LLM 모두 주입) |
+| `agent/providers/claude_agent_sdk.py` | 로컬 `claude` CLI 경유 텍스트 전용 ChatProvider(평가 전용, 도구 호출 거부) |
 | `evaluation/ir_compare.py` | `compare_runs`: 두 run의 paired delta + bootstrap CI + win/loss/tie + 유형별 delta |
 | `storage/eval_store.py` (`EvalRun`/`EvalRunQuery`) | `save_eval_run`/`save_eval_run_queries`/`get_eval_run`/`list_eval_runs`/`list_eval_run_queries`, `snapshot_index`, `content_hashes_for` |
 | `cli.py::eval-ir` | 실행·`--compare`·`--list` 세 모드 |
@@ -310,12 +312,92 @@ run 행은 시작 시 한 번(summary 비움), 종료 시 한 번 더 upsert —
   `ndcg@10`)에 `bootstrap_ci`(seed 고정, 결정론) + win/loss/tie + 유형별 delta, 나머지 공유
   지표는 `per_metric`에 평균 delta만. `error`가 난 질의는 짝에서 빠진다(`n`이 알려줌).
 
+## `knowledge-forge eval-gen` — 골든셋 초안 자동 생성 (구현됨)
+
+`evaluation/gen.py` + `cli.py::eval-gen`. **층화 샘플링 → LLM 질의 생성 → 자동 필터 →
+검색 되돌리기 검증**까지 돌고 `origin: "synthetic"` 골든셋 **초안**을 낸다. 사람 검수는
+이 커맨드 밖이다.
+
+```bash
+# 청크 12개를 층화 샘플링해 청크당 2개씩 생성, 최대 20개 채택
+KF_DATABASE_URL=postgresql://... knowledge-forge eval-gen \
+  --provider claude_agent_sdk --chunks 12 --per-chunk 2 --max-queries 20 \
+  --out tests/eval/golden/v1-draft.json --stats-json out/gen-stats.json
+```
+
+옵션: `--chunks`(샘플 청크 수), `--per-chunk`, `--max-queries`, `--min-tokens 80`(청크 노이즈
+하한), `--source-type slack,gmail`, `--project-id`, `--seed 0`, `--max-per-document 2`,
+`--provider/--model`, `--concurrency 4`, `--no-verify`, `--verify-k 10`, `--force`,
+`--stats-json`. `KF_DATABASE_URL` 필수.
+
+### 왜 이렇게 만들었나
+
+- **원천은 `chunks.text`(원문 청크)이지 KnowledgeObject가 아니다.** KO에서 뽑으면 추출 품질이
+  골든셋 품질의 상한이 되고(추출이 놓친 사실은 질문이 될 수 없다), `--no-extract` 경로로
+  인제스트한 코퍼스에서는 아예 돌지 않는다. 청크를 원천으로 두면 "KO 임베딩 vs 청크 임베딩"
+  (`KF_EMBEDDING_SOURCE`) A/B도 같은 골든셋으로 잰다.
+- **임베딩에 의존하지 않는다.** 샘플링은 SQL 필터 + 결정적 층화, 검증은 렉시컬/메타데이터
+  경로만으로도 돈다 — `OPENAI_API_KEY` 없는 환경에서 생성이 멈추면 안 된다.
+- **층화는 비례가 아니라 라운드로빈**(`source_type`별). 개발 DB는 google_drive 246 / slack 197 /
+  gmail 59로 치우쳐 있어 비례 배분이면 소수 소스가 사실상 빠지고, 유형별 집계가 한 소스의
+  성능이 된다. `--max-per-document`는 청크가 많은 긴 문서 하나가 샘플을 독점하는 걸 막는다.
+- **생성 가능한 유형은 11종뿐**(`gen.py::SINGLE_CHUNK_TYPES`: factoid/specific_document_qa/
+  navigational/whole_document_summary/exact_match/entity_centric/temporal/metadata_filter/
+  parent_child/conversation_thread/long_range_context). 나머지 유형은 `golden.py` 로더가 정답
+  모양을 강제하는데(aggregation→`count`, set_query→`exhaustive`, negative/null→`none=true`,
+  relative_temporal/latest→`as_of`, ambiguous/multihop/비교→문서 2개 이상) 그 모양은 청크
+  하나에서 나오지 않는다. 억지로 만들면 "정답이 한 문서뿐인 set_query" 같은 거짓 라벨이 된다.
+- **자동 필터는 버리는 것과 표시하는 것을 나눈다.**
+  - *버림*: 청크 문장을 그대로 베낀 질의(질의와 청크의 최장 공통 부분 문자열 ≥ 25자 —
+    한국어는 조사 때문에 토큰 자카드보다 이쪽이 복사를 훨씬 잘 가른다), 12자 미만, 중복,
+    생성 불가 유형, 스키마 위반.
+  - *표시*: 생성된 질의를 `search/retrieve.py::retrieve`로 되돌려 검색해 정답 문서가 상위 k에
+    없으면 `notes`에 `[review:hard]`. **버리지 않는 이유**: 검색이 못 찾는 질의를 빼면 골든셋이
+    "항상 좋은 점수가 나오는" 자기충족 예언이 된다. 어려운 질의야말로 개선을 측정할 여지가
+    있고, 진짜 모호한 것과 검색이 약한 것을 가르는 건 사람 몫이다. 검증은 provider 없이
+    (규칙 기반 제약 추출만) 돌아 결정적이다.
+- **출력은 항상 draft**: `--golden-version`과 `--out` 파일명 양쪽에 "draft"가 없으면 CLI가
+  거부하고, 이미 있는 파일은 `--force` 없이 덮어쓰지 않는다. 사람 검수를 안 거친 결과가
+  정식 버전 파일로 위장하면 과거 eval run과의 비교가 조용히 깨진다.
+- 통과 질의가 0개면 빈 파일을 쓰지 않고 통계만 출력한 뒤 exit 1 — 빈 골든셋은 로더가 거부한다.
+
+### LLM provider — `claude_agent_sdk` (신규, 평가 전용)
+
+`agent/providers/claude_agent_sdk.py::ClaudeAgentSDKChatProvider`. 로컬 `claude` CLI를 통해
+한 번 호출하는 **텍스트 전용** provider로, ANTHROPIC_API_KEY 없이(Claude Code 로그인만으로)
+`eval`/`eval-ir`/`eval-gen`을 돌리기 위한 것이다. `config.py`의 `agent_provider` Literal에는
+**일부러 넣지 않았다** — wiki/agent-runtime.md의 "claude_agent_sdk는 harness의 어떤 모드에도
+들어오지 않는다"는 판단은 그대로다. `get_chat_provider(provider="claude_agent_sdk")`로
+명시적으로 요청할 때만 만들어지고, `tools`가 비어 있지 않으면 `NotImplementedError`를 던진다.
+
+### 첫 생성 결과 (2026-09-04, `tests/eval/golden/v1-draft.json`)
+
+청크 12개(gmail 4 / google_drive 4 / slack 4) → 생성 20개 → `copied_from_chunk` 2개 버림 →
+**채택 18개**, 그중 **12개가 `[review:hard]`**. 유형은 factoid 9 / conversation_thread 5 /
+temporal 3 / exact_match 1.
+
+flag 비율이 높은 건 대체로 생성기 문제가 아니라 **검증 환경의 한계**다: 임베딩이 0행이라
+`vector`가 항상 비어 렉시컬/메타데이터로만 검증되고, slack/gmail 청크 수준의 질문은 문서
+제목에 단서가 없어 pg_trgm으로 잡히지 않는다. 임베딩을 채운 뒤 다시 검증하면 상당수가
+풀릴 것으로 본다. 눈으로 본 품질 소견:
+
+- 잘 나온 것: 문서명/식별자가 질의에 박힌 것(`프로젝트 투입 관리_2026-031_...`, Google Sheets
+  링크 `exact_match`), 기술 문서의 규칙을 묻는 factoid. 정답도 `notes`에 정확히 적힌다.
+- 약한 것: **문맥 의존 질의**가 남는다("3차 인터뷰에 사용하기 위해 전달된 파일은?"처럼 여러
+  문서에 걸릴 수 있는 질문). 프롬프트가 "가리키는 말 대신 고유명사를 넣어라"라고 지시해도
+  청크가 짧은 slack 메시지면 넣을 고유명사 자체가 없다 — 채널 id(`#C0BSW8Y2AD9`)로 대신
+  채우는데, 사람이 실제로 칠 질의는 아니다. 검수 때 이 부류를 걷어내거나
+  `--source-type gdrive`로 소스를 좁히는 게 현실적이다.
+- 개인 이름은 실제로 들어가지 않았다(프롬프트 규칙이 지켜짐).
+
 ### 다음 단계
 
-1. **`knowledge-forge eval-gen`** — `chunks.text`에서 층화 샘플링(type/document_type/source) →
-   LLM 질의 생성 → 자동 필터 → `origin: "synthetic"`으로 **v1 발행**. v0는 그대로 두고 v1이
-   사람 검수(Tier A)를 거친 첫 절대값 기준이 된다.
-2. **`eval-gen --from-traffic`** — `search_feedback.rating='up' ∧ groundedness ≥ 0.9`인
+1. **v1-draft 사람 검수 → v1 발행.** `[review:hard]` 12개부터 본다. 검수를 마치면 파일명을
+   `v1.json`으로 굳히고(그때부터 불변) 첫 절대값 기준(Tier A)으로 쓴다.
+2. **청크 하나로 못 만드는 유형**(aggregation/set_query/negative/null/multihop/비교/
+   relative_temporal/latest/ambiguous)은 여전히 손 작성이거나 별도 생성기가 필요하다 —
+   v0의 그 항목들을 v1로 옮겨 오는 게 가장 싸다.
+3. **`eval-gen --from-traffic`** — `search_feedback.rating='up' ∧ groundedness ≥ 0.9`인
    `search_log`의 evidence를 `origin: "feedback"`으로 편입(Tier C). 노이즈가 크므로 큐레이션 셋을
    대체하지 않는다.
 ### v0 첫 실측 baseline (2026-09-04)
@@ -556,11 +638,11 @@ agent_groundedness_gate_max_retries: int = 2
    실패 원인 추적"의 최소 형태(사람이 `search_log`를 직접 읽는 것)를 제공한다.
 2. **(B) Groundedness/Citation LLM-judge 배치 — 구현됨.** `knowledge-forge eval`을 주기적으로
    돌리기 시작하면 실패 유형 데이터가 쌓인다.
-3. **(C) 골드셋 기반 Recall/Precision/MRR/NDCG — 스키마·v0·지표·`eval-ir` CLI 구현됨,
-   `eval-gen` v1 다음.** `evaluation/golden.py`/`ir_metrics.py`/`ir_runner.py`/`ir_compare.py`,
+3. **(C) 골드셋 기반 Recall/Precision/MRR/NDCG — 스키마·v0·지표·`eval-ir`/`eval-gen` CLI
+   구현됨, v1 사람 검수가 다음.** `evaluation/golden.py`/`ir_metrics.py`/`ir_runner.py`/`ir_compare.py`,
    `eval_run`/`eval_run_query` 테이블, `knowledge-forge eval-ir`(실행·`--compare`·`--list`)까지
-   있다. `search/retrieve.py`가 합류하면 v0 baseline run을 남기고, `eval-gen`으로 사람 검수를
-   거친 v1을 발행하는 것이 다음이다.
+   있다. v0 baseline run은 남겼고, `eval-gen`이 낸 `v1-draft.json`을 사람이 검수해 v1으로
+   굳히는 것이 다음이다.
 4. **(D) 온라인 Groundedness Gate — 설계만.** `knowledge-forge eval`을 몇 주 돌려 실사용
    hallucination/citation 오류 빈도가 실제로 문제 될 만큼 나오는지 (B)의 데이터로 먼저
    확인한 뒤 켜는 옵션 - 데이터 없이 미리 만들면 근거 없는 지연시간/비용 증가가 된다.
