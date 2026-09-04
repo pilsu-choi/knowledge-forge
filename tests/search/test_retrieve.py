@@ -201,7 +201,9 @@ async def test_metadata_filter_intersects_other_sources_and_records_sql(monkeypa
 
     assert "metadata_filter" in result.strategies
     step = next(s for s in result.steps if s.strategy == "metadata_filter")
-    assert "d.title ILIKE '%회의록%'" in step.detail["sql"]
+    # 타입 라벨("회의록")은 더 이상 술어가 아니다 - 제목을 타입 라벨로 쓰던 술어를 없앴다
+    # (`_is_source_hint_only_filter` docstring). 남는 술어는 시간 범위뿐이다.
+    assert "ILIKE" not in step.detail["sql"]
     assert "COALESCE(s.modified_at, s.collected_at) >=" in step.detail["sql"]
     assert step.detail["applied"].startswith("intersected:")
     assert result.document_ids == ["d2"]
@@ -231,9 +233,47 @@ async def test_metadata_filter_alone_returns_its_rows_newest_first(monkeypatch):
 
     step = next(s for s in result.steps if s.strategy == "metadata_filter")
     assert "s.metadata->>'participants' ILIKE '%김철수%'" in step.detail["sql"]
+    # slack의 `participants`는 유저 ID 배열이라 사람 이름이 절대 닿지 않는다 - SlackDirectory가
+    # 푼 `participant_names`를 같이 봐야 "누가 보낸/누가 참여한" 질의가 슬랙에 닿는다.
+    assert "s.metadata->>'participant_names' ILIKE '%김철수%'" in step.detail["sql"]
     assert step.detail["applied"] == "filter_only"
     assert result.document_ids == ["new", "old"]
     assert result.scores == [1.0, 1.0]
+
+
+async def test_document_type_label_never_filters_by_title(monkeypatch):
+    """제목은 사람이 읽는 문자열이지 문서 종류 라벨이 아니다.
+
+    실측 붕괴 재현: 슬랙 제목에 첫 메시지 발췌를 붙이면(`fix/slack-channel-names`의
+    `_SLACK_EXCERPT_CHARS`) "[done] 운영 **매뉴얼** 초안" 같은 스레드가 `%매뉴얼%`에 걸린다.
+    그 술어는 구조적 술어로 분류돼 **교집합**을 잡으므로, 오탐 1건이 관련도 랭킹 전체를
+    대체했다(v0-whole_document_summary-003 ndcg 0.631 → 0.000).
+
+    여기서는 관련도 arm이 d1/d2/d3을 물어왔는데 제목 오탐 f1만 필터에 걸린 상황을 만든다.
+    예전 코드는 교집합이 0이라 `no_overlap_fallback_to_filter`로 f1 하나만 내보냈다."""
+    store = _FakeStore(filter_rows=[_filter_row("f1", datetime(2026, 8, 30, tzinfo=timezone.utc))])
+    _patch_vector(monkeypatch, [_chunk_hit("d1", "c1", 0.9), _chunk_hit("d2", "c2", 0.8), _chunk_hit("d3", "c3", 0.7)])
+
+    result = await retrieve("운영 매뉴얼 내용 알려줘", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.strategy == "metadata_filter")
+    assert step.detail.get("skipped") == "no_predicate"
+    assert "f1" not in result.document_ids
+    assert result.document_ids[:3] == ["d1", "d2", "d3"]
+
+
+async def test_negative_query_with_a_type_label_is_not_rescued_by_a_title_false_positive(monkeypatch):
+    """`v0-negative-001`("Kubernetes 클러스터 구성 가이드")의 붕괴 형태 - none_correct 1.0 → 0.0.
+
+    정답이 없어야 하는 질의인데 `%가이드%`에 걸린 오탐 하나가 교집합을 잡아 답으로 나갔다.
+    타입 라벨이 술어를 만들지 않으면 필터 자체가 돌지 않는다."""
+    store = _FakeStore(filter_rows=[_filter_row("guide-false-positive", datetime(2026, 8, 30, tzinfo=timezone.utc))])
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("Kubernetes 클러스터 구성 가이드", store=store, now=_NOW)
+
+    assert "guide-false-positive" not in result.document_ids
+    assert result.document_ids == []
 
 
 async def test_source_type_hint_alone_never_hard_filters_the_relevance_ranking(monkeypatch):
@@ -325,17 +365,44 @@ async def test_keyword_arm_still_runs_when_vector_returned_hits(monkeypatch):
     assert set(result.document_ids) == {"d1", "d2", "d3"}
 
 
-async def test_term_fallback_is_skipped_when_the_whole_query_already_matched(monkeypatch):
-    """질의 문자열 통째로 걸린 히트가 term 하나하나보다 강한 신호다 - term 분해는 그게 빈손일
-    때만 도는 구제 경로. 항상 돌리면 제목이 정확히 맞은 질의를 term 히트가 밀어낸다
+async def test_term_fallback_is_skipped_when_the_title_anchor_matched(monkeypatch):
+    """제목 substring 완전 일치(anchor)는 가장 강한 신호다 - term 분해가 돌면 안 된다.
+    항상 돌리면 제목이 정확히 맞은 질의를 term 히트가 밀어낸다
     (v0-navigational-002 "codex README": ndcg 1.000 → 0.356)."""
-    store = _FakeStore(title_hits={"codex README": [_doc_hit("d1", 0.8)]})
+    store = _FakeStore(title_hits={"codex README": [_doc_hit("d1", 1.0)]})
     _patch_vector(monkeypatch, [])
 
     result = await retrieve("codex README", store=store, now=_NOW)
 
     assert not [s for s in result.steps if s.detail.get("mode") == "per_term"]
     assert [q for q, _limit in store.chunk_calls] == ["codex README"]
+
+
+async def test_term_fallback_is_skipped_when_several_documents_already_matched(monkeypatch):
+    """anchor가 없어도 서로 다른 문서 둘 이상이 걸렸으면 이미 순서가 있는 후보 집합이다 -
+    거기에 term별 소스를 얹으면 약한 히트가 강한 히트를 밀어낸다."""
+    store = _FakeStore(title_hits={"codex README": [_doc_hit("d1", 0.8), _doc_hit("d2", 0.7)]})
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("codex README", store=store, now=_NOW)
+
+    assert not [s for s in result.steps if s.detail.get("mode") == "per_term"]
+
+
+async def test_term_fallback_runs_when_the_whole_query_matched_only_one_document(monkeypatch):
+    """**약한 1히트**는 랭킹이 아니다 - 예전 게이트(`0히트일 때만`)는 그 1건이 결과 전부가
+    되게 놔뒀다(v0-multihop-002: 슬랙 제목에 발췌가 붙어 1건이 잡히자 1.000 → 0.613).
+    문서 하나뿐이면 term 분해로 구제한다."""
+    store = _FakeStore(
+        title_hits={"codex README": [_doc_hit("d1", 0.4)]},
+        chunk_hits={"README": [_chunk_hit("d2", "c2", 0.5)], "codex": [_chunk_hit("d2", "c9", 0.5)]},
+    )
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("codex README", store=store, now=_NOW)
+
+    assert [s for s in result.steps if s.detail.get("mode") == "per_term"]
+    assert "d2" in result.document_ids
 
 
 async def test_term_fallback_splits_the_query_and_ranks_by_term_coverage(monkeypatch):

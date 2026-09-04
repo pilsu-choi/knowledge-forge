@@ -1245,3 +1245,58 @@ agent_groundedness_gate_max_retries: int = 2
   지금 범위 밖.
 - **Graph/SQL search가 라우팅에 추가될 때의 스키마 변경** — `evidence`/`tool_calls`가 이미
   JSONB라 소스 종류가 늘어도 컬럼 추가 없이 흡수된다.
+
+## `title_types` 술어 제거 + term fallback 게이트 완화 실측 (2026-09-05)
+
+코퍼스 상태(측정 전후 동일 확인): `documents` 358 / `chunks` 2856 /
+`knowledge_object_embeddings` 2856. 슬랙 제목은 `#<채널명> <날짜>` 형태(발췌 **꺼져 있음**,
+`_SLACK_EXCERPT_CHARS = 0`).
+
+| run | 라벨 | run_id | ndcg@10 | none_correct |
+|---|---|---|---|---|
+| A | 기준선(main `da64fac`) | `fe4d5737ff6047058e120c52e2ebad5b` | 0.8490 | 1.000 |
+| B | `fix/title-types-filter` | `0878e655f73146939ae47e79dfd9a148` | 0.8490 | 1.000 |
+
+`--compare A B --metric ndcg@10`: **delta +0.0000, win/loss/tie = 0/0/70.** 전 유형 전 질의가
+동일하다. hit@1 0.729 / recall@5 0.877 / mrr 0.830 / exhaustive_recall 0.908 /
+count_match 0.333 / none_correct 1.000도 소수점까지 같다.
+
+**이 "변화 없음"이 이 변경의 목표다.** 세 결함은 전부 *지금* 손해를 내는 것이 아니라,
+슬랙 제목 발췌를 켰을 때 **이득을 상쇄하는** 것들이었다. 그래서 현 코퍼스에서 신호가 0이면
+"발췌를 켜도 안전하다"는 뜻이고, 회귀가 0이면 "지금 잃는 것도 없다"는 뜻이다.
+
+### `steps`로 확인한 실제 경로 변화 (집계가 같아도 코드 경로는 바뀌었다)
+
+- `d.title ILIKE`를 쓰던 질의는 정확히 4개였고(`v0-long_range_context-002`,
+  `v0-negative-001`, `v0-null-002`, `v0-whole_document_summary-003`), run B에서 넷 다
+  `metadata_filter` step이 `skipped="no_predicate"`로 바뀌었다. **발췌를 켰을 때 무너진다고
+  기록된 두 질의(`negative-001`, `whole_document_summary-003`)가 그 안에 있다.** 현
+  코퍼스에서는 그 술어가 오탐도 정탐도 만들지 않고 있었다 — 즉 **얻는 것 없이 지뢰만
+  깔려 있었다.**
+- term fallback을 도는 질의는 25 → 29개. 새로 도는 것은 `v0-factoid-002`, `v0-factoid-010`,
+  `v0-exact_match-003`, `v0-parent_child-002`, `v0-cross_document_comparison-003`(전부 tie).
+  `v0-long_range_context-002`는 필터가 사라지며 arm 히트가 2건 이상이 되어 fallback을
+  **덜** 돈다(역시 tie). **약한 히트를 살리면서 강한 히트를 밀어내지 않았다**는 실측이다.
+- `participant_names` OR는 `v0-metadata_filter-001`의 SQL에 실제로 실렸다(손실 없음). v0
+  골든셋에는 "슬랙에서 누가 보낸" 류 질의가 없어 **이득은 측정되지 않았다** — 코드와
+  데이터(slack 197/197행에 `participant_names` 존재)는 준비됐고, 그 이득을 재려면 골든셋에
+  해당 질의가 필요하다.
+
+### 못 잰 것 — 발췌 제목 이득의 실측 회복
+
+`_SLACK_EXCERPT_CHARS`를 켜고 제목 백필을 다시 돌리는 것은 **하지 않았다**(공유 DB의 다른
+baseline을 무효화하는 사고가 이 세션에 이미 한 번 있었다 — `documents.title` 변경은 행 수도
+`updated_at`도 안 바꿔서 눈에 띄지 않는다). 대신 붕괴 형태를 **단위 테스트로 재현**했고, 세
+테스트 모두 수정 전 코드에서 실패하고 수정 후 통과한다:
+
+- `test_document_type_label_never_filters_by_title` — 제목 오탐 1건이 관련도 랭킹을
+  대체하던 형태(`whole_document_summary-003`).
+- `test_negative_query_with_a_type_label_is_not_rescued_by_a_title_false_positive` —
+  `negative-001`의 `none_correct` 붕괴 형태.
+- `test_term_fallback_runs_when_the_whole_query_matched_only_one_document` —
+  약한 1히트가 게이트를 닫던 형태(`multihop-002`).
+
+즉 **"발췌를 켜면 0.631→1.000이 되돌아온다"는 아직 실측이 아니다.** 다음 사람이 할 일은
+`_SLACK_EXCERPT_CHARS`를 되돌리고 `db backfill-slack-names`를 돌린 뒤(원재료
+`sources.metadata.first_message`는 이미 저장돼 있다) 이 브랜치 위에서 A/B를 다시 재는 것이다.
+그때 반드시 **같은 코퍼스 상태에서 baseline을 새로 뜨고** 비교해라.

@@ -109,6 +109,10 @@ _MAX_FALLBACK_TERMS = 10
 # 2위와 이만큼 벌어져야 한다. 2위도 1.0이면("AGENTS.md" vs "agents-skills-AGENTS.md") ambiguous.
 _ANCHOR_MIN_SCORE = 1.0
 _ANCHOR_MIN_GAP = 0.2
+# `keyword_arm`이 term 단위 fallback(`_term_fallback`)으로 내려가는 기준 - 질의 문자열 통째로
+# 건 두 조회(제목+본문)가 **서로 다른 문서를 이만큼도 못 물어왔으면** 그건 랭킹이 아니라 우연
+# 한 건이다. 문서 수로 세는 이유와 값이 2인 이유는 `keyword_arm` 안의 주석에.
+_ARM_STRONG_DOCUMENTS = 2
 # whole_document에서 anchor가 없을 때 읽는 상위 문서 수, 그리고 한 문서에서 싣는 본문 상한 -
 # `agent/tools.py::_READ_DOCUMENT_MAX_CHARS`와 같은 값(그쪽 상수를 import하면 계층이 뒤집힌다).
 _WHOLE_DOCUMENT_TOP_N = 2
@@ -289,7 +293,16 @@ def _metadata_filter_where(constraints: QueryConstraints, project_id: str | None
 
     def _person(name: str) -> str:
         pattern = _like_literal(name)
-        return f"(s.metadata->>'participants' ILIKE {pattern} OR d.metadata->>'author' ILIKE {pattern})"
+        # `participants`는 소스마다 모양이 다르다: gmail은 "이름 <주소>" 문자열이라 이름이 그대로
+        # 들어 있지만 slack은 유저 ID 배열(["U0…"])이라 사람 이름이 절대 닿지 않는다.
+        # `participant_names`는 SlackDirectory가 그 ID를 사람이 읽는 이름으로 푼 배열이다
+        # (collectors/saas/slack.py, wiki/saas-connectors.md). 원시 `participants`는 조인 키로
+        # 그대로 남겨 두므로 여기서는 **둘 다** 본다 - 어느 한쪽만 보면 소스 하나가 통째로 빠진다.
+        return (
+            f"(s.metadata->>'participants' ILIKE {pattern}"
+            f" OR s.metadata->>'participant_names' ILIKE {pattern}"
+            f" OR d.metadata->>'author' ILIKE {pattern})"
+        )
 
     # 작성자는 "그중 하나"(OR), 참여자는 "전부 참석"(AND) - "A와 B의 회의"는 둘 다 있어야 한다.
     if constraints.authors:
@@ -297,9 +310,11 @@ def _metadata_filter_where(constraints: QueryConstraints, project_id: str | None
     for name in constraints.participants:
         where.append(_person(name))
 
-    title_types = [t for t in constraints.document_types if t not in _DOCUMENT_TYPE_AS_SOURCE]
-    if title_types:
-        where.append("(" + " OR ".join(f"d.title ILIKE {_like_literal(t)}" for t in title_types) + ")")
+    # `document_types` 중 소스로 매핑되지 않는 라벨("회의록"/"매뉴얼"/"보고서"…)에는 **술어를
+    # 걸지 않는다.** 예전에는 `d.title ILIKE '%매뉴얼%'`로 걸었는데, 제목은 사람이 읽는 문자열이지
+    # 타입 라벨이 아니다 - 제목에 본문이 조금이라도 섞이면 곧바로 오탐이고, 이 필터는
+    # `_is_source_hint_only_filter`가 "믿을 만한 구조적 술어"로 분류해 **교집합**을 잡으므로
+    # 오탐 1건이 결과 전체를 대체한다. 근거와 기각한 대안은 그 함수 docstring에.
     return where
 
 
@@ -317,11 +332,48 @@ def _is_source_hint_only_filter(constraints: QueryConstraints) -> bool:
       없다. 이런 질의는 semantic_query가 "보낸" 한 단어로 쪼그라들어 관련도 arm이 오히려 쓰레기다.
     - 반면 `source_type` 하나뿐인 필터는 `SOURCE_TYPE_MARKERS` 정규식이 질의 표면 어휘만 보고
       찍은 추측이고, 그 어휘→source_type 매핑은 방향이 자주 반대다(merge() 주석의 코퍼스 실측).
+
+    **"제목 종류"가 이 목록에서 빠진 경위**(2026-09-05). 예전에는 `document_types` 중 소스로
+    매핑되지 않는 라벨을 `d.title ILIKE '%매뉴얼%'`로 걸고 그걸 구조적 술어로 쳤다. 그 술어는
+    **제목을 문서 종류 라벨로 쓴다**는 잘못된 전제 위에 있었고, 슬랙 제목에 첫 메시지 발췌를
+    붙이자마자 실측으로 무너졌다(`fix/slack-channel-names`의 `_SLACK_EXCERPT_CHARS`):
+    `v0-whole_document_summary-003` ndcg 0.631→0.000("[done] 운영 매뉴얼 초안" 스레드가
+    `%매뉴얼%`에 걸림), `v0-negative-001`("Kubernetes 클러스터 구성 가이드") none_correct
+    1.0→0.0. **negative 질의까지 깨진다**는 게 핵심이다 - 오탐 1건이 교집합을 잡아 결과
+    전체를 대체하기 때문이다.
+
+    "신뢰할 수 있는 출처로 옮긴다"를 먼저 시도했고 **기각했다.** 개발 DB 실측:
+    - `documents.metadata`에 `document_type` 키는 **없다**(358행 전부. 있는 키는 created_at/
+      page_count/author/language/title/version_*).
+    - `knowledge_objects.document_type`은 있지만 **LLM이 매번 자유 문자열로 쓴 값**이라
+      5107행에 서로 다른 값이 **571가지**다("Slack 메시지"/"Slack 대화"/"슬랙 메시지"/
+      "Slack message"/"guide"/"guide or manual"…). `DOCUMENT_TYPE_MARKERS`의 8개 라벨로
+      정규화할 방법이 없고, 정규화한들 KO가 붙은 문서가 **263/358**뿐이라 나머지 95건이
+      "타입 불명"이 아니라 "타입 불일치"로 **하드 필터에서 통째로 사라진다.** 하드 필터의
+      입력으로 쓰기에는 정밀도도 커버리지도 모자란다.
+    그래서 술어 자체를 없앴다. 타입 라벨은 그동안에도 `semantic_query`를 통해 제목/본문/벡터
+    arm에 이미 들어가고 있다("회의록 요약해줘"의 "회의록"은 `document_search`가 본다) - 잃은
+    것은 **하드 필터로서의** 타입 조건뿐이다.
     """
     if not constraints.source_types and not any(t in _DOCUMENT_TYPE_AS_SOURCE for t in constraints.document_types):
         return False
-    title_types = [t for t in constraints.document_types if t not in _DOCUMENT_TYPE_AS_SOURCE]
-    return not (constraints.authors or constraints.participants or constraints.time_range or title_types)
+    return not (constraints.authors or constraints.participants or constraints.time_range)
+
+
+def _has_metadata_predicate(constraints: QueryConstraints) -> bool:
+    """`_metadata_filter_where`가 `project_id` 말고 **실제 술어를 하나라도** 만드는가.
+
+    `suggest_strategies`는 `document_types`가 있으면 metadata_filter를 고르는데, 소스로
+    매핑되지 않는 타입 라벨은 이제 술어를 만들지 않는다(위 함수 참고). 그대로 두면 WHERE가
+    `project_id` 하나뿐인 질의가 코퍼스 전체(`_FILTER_MAX_ROWS`)를 긁어와 아무것도 안 거르는
+    교집합을 잡는다 - 왕복만 낭비하고 `filter_only`/`no_overlap` 분기의 의미도 흐려진다."""
+    return bool(
+        constraints.source_types
+        or any(t in _DOCUMENT_TYPE_AS_SOURCE for t in constraints.document_types)
+        or constraints.authors
+        or constraints.participants
+        or constraints.time_range is not None
+    )
 
 
 _FILTER_FROM = "FROM documents d JOIN sources s ON s.source_id = d.source_id"
@@ -568,6 +620,15 @@ class _Run:
         self.step(STRATEGY_LEXICAL, SOURCE_LEXICAL_SEARCH, len(collected), terms=terms, anchor_narrowing=narrowing)
 
     async def metadata_filter(self) -> None:
+        if not _has_metadata_predicate(self.c):
+            self.step(
+                STRATEGY_METADATA_FILTER,
+                SOURCE_SQL_SEARCH,
+                0,
+                skipped="no_predicate",
+                filters={"document_types": self.c.document_types},
+            )
+            return
         where = _metadata_filter_where(self.c, self.project_id)
         sql = _metadata_filter_sql(where)
         rows, _columns = await self.store.execute_readonly_query(sql, _FILTER_MAX_ROWS)
@@ -722,10 +783,32 @@ class _Run:
         body_hits, _ = _narrow_to_anchor(fetched.body, self.anchor)
         self.add_hits(SOURCE_LEXICAL_SEARCH_SEMANTIC, body_hits)
         self.step(STRATEGY_LEXICAL, SOURCE_LEXICAL_SEARCH_SEMANTIC, len(body_hits), query=query, arm="semantic_query")
-        # 질의 문자열 통째로 뭔가 걸렸으면 그게 term 하나하나보다 강한 신호다 - term 분해는
-        # 그게 빈손일 때만 도는 구제 경로다. 항상 돌리면 "codex README"처럼 제목이 정확히
-        # 맞은 질의에서 term별 히트가 정답을 밀어낸다(v0-navigational-002: ndcg 1.000 → 0.356).
-        if not title_hits and not body_hits:
+        # 질의 문자열 통째로 뭔가 **강하게** 걸렸으면 그게 term 하나하나보다 강한 신호다 -
+        # term 분해는 그 신호가 약할 때만 도는 구제 경로다. 항상 돌리면 "codex README"처럼
+        # 제목이 정확히 맞은 질의에서 term별 히트가 정답을 밀어낸다(v0-navigational-002:
+        # ndcg 1.000 → 0.356).
+        #
+        # 예전 게이트는 `not title_hits and not body_hits`, 즉 **0히트에만** 반응했다. 그래서
+        # 약한 1히트가 게이트를 닫아 그 1건이 결과 전부가 됐다(v0-multihop-002: 슬랙 제목에
+        # 발췌가 붙어 `document_search`가 1건을 물어오자 1.000 → 0.613. 기준선에서는 0히트라
+        # fallback이 돌아 gmail 정답까지 데려왔다). 히트가 **있다/없다**가 아니라 **강하다/
+        # 약하다**로 판정해야 하는 이유가 이것이다.
+        #
+        # 판정을 문서 수로, 임계를 2로 잡은 이유:
+        # - 히트 수가 아니라 **문서 수**다. 한 문서의 청크 여러 개는 "여러 후보"가 아니다.
+        # - 서로 다른 문서 1건은 애초에 랭킹이 아니다 - 비교 대상이 없어 RRF가 할 일이 없고,
+        #   `lexical_search`의 3단 매칭에서 그 1건은 대개 마지막 `word_similarity` 티어로
+        #   겨우 걸린 것이다. 반면 2건 이상이면 이미 순서가 있는 후보 집합이라, 거기에
+        #   term별 소스 열 개를 얹으면 **약한 히트를 살리려다 강한 히트를 밀어낸다**
+        #   (같은 실패 양식: `latest` 후처리, `feature/links-ranking`의 무게이트 링크 확장).
+        #   그래서 임계는 일부러 최소값으로 둔다 - 구제 경로를 넓히는 상수가 아니다.
+        # - anchor가 잡혔으면(제목 substring 완전 일치) 문서 수는 좁히기 때문에 1이 되지만
+        #   그건 가장 강한 신호다. 그래서 anchor를 먼저 본다 - 이게 없으면
+        #   v0-navigational-002가 그대로 회귀한다.
+        arm_documents = len(
+            {hit["document_id"] for hit in [*title_hits, *body_hits] if hit.get("document_id")}
+        )
+        if self.anchor is None and arm_documents < _ARM_STRONG_DOCUMENTS:
             await self._term_fallback()
 
     async def _term_fallback(self) -> None:
