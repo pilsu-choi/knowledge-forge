@@ -324,3 +324,58 @@ CREATE TABLE IF NOT EXISTS eval_score (
     judge_model         TEXT NOT NULL,
     judged_at           TIMESTAMPTZ NOT NULL
 );
+
+-- Golden-set IR evaluation runs (wiki/search-evaluation.md (C)) - one
+-- `eval_run` per `knowledge-forge eval-ir` invocation plus one
+-- `eval_run_query` per golden query. Separate from `eval_score` (which keys
+-- on live `search_log` traffic) because these score a fixed gold file with
+-- no user in the loop, and the A/B comparison (`eval-ir --compare`) needs
+-- the *per-query* metrics of both runs, not just the aggregate - hence the
+-- child table rather than a single JSONB blob. run_id is uuid4 like
+-- search_log.log_id (event row, not Knowledge Graph content).
+CREATE TABLE IF NOT EXISTS eval_run (
+    run_id          TEXT PRIMARY KEY,
+    golden_version  TEXT NOT NULL,
+    golden_path     TEXT NOT NULL,
+    project_id      TEXT,
+    -- {provider, model, limit, strategies_override, use_llm_constraints, k_values}
+    config          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    -- sha256(sorted-json(config))[:12] - a cheap "same settings?" key for
+    -- grouping/comparing runs without diffing the JSON.
+    config_hash     TEXT NOT NULL,
+    -- Measured at run time, not copied from the gold file:
+    -- {documents, chunks, knowledge_objects, embeddings_by_kind}. Two runs
+    -- are only comparable when this matches (see ir_compare.py).
+    index_snapshot  JSONB NOT NULL DEFAULT '{}'::jsonb,
+    git_commit      TEXT,
+    label           TEXT,
+    started_at      TIMESTAMPTZ NOT NULL,
+    finished_at     TIMESTAMPTZ,
+    -- ir_metrics.aggregate() output ({overall, by_type, metric_n}) plus the
+    -- run's error/stale query lists.
+    summary         JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_eval_run_golden_version ON eval_run(golden_version);
+CREATE INDEX IF NOT EXISTS idx_eval_run_started_at ON eval_run(started_at);
+
+CREATE TABLE IF NOT EXISTS eval_run_query (
+    run_id              TEXT NOT NULL REFERENCES eval_run(run_id) ON DELETE CASCADE,
+    query_id            TEXT NOT NULL,
+    query_text          TEXT NOT NULL,
+    primary_type        TEXT NOT NULL,
+    types               JSONB NOT NULL DEFAULT '[]'::jsonb,
+    -- Deduplicated document ranking the metrics were computed from, kept
+    -- so a regression can be diagnosed without re-running retrieval.
+    ranked_document_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    scores              JSONB NOT NULL DEFAULT '[]'::jsonb,
+    predicted_count     INT,
+    -- ir_metrics.score_query() output; empty when `error` is set.
+    metrics             JSONB NOT NULL DEFAULT '{}'::jsonb,
+    strategies          JSONB NOT NULL DEFAULT '[]'::jsonb,
+    steps               JSONB NOT NULL DEFAULT '[]'::jsonb,
+    elapsed_ms          DOUBLE PRECISION NOT NULL DEFAULT 0,
+    -- Retrieval raised for this query; the run continues and the query
+    -- simply contributes no metrics (it is listed in summary.errors).
+    error               TEXT,
+    PRIMARY KEY (run_id, query_id)
+);

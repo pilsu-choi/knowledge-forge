@@ -15,6 +15,9 @@ from knowledge_forge.collectors.local_file import LocalFileCollector
 from knowledge_forge.collectors.saas.factory import SAAS_COLLECTOR_BUILDERS
 from knowledge_forge.config import settings
 from knowledge_forge.embedding.factory import get_embedding_provider
+from knowledge_forge.evaluation.golden import load_golden
+from knowledge_forge.evaluation.ir_compare import compare_runs
+from knowledge_forge.evaluation.ir_runner import run_ir_eval, run_to_dict
 from knowledge_forge.evaluation.judge import judge_search_log
 from knowledge_forge.extraction.auth import credential_hint_ko, has_resolvable_credentials
 from knowledge_forge.extraction.factory import get_extractor
@@ -27,7 +30,7 @@ from knowledge_forge.scheduling.scheduler import (
     DEFAULT_TRIGGER_API_PORT,
 )
 from knowledge_forge.storage import PipelineStore
-from knowledge_forge.storage.eval_store import EvalStore
+from knowledge_forge.storage.eval_store import EvalRun, EvalStore
 from knowledge_forge.storage.postgres_store import PostgresStore
 
 app = typer.Typer(help="Knowledge Forge: Collector -> Parser -> Adaptive Chunker -> Knowledge Extraction.")
@@ -895,6 +898,249 @@ def eval(
 
     scored, failed = asyncio.run(_run())
     typer.echo(f"채점 완료: {scored}개 성공, {failed}개 실패(다음 실행에서 재시도)", err=True)
+
+
+# Per-type table columns for `eval-ir`, in display order; only the ones at
+# least one type row actually carries are printed (none_correct exists only
+# for negative/null, count_match only for aggregation, ...).
+_IR_TABLE_METRICS = ("hit@1", "recall@5", "mrr", "ndcg@10", "exhaustive_recall", "count_match", "none_correct")
+
+
+def _fmt_metric(value: float | None) -> str:
+    return "-" if value is None else f"{value:.3f}"
+
+
+def _format_ir_summary(summary: dict) -> str:
+    """Overall line + per-type table + failed/stale lists, as one string so
+    tests can assert on it without capturing stdout."""
+    overall = summary.get("overall", {})
+    by_type: dict[str, dict] = summary.get("by_type", {})
+    cols = [m for m in _IR_TABLE_METRICS if any(m in row for row in by_type.values()) or m in overall]
+    lines = [
+        "overall: n={} ".format(overall.get("n", 0))
+        + " ".join(f"{m}={_fmt_metric(overall.get(m))}" for m in cols if m in overall)
+    ]
+    if by_type:
+        header = f"{'type':<26}{'n':>4} " + " ".join(f"{m:>17}" for m in cols)
+        lines.append(header)
+        for t, row in by_type.items():
+            lines.append(f"{t:<26}{row.get('n', 0):>4} " + " ".join(f"{_fmt_metric(row.get(m)):>17}" for m in cols))
+    errors = summary.get("errors", [])
+    if errors:
+        lines.append(f"실패한 질의 {len(errors)}개:")
+        lines.extend(f"  {e['query_id']}: {e['error']}" for e in errors)
+    stale = summary.get("stale_queries", [])
+    if stale:
+        lines.append(f"stale 질의 {len(stale)}개 (골든셋과 인덱스가 어긋남 - 점수에는 포함됨):")
+        lines.extend(f"  {s['query_id']}: {s['reason']} {','.join(s['document_ids'])}" for s in stale)
+    elif not summary.get("staleness_checked", False):
+        lines.append("staleness 검사 생략 (--no-store)")
+    return "\n".join(lines)
+
+
+def _format_ir_compare(report: dict) -> str:
+    lines = [
+        f"metric={report['metric']} golden_version={report['golden_version']} n={report['n']}",
+        f"A={report['run_a']['run_id']} ({report['run_a']['label'] or '-'}, cfg {report['run_a']['config_hash']})",
+        f"B={report['run_b']['run_id']} ({report['run_b']['label'] or '-'}, cfg {report['run_b']['config_hash']})",
+    ]
+    lines.extend(f"경고: {w}" for w in report.get("warnings", []))
+    if report["n"] == 0:
+        lines.append("공통으로 채점된 질의가 없어 비교할 수 없습니다.")
+        return "\n".join(lines)
+    lo, hi = report["ci95"]
+    lines.append(
+        f"mean A={report['mean_a']:.4f} B={report['mean_b']:.4f} delta(B-A)={report['mean_delta']:+.4f} "
+        f"95% CI [{lo:+.4f}, {hi:+.4f}] {'유의' if report['significant'] else '유의하지 않음'}"
+    )
+    lines.append(f"win/loss/tie = {report['wins']}/{report['losses']}/{report['ties']}")
+    if report["by_type"]:
+        lines.append(f"{'type':<26}{'n':>4} {'delta':>9} {'w/l/t':>10}")
+        for t, row in report["by_type"].items():
+            lines.append(
+                f"{t:<26}{row['n']:>4} {row['mean_delta']:>+9.4f} {row['wins']}/{row['losses']}/{row['ties']:>3}"
+            )
+    movers = [q for q in report["per_query"] if q["delta"] != 0]
+    if movers:
+        movers.sort(key=lambda q: abs(q["delta"]), reverse=True)
+        lines.append("가장 크게 움직인 질의:")
+        lines.extend(f"  {q['query_id']}: {q['a']:.3f} -> {q['b']:.3f} ({q['delta']:+.3f})" for q in movers[:10])
+    return "\n".join(lines)
+
+
+def _parse_csv_option(value: str | None) -> list[str] | None:
+    if value is None:
+        return None
+    items = [v.strip() for v in value.split(",") if v.strip()]
+    return items or None
+
+
+@app.command(name="eval-ir")
+def eval_ir(
+    golden: Path | None = typer.Option(None, "--golden", help="골든셋 JSON 경로(예: tests/eval/golden/v0.json)."),
+    project_id: str | None = typer.Option(
+        None, "--project-id", help="검색 범위 project_id. 골든셋에 project_id가 박혀 있으면 그쪽이 우선."
+    ),
+    limit: int = typer.Option(10, "--limit", help="질의당 결과 수. exhaustive/count 질의는 자동으로 200으로 승격."),
+    k: str = typer.Option("1,3,5,10", "--k", help="@k 지표의 k 목록(쉼표 구분)."),
+    strategies: str | None = typer.Option(
+        None, "--strategies", help="라우팅을 무시하고 이 전략만 실행(쉼표 구분, 예: vector,lexical)."
+    ),
+    no_llm: bool = typer.Option(False, "--no-llm", help="LLM 제약 추출 없이 실행(provider 생성 안 함)."),
+    provider: str | None = typer.Option(
+        None, "--provider", help="제약 추출에 쓸 ChatProvider. 생략하면 KF_AGENT_PROVIDER(에이전트와 동일)."
+    ),
+    model: str | None = typer.Option(None, "--model", help="제약 추출 모델. 생략하면 그 provider의 기본 모델."),
+    label: str | None = typer.Option(None, "--label", help="run에 붙일 사람용 이름(예: 'rerank-on')."),
+    type_filter: str | None = typer.Option(
+        None, "--type", help="이 유형(들)만 실행(쉼표 구분). multi-label `types` 중 하나라도 맞으면 포함."
+    ),
+    query_id: list[str] | None = typer.Option(None, "--query-id", help="이 질의 id만 실행(반복 지정 가능)."),
+    concurrency: int = typer.Option(4, "--concurrency", help="동시에 실행할 질의 수."),
+    no_store: bool = typer.Option(False, "--no-store", help="eval_run에 기록하지 않음(스냅샷/staleness 검사도 생략)."),
+    json_path: Path | None = typer.Option(None, "--json", help="결과(run + 질의별 행)를 이 JSON 파일에도 저장."),
+    compare: tuple[str, str] = typer.Option(
+        (None, None), "--compare", help="두 run_id를 paired 비교(A B 순서, B-A를 보고)."
+    ),
+    metric: str = typer.Option("ndcg@10", "--metric", help="--compare의 헤드라인 지표."),
+    list_runs: bool = typer.Option(False, "--list", help="최근 eval_run 목록."),
+    golden_version: str | None = typer.Option(None, "--golden-version", help="--list를 이 골든셋 버전으로 제한."),
+) -> None:
+    """골든셋(wiki/search-evaluation.md (C))으로 `search/retrieve.py`의 문서 랭킹을 채점해
+    Recall/Precision/MRR/NDCG를 내고 `eval_run`/`eval_run_query`에 기록한다. `eval`(LLM-judge)과
+    달리 정답 파일이 필요한 대신 LLM 없이 결정적으로 돈다. `--compare A B`는 같은 golden_version
+    의 두 run을 질의별 paired delta + bootstrap CI로 비교하고, `--list`는 최근 run을 보여준다."""
+    if not settings.database_url:
+        typer.echo("KF_DATABASE_URL이 설정되지 않았습니다 - eval-ir은 Postgres가 필수입니다.", err=True)
+        raise typer.Exit(1)
+    database_url = settings.database_url
+
+    if list_runs:
+
+        async def _list() -> None:
+            async with EvalStore(database_url) as eval_store:
+                runs = await eval_store.list_eval_runs(golden_version=golden_version)
+            if not runs:
+                typer.echo("기록된 eval_run이 없습니다.", err=True)
+                return
+            typer.echo(f"{'run_id':<32} {'golden':<7} {'cfg':<12} {'started_at':<20} {'ndcg@10':>8} {'mrr':>6} label")
+            for r in runs:
+                overall = r.summary.get("overall", {})
+                started = r.started_at.strftime("%Y-%m-%d %H:%M:%S")
+                typer.echo(
+                    f"{r.run_id:<32} {r.golden_version:<7} {r.config_hash:<12} {started:<20} "
+                    f"{_fmt_metric(overall.get('ndcg@10')):>8} {_fmt_metric(overall.get('mrr')):>6} {r.label or ''}"
+                )
+
+        asyncio.run(_list())
+        return
+
+    if compare[0] is not None or compare[1] is not None:
+        run_a_id, run_b_id = compare
+        if not run_a_id or not run_b_id:
+            typer.echo("--compare는 run_id 두 개(A B)가 필요합니다.", err=True)
+            raise typer.Exit(1)
+
+        async def _compare() -> dict:
+            async with EvalStore(database_url) as eval_store:
+                run_a = await eval_store.get_eval_run(run_a_id)
+                run_b = await eval_store.get_eval_run(run_b_id)
+                if run_a is None or run_b is None:
+                    missing = run_a_id if run_a is None else run_b_id
+                    typer.echo(f"run_id '{missing}'를 찾을 수 없습니다.", err=True)
+                    raise typer.Exit(1)
+                qa = await eval_store.list_eval_run_queries(run_a_id)
+                qb = await eval_store.list_eval_run_queries(run_b_id)
+            return compare_runs(run_a, qa, run_b, qb, metric=metric)
+
+        try:
+            report = asyncio.run(_compare())
+        except ValueError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(1) from None
+        typer.echo(_format_ir_compare(report))
+        if json_path is not None:
+            json_path.parent.mkdir(parents=True, exist_ok=True)
+            json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        return
+
+    if golden is None:
+        typer.echo("--golden <골든셋 JSON>이 필요합니다 (또는 --compare / --list).", err=True)
+        raise typer.Exit(1)
+    try:
+        golden_set = load_golden(golden)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"골든셋을 읽을 수 없습니다: {exc}", err=True)
+        raise typer.Exit(1) from None
+    try:
+        k_values = tuple(int(v) for v in k.split(",") if v.strip())
+    except ValueError:
+        typer.echo("--k는 쉼표로 구분한 정수여야 합니다 (예: 1,3,5,10).", err=True)
+        raise typer.Exit(1) from None
+
+    chat_provider = None
+    provider_name = model_name = None
+    if not no_llm:
+        chat_provider = get_chat_provider(provider=provider, model=model)
+        # Same resolution as `eval` - recorded on eval_run.config so two runs
+        # with different constraint extractors don't share a config_hash.
+        provider_name = provider or settings.agent_provider
+        default_model = (
+            settings.agent_openai_compatible_model if provider_name == "openai_compatible" else settings.agent_model
+        )
+        model_name = model or default_model
+
+    type_set = set(_parse_csv_option(type_filter) or []) or None
+    query_set = set(query_id) if query_id else None
+
+    async def _run() -> EvalRun:
+        async with PipelineStore(database_url, settings.data_dir) as store:
+            if no_store:
+                return await run_ir_eval(
+                    golden_set,
+                    store=store,
+                    eval_store=None,
+                    golden_path=str(golden),
+                    provider=chat_provider,
+                    provider_name=provider_name,
+                    model_name=model_name,
+                    project_id=project_id,
+                    limit=limit,
+                    k_values=k_values,
+                    strategies_override=_parse_csv_option(strategies),
+                    use_llm_constraints=not no_llm,
+                    label=label,
+                    query_filter=query_set,
+                    type_filter=type_set,
+                    concurrency=concurrency,
+                )
+            async with EvalStore(database_url) as eval_store:
+                return await run_ir_eval(
+                    golden_set,
+                    store=store,
+                    eval_store=eval_store,
+                    golden_path=str(golden),
+                    provider=chat_provider,
+                    provider_name=provider_name,
+                    model_name=model_name,
+                    project_id=project_id,
+                    limit=limit,
+                    k_values=k_values,
+                    strategies_override=_parse_csv_option(strategies),
+                    use_llm_constraints=not no_llm,
+                    label=label,
+                    query_filter=query_set,
+                    type_filter=type_set,
+                    concurrency=concurrency,
+                )
+
+    run = asyncio.run(_run())
+    typer.echo(_format_ir_summary(run.summary))
+    if json_path is not None:
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        json_path.write_text(json.dumps(run_to_dict(run), ensure_ascii=False, indent=2), encoding="utf-8")
+        typer.echo(f"JSON 저장: {json_path}", err=True)
+    typer.echo(f"run_id={run.run_id}{' (--no-store: DB 미기록)' if no_store else ''}", err=True)
 
 
 if __name__ == "__main__":
