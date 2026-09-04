@@ -96,10 +96,13 @@ POST /search/vector   # 이 HTTP 경로 자체는 여전히 미구현 - 아래�
 `file_search`/`vector_search` 중 무엇을 쓸지 정하는 라우팅 휴리스틱을 구현했다 - 이 문서가 다루는
 세 검색 도구 자체보다 한 단계 위(도구 여러 개를 조합해 쓰는 계층)라, 전체 설계 근거와 상태는
 별도 문서 [`search-architecture.md`](search-architecture.md)에 정리했다 (`search/planner.py`,
-`search/router.py`, `search/rerank.py`, `agent/tools.py::_make_plan_search_tool`). 두 소스
-결과를 병합/재정렬하는 RRF reranking + cross-source dedup(`search/rerank.py`)도 같은 후속
-작업으로 구현됐다. Query Understanding/Context Engineering/Map-Reduce/Temporal Search/
-Evidence Grounding/Feedback Loop 같은 더 넓은 RAG 아키텍처 레이어들의 구현 여부도 그 문서의
+`search/router.py`, `search/rerank.py`, `search/temporal.py`, `agent/tools.py::_make_plan_search_tool`).
+두 소스 결과를 병합/재정렬하는 RRF reranking + cross-source dedup(`search/rerank.py`), 자연어
+시간 표현을 명시적 범위로 바꾸는 temporal filtering(`search/temporal.py`, "어제"/"지난주"/
+"2025년 Q3" 등)도 같은 후속 작업으로 구현됐다 - 후자는 `time_range` 인자로 `file_search`/
+`vector_search`에서도 직접 쓸 수 있다. Context Engineering의 나머지(conflict 탐지 등)/
+Map-Reduce/Evidence Grounding 파이프라인/Feedback Loop 같은 더 넓은 RAG 아키텍처 레이어들의
+구현 여부도 그 문서의
 상태표에 있다.
 
 ### `GET /relations/expand` (graph_search)

@@ -11,14 +11,14 @@ Grounding까지)을 레이어별로 정리한다. 실제 프로덕션 엔터프�
 
 | 레이어 | 상태 |
 |---|---|
-| ① Query Understanding (intent/entity/temporal) | 설계만, 미구현 — 아래 절 참고 |
+| ① Query Understanding (intent/entity/temporal) | **부분 구현** — temporal expression parsing(`search/temporal.py`)만 있음, 아래 절 참고. intent classification/entity extraction/conversation-aware query는 여전히 LLM 판단에 위임(설계만) |
 | ② Query Planning (multi-hop 분해) | **구현됨** — `search/planner.py`, 아래 절 참고 |
 | Query Routing (소스 선택) | **구현됨** — `search/router.py`, 아래 절 참고 |
-| ③ Hybrid Retrieval (BM25+Vector+Metadata+Graph) | **부분 구현** — keyword(`file_search`)+semantic(`vector_search`)+metadata(`project_id`/`type`) 병행 실행 + RRF reranking까지 있음, graph는 미구현 |
+| ③ Hybrid Retrieval (BM25+Vector+Metadata+Graph) | **부분 구현** — keyword(`file_search`)+semantic(`vector_search`)+metadata(`project_id`/`type`/시간 범위) 병행 실행 + RRF reranking까지 있음, graph는 미구현 |
 | Multi-stage Retrieval / Reranking | **부분 구현** — `search/rerank.py`의 Reciprocal Rank Fusion, 아래 절 참고. Cross-Encoder/LLM reranker는 미구현 |
 | ④ Context Engineering (dedup/conflict/compression) | **부분 구현** — 토큰 예산 압축(`agent/compaction.py`), cross-source dedup(`search/rerank.py`, knowledge_object_id 기준)은 있음. conflict 탐지/source reliability/temporal consistency/evidence clustering은 없음 |
 | ⑤ Map-Reduce / Hierarchical Retrieval | 설계만, 미구현 |
-| ⑥ Temporal Search (Text-to-SQL/Temporal Join) | 설계만, 미구현 |
+| ⑥ Temporal Search (자연어 시간 표현 → 범위 필터) | **부분 구현** — `search/temporal.py`, 아래 절 참고. Text-to-SQL/서로 다른 KnowledgeObject 타입 간 temporal join(예: "지난달 결정 중 미완료인 것")은 미구현 |
 | Query Routing 확장 (SQL/Web 소스) | 설계만, 미구현 (현재 소스는 file_search/vector_search 둘뿐) |
 | Evidence Grounding / Citation | **약하게 구현** — 시스템 프롬프트가 path/knowledge_object_id 인용을 지시할 뿐, claim-level 매칭/인용 파이프라인은 없음 |
 | Search Evaluation / Feedback Loop | 설계만, 미구현 |
@@ -170,15 +170,37 @@ Message→Chunk 요약→Document 요약→Project 요약처럼 계층적으로 
 `ExtractionResult.summary`를 모아 재요약)을 고민한 흔적이 `roadmap.md`(7단계 이전 문서 요약
 설계)에 있으니, 필요해지면 그 설계를 확장하는 방향이 될 것.
 
-## ⑥ Temporal Search — 설계만, 미구현
+## ⑥ Temporal Search — 부분 구현, `search/temporal.py`
 
-"어제", "지난주", "Q2" 같은 상대 시간 표현을 명시적 시간 범위로 바꾸고, `Decision.created_at ∈
-last_month AND Task.status != completed`류의 temporal join까지 하려면 Text-to-SQL 또는 구조화된
-temporal query parser가 필요하다. 지금은 `knowledge_objects.extracted_at`이 있으니 데이터는
-있지만, 이를 질의로 바꾸는 계층이 없다 - 에이전트가 자연어로 "어제"를 이해하고 있다 해도, 그걸
-정확한 `WHERE extracted_at BETWEEN ...` 필터로 실행할 방법이 `file_search`/`vector_search`
-어느 쪽에도 없다(`file_search`/`vector_search` 모두 시간 필터 파라미터가 없다). 우선순위가
-낮은 이유: 지금 KnowledgeObject 볼륨에서는 "최근 N개"보다 정확도가 시급한 문제가 아니었다.
+"어제", "지난주", "이번 분기", "2025년 Q3", "최근 3일" 같은 상대/분기 시간 표현을
+`parse_temporal_expression(text, now=None) -> TimeRange | None`이 명시적 `[start, end)` UTC
+범위로 바꾸고, `file_search`/`vector_search`가 그 범위로 결과를 필터링한다.
+
+- **LLM 호출이 아니라 정규식 + 달력 산술**이다 - `search/router.py`와 같은 이유: "어제"를 explicit
+  range로 바꾸는 건 `now`가 고정되면 완전히 기계적인 계산이라, 여기에 LLM 라운드트립을 쓰면
+  정확도 개선 없이 지연/비용만 늘어난다.
+- **필터 적용 지점**: `file_search`는 frontmatter의 `generated.at`(리소스는 `Source.collected_at`,
+  오브젝트는 `KnowledgeObject.extracted_at`이 그 값)을, `vector_search`는
+  `knowledge_objects.extracted_at`을 기준으로 `[since, until)` 필터를 건다 - 방문/파이프라인
+  처리 시각이지 "그 일이 실제로 일어난 시각"(예: Slack 메시지의 실제 작성 시각)은 아니다.
+  이 저장소에서 KnowledgeObject 레벨에 저장된 유일한 타임스탬프가 이것이라 어쩔 수 없이 쓰는
+  근사치 - Slack collector 등이 실시간에 가깝게 수집한다면 오차가 작겠지만, 배치로 오래된
+  데이터를 한꺼번에 넣으면 "지난주"가 실제 사건 시점과 어긋날 수 있다.
+- **어디서 자동으로 쓰이는가**: (1) `plan_search`(`search/planner.py::_execute_subquery`)가 각
+  하위 질의 문장 자체를 스캔해 시간 표현을 찾으면 자동으로 그 하위 질의의 검색에 적용한다 -
+  모델이 별도 인자를 신경 쓸 필요가 없다. (2) `file_search`/`vector_search` 도구 자체도
+  선택적 `time_range`(자연어 문자열) 인자를 받는다 - 모델이 직접 이 두 도구를 호출할 때도
+  "어제" 같은 표현을 그대로 넘기면 되고, 날짜 계산은 여기(`search/temporal.py`)가 대신한다.
+  인식하지 못하는 표현은 에러 없이 그냥 무시된다(필터 없이 검색).
+- **타임존**: 항상 UTC 기준(`KnowledgeObject.extracted_at`이 항상 UTC로 저장되므로 데이터와
+  일관성을 맞춘 것) - 호출자가 UTC와 먼 타임존에 있으면 "오늘"/"어제"의 자정 경계가 그 호출자의
+  체감과 최대 하루 정도 어긋날 수 있다. 월요일을 주의 시작으로 본다(ISO, 한국 관례와 일치).
+- **아직 안 되는 것 (Temporal Join)**: "지난달 결정된 사항 중 아직 완료되지 않은 것"처럼 서로
+  다른 KnowledgeObject 타입(Decision과 ActionItem 등)에 각각 다른 조건(시간 범위 + 상태)을
+  걸어 join하는 건 여전히 미구현이다 - `content: dict`가 타입별 자유 스키마라 "완료 여부"
+  같은 상태 필드가 구조화된 필터로 걸 수 있게 정규화되어 있지 않은 게 근본 원인(Text-to-SQL을
+  만들어도 걸 조건 자체가 아직 없다). 시간 범위 하나로 한 소스를 필터링하는 것까지가 이번
+  구현의 범위.
 
 ## Evidence Grounding / Citation — 약하게 구현
 
@@ -212,5 +234,11 @@ map-reduce → citation → feedback loop)가 될 것 같지만, 실제 우선�
 과 거기서 자연스럽게 같이 풀리는 **④ cross-source dedup**을 구현했다 - `plan_search`가 하위
 질의당 두 소스를 병행 실행하기 시작한 순간부터 "결과를 그냥 이어붙이기만 한다"는 게 가장 먼저
 체감되는 품질 문제였기 때문(같은 KnowledgeObject가 두 번 나오거나, 두 소스 다 낮게 평가한
-결과와 둘 다 동의한 결과가 구분 없이 뒤섞임). 남은 순서(⑥ temporal → ⑤ map-reduce → citation
-→ feedback loop, 그리고 ④의 나머지인 conflict 탐지/reliability/clustering)는 여전히 설계만.
+결과와 둘 다 동의한 결과가 구분 없이 뒤섞임).
+
+이어서 **⑥ Temporal Search**(`search/temporal.py`)를 구현했다 - "어제 뭐 있었어" 같은 질문이
+지금까지 전혀 필터링되지 않고 그냥 키워드/의미 검색으로만 처리되는 게 가장 체감 격차가 큰
+남은 gap이었다. Text-to-SQL이나 서로 다른 KnowledgeObject 타입 간 temporal join까지는 손대지
+않았다 - 걸 조건(예: "완료 여부") 자체가 구조화되어 있지 않아 그 확장은 스키마 변경 없이는
+의미가 없다고 판단했다(위 절의 "아직 안 되는 것" 참고). 남은 순서(⑤ map-reduce → citation →
+feedback loop, 그리고 ④의 나머지인 conflict 탐지/reliability/clustering)는 여전히 설계만.

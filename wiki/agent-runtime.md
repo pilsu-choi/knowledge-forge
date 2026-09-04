@@ -1,4 +1,4 @@
-# Agent Runtime — 모델 벤더 중립 harness (Phase 1~4 구현됨)
+# Agent Runtime — 모델 벤더 중립 harness (Phase 1~5 구현됨)
 
 `refs/hermes-agent`를 참고해 세운 knowledge-forge 자체 agent runtime(harness). `wiki/agent-search.md`
 의 `file_search`/`vector_search`/`graph_search` 설계 중 **file_search(Phase 1)와 vector_search
@@ -39,6 +39,7 @@ src/knowledge_forge/search/
     router.py              # route_query() - 질의당 file_search/vector_search 소스 선택 휴리스틱
     planner.py              # decompose_query()/plan_and_search() - 멀티홉 질의 분해 + 병렬/의존 실행
     rerank.py                # merge_and_rerank() - RRF로 다중 소스 결과 병합/재정렬 + cross-source dedup
+    temporal.py              # parse_temporal_expression() - 자연어 시간 표현 -> [since, until) UTC 범위
 src/knowledge_forge/okf/
     fs_service.py          # read_file/write_file/edit_file/list_dir() - OKF 루트 트리로 스코프된 FS 도구
 src/knowledge_forge/agent/
@@ -279,6 +280,30 @@ KnowledgeObject가 아니라 여전히 `None` - 매칭 대상이 될 수 없으�
 `include_delegate=False`로 만든 자식 도구 목록에도 그대로 포함된다(재귀 위임 차단 대상은
 `delegate_task` 자신뿐).
 
+## Phase 5 — `search/temporal.py` (Temporal Search)
+
+`wiki/search-architecture.md`의 "⑥ Temporal Search" 구현 - "어제"/"지난주"/"이번 분기"/
+"2025년 Q3"/"최근 3일" 같은 자연어 시간 표현을 명시적 `[since, until)` UTC 범위로 바꿔
+`file_search`/`vector_search`의 결과를 좁힌다. `search/router.py`와 같은 이유로 정규식 +
+달력 산술이지 LLM 호출이 아니다(`now`가 고정되면 완전히 기계적인 계산). 항상 UTC 기준 -
+`KnowledgeObject.extracted_at`이 항상 UTC로 저장되므로(`extraction/outcome.py`) 데이터와
+일관성을 맞춘 선택이고, 월요일을 주의 시작으로 본다.
+
+필터 적용 지점: `file_search`는 frontmatter의 `generated.at`(`okf/writer.py`가 모든
+resources/objects 파일에 이미 쓰고 있던 필드 - 새 필드 추가 없이 재사용)을,
+`vector_search`(→ `postgres_store.py::search_knowledge_objects_by_embedding`)는
+`knowledge_objects.extracted_at`을 기준으로 필터링한다 - 둘 다 "언제 처리했는지"이지
+"실제로 언제 있었던 일인지"의 근사치라는 한계는 `search-architecture.md`에 명시.
+
+자동 적용 지점 두 곳:
+- `search/planner.py::_execute_subquery`가 각 하위 질의 문장 자체를 `parse_temporal_expression()`
+  으로 스캔해 자동으로 필터를 건다 - 모델이 별도로 신경 쓸 필요가 없다(`plan_and_search()`의
+  반환값에도 하위 질의별 `time_range`가 실려서, 어떤 필터가 적용됐는지 상위 에이전트가 알 수
+  있다).
+- `agent/tools.py`의 `file_search`/`vector_search` 도구 입력 스키마에 선택적 `time_range`
+  (자연어 문자열) 인자를 추가했다 - `_resolve_time_range()`가 두 핸들러에서 공유하는 변환
+  헬퍼. 모델이 이해 못 하는 표현을 넘겨도 에러 없이 필터 없는 검색으로 조용히 degrade한다.
+
 ## 알려진 제약
 
 - 스트리밍 미지원 - 한 턴이 끝나야 출력.
@@ -300,6 +325,7 @@ KnowledgeObject가 아니라 여전히 `None` - 매칭 대상이 될 수 없으�
 3. `knowledge-forge mcp-server`(stdio) - 외부 host(Claude Code/Claude Desktop 등) 노출.
 4. permission mode(쓰기 도구 승인 흐름) / Skills 연동 - 별도 설계 문서.
 5. `wiki/search-architecture.md`가 정리한 더 넓은 RAG 레이어 중 남은 것(Context Engineering의
-   conflict 탐지/reliability/clustering, Temporal Search, Map-Reduce, Evidence Grounding
-   파이프라인, Feedback Loop) - Hybrid rerank(RRF)/cross-source dedup은 `search/rerank.py`로
+   conflict 탐지/reliability/clustering, Map-Reduce, Evidence Grounding 파이프라인, Feedback
+   Loop, Temporal Search의 서로 다른 KnowledgeObject 타입 간 join) - Hybrid rerank(RRF)/
+   cross-source dedup(`search/rerank.py`)과 단일 소스 시간 범위 필터(`search/temporal.py`)는
    구현됐지만 나머지는 설계만 있고 미착수, 그 문서의 "왜 지금 여기서 멈추는가" 참고.
