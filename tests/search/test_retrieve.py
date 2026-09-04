@@ -230,7 +230,13 @@ async def test_sql_literal_escapes_quotes_and_like_metacharacters():
 # --- vector fallback --------------------------------------------------------------
 
 
-async def test_empty_vector_result_falls_back_to_keyword_search_on_semantic_query(monkeypatch):
+async def test_keyword_arm_runs_alongside_vector_on_the_semantic_query(monkeypatch):
+    """semantic_query를 제목/본문에도 거는 어휘 arm은 vector와 **나란히** 돈다 - vector가
+    0히트일 때만 도는 fallback이 아니다. 원래는 fallback이었고, 임베딩이 0행인 동안에는
+    vector가 늘 실패해서 항상 돌았다. 임베딩을 채우자 ANN이 언제나 `limit`개를 돌려주면서
+    경로가 통째로 꺼졌고 v0 ndcg@10이 0.865 → 0.804로 내려갔다(retrieve.py::_keyword_arm).
+    소스 이름이 `#semantic`으로 갈리는 것까지 계약이다 - 같은 소스에 append하면 서로 다른
+    질의의 순위가 한 리스트에 섞여 RRF가 망가진다."""
     store = _FakeStore(
         title_hits={"codex README": [_doc_hit("d1", 0.8)]},
         chunk_hits={"codex README": [_chunk_hit("d2", "c2", 0.6)]},
@@ -240,9 +246,27 @@ async def test_empty_vector_result_falls_back_to_keyword_search_on_semantic_quer
     result = await retrieve("codex README", store=store, now=_NOW)
 
     assert result.strategies == ["vector"]
-    fallbacks = [s for s in result.steps if s.detail.get("fallback_from") == "vector"]
-    assert [s.source for s in fallbacks] == ["document_search", "lexical_search"]
+    arm = [s for s in result.steps if s.detail.get("arm") == "semantic_query"]
+    assert [s.source for s in arm] == ["document_search#semantic", "lexical_search#semantic"]
     assert result.document_ids == ["d1", "d2"]
+
+
+async def test_keyword_arm_still_runs_when_vector_returned_hits(monkeypatch):
+    """위 테스트의 짝 - vector가 히트를 돌려줘도 어휘 arm이 꺼지지 않는다는 것이 이번
+    수정의 요점이다. `suggest_strategies`는 identifiers/quoted_phrases가 잡혔을 때만
+    document_lookup/lexical을 고르므로, 평범한 자연어 질의에서는 이 arm이 유일한 어휘
+    신호다."""
+    store = _FakeStore(
+        title_hits={"codex README": [_doc_hit("d1", 0.8)]},
+        chunk_hits={"codex README": [_chunk_hit("d2", "c2", 0.6)]},
+    )
+    _patch_vector(monkeypatch, [_chunk_hit("d3", "c3", 0.9)])
+
+    result = await retrieve("codex README", store=store, now=_NOW)
+
+    arm = [s for s in result.steps if s.detail.get("arm") == "semantic_query"]
+    assert [s.source for s in arm] == ["document_search#semantic", "lexical_search#semantic"]
+    assert set(result.document_ids) == {"d1", "d2", "d3"}
 
 
 async def test_term_fallback_is_skipped_when_the_whole_query_already_matched(monkeypatch):
@@ -602,10 +626,13 @@ async def test_strategies_override_runs_only_the_given_strategies(monkeypatch):
     result = await retrieve("report_v2.pdf 리스크 항목 요약해줘", store=store, now=_NOW, strategies_override=["vector"])
 
     assert result.strategies == ["vector"]
-    assert [s.strategy for s in result.steps] == ["vector"]
-    assert store.title_calls == []
+    # `vector` 하나만 지정해도 어휘 arm(document_lookup/lexical step)이 따라붙는다 -
+    # arm은 전략 선택의 산물이 아니라 vector 실행의 일부다(retrieve.py::_keyword_arm).
+    assert [s.strategy for s in result.steps] == ["vector", "document_lookup", "lexical"]
+    assert [q for q, _limit in store.title_calls] == [result.constraints["semantic_query"]]
     assert result.documents_read == []
-    assert result.document_ids == ["d1"]
+    # 'title-only'는 어휘 arm의 제목 조회가 물어온 것 - vector 히트 'd1'과 함께 RRF에 들어간다.
+    assert result.document_ids == ["d1", "title-only"]
     assert calls[0][0] == result.constraints["semantic_query"]
 
 

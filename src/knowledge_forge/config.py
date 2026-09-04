@@ -122,6 +122,22 @@ class Settings(BaseSettings):
     # 근거가 latest 3개 + version 7개뿐이라 잠정값이다 - 골든셋 v1에서 다시 재야 한다.
     latest_relevance_pool: int = 5
 
+    # ANN(HNSW)에는 "관련도 하한"이 없다 - 코퍼스에 전혀 없는 주제를 물어도 가장 가까운
+    # `limit`개를 무조건 돌려주므로, "관련 문서 없음"이 정답인 질의(golden의 negative/null)
+    # 조차 후보가 찬다. exhaustive/count/negative는 컷오프 없이 그 후보 집합을 그대로 답으로
+    # 쓰기 때문에 임베딩을 채우자 v0에서 none_correct 1.000 → 0.000, count_match 0.333 →
+    # 0.000이 됐다(run 9ad2bba2). 이 값보다 낮은 코사인 유사도(`1 - distance`)의 벡터 히트를
+    # 버린다. 0.0은 끄는 값(하한 없음)이고, 모델/코퍼스마다 달라지는 값이라 기본값은 추측이
+    # 아니라 eval-ir 스윕으로 정한다 - 근거는 wiki/search-evaluation.md.
+    #
+    # 0.45는 v0 골든셋 76개 스윕(0.0/0.35/0.40/0.42~0.48/0.50)에서 고른 값이다. 0.42~0.47이
+    # ndcg@10 0.876~0.888의 고원이고 none_correct 1.000 / count_match 0.333이 그 구간 내내
+    # 유지된다. 최고점은 0.42(0.888)지만 기본값은 고원 한가운데로 잡았다 - v0는 사람 검수를
+    # 거치지 않은 스모크셋이라(wiki/search-evaluation.md) argmax를 박으면 과적합이고,
+    # 0.40에서 none_correct가 0.833으로 무너지는 절벽과의 안전거리가 ndcg +0.002보다 낫다.
+    # 0.0으로 두면 하한이 꺼지고 임베딩 채운 직후의 동작(ndcg 0.870)으로 돌아간다.
+    vector_min_score: float = 0.45
+
     embedding_enabled: bool = False
     # Which embedding backend embedding/factory.py builds (mirrors
     # llm_provider/get_extractor). "openrouter" talks to OpenRouter's

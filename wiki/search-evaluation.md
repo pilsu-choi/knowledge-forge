@@ -550,6 +550,87 @@ set_query 0.749 → 0.828. paired: +0.0193, CI [+0.0000, +0.0571]로 유의하�
 `predicted_count=25`(정답과 불일치)로 틀렸다. 즉 이전 0.500은 실패를 세지 않아서 나온 값이다.
 원인은 아래 "남은 것" 6번(`count`가 `len(document_ids)`)이고, 이 질의가 그 증거다.
 
+### 임베딩 적재 + 하이브리드 arm + 관련도 하한 — 다섯 번째 실측 (2026-09-04)
+
+이 회차가 지금까지와 성격이 다르다. 1~4회차는 전부 **`vector_search`가 0히트인 상태**에서
+잰 값이다(`knowledge_object_embeddings` 0행, 이 머신에 임베딩 키 없음). OpenRouter 임베딩
+provider를 붙이고(`wiki/embeddings.md`) 청크 936개를 `openai/text-embedding-3-small`로
+채운 뒤 처음으로 벡터 경로가 실제로 도는 상태에서 다시 쟀다.
+
+| | 4회차 baseline (임베딩 0행) | 임베딩만 채움 | +어휘 arm | **+하한 0.45 (채택)** |
+|---|---|---|---|---|
+| run_id | `8c12c099e3c7…` | `9ad2bba29b4b…` | `d80b34428b68…` | **`bade74dc839b…`** |
+| hit@1 | 0.857 | 0.671 | 0.786 | **0.829** |
+| recall@5 | 0.848 | 0.844 | 0.886 | **0.897** |
+| mrr | 0.890 | 0.784 | 0.859 | **0.884** |
+| ndcg@10 | 0.865 | 0.804 | 0.870 | **0.886** |
+| exhaustive_recall | 0.846 | 0.976 | 0.989 | **0.908** |
+| count_match | 0.333 | 0.000 | 0.000 | **0.333** |
+| none_correct | 1.000 | 0.000 | 0.000 | **1.000** |
+
+**임베딩을 채우자 지표가 먼저 떨어졌다(0.865 → 0.804).** 짐작하지 말고 `steps`를 열어
+원인을 찾았고, 두 가지였다.
+
+**(1) 어휘 경로 전체가 "벡터가 실패했을 때만" 도는 fallback이었다.** `v0-navigational-004`
+("Dev Handover README")의 baseline `steps`에는 vector가 자격증명 에러로 0히트가 되고
+`fallback_from: "vector"`가 붙은 `document_search` 5건 + `lexical_search` 4건이 이어진다.
+임베딩을 채우자 ANN이 관련도와 무관하게 늘 `limit`개를 돌려주면서 `if not hits` 조건이
+성립하지 않아 **그 두 조회가 아예 실행되지 않았고**, vector 단독 30히트로 랭킹됐다.
+
+즉 **1~4회차의 0.709 → 0.865는 "임베딩 없는 degrade 경로" 최적화가 아니라 degrade 경로
+그 자체가 만든 점수다.** `suggest_strategies`가 `document_lookup`/`lexical`을 고르는 조건은
+`identifiers`/`quoted_phrases`/`document_reference`가 잡혔을 때뿐이라 평범한 자연어 질의는
+그 그물에 안 걸리는데, fallback은 semantic_query를 통째로 거는 훨씬 넓은 그물이었다.
+
+→ fallback을 상시 하이브리드 arm으로 승격(`retrieve.py::_keyword_arm`). 이미 전략이 돌았어도
+끄지 않고 **소스 이름을 나눠**(`document_search#semantic`/`lexical_search#semantic`) RRF의
+별도 투표자로 넣는다 — `_term_fallback`의 `lexical_search#<term>`과 같은 수법이고, 같은
+소스에 append하면 서로 다른 질의의 순위가 한 리스트에 섞여 `1/(k+rank)`가 의미를 잃는다.
+`_term_fallback`의 게이트(전체 질의 조회가 빈손일 때만)는 그대로 뒀다 — 항상 돌리면
+`v0-navigational-002`가 깨진다는 3회차 실측이 유효하다. → 0.804 → **0.870**.
+
+**(2) ANN에 관련도 하한이 없다.** 코퍼스에 전혀 없는 주제를 물어도 가장 가까운 `limit`개를
+무조건 돌려주므로, "관련 문서 없음"이 정답인 negative/null 6개가 전부 틀리고
+(`none_correct` 1.000 → 0.000) `count`가 부풀었다. 실측 점수 분포가 깨끗하게 갈린다:
+
+| | top-1 코사인 유사도 |
+|---|---|
+| 정답 없음이 정답인 질의 6개 | 0.350 ~ 0.401 |
+| 정답이 있는 질의 | 0.560 ~ 0.624 (예외: "주간 할 일 다이제스트" 0.359) |
+
+→ `KF_VECTOR_MIN_SCORE`(기본 **0.45**). 스윕(0.0/0.35/0.40/0.42~0.48/0.50) 결과
+**0.42~0.47이 ndcg@10 0.876~0.888의 고원**이고 그 구간 내내 `none_correct` 1.000 /
+`count_match` 0.333이 유지된다. 0.40에서 `none_correct`가 0.833으로 무너진다.
+**최고점은 0.42(0.888)지만 기본값은 고원 한가운데인 0.45로 잡았다** — v0는 사람 검수를
+거치지 않은 스모크셋이라(아래 "v0의 성격") argmax를 박으면 과적합이고, 절벽과의 안전거리가
+ndcg +0.002보다 낫다.
+
+**정직하게 볼 것: baseline 대비 개선은 통계적으로 유의하지 않다.**
+
+```
+mean A=0.8648 B=0.8863 delta(B-A)=+0.0215 95% CI [-0.0274, +0.0680] 유의하지 않음
+win/loss/tie = 9/6/55   (n=70, paired)
+```
+
+유형별로 크게 오른 것: conversation_thread +0.250, sequence +0.125, multihop +0.125,
+temporal +0.105, cross_document_comparison +0.097. 내린 것: **navigational −0.096
+(2승 4패)** — `v0-navigational-002`("codex README") 1.000 → 0.500이 대표. 제목이 정확히
+맞은 질의에 벡터 후보가 섞이는 형태로, 3회차의 term fallback 회귀와 같은 종류다.
+
+`exhaustive_recall`은 하한을 걸면서 0.989 → 0.908로 내려간다(baseline 0.846보다는 위).
+재현율과 "없음을 없다고 말하는 능력"의 trade-off를 하한 하나로 조절하고 있는 셈이라,
+`exhaustive`/`negative`에만 다른 하한을 쓰는 게 맞을 수 있다 — 미검증.
+
+```bash
+# 재현
+export KF_DATABASE_URL=postgresql://kf:kf@localhost:15432/knowledge_forge
+uv run knowledge-forge eval-ir --golden tests/eval/golden/v0.json --no-llm --label <이름>
+uv run knowledge-forge eval-ir --compare 8c12c099e3c749178881d7b51e6422de <new_run_id> --metric ndcg@10
+# 하한 스윕
+for v in 0.0 0.40 0.42 0.45 0.50; do KF_VECTOR_MIN_SCORE=$v uv run knowledge-forge eval-ir \
+  --golden tests/eval/golden/v0.json --no-llm --label "vfloor-$v"; done
+```
+
 ### 남은 것 (우선순위 순)
 
 진단은 `eval_run_query.steps` 실측 기준이다.

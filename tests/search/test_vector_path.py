@@ -389,28 +389,35 @@ def store_hits(result, source: str) -> list[dict]:
     return [h for h in result.hits if source in h.get("retrieval_sources", [])]
 
 
-async def test_keyword_fallback_does_not_fire_once_embeddings_exist(store):
-    """`_Run._keyword_fallback`은 벡터가 0히트일 때만 도는 degrade 경로다. 임베딩이
-    채워지면 ANN은 관련도와 무관하게 항상 `limit`개를 돌려주므로 이 경로는 사실상
-    영원히 안 돈다 - 임베딩 0행 상태에서 측정한 골든셋 점수(term fallback 포함)를
-    임베딩 채운 뒤와 비교할 때 반드시 감안해야 하는 동작 차이라 여기에 못 박아 둔다
-    (wiki/search-architecture.md "벡터 경로" 절)."""
+async def test_keyword_arm_runs_alongside_vector_once_embeddings_exist(store):
+    """이 테스트는 원래 정반대를 못 박고 있었다: `_keyword_fallback`은 vector가 0히트일 때만
+    도는 degrade라, 임베딩을 채우면 ANN이 늘 `limit`개를 돌려줘 **영원히 안 돈다**는 것.
+    그 예측은 맞았고, v0 골든셋에서 실제로 ndcg@10 0.865 → 0.804 회귀로 나타났다
+    (run 9ad2bba2). `steps`를 열어 보니 "Dev Handover README" 같은 질의가 vector 단독
+    30히트만으로 랭킹되고 있었다 - 0.865를 만든 어휘 경로가 통째로 꺼진 것이다.
+
+    그래서 fallback을 하이브리드 arm으로 승격시켰다(retrieve.py::_keyword_arm). 이제
+    vector가 히트를 돌려줘도 어휘 조회가 같이 돌고 RRF에 별도 투표자로 들어간다."""
     result = await retrieve(_LEAVE_QUERY, store=store, project_id=_PROJECT, now=_NOW, strategies_override=["vector"])
 
-    assert all("fallback_from" not in s.detail for s in result.steps)
+    arm_sources = [s.source for s in result.steps if s.detail.get("arm") == "semantic_query"]
+    assert arm_sources == ["document_search#semantic", "lexical_search#semantic"]
+    # 옛 이름은 남아 있으면 안 된다 - fallback이 아니라 상시 arm이다.
+    assert all("fallback_from" not in s.detail for s in result.steps if s.detail.get("mode") != "per_term")
 
 
-async def test_vector_returns_hits_even_for_a_query_nothing_matches(store):
-    """ANN에는 "관련도 하한"이 없다 - 가장 가까운 `limit`개를 무조건 돌려주므로, 코퍼스에
-    전혀 없는 주제를 물어도 (유사도 0인) 문서 전부가 후보로 올라온다. exhaustive/count/
-    negative 전략은 컷오프 없이 이 후보 수를 그대로 답(문서 집합/개수)으로 쓰기 때문에,
-    임베딩이 채워지는 순간 이 세 유형의 지표가 바뀐다 - 임베딩 0행에서 측정한 골든셋
-    점수와 비교할 때 반드시 감안해야 하는 동작이라 여기에 못 박아 둔다
-    (wiki/search-architecture.md "벡터 경로")."""
+async def test_vector_min_score_drops_hits_for_a_query_nothing_matches(store):
+    """ANN에는 "관련도 하한"이 없다 - 코퍼스에 전혀 없는 주제를 물어도 가장 가까운 `limit`개를
+    무조건 돌려준다. exhaustive/count/negative는 컷오프 없이 그 후보 집합을 그대로 답으로 쓰기
+    때문에, 임베딩을 채우자 v0에서 none_correct 1.000 → 0.000, count_match 0.333 → 0.000이
+    됐다(run 9ad2bba2).
+
+    `KF_VECTOR_MIN_SCORE`(config.py, 기본 0.45)가 그 하한이다. 임계값은 v0 스윕으로 정했고
+    0.42~0.47이 고원이다 - 근거는 config.py 주석과 wiki/search-evaluation.md. 여기서는
+    "하한이 실제로 후보를 버리고 그 사실이 steps에 남는다"는 계약만 고정한다."""
     result = await retrieve("단풍 낚시 여행 메시지 전부", store=store, project_id=_PROJECT, now=_NOW)
 
-    assert "exhaustive" in result.strategies
     vector = next(s for s in result.steps if s.strategy == "vector")
-    assert vector.n_hits == 4  # 이 프로젝트에 심어 둔 임베딩 전부(청크 3 + KO 1) - 하나도 관련이 없는데도
-    assert all(h["score"] == pytest.approx(0.0, abs=1e-6) for h in result.hits)
-    assert len(result.document_ids) == 3
+    assert vector.detail["min_score"] == settings.vector_min_score
+    assert vector.detail["dropped_below_min_score"] > 0
+    assert vector.n_hits == 0

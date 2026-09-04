@@ -74,6 +74,13 @@ logger = logging.getLogger(__name__)
 # 소스 이름 (RetrievalStep.source / merge_and_rerank 키)
 SOURCE_DOCUMENT_SEARCH = "document_search"
 SOURCE_LEXICAL_SEARCH = "lexical_search"
+# `_Run._keyword_arm`이 semantic_query 통째로 거는 조회의 소스 이름. 같은 검색 함수를
+# 쓰지만 질의가 다르므로(전략 쪽은 identifiers/quoted_phrases 단위) 위의 두 소스에
+# append하지 않고 별도 투표자로 분리한다 - 한 소스 리스트 안에 서로 다른 질의의 순위를
+# 섞으면 RRF의 `1/(k+rank)`가 의미를 잃는다. `_term_fallback`의 `lexical_search#<term>`과
+# 같은 관례(`#` 뒤가 "무엇으로 조회했는지").
+SOURCE_DOCUMENT_SEARCH_SEMANTIC = f"{SOURCE_DOCUMENT_SEARCH}#semantic"
+SOURCE_LEXICAL_SEARCH_SEMANTIC = f"{SOURCE_LEXICAL_SEARCH}#semantic"
 SOURCE_VECTOR_SEARCH = "vector_search"
 SOURCE_SQL_SEARCH = "sql_search"
 SOURCE_PLAN_SEARCH = "plan_search"
@@ -445,35 +452,62 @@ class _Run:
                 logger.warning("vector_search failed, continuing without it: %s", exc)
                 error = f"{type(exc).__name__}: {exc}"
         hits, narrowing = _narrow_to_anchor(hits, self.anchor)
+        # 관련도 하한 - config.py의 vector_min_score 주석 참고. anchor 좁히기 뒤에 거는 이유는
+        # anchor가 이미 "제목이 정확히 맞은 문서"라는 더 강한 신호라, 그 안에서 유사도가 낮다고
+        # 버리면 정답을 잃기 때문이다.
+        floor = settings.vector_min_score
+        dropped = 0
+        if floor > 0.0 and hits:
+            kept = [hit for hit in hits if _hit_score(hit) >= floor]
+            dropped = len(hits) - len(kept)
+            hits = kept
         self.add_hits(SOURCE_VECTOR_SEARCH, hits)
         self.step(
-            STRATEGY_VECTOR, SOURCE_VECTOR_SEARCH, len(hits), query=query, anchor_narrowing=narrowing, error=error
+            STRATEGY_VECTOR,
+            SOURCE_VECTOR_SEARCH,
+            len(hits),
+            query=query,
+            anchor_narrowing=narrowing,
+            error=error,
+            min_score=floor,
+            dropped_below_min_score=dropped,
         )
-        if not hits and query:
-            await self._keyword_fallback(query)
+        if query:
+            await self._keyword_arm(query)
 
-    async def _keyword_fallback(self, query: str) -> None:
-        """vector가 아무것도 못 돌려줬을 때(임베딩 0행, 임베더 미구성)의 키워드 기준선 -
-        semantic_query로 제목 조회 + 청크 원문 일치. 임베딩이 없는 개발 DB/평가 환경에서 실행기가
-        빈손이 되지 않게 하는 degrade이지 vector의 대체가 아니다(패러프레이즈는 못 잡는다).
+    async def _keyword_arm(self, query: str) -> None:
+        """semantic_query를 제목(`document_search`)과 청크 원문(`lexical_search`)에도 걸어
+        RRF에 **벡터와 나란히** 넣는 어휘 arm. 이름 그대로 하이브리드 검색의 한쪽 팔이지,
+        벡터가 실패했을 때의 degrade가 아니다.
 
-        주의: 이 경로는 **임베딩이 채워지면 사실상 영원히 안 돈다** - ANN은 관련도와 무관하게
-        항상 `limit`개를 돌려주므로 `not hits` 조건이 성립하지 않는다. term 분해 fallback
-        (`_term_fallback`)이 v0 골든셋 ndcg@10을 0.709 → 0.865로 올린 경로라, 임베딩을 채운
-        뒤 지표를 비교할 때 반드시 감안해야 한다(wiki/search-architecture.md "벡터 경로").
-        하한(최소 유사도)을 둘지는 `eval-ir`로 재고 나서 결정할 문제다."""
+        원래는 `if not hits`, 즉 vector가 0히트일 때만 도는 fallback이었다. 임베딩이 0행인
+        동안은 vector가 항상 실패해서 이 경로가 **항상** 돌았고, v0 골든셋 ndcg@10 0.709 →
+        0.865는 사실상 이 어휘 경로가 만든 점수다. 임베딩을 채우자 ANN이 관련도와 무관하게
+        늘 `limit`개를 돌려주면서 조건이 성립하지 않아 경로가 통째로 꺼졌고, 지표가 0.865 →
+        0.804로 내려갔다(run 9ad2bba2). `steps`를 열어 보니 `v0-navigational-004`
+        ("Dev Handover README") 같은 질의가 vector 단독 30히트만으로 랭킹되고 있었다.
+
+        `suggest_strategies`가 `document_lookup`/`lexical`을 고르는 조건은
+        `identifiers`/`quoted_phrases`/`document_reference`가 잡혔을 때뿐이라, 평범한 자연어
+        질의는 그 그물에 안 걸린다. 반면 이 arm은 semantic_query 통째로 거는 더 넓은 그물이라
+        둘은 대체재가 아니다 - 그래서 전략이 이미 돌았어도 이 arm을 끄지 않고, 대신 **소스
+        이름을 나눠**(`#semantic`) RRF의 별도 투표자로 넣는다. `_term_fallback`이
+        `lexical_search#<term>`으로 소스를 나눈 것과 같은 수법이고, 같은 소스에 append하면
+        한 리스트 안에서 순위가 섞여 RRF가 망가지기 때문이다."""
         title_hits = await document_search(
             query, self.store, project_id=self.project_id, limit=self.fetch_limit, since=self.since, until=self.until
         )
         title_hits, _ = _narrow_to_anchor(title_hits, self.anchor)
-        self.add_hits(SOURCE_DOCUMENT_SEARCH, title_hits)
-        self.step(STRATEGY_DOCUMENT_LOOKUP, SOURCE_DOCUMENT_SEARCH, len(title_hits), query=query, fallback_from=STRATEGY_VECTOR)
+        self.add_hits(SOURCE_DOCUMENT_SEARCH_SEMANTIC, title_hits)
+        self.step(
+            STRATEGY_DOCUMENT_LOOKUP, SOURCE_DOCUMENT_SEARCH_SEMANTIC, len(title_hits), query=query, arm="semantic_query"
+        )
         body_hits = await lexical_search(
             query, self.store, project_id=self.project_id, limit=self.fetch_limit, since=self.since, until=self.until
         )
         body_hits, _ = _narrow_to_anchor(body_hits, self.anchor)
-        self.add_hits(SOURCE_LEXICAL_SEARCH, body_hits)
-        self.step(STRATEGY_LEXICAL, SOURCE_LEXICAL_SEARCH, len(body_hits), query=query, fallback_from=STRATEGY_VECTOR)
+        self.add_hits(SOURCE_LEXICAL_SEARCH_SEMANTIC, body_hits)
+        self.step(STRATEGY_LEXICAL, SOURCE_LEXICAL_SEARCH_SEMANTIC, len(body_hits), query=query, arm="semantic_query")
         # 질의 문자열 통째로 뭔가 걸렸으면 그게 term 하나하나보다 강한 신호다 - term 분해는
         # 그게 빈손일 때만 도는 구제 경로다. 항상 돌리면 "codex README"처럼 제목이 정확히
         # 맞은 질의에서 term별 히트가 정답을 밀어낸다(v0-navigational-002: ndcg 1.000 → 0.356).
