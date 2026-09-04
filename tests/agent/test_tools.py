@@ -262,7 +262,7 @@ async def test_default_tools_includes_vector_search_and_sql_search_right_after_f
 
     tools = default_tools()
 
-    assert [t.name for t in tools] == ["file_search", "vector_search", "sql_search", "read_document"] + _EXPECTED_BASE_TOOL_NAMES[1:]
+    assert [t.name for t in tools] == ["file_search", "vector_search", "sql_search", "document_search", "lexical_search", "read_document"] + _EXPECTED_BASE_TOOL_NAMES[1:]
 
 
 class _FakeConnectedStore:
@@ -305,6 +305,63 @@ async def test_default_tools_vector_search_opens_a_store_and_forwards_arguments(
     assert captured["limit"] == 3
     assert captured["since"] is None
     assert captured["until"] is None
+
+
+async def test_default_tools_document_search_opens_a_store_and_forwards_arguments(monkeypatch):
+    captured = {}
+    sentinel_store = object()
+
+    def _fake_pipeline_store(database_url, data_dir):
+        captured["database_url"] = database_url
+        return _FakeConnectedStore(sentinel_store)
+
+    async def _fake_document_search(query, store, project_id=None, source_type=None, limit=10, since=None, until=None):
+        captured.update(query=query, store=store, project_id=project_id, source_type=source_type, limit=limit, since=since, until=until)
+        return [{"document_id": "d1", "target_kind": "document"}]
+
+    monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
+    monkeypatch.setattr("knowledge_forge.storage.store.PipelineStore", _fake_pipeline_store)
+    monkeypatch.setattr("knowledge_forge.agent.tools.document_search", _fake_document_search)
+
+    from knowledge_forge.agent.tools import _MAX_SEARCH_LIMIT
+
+    tool = next(t for t in default_tools() if t.name == "document_search")
+    result = await tool.handler({"query": "SH 보고서", "project_id": "proj", "source_type": "google_drive", "limit": 999})
+
+    assert result == [{"document_id": "d1", "target_kind": "document"}]
+    assert "특정" in tool.description
+    assert captured["store"] is sentinel_store
+    assert captured["query"] == "SH 보고서"
+    assert captured["project_id"] == "proj"
+    assert captured["source_type"] == "google_drive"
+    assert captured["limit"] == _MAX_SEARCH_LIMIT
+    assert captured["since"] is None
+
+
+async def test_default_tools_lexical_search_opens_a_store_and_resolves_time_range(monkeypatch):
+    captured = {}
+    sentinel_store = object()
+
+    def _fake_pipeline_store(database_url, data_dir):
+        return _FakeConnectedStore(sentinel_store)
+
+    async def _fake_lexical_search(query, store, project_id=None, limit=10, since=None, until=None):
+        captured.update(query=query, store=store, project_id=project_id, limit=limit, since=since, until=until)
+        return [{"document_id": "d1", "chunk_id": "c1", "target_kind": "chunk"}]
+
+    monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
+    monkeypatch.setattr("knowledge_forge.storage.store.PipelineStore", _fake_pipeline_store)
+    monkeypatch.setattr("knowledge_forge.agent.tools.lexical_search", _fake_lexical_search)
+
+    tool = next(t for t in default_tools() if t.name == "lexical_search")
+    result = await tool.handler({"query": "ERR_CONNECTION_RESET", "time_range": "지난주"})
+
+    assert result == [{"document_id": "d1", "chunk_id": "c1", "target_kind": "chunk"}]
+    assert captured["store"] is sentinel_store
+    assert captured["query"] == "ERR_CONNECTION_RESET"
+    assert captured["project_id"] is None
+    assert captured["limit"] == 10
+    assert captured["since"] is not None and captured["until"] is not None
 
 
 async def test_default_tools_vector_search_clamps_an_oversized_limit(monkeypatch):
@@ -369,6 +426,8 @@ async def test_default_tools_orders_vector_search_and_sql_search_before_plan_sea
         "file_search",
         "vector_search",
         "sql_search",
+        "document_search",
+        "lexical_search",
         "read_document",
         "plan_search",
     ] + _EXPECTED_BASE_TOOL_NAMES[1:]

@@ -292,3 +292,64 @@ async def vector_search(
         until=until,
         target_kind=target_kind,
     )
+
+
+async def document_search(
+    query: str,
+    store: PipelineStore,
+    project_id: str | None = None,
+    source_type: str | None = None,
+    limit: int = 10,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """문서 제목/파일명 검색 - "2025_SH_업무_보고서 찾아줘"(Navigational), "SH 보고서"
+    (Ambiguous - 후보 여러 개) 같이 **어떤 문서인지 특정**하는 질의를 위한 도구
+    (wiki/search-architecture.md ③ "문서 렉시컬 검색"). 벡터 유사도가 아니라 `documents.title`
+    (`storage/document_title.py`가 파생, pg_trgm 인덱스)에 대한 문자열 일치라, 임베딩이 없는
+    문서도 찾고 파일명의 언더스코어/확장자 같은 리터럴도 그대로 맞춘다.
+
+    `store.search_documents_by_title()`(정확 substring → 토큰 전부 포함 → trigram 유사도 순
+    랭킹)을 얇게 감싼다 - `vector_search`처럼 호출자가 연결된 `PipelineStore`를 쥐고 있어야
+    한다. 모든 히트에 `target_kind="document"`/`document_id`가 실린다 - 평가 골든셋
+    (`search-evaluation.md` (C))의 채점 단위가 `document_id`이고, `vector_search`/
+    `lexical_search` 히트와 같은 키로 합쳐질 수 있어야 하기 때문. 본문은 싣지 않는다 - 후보를
+    고른 뒤 본문이 필요하면 `lexical_search`/`vector_search`(또는 `sql_search`)로 이어가면 된다.
+
+    `since`/`until`은 `vector_search`와 같은 계약(소스의 실제 시각 `COALESCE(modified_at,
+    collected_at)` 기준, `until` 배타적)."""
+    query = query.strip()
+    if not query:
+        return []
+    hits = await store.search_documents_by_title(
+        query, project_id=project_id, source_type=source_type, since=since, until=until, limit=limit
+    )
+    for hit in hits:
+        hit.setdefault("target_kind", "document")
+    return hits
+
+
+async def lexical_search(
+    query: str,
+    store: PipelineStore,
+    project_id: str | None = None,
+    limit: int = 10,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """청크 본문의 문자열 일치 검색 - 에러 코드("ERR_CONNECTION_RESET"), 티켓/문서 ID, 정확한
+    문구처럼 임베딩으로는 "가까울" 수가 없는 리터럴(Exact/Identifier 질의)을 위한 `vector_search`의
+    보완 도구. `file_search`가 OKF 마크다운(추출된 KnowledgeObject)만 보는 것과 달리 Postgres의
+    `chunks.text`(원문 청크)를 pg_trgm 인덱스로 본다 - 추출/임베딩 전 문서, KO로 요약되며 사라진
+    리터럴도 여기서는 찾힌다.
+
+    히트 모양은 `vector_search`의 chunk grain 히트와 같다(`target_kind="chunk"`, `document_id`,
+    `chunk_id`, `summary`(일치 지점 주변 원문 500자), `score`) - `search/rerank.py`가 두 결과를
+    같은 키로 병합할 수 있게 하기 위해. `since`/`until` 계약도 `vector_search`와 같다."""
+    query = query.strip()
+    if not query:
+        return []
+    hits = await store.search_chunks_lexical(query, project_id=project_id, since=since, until=until, limit=limit)
+    for hit in hits:
+        hit.setdefault("target_kind", "chunk")
+    return hits

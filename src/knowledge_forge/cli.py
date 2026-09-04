@@ -663,6 +663,31 @@ def db_init() -> None:
     typer.echo("스키마 초기화 완료", err=True)
 
 
+@db_app.command("backfill-titles")
+def db_backfill_titles(
+    project_id: str | None = typer.Option(None, "--project-id", help="Only backfill this project's documents."),
+    overwrite: bool = typer.Option(
+        False, "--overwrite", help="Re-derive every title, not just NULL ones (after a change to the derivation rules)."
+    ),
+) -> None:
+    """Fill `documents.title` for rows written before the column existed (see
+    storage/document_title.py for the derivation order) so `document_search` can find
+    them. New ingests fill it on write; this is only needed once per existing database
+    (`db init` first - it adds the column)."""
+    database_url = settings.database_url
+    if not database_url:
+        typer.echo("KF_DATABASE_URL이 설정되지 않았습니다.", err=True)
+        raise typer.Exit(1)
+
+    async def _run() -> int:
+        async with PipelineStore(database_url, settings.data_dir) as store:
+            await store.init_schema()
+            return await store.backfill_document_titles(project_id, overwrite=overwrite)
+
+    updated = asyncio.run(_run())
+    typer.echo(f"문서 제목 백필 완료: {updated}건", err=True)
+
+
 @db_app.command("export-okf")
 def db_export_okf(
     okf_dir: Path = typer.Option(..., "--okf-dir", help="Directory to write the OKF Knowledge Base tree to."),

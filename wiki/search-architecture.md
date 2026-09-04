@@ -14,7 +14,7 @@ Grounding까지)을 레이어별로 정리한다. 실제 프로덕션 엔터프�
 | ① Query Understanding (intent/entity/temporal) | **부분 구현** — `search/constraints.py`가 질의를 구조화된 제약(`QueryConstraints`: 시간 범위/작성자/식별자/문서 참조/소스·문서 타입)과 의도 플래그(latest/exhaustive/count/summary/whole_document/negative/comparison/multihop)로 분해하고 `suggest_strategies()`로 검색 전략 이름을 내놓는다(규칙 1단계 + 선택적 LLM 보강 2단계). temporal parsing(`search/temporal.py`)을 재사용. 아직 없는 것: conversation-aware 질의 복원, 동의어/약어 확장, 이 제약을 실제로 소비하는 통합 실행기(`search/retrieve.py`, 다음 단계) |
 | ② Query Planning (multi-hop 분해) | **구현됨** — `search/planner.py`, 아래 절 참고 |
 | Query Routing (소스 선택) | **구현됨** — `search/router.py`, 아래 절 참고 |
-| ③ Hybrid Retrieval (BM25+Vector+Metadata+Graph) | **부분 구현** — keyword(`file_search`)+semantic(`vector_search`)+metadata(`project_id`/`type`/시간 범위) 병행 실행 + RRF reranking까지 있음. Graph 전용 API(`graph_search`)는 미구현이지만 `sql_search`로 `relations` 테이블을 직접 JOIN하는 것으로 상당 부분 대체 가능 |
+| ③ Hybrid Retrieval (BM25+Vector+Metadata+Graph) | **부분 구현** — keyword(`file_search`)+semantic(`vector_search`)+metadata(`project_id`/`type`/시간 범위) 병행 실행 + RRF reranking까지 있음. 문서 제목/원문 청크의 pg_trgm 렉시컬 검색(`document_search`/`lexical_search`)도 있음. Graph 전용 API(`graph_search`)는 미구현이지만 `sql_search`로 `relations` 테이블을 직접 JOIN하는 것으로 상당 부분 대체 가능 |
 | Multi-stage Retrieval / Reranking | **부분 구현** — `search/rerank.py`의 Reciprocal Rank Fusion, 아래 절 참고. Cross-Encoder/LLM reranker는 미구현 |
 | ④ Context Engineering (dedup/conflict/compression) | **부분 구현** — 토큰 예산 압축(`agent/compaction.py`), cross-source dedup(`search/rerank.py`, knowledge_object_id 기준)은 있음. conflict 탐지/source reliability/temporal consistency/evidence clustering은 없음 |
 | ⑤ Map-Reduce / Hierarchical Retrieval | 설계만, 미구현 |
@@ -218,6 +218,48 @@ Search Evaluation / Feedback Loop 절과 판정기를 공유하는 옵션 확장
     RRF는 각 소스의 기존 순위를 신뢰하는 저비용 융합일 뿐, 두 소스 모두 낮게 평가한 문서를
     끌어올리거나 실제 관련성을 재판단하지는 못한다. 필요해지는 시점은 RRF로 병합한 상위
     결과의 정밀도가 실사용에서 부족하다고 판명될 때.
+- **문서 렉시컬 검색(Document/Lexical Search) — 구현됨**, `search/service.py::document_search`/
+  `lexical_search` + `storage/postgres_store.py::search_documents_by_title`/`search_chunks_lexical`,
+  agent 도구 `document_search`/`lexical_search`(`KF_DATABASE_URL`이 있을 때만 등록).
+  검색 유형 중 Navigational("2025_SH_업무_보고서 찾아줘"), Exact/Identifier("ERR_CONNECTION_RESET
+  문서"), Ambiguous("SH 보고서" → 후보 여러 개)는 벡터 유사도로 풀 수 없다 - 파일명/에러 코드는
+  임베딩이 "가까울" 의미가 없고, `file_search`는 OKF 마크다운(추출된 KO 요약)만 봐서 요약 과정에서
+  사라진 리터럴을 놓친다. 그래서 Postgres의 `documents.title`/`chunks.text`에 대한 문자열 일치
+  검색을 따로 뒀다.
+  - **왜 tsvector(FTS)가 아니라 pg_trgm인가**: 제목/청크의 대부분이 한국어 + 언더스코어로 이어진
+    파일명(`2025_SH_업무_보고서.pdf`)이다. Postgres 기본 텍스트 검색 파서(`simple`)는 한국어를
+    형태소 단위로 나누지 못하고 공백 기준으로만 자르며, 언더스코어 파일명은 통째로 한 토큰이 되어
+    "SH 보고서"로는 절대 못 찾는다. trigram은 토크나이저가 없어 언어에 무관하고, `ILIKE '%q%'`
+    (substring)과 `similarity`/`word_similarity`(오타/부분 일치) 둘 다 같은 GIN 인덱스
+    (`gin_trgm_ops`)로 서빙한다. 영문/식별자용 tsvector 병행은 넣지 않았다 - 식별자는 substring
+    일치가 정답이고 trigram이 그걸 이미 인덱스로 처리하므로 얻는 게 없다.
+  - **3단 랭킹**: ① 질의 전체 substring(`ILIKE`) → ② 공백 토큰 전부 포함(`ILIKE ALL(...)`,
+    "SH 보고서"가 `2025_SH_업무_보고서.pdf`에 맞는 단계) → ③ `word_similarity(q, title) >= 0.3`
+    (청크는 0.5). `similarity` 대신 `word_similarity`를 쓰는 이유: 짧은 질의가 긴 파일명에 얼마나
+    덮이는지를 재므로("SH 보고서" 0.7 vs `similarity` 0.37) 제목 검색이 실제로 묻는 질문과 맞다.
+    LIKE 패턴은 `_`/`%`를 이스케이프한다 - 파일명의 `_`가 LIKE 와일드카드라 안 하면
+    `2025aSHb업무`도 맞는다. `score`는 ①=1.0, ②=0.5+sim/2, ③=sim으로 [0,1] 안에서 단계와 단조.
+  - **제목 파생 우선순위**(`storage/document_title.py`, [`storage.md`](storage.md)): 파서가 읽은
+    `document.metadata.title` → 소스 메타데이터 `name`(Drive)/`subject`(Gmail) → Slack이면
+    `#channel YYYY-MM-DD` → 첫 Heading → NULL. 개발 DB 기준 `documents.metadata->>'title'`은 전부
+    NULL이라(파서는 Drive 파일명/메일 제목을 모른다 - 그건 `sources.metadata`에만 있다) 이 파생이
+    없으면 제목 검색 자체가 성립하지 않는다. Heading이 마지막인 이유: Slack/Gmail 컨텍스트 파서가
+    만드는 "Slack #C0BG… 스레드" 같은 합성 제목은 사람이 부르는 이름이 아니다.
+  - **결과 모양**: `document_search`는 본문 없이 `{target_kind:"document", document_id, title,
+    source_type, uri, modified_at, score}` 후보 목록 - "어떤 문서인지 특정"하는 단계용이라 후보가
+    여럿이면 전부 돌려주고 모델이 사용자에게 되묻게 한다. `lexical_search`는 `vector_search`의
+    chunk grain 히트와 같은 키(`target_kind:"chunk"`, `document_id`, `chunk_id`, `summary`=일치
+    지점 주변 500자, `score`)라 `search/rerank.py`가 그대로 병합할 수 있다. 둘 다 `document_id`를
+    항상 싣는다 - [`search-evaluation.md`](search-evaluation.md) (C) 골든셋의 채점 단위.
+  - `search/router.py`: `_ID_LIKE_RE`가 못 잡던 숫자 시작/한글 혼합 식별자(`2025_SH_업무_보고서`
+    - `_`/`-`로 이어진 3토큰 이상)와 확장자(.pdf/.xlsx/.docx/.pptx/.hwp…) 포함 토큰을
+    `has_exact_match_signal()`의 정확 일치 신호로 추가했다. `plan_search`의 하위 질의 라우팅은
+    여전히 `file_search`/`vector_search` 두 소스만 고른다 - `document_search`를 planner에 엮는
+    건 골든셋으로 효과를 잰 뒤에.
+  - **아직 없는 것**: `document_search` 후보를 `vector_search`/`lexical_search`의 `document_id`
+    필터로 바로 잇는 파라미터(지금은 모델이 후보를 고른 뒤 `sql_search`나 본문 검색을 이어 부른다),
+    Slack 채널 ID → 채널 이름 해석(제목이 `#C0BGQEQG1L6 2026-08-11` 형태로 남는다 - 컬렉터가
+    `channel_name`을 메타데이터에 넣으면 파생 로직은 이미 그걸 우선 쓴다).
 
 ## ④ Context Engineering — 부분 구현
 

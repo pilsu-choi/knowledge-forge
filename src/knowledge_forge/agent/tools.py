@@ -23,7 +23,7 @@ from knowledge_forge.config import settings
 from knowledge_forge.okf.fs_service import edit_file, list_dir, read_file, write_file
 from knowledge_forge.search.document import read_document
 from knowledge_forge.search.planner import DEFAULT_LIMIT_PER_SUBQUERY, plan_and_search
-from knowledge_forge.search.service import file_search, vector_search
+from knowledge_forge.search.service import document_search, file_search, lexical_search, vector_search
 from knowledge_forge.search.sql import describe_schema, sql_search
 from knowledge_forge.search.temporal import parse_temporal_expression
 
@@ -110,6 +110,68 @@ VECTOR_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
                 "'2025년 Q3', '최근 3일'). 이해하지 못하는 표현이면 무시된다(에러 아님)."
             ),
         },
+    },
+    "required": ["query"],
+}
+
+_TIME_RANGE_PROPERTY: dict[str, Any] = {
+    "type": "string",
+    "description": (
+        "자연어 시간 표현으로 결과를 좁힌다 (예: '어제', '지난주', '지난달', '이번 분기', "
+        "'2025년 Q3', '최근 3일'). 이해하지 못하는 표현이면 무시된다(에러 아님)."
+    ),
+}
+
+DOCUMENT_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": (
+                "찾는 문서의 제목/파일명(또는 그 일부) - 예: '2025_SH_업무_보고서', 'SH 보고서', "
+                "'산출물 기간 변경'. 자연어 문장이 아니라 이름만 넣을 것."
+            ),
+        },
+        "project_id": {
+            "type": "string",
+            "description": "특정 프로젝트로 범위를 좁힌다. 생략하면 모든 프로젝트를 검색한다.",
+        },
+        "source_type": {
+            "type": "string",
+            "description": "소스 종류로 좁힌다: local_file/slack/gmail/google_drive/notion. 생략하면 전부.",
+        },
+        "limit": {
+            "type": "integer",
+            "description": f"반환할 최대 후보 수 (서버가 {_MAX_SEARCH_LIMIT}로 상한을 둔다).",
+            "default": 10,
+            "maximum": _MAX_SEARCH_LIMIT,
+        },
+        "time_range": _TIME_RANGE_PROPERTY,
+    },
+    "required": ["query"],
+}
+
+LEXICAL_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": (
+                "원문에 그대로 들어 있어야 하는 문자열 - 에러 코드('ERR_CONNECTION_RESET'), 티켓/문서 ID, "
+                "정확한 문구. 의미가 비슷한 표현은 찾지 못하므로 그런 경우엔 vector_search를 쓸 것."
+            ),
+        },
+        "project_id": {
+            "type": "string",
+            "description": "특정 프로젝트로 범위를 좁힌다. 생략하면 모든 프로젝트를 검색한다.",
+        },
+        "limit": {
+            "type": "integer",
+            "description": f"반환할 최대 결과 수 (서버가 {_MAX_SEARCH_LIMIT}로 상한을 둔다).",
+            "default": 10,
+            "maximum": _MAX_SEARCH_LIMIT,
+        },
+        "time_range": _TIME_RANGE_PROPERTY,
     },
     "required": ["query"],
 }
@@ -355,6 +417,74 @@ def _make_read_document_tool(database_url: str) -> ToolSpec:
     )
 
 
+def _make_document_search_tool(database_url: str) -> ToolSpec:
+    """`document_search`(`search/service.py`) - `vector_search`와 같은
+    "database_url이 있을 때만, 호출마다 `PipelineStore`를 열고 닫는" 패턴.
+    별도 도구로 두는 이유: "2025_SH_업무_보고서 찾아줘" 같은 Navigational 질의는
+    답이 *문서 하나(또는 후보 몇 개)* 이지 청크/KO가 아니라, 결과 모양 자체가
+    다르다(본문 없이 제목+document_id 목록). `file_search`/`vector_search`
+    결과에 섞어 넣으면 모델이 "이게 그 문서인지"를 특정하는 단계를 건너뛰고
+    스니펫부터 읽기 시작한다."""
+    from knowledge_forge.storage.store import PipelineStore
+
+    async def _handler(args: dict[str, Any]) -> list[dict[str, Any]]:
+        since, until = _resolve_time_range(args)
+        async with PipelineStore(database_url, settings.data_dir) as store:
+            return await document_search(
+                query=args["query"],
+                store=store,
+                project_id=args.get("project_id"),
+                source_type=args.get("source_type"),
+                limit=_clamp_limit(args.get("limit"), default=10, maximum=_MAX_SEARCH_LIMIT),
+                since=since,
+                until=until,
+            )
+
+    return ToolSpec(
+        name="document_search",
+        description=(
+            "문서를 제목/파일명으로 찾아 후보 목록(document_id, title, source_type, uri, modified_at, score)을 "
+            "반환한다 - '2025_SH_업무_보고서 찾아줘', 'SH 보고서'처럼 **어떤 문서인지 특정**해야 할 때 "
+            "가장 먼저 쓸 것(부분 일치/오타도 허용, 후보가 여러 개면 전부 반환하니 사용자에게 어느 것인지 "
+            "되물을 수 있다). 본문은 싣지 않는다 - 특정한 document_id로 lexical_search/sql_search를 이어갈 것. "
+            "내용/개념으로 찾는 질문에는 vector_search가 적합하다."
+        ),
+        input_schema=DOCUMENT_SEARCH_INPUT_SCHEMA,
+        handler=_handler,
+    )
+
+
+def _make_lexical_search_tool(database_url: str) -> ToolSpec:
+    """`lexical_search`(`search/service.py`) - `file_search`가 OKF 마크다운(추출된
+    KO 요약)만 보는 것과 달리 Postgres `chunks.text` 원문을 pg_trgm으로 보므로,
+    추출 과정에서 요약되며 사라진 에러 코드/ID 같은 리터럴도 찾는다."""
+    from knowledge_forge.storage.store import PipelineStore
+
+    async def _handler(args: dict[str, Any]) -> list[dict[str, Any]]:
+        since, until = _resolve_time_range(args)
+        async with PipelineStore(database_url, settings.data_dir) as store:
+            return await lexical_search(
+                query=args["query"],
+                store=store,
+                project_id=args.get("project_id"),
+                limit=_clamp_limit(args.get("limit"), default=10, maximum=_MAX_SEARCH_LIMIT),
+                since=since,
+                until=until,
+            )
+
+    return ToolSpec(
+        name="lexical_search",
+        description=(
+            "원문 청크(chunks.text)에서 문자열이 그대로 들어 있는 곳을 찾는다 - 에러 코드, 티켓/문서 ID, "
+            "정확한 문구처럼 리터럴 일치가 필요한 질의용. 결과는 vector_search와 같은 모양(document_id, "
+            "chunk_id, 일치 지점 주변 summary, score)이다. 패러프레이즈/개념 질문에는 vector_search를, "
+            "문서 자체를 제목으로 찾을 때는 document_search를 쓸 것."
+        ),
+        input_schema=LEXICAL_SEARCH_INPUT_SCHEMA,
+        handler=_handler,
+    )
+
+
 def _make_sql_search_tool(database_url: str) -> ToolSpec:
     """`sql_search`(Text-to-SQL, `search/sql.py`)는 `vector_search`와 같은
     이유로 `KF_DATABASE_URL`이 있을 때만 추가되고 호출마다 `PipelineStore`를
@@ -532,6 +662,8 @@ def default_tools(
     if settings.database_url:
         tools.append(_make_vector_search_tool(settings.database_url))
         tools.append(_make_sql_search_tool(settings.database_url))
+        tools.append(_make_document_search_tool(settings.database_url))
+        tools.append(_make_lexical_search_tool(settings.database_url))
         tools.append(_make_read_document_tool(settings.database_url))
     if provider is not None:
         tools.append(_make_plan_search_tool(provider=provider, database_url=settings.database_url, project_id=project_id))
