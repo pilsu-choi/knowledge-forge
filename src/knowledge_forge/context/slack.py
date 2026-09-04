@@ -34,6 +34,12 @@ from knowledge_forge.models.link import LinkType
 
 _DEFAULT_GAP_SECONDS = 1800.0
 
+# 에피소드 첫 메시지에서 `sources.metadata.first_message`로 실어 둘 원문 길이 상한.
+# 실제 제목에 쓰이는 발췌 길이(`storage/document_title.py::_SLACK_EXCERPT_CHARS`)보다
+# 넉넉하게 잡는다 - 제목 규칙이 바뀌어 발췌를 늘리고 싶어질 때 재적재 없이
+# `db backfill-titles --overwrite`만으로 넓힐 수 있게 하려는 여유분이다.
+_FIRST_MESSAGE_CHARS = 400
+
 
 def _ts(item: RawItem) -> float:
     return float(item.metadata["ts"])
@@ -122,6 +128,27 @@ class SlackConversationReconstructor(ContextReconstructor):
             "participants": participants,
             "message_count": len(episode),
         }
+        # SlackDirectory가 붙어 있을 때만 채워지는 사람이 읽는 이름들
+        # (collectors/saas/slack.py::SlackDirectory, wiki/saas-connectors.md).
+        # 원시 ID는 `channel`/`participants`에 그대로 남는다 - 둘 다 조인 키다.
+        channel_name = next(
+            (m.metadata.get("channel_name") for m in episode if m.metadata.get("channel_name")), None
+        )
+        if channel_name:
+            metadata["channel_name"] = channel_name
+        participant_names = list(
+            dict.fromkeys(m.metadata.get("user_name") for m in episode if m.metadata.get("user_name"))
+        )
+        if participant_names:
+            metadata["participant_names"] = participant_names
+        # 에피소드 첫 메시지 원문 - `documents.title`의 재료다. 이게 없으면 슬랙 제목은
+        # "#채널 날짜"에 머물고, v0 골든셋 실측상 그 형태는 슬랙 정답 66건 중 0건에
+        # 닿는다(wiki/search-evaluation.md).
+        first = episode[0]
+        first_text = first.metadata.get("text_resolved") or first.content.decode("utf-8", errors="replace")
+        first_text = " ".join(first_text.split())
+        if first_text:
+            metadata["first_message"] = first_text[:_FIRST_MESSAGE_CHARS]
         if thread_ts is not None:
             metadata["thread_ts"] = thread_ts
         if previous_uri is not None:

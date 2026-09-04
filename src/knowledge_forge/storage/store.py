@@ -215,6 +215,15 @@ class PipelineStore:
         """`knowledge-forge db backfill-titles` - see `PostgresStore.backfill_document_titles`."""
         return await self._db.backfill_document_titles(project_id, overwrite=overwrite)
 
+    async def backfill_slack_display_names(self, directory, project_id: str | None = None) -> dict:
+        """`knowledge-forge db backfill-slack-names` - see `PostgresStore.backfill_slack_display_names`."""
+        return await self._db.backfill_slack_display_names(directory, project_id)
+
+    @property
+    def conn(self):
+        """CLI의 `--dry-run`이 백필을 트랜잭션으로 감싸 롤백하려면 같은 커넥션이 필요하다."""
+        return self._db.conn
+
     async def normalize_unicode_text(self, project_id: str | None = None) -> tuple[int, int]:
         """`knowledge-forge db normalize-unicode` - see `PostgresStore.normalize_unicode_text`."""
         return await self._db.normalize_unicode_text(project_id)

@@ -171,3 +171,127 @@ def test_backfill_sync_without_until_omits_latest_param():
 
     assert len(items) == 1
     assert "latest" not in client.history_calls[0]
+
+
+# --- SlackDirectory / 이름 해석 -------------------------------------------------
+
+
+class _FakeDirectoryClient:
+    """`conversations.info` / `users.list` 호출 횟수를 세는 가짜 클라이언트.
+    SlackDirectory의 계약이 "채널당 1회, 유저는 워크스페이스 통틀어 1회"라 호출 수 자체가 검증 대상이다."""
+
+    def __init__(self, channels=None, user_pages=None, fail=()):
+        self._channels = channels or {}
+        self._user_pages = user_pages or [[]]
+        self._fail = set(fail)
+        self.info_calls: list[str] = []
+        self.users_calls: list[dict] = []
+
+    def conversations_info(self, **kwargs):
+        channel = kwargs["channel"]
+        self.info_calls.append(channel)
+        if "conversations_info" in self._fail or channel not in self._channels:
+            raise RuntimeError("channel_not_found")
+        return {"channel": {"id": channel, "name": self._channels[channel]}}
+
+    def users_list(self, **kwargs):
+        self.users_calls.append(kwargs)
+        if "users_list" in self._fail:
+            raise RuntimeError("missing_scope")
+        index = int(kwargs.get("cursor") or 0)
+        members = self._user_pages[index]
+        next_cursor = str(index + 1) if index + 1 < len(self._user_pages) else None
+        return {"members": members, "response_metadata": {"next_cursor": next_cursor} if next_cursor else {}}
+
+
+def _directory(**kwargs):
+    from knowledge_forge.collectors.saas.slack import SlackDirectory
+
+    client = _FakeDirectoryClient(**kwargs)
+    return SlackDirectory(client=client), client
+
+
+def test_directory_caches_channel_lookups_one_call_per_channel():
+    directory, client = _directory(channels={"C1": "project-intel-개발자"})
+
+    assert directory.channel_name("C1") == "project-intel-개발자"
+    assert directory.channel_name("C1") == "project-intel-개발자"
+    assert client.info_calls == ["C1"]
+
+
+def test_directory_loads_every_user_with_a_single_paginated_users_list():
+    directory, client = _directory(
+        user_pages=[
+            [{"id": "U1", "profile": {"display_name": "이효현 (샨)"}, "real_name": "이효현"}],
+            [{"id": "U2", "profile": {"display_name": ""}, "real_name": "Google Drive"}],
+        ]
+    )
+
+    assert directory.user_name("U1") == "이효현 (샨)"
+    # 봇 계정은 display_name이 빈 문자열이라 real_name으로 떨어진다.
+    assert directory.user_name("U2") == "Google Drive"
+    # 두 번째 유저를 물어도 users.list를 다시 부르지 않는다 (페이지 2개 = 호출 2번이 전부).
+    assert len(client.users_calls) == 2
+
+
+def test_directory_falls_back_to_project_id_when_conversations_info_has_no_scope():
+    from knowledge_forge.collectors.saas.slack import SlackDirectory
+
+    client = _FakeDirectoryClient(fail={"conversations_info"})
+    directory = SlackDirectory(client=client, fallback_channel_names={"C1": "PRJ-0A09"})
+
+    assert directory.channel_name("C1") == "PRJ-0A09"
+    assert directory.channel_name("C2") is None  # 못 풀면 None - 푼 척하지 않는다
+    # 실패해도 캐시되어 재호출하지 않는다.
+    directory.channel_name("C1")
+    assert client.info_calls == ["C1", "C2"]
+
+
+def test_directory_user_names_keeps_raw_id_when_unresolvable():
+    directory, _ = _directory(user_pages=[[{"id": "U1", "profile": {"display_name": "샨"}}]])
+
+    assert directory.user_names(["U1", "U9", None]) == ["샨", "U9"]
+
+
+def test_directory_resolve_mentions_rewrites_user_and_channel_links():
+    directory, _ = _directory(
+        channels={"C1": "general"},
+        user_pages=[[{"id": "U1", "profile": {"display_name": "샨"}}]],
+    )
+
+    assert directory.resolve_mentions("<@U1> 님 <#C1|general> 확인") == "샨 님 #general 확인"
+    # 못 푸는 멘션은 원문 그대로 남는다.
+    assert directory.resolve_mentions("<@U9> 확인") == "<@U9> 확인"
+
+
+def test_collector_adds_names_without_touching_raw_ids():
+    from knowledge_forge.collectors.saas.slack import SlackDirectory
+
+    client = _FakeSlackClient()
+    client.history_pages["C1"] = [[{"ts": "100.0", "text": "<@U1> 확인 부탁", "user": "U1"}]]
+    directory_client = _FakeDirectoryClient(
+        channels={"C1": "general"}, user_pages=[[{"id": "U1", "profile": {"display_name": "샨"}}]]
+    )
+    collector = SlackCollector(
+        client=client, channels=["C1"], directory=SlackDirectory(client=directory_client)
+    )
+
+    (item,) = list(collector.initial_sync())
+
+    # 원시 ID는 그대로 - `channel`/`user`는 스레드 그룹핑과 조인의 키다.
+    assert item.metadata["channel"] == "C1"
+    assert item.metadata["user"] == "U1"
+    assert item.metadata["channel_name"] == "general"
+    assert item.metadata["user_name"] == "샨"
+    assert item.metadata["text_resolved"] == "샨 확인 부탁"
+    # content(=content_hash의 재료)는 건드리지 않는다 - 바뀌면 document_id가 통째로 달라진다.
+    assert item.content == "<@U1> 확인 부탁".encode()
+
+
+def test_collector_without_directory_produces_the_previous_metadata_exactly():
+    client = _FakeSlackClient()
+    client.history_pages["C1"] = [[{"ts": "100.0", "text": "hi", "user": "U1"}]]
+
+    (item,) = list(SlackCollector(client=client, channels=["C1"]).initial_sync())
+
+    assert item.metadata == {"channel": "C1", "ts": "100.0", "user": "U1", "thread_ts": None}

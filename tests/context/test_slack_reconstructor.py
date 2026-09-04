@@ -15,6 +15,13 @@ def _msg(channel, ts, user, text, thread_ts=None, project_id=None):
     )
 
 
+def _msg_named(channel, ts, user, text, **names):
+    """`_msg` + SlackDirectory가 붙었을 때 수집기가 얹는 이름 키들."""
+    item = _msg(channel, ts, user, text)
+    item.metadata.update({k: v for k, v in names.items() if v is not None})
+    return item
+
+
 def test_thread_replies_are_grouped_into_one_episode_regardless_of_gap():
     items = [
         _msg("general", "100.0", "A", "배포 언제 할까요?", thread_ts="100.0"),
@@ -141,3 +148,32 @@ def test_no_project_id_configured_stays_none():
     episodes = list(SlackConversationReconstructor().reconstruct(iter(items)))
 
     assert episodes[0].project_id is None
+
+
+def test_merge_carries_display_names_and_first_message_without_dropping_raw_ids():
+    """SlackDirectory가 붙은 수집기가 채운 이름을 에피소드 메타데이터로 옮기는지.
+    원시 `channel`/`participants`는 조인 키라 그대로 남아야 한다
+    (`storage/postgres_store.find_slack_thread_*`, `document_links.py`)."""
+    items = [
+        _msg_named("C1", "100.0", "U1", "<@U1> 확인 부탁", channel_name="general", user_name="샨", text_resolved="샨 확인 부탁"),
+        _msg_named("C1", "120.0", "U2", "넵", channel_name="general", user_name="딘"),
+    ]
+
+    (episode,) = list(SlackConversationReconstructor().reconstruct(iter(items)))
+
+    assert episode.metadata["channel"] == "C1"
+    assert episode.metadata["participants"] == ["U1", "U2"]
+    assert episode.metadata["channel_name"] == "general"
+    assert episode.metadata["participant_names"] == ["샨", "딘"]
+    # 첫 메시지는 멘션이 풀린 형태(text_resolved)를 우선한다 - 제목의 재료라서.
+    assert episode.metadata["first_message"] == "샨 확인 부탁"
+
+
+def test_merge_falls_back_to_raw_content_and_omits_name_keys_without_a_directory():
+    items = [_msg("C1", "100.0", "U1", "안녕하세요\n  반갑습니다")]
+
+    (episode,) = list(SlackConversationReconstructor().reconstruct(iter(items)))
+
+    assert episode.metadata["first_message"] == "안녕하세요 반갑습니다"
+    assert "channel_name" not in episode.metadata
+    assert "participant_names" not in episode.metadata

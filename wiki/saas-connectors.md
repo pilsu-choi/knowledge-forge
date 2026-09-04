@@ -76,3 +76,85 @@ Drive/Notion 계정·토큰이 없어 라이브 API 응답으로는 검증하지
 실사용 전에는 각자의 실제 토큰/계정으로 `initial_sync()`을 한 번 돌려 결과를 확인하는 걸
 권장한다. `tests/collectors/test_slack.py`/`test_gmail.py`/`test_gdrive.py`/`test_notion.py`가
 각 SDK의 모킹 패턴을 보여주는 참고 자료다.
+
+## Slack ID → 사람이 읽는 이름 (`SlackDirectory`)
+
+Slack이 주는 원본 레코드에는 불투명한 ID밖에 없다. 그대로 저장한 결과가 개발 DB의 슬랙 문서
+197건이었다 — 제목은 전부 `#C0BGQEQG1L6 2026-09-01`, `sources.metadata`는
+
+```json
+{"channel": "C0BGQEQG1L6", "thread_ts": "1786438991.743159",
+ "message_ts": ["1786438991.743159", "1786439891.589029"],
+ "participants": ["U0BBCPVEHF0"], "message_count": 2}
+```
+
+`participants`가 원시 유저 ID라 `search/retrieve.py::_metadata_filter_where`의 작성자/참여자
+필터(`s.metadata->>'participants' ILIKE '%이름%'`)가 슬랙에는 구조적으로 닿지 않는다. gmail은
+같은 키에 `["이름 <주소>", ...]`를 넣으므로, 이건 슬랙만 계약을 못 지키고 있던 것이다.
+
+**해석기**: `collectors/saas/slack.py::SlackDirectory`. 호출 예산이 설계의 핵심이다.
+
+| 대상 | API | 호출 수 | 캐시 |
+|---|---|---|---|
+| 채널명 | `conversations.info` | 채널당 1회 (이 워크스페이스 12채널 = 12콜) | 영구, 실패도 캐시 |
+| 유저 표시명 | `users.list` | **워크스페이스 통틀어 1회**(페이지네이션 포함, 305명 = 2콜) | 영구 |
+
+`conversations.list`로 채널을 한 번에 받는 방법도 있지만 그건 워크스페이스 전체 채널을
+페이지네이션하는 것이라, 우리가 보는 채널이 12개뿐일 때는 오히려 비싸다. 참여자마다
+`users.info`를 부르는 것도 스레드 수만큼 콜이 늘어나서 안 된다.
+
+표시명은 `profile.display_name` → `real_name` → `name` 순으로 고른다. 이 워크스페이스 실측상
+`display_name`이 "이효현 (샨)"처럼 사내 호칭까지 담고 있어 질의가 가장 잘 맞는 형태이고,
+봇 계정은 `display_name`이 빈 문자열이라 `real_name`("Google Drive")으로 떨어진다.
+
+**실패는 삼킨다.** 토큰에 `channels:read`/`users:read` 스코프가 없으면 경고 로그만 남기고
+`None`을 캐시해 다시 부르지 않는다 — 이름 해석은 검색 품질 개선이지 수집의 전제 조건이 아니다.
+채널은 그때 `KF_SLACK_CHANNEL_PROJECT_MAP`이 주는 프로젝트 ID로 떨어지고(원시 채널 ID보다는
+질의에 나올 만한 문자열이다), 참여자는 원시 ID 그대로 남는다. **못 푼 것을 푼 척하지 않는다** —
+`user_names()`는 못 푼 ID를 목록에서 지우지 않고 원시 ID를 그 자리에 남기고,
+`channel_name()`은 `None`을 돌려준다.
+
+### 무엇이 어디에 저장되는가
+
+원시 ID는 **하나도 지우지 않는다.** `channel`은 `context/slack.py`의 스레드 그룹핑 키이자
+`postgres_store.find_slack_thread_*` / `document_links.py`의 조인 키라, 값이 바뀌면 조용히
+스레드가 갈라진다. 새 키만 덧붙인다.
+
+| 키 | 값 | 채우는 곳 |
+|---|---|---|
+| `channel` / `participants` / `message_ts` | 원시 (그대로) | 예전과 동일 |
+| `channel_name` | `proj_2026-038-0_nh농협은행_mvp` | `context/slack.py::_merge` |
+| `participant_names` | `["이효현 (샨)", ...]` | `context/slack.py::_merge` |
+| `first_message` | 에피소드 첫 메시지 원문 400자, `<@U…>` 멘션 해석됨 | `context/slack.py::_merge` |
+
+메시지 단위 `RawItem.metadata`에는 `channel_name` / `user_name` / `text_resolved`가 붙고,
+`_merge`가 에피소드 단위로 접는다. **`RawItem.content`는 건드리지 않는다** — 그게 바뀌면
+`content_hash`가 바뀌고 `document_id`가 통째로 달라져 기존 문서 전부가 재적재된다.
+
+### 이미 적재된 행: `knowledge-forge db backfill-slack-names`
+
+`PostgresStore.backfill_slack_display_names`. `sources.metadata`와 `documents.title`
+**두 컬럼만** 쓴다(chunks/embeddings/knowledge_objects 불변 — 같은 DB를 공유하는 평가 런의
+인덱스 정합이 깨지면 안 된다). 이미 값이 있으면 UPDATE를 아예 보내지 않으므로 재실행하면
+전부 0건이 나오는 멱등 연산이다. `--dry-run`은 진짜 백필을 트랜잭션 안에서 돌린 뒤 롤백한다 —
+미리보기 전용 로직을 따로 두면 진짜 경로와 어긋나는 게 시간 문제라서.
+
+`first_message`는 수집 경로가 채우지만 이미 적재된 행에는 없다. 그래서 백필은
+`documents.elements`의 첫 텍스트 블록에서 되살린다 — 그게 transcript의 첫 메시지고, 화자
+접두어(`U0BD…: `)는 `storage/document_title.py::slack_excerpt`가 뗀다.
+
+실측(개발 DB 197건): 채널 12개 전부 해석 성공, 참여자 197건, 첫 메시지 197건, 제목 197건 갱신.
+재실행 시 전부 0건. `documents`/`chunks`/`knowledge_object_embeddings`/`knowledge_objects`
+카운트는 358/2856/2856/5107로 불변.
+
+### 남은 구멍
+
+- **`_metadata_filter_where`가 아직 `participant_names`를 보지 않는다.** 지금은
+  `s.metadata->>'participants' ILIKE ...`만 걸어서, 이름을 채워 놨는데도 "누가 보낸" 류 질의가
+  슬랙에 닿지 않는다. `search/retrieve.py`의 `_person()`에 `participant_names`를 OR로 하나 더
+  얹으면 끝이지만, 그 파일은 이 작업 범위 밖이었다.
+- **transcript 본문은 아직 원시 유저 ID다.** `context/slack.py::_format_message`가
+  `f"{user}: {text}"`로 조립하므로 `chunks.text`에 `U0BDNDBHWLV: ...`가 그대로 들어 있고,
+  어휘 검색이 슬랙 본문에서 사람 이름을 영원히 못 맞춘다. 고치려면 `content`가 바뀌고
+  → `content_hash` → `document_id`가 바뀌어 **슬랙 전체 재적재**가 필요하다. 임베딩까지 다시
+  써야 하므로 코퍼스 재적재를 하는 날 함께 해야 한다.
