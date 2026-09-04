@@ -25,6 +25,15 @@ DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MAX_TOKENS = 4096
 
 
+# No prompt-caching knob here, deliberately. The OpenAI Chat Completions
+# schema has no cache primitive: OpenAI-hosted models cache prefixes
+# automatically with nothing to declare, and OpenRouter only forwards
+# Anthropic-style `cache_control` blocks when the request happens to be
+# routed to an Anthropic model - which this class cannot assume, since the
+# same code path also serves plain OpenAI and any other compatible endpoint
+# (a local vLLM server) via `base_url`, where an unknown `cache_control` key
+# inside a message is rejected. So the caching win
+# (providers/anthropic.py's `_CACHE_BREAKPOINT`) is Anthropic-only.
 def _to_openai_tools(tools: list[ToolSpec]) -> list[dict]:
     return [
         {"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.input_schema}}
