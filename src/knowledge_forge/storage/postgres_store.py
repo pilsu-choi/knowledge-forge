@@ -7,6 +7,8 @@ unchanged input is safe to repeat.
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -14,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 import psycopg
 from pgvector import Vector
 from psycopg.types.json import Jsonb
+from psycopg_pool import AsyncConnectionPool
 
 from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.document import Document
@@ -26,6 +29,7 @@ from knowledge_forge.models.link import DocumentLink
 from knowledge_forge.models.relation import Relation
 from knowledge_forge.models.source import Source, SourceRef
 from knowledge_forge.storage.document_title import derive_document_title, first_heading_text
+from knowledge_forge.text_normalize import to_nfc
 
 if TYPE_CHECKING:
     from knowledge_forge.embedding.base import EmbeddingRecord
@@ -42,6 +46,24 @@ _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 # `read_file` the resource for the full text once it has picked a hit.
 _CHUNK_HIT_SUMMARY_CHARS = 500
 
+# 읽기 전용 검색 경로(`_read_conn`)가 쓰는 커넥션 풀 크기.
+#
+# 왜 풀이 필요한가: psycopg3의 async 커넥션은 커넥션 하나에 대한 동시 실행을 내부 락으로
+# 직렬화한다. 그래서 `search/retrieve.py`의 arm들을 asyncio.gather로 겹쳐도 커넥션이
+# 하나면 아무 이득이 없다 - 실측(이 코퍼스, 936청크): lexical_search 5회가 순차 182ms,
+# 같은 커넥션에 gather 183ms(= 이득 0), 커넥션 5개로 gather 46ms(약 4배).
+#
+# max 8인 이유: 평가 하네스가 질의 4개를 동시에 돌리고(`eval-ir --concurrency 4`) 질의
+# 하나가 arm 안에서 2~3개를 겹치므로 상한이 대략 그 곱이다. 그 위로 더 열어도 Postgres가
+# 같은 코어에서 같은 일을 하는 것이라 처리량이 늘지 않는다.
+#
+# min 4인 이유: 풀이 필요할 때만 늘어나면 첫 버스트가 커넥션 하나를 놓고 줄을 선다
+# (실측: 같은 gather 5회가 min=1이면 93ms, min=4면 57ms). 풀 자체가 **첫 검색 때** 열리므로
+# (아래 `_read_conn` 참고) 검색을 한 번도 안 하는 소비자(적재 파이프라인, 워커, 스케줄러)는
+# 이 4개를 아예 열지 않는다.
+_READ_POOL_MIN_SIZE = 4
+_READ_POOL_MAX_SIZE = 8
+
 
 class PostgresStore:
     def __init__(self, dsn: str):
@@ -53,14 +75,30 @@ class PostgresStore:
         # that one method serializes on this lock. Everything else on the
         # store runs in autocommit and needs no lock.
         self._tx_lock = asyncio.Lock()
+        # 읽기 전용 검색용 풀. `connect()`가 아니라 첫 검색 때 만들어진다(`_read_conn`).
+        self._read_pool: AsyncConnectionPool | None = None
+        self._read_pool_lock = asyncio.Lock()
 
     async def connect(self) -> "PostgresStore":
         self._conn = await psycopg.AsyncConnection.connect(self._dsn, autocommit=True)
-        await self._register_vector_types()
-        await self._configure_ann_search()
+        await self._prepare_connection(self.conn)
         return self
 
-    async def _register_vector_types(self) -> None:
+    async def _prepare_connection(self, conn: psycopg.AsyncConnection) -> None:
+        """커넥션 하나를 이 코드베이스가 기대하는 상태로 만든다 - pgvector 타입 등록 +
+        `hnsw.iterative_scan` 세션 GUC.
+
+        **커넥션마다 반드시 다시 해야 하는 일이다.** 둘 다 세션 스코프라 새로 연 커넥션은
+        아무것도 물려받지 않는다. 특히 `_configure_ann_search()`를 빠뜨린 커넥션에서
+        `search_by_embedding`을 돌리면 에러 없이 히트를 잃는다(그 메서드의 docstring에
+        실측 사례가 있다: 필터가 소수 행을 고르면 0히트) - 풀을 도입하면서 가장 깨지기
+        쉬운 지점이 정확히 여기라서, `connect()`와 풀의 `configure=` 훅이 **같은 함수**를
+        부르게 묶어 둔다. 한쪽만 고치는 실수가 나올 수 없게
+        (`tests/storage/test_read_pool.py`가 풀 커넥션 전부를 동시에 붙잡고 확인한다)."""
+        await self._register_vector_types(conn)
+        await self._configure_ann_search(conn)
+
+    async def _register_vector_types(self, conn: psycopg.AsyncConnection | None = None) -> None:
         """Teaches psycopg how to adapt `pgvector.Vector`/`numpy.ndarray`
         to/from the `vector` column type - required before any
         embedding-column read/write. Tolerates the `vector` extension not
@@ -73,11 +111,11 @@ class PostgresStore:
         from pgvector.psycopg import register_vector_async
 
         try:
-            await register_vector_async(self.conn)
+            await register_vector_async(conn if conn is not None else self.conn)
         except psycopg.ProgrammingError:
             pass
 
-    async def _configure_ann_search(self) -> None:
+    async def _configure_ann_search(self, conn: psycopg.AsyncConnection | None = None) -> None:
         """Turns pgvector's iterative index scan on for this session - without
         it `search_by_embedding` silently loses rows whenever a filter
         (project_id / target_kind / embedding_model / since-until) selects a
@@ -105,12 +143,73 @@ class PostgresStore:
         `_register_vector_types` tolerates the extension not existing - a
         missing knob degrades to today's behaviour, it must not make
         `connect()` fail."""
+        target = conn if conn is not None else self.conn
         try:
-            await self.conn.execute("SET hnsw.iterative_scan = strict_order")
+            await target.execute("SET hnsw.iterative_scan = strict_order")
         except psycopg.Error:  # pragma: no cover - only on pgvector < 0.8
             logger.warning("hnsw.iterative_scan is unavailable - filtered vector search may lose hits")
 
+    @asynccontextmanager
+    async def _read_conn(self) -> AsyncIterator[psycopg.AsyncConnection]:
+        """읽기 전용 검색 한 건이 쓸 커넥션을 빌려준다 - 풀에서 하나, 풀을 못 열면
+        기존의 공유 커넥션.
+
+        검색 메서드(`search_by_embedding` / `search_documents_by_title` /
+        `search_chunks_lexical` / `execute_readonly_query`)만 이걸 쓴다. 쓰기 경로는 전부
+        `self.conn` 그대로다 - upsert/트랜잭션이 어느 커넥션에서 도는지가 의미를 갖는
+        곳이고, 거기서 동시성을 늘려 얻을 것도 없기 때문이다(파이프라인은 문서 단위로
+        순차 실행된다).
+
+        풀은 `connect()`가 아니라 여기서 지연 생성한다. 이유 두 가지:
+        (1) 검색을 하지 않는 소비자(적재 CLI, Celery 워커, 스케줄러)가 쓰지도 않을
+            커넥션을 열지 않는다.
+        (2) 빈 데이터베이스에 처음 붙을 때는 `vector` 확장이 아직 없어서 타입 등록이
+            no-op이 된다(`_register_vector_types`의 docstring). `init_schema()`가 확장을
+            만든 **뒤**에 풀이 열리므로 풀 커넥션은 항상 등록에 성공한다.
+
+        풀을 여는 데 실패하면(커넥션 상한, psycopg_pool 문제 등) 예외를 올리지 않고
+        공유 커넥션으로 조용히 되돌아간다 - 이건 성능 최적화지 기능이 아니라서, 못 여는
+        상황에서 검색이 아예 안 되는 것보다 느리게라도 되는 게 맞다."""
+        pool = await self._ensure_read_pool()
+        if pool is None:
+            yield self.conn
+            return
+        async with pool.connection() as conn:
+            yield conn
+
+    async def _ensure_read_pool(self) -> AsyncConnectionPool | None:
+        if self._read_pool is not None:
+            return self._read_pool
+        if self._conn is None:
+            # connect() 전에는 풀도 만들지 않는다 - self.conn이 던지는 것과 같은 계약.
+            return None
+        async with self._read_pool_lock:
+            if self._read_pool is not None:
+                return self._read_pool
+            pool = AsyncConnectionPool(
+                self._dsn,
+                min_size=_READ_POOL_MIN_SIZE,
+                max_size=_READ_POOL_MAX_SIZE,
+                # autocommit=True로 공유 커넥션과 세션 설정을 맞춘다 - 안 맞추면 단순
+                # SELECT마다 암묵 트랜잭션이 열려 반납 때 ROLLBACK 왕복이 하나 더 붙고,
+                # `execute_readonly_query`의 명시적 transaction() 블록 의미도 달라진다.
+                kwargs={"autocommit": True},
+                configure=self._prepare_connection,
+                open=False,
+            )
+            try:
+                await pool.open(wait=True, timeout=10.0)
+            except Exception as exc:  # noqa: BLE001 - 풀은 최적화지 기능이 아니다
+                logger.warning("read connection pool unavailable, falling back to the shared connection: %s", exc)
+                await pool.close()
+                return None
+            self._read_pool = pool
+            return pool
+
     async def close(self) -> None:
+        if self._read_pool is not None:
+            await self._read_pool.close()
+            self._read_pool = None
         if self._conn is not None:
             await self._conn.close()
             self._conn = None
@@ -329,6 +428,13 @@ class PostgresStore:
         )
 
     async def save_chunks(self, chunks: list[Chunk]) -> None:
+        """청크 본문은 NFC로 정규화해서 저장한다(`text_normalize.py`) - `chunks.text`는
+        `search_chunks_lexical`의 ILIKE/trigram 대상이라, macOS·Drive 유래 NFD 파일명이
+        본문에 인용돼 들어오면 NFC 질의로는 구조적으로 못 맞는다. 파서 출력 원본인
+        `documents.elements`는 그대로 두고 여기서만 정규화한다 - 청크는 `element_ids`로
+        엘리먼트를 참조하지 문자열로 맞대보지 않으므로 둘이 달라도 깨지는 곳이 없다.
+        `token_count`는 재계산하지 않는다: NFC 합성은 코드포인트 수만 줄일 뿐이고,
+        토큰 수는 어차피 청킹 시점의 근사치다."""
         now = datetime.now(timezone.utc)
         rows: list[tuple[Any, ...]] = [
             (
@@ -338,7 +444,7 @@ class PostgresStore:
                 chunk.hierarchy_level.value,
                 chunk.sequence_index,
                 chunk.parent_chunk_id,
-                chunk.text,
+                to_nfc(chunk.text),
                 chunk.token_count,
                 Jsonb(chunk.element_ids),
                 chunk.page_range[0] if chunk.page_range else None,
@@ -968,7 +1074,7 @@ class PostgresStore:
         used for filtering) is included so a caller can see which timestamp
         the filter actually matched against."""
         vector = Vector(embedding)
-        async with self.conn.cursor() as cur:
+        async with self._read_conn() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
                 SELECT e.target_kind, e.knowledge_object_id, e.chunk_id, e.document_id,
@@ -1064,13 +1170,19 @@ class PostgresStore:
         literal-interpolation safe (whatever `limit` was, only its digits
         ever reach the query)."""
         wrapped = f"SELECT * FROM (\n{sql}\n) AS sql_search LIMIT {int(limit)}"
-        async with self._tx_lock:
-            async with self.conn.transaction(force_rollback=True):
-                await self.conn.execute("SET TRANSACTION READ ONLY")
-                async with self.conn.cursor() as cur:
-                    await cur.execute(wrapped)
-                    rows = await cur.fetchall()
-                    columns = [d.name for d in cur.description] if cur.description else []
+        async with self._read_conn() as conn:
+            # `_tx_lock`은 **공유 커넥션 하나를 쓸 때만** 필요하다. 풀에서 빌린 커넥션은
+            # 이 호출이 반납할 때까지 이 호출 전용이라 BEGIN/ROLLBACK이 겹칠 수가 없고,
+            # 거기에 전역 락을 걸면 풀을 넣은 이유(질의 여러 개를 겹치는 것)가 그대로
+            # 사라진다. `_read_conn`이 공유 커넥션으로 폴백했을 때만 예전처럼 직렬화한다.
+            guard: Any = self._tx_lock if conn is self._conn else nullcontext()
+            async with guard:
+                async with conn.transaction(force_rollback=True):
+                    await conn.execute("SET TRANSACTION READ ONLY")
+                    async with conn.cursor() as cur:
+                        await cur.execute(wrapped)
+                        rows = await cur.fetchall()
+                        columns = [d.name for d in cur.description] if cur.description else []
         return rows, columns
 
     async def backfill_document_titles(self, project_id: str | None = None, *, overwrite: bool = False) -> int:
@@ -1122,6 +1234,45 @@ class PostgresStore:
             await cur.executemany("UPDATE documents SET title = %s WHERE document_id = %s", updates)
         return len(updates)
 
+    async def normalize_unicode_text(self, project_id: str | None = None) -> tuple[int, int]:
+        """이미 저장된 `documents.title` / `chunks.text` 중 NFC가 아닌 행을 NFC로 고친다
+        (`knowledge-forge db normalize-unicode`). 적재 경로에 NFC를 건 뒤 남는 과거 데이터를
+        위한 일회성 마이그레이션이고, 재실행해도 0건이 나오는 멱등 연산이다.
+
+        재적재가 아니라 전용 마이그레이션인 이유: 이 행들의 내용은 멀쩡하고 **표현 형태만**
+        틀렸다. 재적재는 파싱·추출·임베딩(LLM 호출 포함)을 전부 다시 돌리면서도 결국 같은
+        `document_id`/`chunk_id`를 덮어쓸 뿐이라, 표현 형태 하나 고치자고 치르기엔 비싸고
+        Gmail처럼 원본을 다시 못 받는 소스도 있다. `db backfill-titles --overwrite`는 제목은
+        고칠 수 있지만 `chunks.text`는 못 고치고, 제목 파생 규칙 전체를 재적용하는 넓은 연산이다.
+
+        NFC 판정과 변환을 파이썬이 아니라 서버의 `normalize(text, NFC)`(PG 13+)로 하는 이유는
+        쓰기 트랜잭션을 짧게 끝내기 위해서다 - 개발 DB를 다른 프로세스가 동시에 읽는다.
+        `updated_at`은 건드리지 않는다: 내용 개정이 아니라 표현 정규화라
+        `backfill_document_titles`와 같은 판단이다.
+
+        반환값은 `(고친 documents 행 수, 고친 chunks 행 수)`."""
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE documents SET title = normalize(title, NFC)
+                WHERE title IS NOT NULL AND title <> normalize(title, NFC)
+                  AND (%s::text IS NULL OR project_id = %s)
+                """,
+                (project_id, project_id),
+            )
+            documents = cur.rowcount
+            await cur.execute(
+                """
+                UPDATE chunks c SET text = normalize(c.text, NFC)
+                WHERE c.text <> normalize(c.text, NFC)
+                  AND (%s::text IS NULL
+                       OR EXISTS (SELECT 1 FROM documents d WHERE d.document_id = c.document_id AND d.project_id = %s))
+                """,
+                (project_id, project_id),
+            )
+            chunks = cur.rowcount
+        return documents, chunks
+
     async def search_documents_by_title(
         self,
         query: str,
@@ -1154,10 +1305,16 @@ class PostgresStore:
         similarity for tier 3, so it stays in [0, 1] and monotonic with the
         tiers. `since`/`until` filter on `COALESCE(s.modified_at,
         s.collected_at)` - the same real-content timestamp `search_by_embedding`
-        uses (its docstring explains why not a pipeline timestamp)."""
+        uses (its docstring explains why not a pipeline timestamp).
+
+        질의는 NFC로 정규화해서 쓴다(`text_normalize.py`): 사용자가 macOS/Google Drive에서
+        복사한 NFD 파일명을 붙여넣어도 NFC로 저장된 제목과 만나야 한다. 적재 쪽 정규화와
+        짝이라 한쪽만으로는 절반만 맞는다 - 저장만 고치면 NFD 질의가, 질의만 고치면 이미
+        저장된 NFD 행이 남는다."""
+        query = to_nfc(query)
         pattern = _like_pattern(query)
         token_patterns = _token_patterns(query)
-        async with self.conn.cursor() as cur:
+        async with self._read_conn() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
                 SELECT d.document_id, d.title, d.source_id, s.source_type, s.uri, s.modified_at,
@@ -1250,10 +1407,14 @@ class PostgresStore:
         `word_similarity()` per row instead of the index-backed `<%` operator
         because that operator reads its threshold from a session GUC; at the
         current table sizes the explicit function call is fast enough, and
-        the trigram index still serves the `ILIKE` tiers."""
+        the trigram index still serves the `ILIKE` tiers.
+
+        질의 NFC 정규화 이유는 `search_documents_by_title` 참고 - `_lexical_snippet`의
+        일치 지점 탐색도 같은 정규화된 질의를 쓴다."""
+        query = to_nfc(query)
         pattern = _like_pattern(query)
         token_patterns = _token_patterns(query)
-        async with self.conn.cursor() as cur:
+        async with self._read_conn() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
                 SELECT c.chunk_id, c.document_id, c.source_id, c.hierarchy_level, c.sequence_index, c.text,

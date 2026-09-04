@@ -279,12 +279,36 @@ def _build_structured(header_block: list[list[str]], data_rows: list[list[str]])
             path = [h[c].strip() for h in header_block if h[c].strip()]
             if not path:
                 continue
-            node = record
-            for key in path[:-1]:
-                node = node.setdefault(key, {})
-            node[path[-1]] = row[c]
+            _assign_nested(record, path, row[c])
         records.append(record)
     return {"headers": header_block, "rows": records}
+
+
+def _assign_nested(record: dict, path: list[str], value: str) -> None:
+    """Stores `value` under the nested `path`, falling back to a single
+    flattened "a/b" key when an ancestor of that path is already taken by
+    a scalar an earlier column stored there.
+
+    Ragged multi-level headers make such collisions routine: a real
+    workbook had one column headed only "PM53" (path ["PM53"]) next to one
+    headed "PM53" over "실적" (path ["PM53", "실적"]), so walking the
+    second path indexed into the first one's string - a TypeError that
+    escaped `_build_structured` and failed the entire workbook, losing
+    every sheet over one awkward header. Flattening loses the nesting for
+    the colliding column only; nothing else in the document is affected
+    (`rows` is unchanged, and only `structured` reads this).
+    """
+    node = record
+    for key in path[:-1]:
+        child = node.setdefault(key, {})
+        if not isinstance(child, dict):
+            record["/".join(path)] = value
+            return
+        node = child
+    # A leaf collision is left alone deliberately: overwriting is what this
+    # function always did there, it loses nothing that `rows` doesn't still
+    # carry, and it never raised - only the walk above did.
+    node[path[-1]] = value
 
 
 def _extract_formulas(row_idxs: list[int], formula_values: list[list[object]]) -> dict[str, str]:

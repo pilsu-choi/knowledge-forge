@@ -5,7 +5,7 @@ from knowledge_forge.collectors.base import RawItem
 from knowledge_forge.ids import content_hash
 from knowledge_forge.models.document import TableElement, TextBlock
 from knowledge_forge.models.source import SourceRef, SourceType
-from knowledge_forge.parsers.xlsx import XlsxParser
+from knowledge_forge.parsers.xlsx import XlsxParser, _build_structured
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "sample_regions.xlsx"
 
@@ -68,3 +68,18 @@ async def test_formula_string_is_recovered_despite_missing_cached_value():
     table = next(e for e in document.elements if isinstance(e, TableElement))
 
     assert table.formulas == {"B7": "=B5+B6"}
+
+
+def test_structured_view_flattens_a_column_whose_header_path_collides():
+    """A ragged header where one column is headed only "PM53" and the next
+    is headed "PM53" over "실적": the shorter path claims "PM53" for a
+    string, so the longer one cannot nest under it. It flattens instead of
+    raising - which used to abort the whole workbook."""
+    headers = [["구분", "PM53", "PM53"], ["", "", "실적"]]
+    rows = [["2021", "100", "90"]]
+
+    structured = _build_structured(headers, rows)
+
+    # The record's own key comes from the *last* header row's first cell,
+    # which is blank here - hence the "항목" default.
+    assert structured["rows"] == [{"항목": "2021", "PM53": "100", "PM53/실적": "90"}]

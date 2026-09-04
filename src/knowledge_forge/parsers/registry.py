@@ -16,6 +16,28 @@ from knowledge_forge.parsers.txt import TxtParser
 from knowledge_forge.parsers.xlsx import XlsxParser
 
 
+def extension_for(uri: str, filename: str | None = None) -> str:
+    """The lower-cased extension a uri/filename pair dispatches on - `""`
+    when neither carries one.
+
+    Public because parser selection is not the only thing that needs the
+    rule: `knowledge-forge reparse --extensions` (cli.py) filters a replay
+    batch by the very extension the registry would dispatch on, and a
+    second, subtly different copy of this logic would silently select a
+    different set of files than it parses.
+    """
+    # urlparse handles both plain paths and uri schemes like file:// consistently.
+    parsed = urlparse(uri)
+    path = parsed.path or uri
+    extension = PurePosixPath(path).suffix.lower()
+    if not extension and filename:
+        # SaaS collectors (e.g. Google Drive) can hand back an opaque
+        # webViewLink as uri - it carries no extension, so fall back to
+        # the original filename from RawItem.metadata["name"].
+        extension = PurePosixPath(filename).suffix.lower()
+    return extension
+
+
 class ParserRegistry:
     """Dispatches a uri/path to the Parser registered for its extension, or -
     for sources with no file extension, like the Slack/Gmail conversations
@@ -44,14 +66,7 @@ class ParserRegistry:
         if scheme_parser is not None:
             return scheme_parser
 
-        # urlparse handles both plain paths and uri schemes like file:// consistently.
-        path = parsed.path or uri
-        extension = PurePosixPath(path).suffix.lower()
-        if not extension and filename:
-            # SaaS collectors (e.g. Google Drive) can hand back an opaque
-            # webViewLink as uri - it carries no extension, so fall back to
-            # the original filename from RawItem.metadata["name"].
-            extension = PurePosixPath(filename).suffix.lower()
+        extension = extension_for(uri, filename)
         parser = self._parsers.get(extension)
         if parser is None:
             raise UnsupportedFormatError(

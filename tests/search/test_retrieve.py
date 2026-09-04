@@ -61,8 +61,11 @@ class _FakeStore:
     """Answers each store call from canned tables. `title_hits`/`chunk_hits`
     map a query string to its hit list (`None` key = default for any query).
     `execute_readonly_query` dispatches on the SQL shape the executor
-    writes: COUNT(*) -> `count_value`, the version-family lookup ->
-    `version_rows`, anything else -> `filter_rows`."""
+    writes: COUNT(*) -> `count_value`, the term-df UNION -> `term_df`,
+    the version-family lookup -> `version_rows`, anything else ->
+    `filter_rows`. `term_df` maps a term to its corpus document frequency
+    (`_required_terms`의 입력); 비워 두면 df 질의가 빈손으로 돌아와 실행기가
+    실측 df(그 term의 히트에 등장한 문서 수)로 물러난다."""
 
     def __init__(
         self,
@@ -72,6 +75,7 @@ class _FakeStore:
         filter_rows: list[tuple] | None = None,
         version_rows: list[tuple] | None = None,
         count_value: int = 0,
+        term_df: dict[str, int] | None = None,
         documents: dict[str, tuple[Document, Source, list[Chunk]]] | None = None,
     ) -> None:
         self.title_hits = title_hits or {}
@@ -79,6 +83,7 @@ class _FakeStore:
         self.filter_rows = filter_rows or []
         self.version_rows = version_rows or []
         self.count_value = count_value
+        self.term_df = term_df or {}
         self.documents = documents or {}
         self.title_calls: list[tuple[str, int]] = []
         self.chunk_calls: list[tuple[str, int]] = []
@@ -101,6 +106,15 @@ class _FakeStore:
         self.sql_calls.append((sql, limit))
         if sql.startswith("SELECT COUNT(*)"):
             return [(self.count_value,)], ["n"]
+        if "AS term_index" in sql:
+            # `_term_document_frequency_sql`은 term마다 `ILIKE '%<term>%'` 브랜치를 UNION
+            # ALL 한다 - 그 리터럴에서 term을 되짚어 `term_df`를 돌려준다.
+            rows = []
+            for index, line in enumerate(part for part in sql.splitlines() if "ILIKE" in part):
+                term = line.split("ILIKE '%", 1)[1].rsplit("%'", 1)[0]
+                if term in self.term_df:
+                    rows.append((index, self.term_df[term]))
+            return rows, ["term_index", "df"]
         if "version_family" in sql:
             return list(self.version_rows), ["document_id", "project_id", "family", "label", "number", "is_final"]
         return list(self.filter_rows[:limit]), ["document_id", "title", "source_type", "uri", "modified_at", "content_at", "project_id"]
@@ -222,6 +236,48 @@ async def test_metadata_filter_alone_returns_its_rows_newest_first(monkeypatch):
     assert result.scores == [1.0, 1.0]
 
 
+async def test_source_type_hint_alone_never_hard_filters_the_relevance_ranking(monkeypatch):
+    """어휘 힌트뿐인 필터(`source_type IN (...)` 하나)는 관련도 랭킹을 자르지 못한다.
+
+    실측 버그: "Google Drive 폴더 공유 시 부여할 수 있는 역할"의 정답은 Drive 공유요청 **알림
+    메일**(source_type=gmail)인데, "Drive"가 `SOURCE_TYPE_MARKERS`에 걸려 source_types가
+    ['google_drive']로 굳었다. 예전 코드는 교집합 0이면 관련도 랭킹을 통째로 버리고 필터 집합을
+    최신순으로 냈고(`no_overlap_fallback_to_filter`), 그래서 서로 다른 두 질의가 완전히 같은
+    7건을 같은 순서로 돌려줬다 - 질의를 사실상 무시한 것. 코퍼스 실측으로도 본문에 "Google
+    Drive"를 언급하는 문서는 gmail 11 / slack 4 / google_drive 3으로 매핑 방향이 반대다.
+
+    교집합이 **부분적으로** 생기는 경우까지 여기서 함께 못 박는다(fd가 필터에 들어 있다) -
+    교집합 0만 고치면 벡터 arm이 드라이브 파일을 우연히 몇 건 물어온 순간 1위 정답이 다시
+    잘려나간다."""
+    store = _FakeStore(filter_rows=[_filter_row("fd", datetime(2026, 9, 1, tzinfo=timezone.utc))])
+    _patch_vector(monkeypatch, [_chunk_hit("mail1", "c1", 0.9), _chunk_hit("fd", "c2", 0.5)])
+
+    result = await retrieve("Google Drive 폴더 공유 시 부여할 수 있는 역할", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.strategy == "metadata_filter")
+    assert step.detail["filters"]["source_types"] == ["google_drive"]
+    assert step.detail["applied"] == "source_hint_not_applied"
+    assert result.document_ids == ["mail1", "fd"]
+
+
+async def test_no_overlap_still_falls_back_to_a_filter_with_structural_predicates(monkeypatch):
+    """반대로 작성자/참여자/시간 같은 **구조적 술어**가 든 필터는 교집합 0에서도 믿는다.
+
+    이런 질의는 제약을 걷어내고 나면 검색어가 거의 남지 않아("nonghyup.com 도메인 발신자가
+    보낸 메일" → semantic_query "보낸") 관련도 arm이 오히려 무관한 문서를 물어온다. 이 분기까지
+    같이 없앴더니 v0에서 metadata_filter ndcg 0.817→0.543, relative_temporal 1.000→0.578으로
+    무너졌다."""
+    store = _FakeStore(filter_rows=[_filter_row("mail1", datetime(2026, 9, 1, tzinfo=timezone.utc))])
+    _patch_vector(monkeypatch, [_chunk_hit("noise", "c1", 0.9)])
+
+    result = await retrieve("nonghyup.com 도메인 발신자가 보낸 메일", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.strategy == "metadata_filter")
+    assert "ILIKE '%nonghyup.com%'" in step.detail["sql"]
+    assert step.detail["applied"] == "no_overlap_fallback_to_filter"
+    assert result.document_ids == ["mail1"]
+
+
 async def test_sql_literal_escapes_quotes_and_like_metacharacters():
     assert retrieve_module._sql_literal("O'Brien") == "'O''Brien'"
     assert retrieve_module._like_literal("a_b%c") == "'%a\\_b\\%c%'"
@@ -234,7 +290,7 @@ async def test_keyword_arm_runs_alongside_vector_on_the_semantic_query(monkeypat
     """semantic_query를 제목/본문에도 거는 어휘 arm은 vector와 **나란히** 돈다 - vector가
     0히트일 때만 도는 fallback이 아니다. 원래는 fallback이었고, 임베딩이 0행인 동안에는
     vector가 늘 실패해서 항상 돌았다. 임베딩을 채우자 ANN이 언제나 `limit`개를 돌려주면서
-    경로가 통째로 꺼졌고 v0 ndcg@10이 0.865 → 0.804로 내려갔다(retrieve.py::_keyword_arm).
+    경로가 통째로 꺼졌고 v0 ndcg@10이 0.865 → 0.804로 내려갔다(retrieve.py::_Run.keyword_arm).
     소스 이름이 `#semantic`으로 갈리는 것까지 계약이다 - 같은 소스에 append하면 서로 다른
     질의의 순위가 한 리스트에 섞여 RRF가 망가진다."""
     store = _FakeStore(
@@ -245,7 +301,7 @@ async def test_keyword_arm_runs_alongside_vector_on_the_semantic_query(monkeypat
 
     result = await retrieve("codex README", store=store, now=_NOW)
 
-    assert result.strategies == ["vector"]
+    assert result.strategies == ["vector", "keyword_arm"]
     arm = [s for s in result.steps if s.detail.get("arm") == "semantic_query"]
     assert [s.source for s in arm] == ["document_search#semantic", "lexical_search#semantic"]
     assert result.document_ids == ["d1", "d2"]
@@ -284,14 +340,19 @@ async def test_term_fallback_is_skipped_when_the_whole_query_already_matched(mon
 
 async def test_term_fallback_splits_the_query_and_ranks_by_term_coverage(monkeypatch):
     """자연어 질의는 전체 문자열로는 pg_trgm에 안 걸린다(히트 0) - term별로 나눠 찾고, 여러
-    term이 겹친 문서가 RRF로 위에 온다. v0 baseline의 conversation_thread/sequence 실패 형태."""
+    term이 겹친 문서가 RRF로 위에 온다. v0 baseline의 conversation_thread/sequence 실패 형태.
+
+    `term_df`가 붙은 이유: 개수 임계값 위에 변별력 게이트(`_required_terms`)가 하나 더 걸려서,
+    "가장 희귀한 term"이 어느 것인지가 판정에 들어온다. 여기서는 가장 희귀한 "명함"(df=2)을
+    thread가 담고 있어 통과한다."""
     store = _FakeStore(
         chunk_hits={
             "명함": [_chunk_hit("thread", "c1", 0.5)],
             "제작": [_chunk_hit("thread", "c1", 0.5), _chunk_hit("other", "c9", 0.5)],
             "논의": [_chunk_hit("thread", "c1", 0.5)],
             "농협": [_chunk_hit("elsewhere", "c7", 0.5)],
-        }
+        },
+        term_df={"농협": 40, "명함": 2, "제작": 9, "논의": 30},
     )
     _patch_vector(monkeypatch, [])
 
@@ -302,13 +363,131 @@ async def test_term_fallback_splits_the_query_and_ranks_by_term_coverage(monkeyp
     assert step.detail["per_term"] == {"농협": 1, "명함": 1, "제작": 2, "논의": 1}
     # thread만 term 3개(term 4개 × 2/3 → threshold 3) - 하나만 스친 elsewhere/other는 떨어진다.
     assert step.detail["coverage_threshold"] == 3
+    assert step.detail["required_terms"] == ["명함"]
     assert (step.detail["kept_documents"], step.detail["dropped_documents"]) == (1, 2)
     assert result.document_ids == ["thread"]
 
 
+async def test_term_fallback_drops_a_document_that_only_shares_common_terms(monkeypatch):
+    """이번 수정의 요점 - 개수 임계값은 넘겼지만 **흔한 term끼리만** 겹친 문서는 떨어진다.
+
+    v0-negative-001("Kubernetes 클러스터 구성 가이드")의 실제 모양이다: 흔한 "구성/가이드"에
+    희귀한 "클러스터"가 한 문서에서 겹쳐 threshold(=3)를 넘겼지만, 질의에서 df가 가장 낮은
+    term은 **다른** 문서에 있는 "Kubernetes"였다. 개수만 세면 코퍼스가 커질수록 이런 우연이
+    늘어나 "관련 문서 없음"이 정답인 질의가 계속 무너진다(263 → 326 문서만으로 none_correct
+    1.000 → 0.667). df가 최소인 term이 여럿이면 전부 요구하는 것도 계약이다 - 하나만
+    요구하면 여기서 noise가 살아남는다."""
+    store = _FakeStore(
+        chunk_hits={
+            "Kubernetes": [_chunk_hit("k8s-doc", "c1", 0.9)],
+            "클러스터": [_chunk_hit("noise", "c2", 1.0)],
+            "구성": [_chunk_hit("noise", "c3", 1.0)],
+            "가이드": [_chunk_hit("noise", "c4", 1.0)],
+        },
+        term_df={"Kubernetes": 1, "클러스터": 1, "구성": 26, "가이드": 25},
+    )
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("Kubernetes 클러스터 구성 가이드", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.detail.get("mode") == "per_term")
+    assert step.detail["coverage_threshold"] == 3
+    assert step.detail["required_terms"] == ["Kubernetes", "클러스터"]
+    # noise는 term 3개로 개수 임계값은 넘지만 "Kubernetes"가 없어 게이트에서 떨어진다.
+    assert step.detail["dropped_by_rare_gate"] == 1
+    assert result.document_ids == []
+
+
+async def test_term_fallback_drops_everything_when_a_term_is_absent_from_the_corpus(monkeypatch):
+    """df=0인 term("연말정산")은 어떤 문서도 담을 수 없으므로 전부 기각 - v0-null-001의 모양.
+    코퍼스에 없는 개념을 물었으면 "없다"가 정답이라는 판단이고, 오타/동의어로 df가 0이 되는
+    재현율 위험은 `_term_document_frequency`가 실측 df와 max를 취해 완화한다(아래 테스트)."""
+    store = _FakeStore(
+        chunk_hits={
+            "서류": [_chunk_hit("oa-manual", "c1", 1.0)],
+            "제출": [_chunk_hit("oa-manual", "c2", 1.0)],
+            "안내": [_chunk_hit("oa-manual", "c3", 1.0)],
+        },
+        term_df={"연말정산": 0, "서류": 7, "제출": 6, "안내": 13},
+    )
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("연말정산 서류 제출 안내", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.detail.get("mode") == "per_term")
+    assert step.detail["required_terms"] == ["연말정산"]
+    assert step.detail["dropped_by_rare_gate"] == 1
+    assert result.document_ids == []
+
+
+async def test_term_document_frequency_takes_the_max_of_sql_and_observed(monkeypatch):
+    """df는 SQL(substring 티어만)과 실측 히트 수의 max다. 둘 다 **과소평가만** 하기 때문이다:
+    SQL은 fuzzy 티어로만 걸린 term을 0으로 보고, 실측은 `_TERM_FETCH_LIMIT`에 잘려 흔한 term을
+    낮게 본다. max가 아니면 "히트는 있는데 df=0이라 전부 기각"이라는 모순이 생긴다 - 오타/동의어
+    질의가 통째로 빈손이 되는 경로다."""
+    store = _FakeStore(
+        chunk_hits={
+            "Kubernets": [_chunk_hit("k8s-doc", "c1", 0.6)],  # 오타 - substring df=0, fuzzy로만 히트
+            "가이드": [_chunk_hit("k8s-doc", "c2", 1.0), _chunk_hit("other", "c3", 1.0)],
+        },
+        term_df={"Kubernets": 0, "가이드": 25},
+    )
+    _patch_vector(monkeypatch, [])
+    monkeypatch.setattr(retrieve_module.settings, "term_coverage_min", 1)
+    monkeypatch.setattr(retrieve_module.settings, "term_coverage_ratio", 0.0)
+
+    result = await retrieve("Kubernets 가이드", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.detail.get("mode") == "per_term")
+    # SQL이 0이라고 해도 실측 1이 이긴다 - veto가 아니라 "그 문서를 요구"로 바뀐다.
+    assert step.detail["document_frequency"]["Kubernets"] == 1
+    assert step.detail["required_terms"] == ["Kubernets"]
+    assert result.document_ids == ["k8s-doc"]
+
+
+async def test_rare_term_gate_can_be_turned_off(monkeypatch):
+    """음수면 게이트가 꺼져 개수 전용(옛 동작)으로 돌아간다 - A/B와 비상 스위치."""
+    store = _FakeStore(
+        chunk_hits={
+            "Kubernetes": [_chunk_hit("k8s-doc", "c1", 0.9)],
+            "클러스터": [_chunk_hit("noise", "c2", 1.0)],
+            "구성": [_chunk_hit("noise", "c3", 1.0)],
+            "가이드": [_chunk_hit("noise", "c4", 1.0)],
+        },
+        term_df={"Kubernetes": 1, "클러스터": 1, "구성": 26, "가이드": 25},
+    )
+    _patch_vector(monkeypatch, [])
+    monkeypatch.setattr(retrieve_module.settings, "term_rare_df_max", -1)
+
+    result = await retrieve("Kubernetes 클러스터 구성 가이드", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.detail.get("mode") == "per_term")
+    assert step.detail["required_terms"] == []
+    assert result.document_ids == ["noise"]
+    # 게이트가 꺼지면 df 질의도 돌지 않는다(추가 왕복 0회).
+    assert not [sql for sql, _limit in store.sql_calls if "AS term_index" in sql]
+
+
+def test_required_terms_uses_the_minimum_df_and_the_absolute_floor(monkeypatch):
+    """요구 집합 = df가 `max(최소 df, term_rare_df_max)` 이하인 term 전부. 하한이 0이면 순수하게
+    최소 df만 따라가므로 코퍼스가 커져도 "가장 희귀한 term"이라는 의미가 유지된다."""
+    terms = ["a", "b", "c"]
+    df = {"a": 2, "b": 2, "c": 30}
+    monkeypatch.setattr(retrieve_module.settings, "term_rare_df_max", 0)
+    assert retrieve_module._required_terms(terms, df) == {"a", "b"}
+    monkeypatch.setattr(retrieve_module.settings, "term_rare_df_max", 30)
+    assert retrieve_module._required_terms(terms, df) == {"a", "b", "c"}
+    monkeypatch.setattr(retrieve_module.settings, "term_rare_df_max", -1)
+    assert retrieve_module._required_terms(terms, df) == set()
+
+
 async def test_term_coverage_threshold_keeps_recall_when_the_setting_is_off(monkeypatch):
-    """`term_coverage_ratio`/`term_coverage_min`을 0으로 내리면 필터가 꺼지고 term 하나만
-    겹친 문서도 후보로 남는다 - 재현율/정밀도 트레이드오프를 A/B로 재기 위한 노브."""
+    """`term_coverage_ratio`/`term_coverage_min`을 0으로 내리면 개수 필터가 꺼지고 term 하나만
+    겹친 문서도 후보로 남는다 - 재현율/정밀도 트레이드오프를 A/B로 재기 위한 노브.
+
+    `term_rare_df_max`도 함께 끈다: 변별력 게이트가 개수 필터와 **AND**로 걸리는 독립 조건이라
+    (`_required_terms`), 개수 쪽만 0으로 내려도 "가장 희귀한 term이 없는 문서"는 여전히 떨어진다.
+    "필터를 전부 끈 상태"를 재는 테스트라 계약이 바뀐 만큼 두 노브를 같이 내리도록 고쳤다."""
     store = _FakeStore(
         chunk_hits={
             "명함": [_chunk_hit("thread", "c1", 0.5)],
@@ -320,6 +499,7 @@ async def test_term_coverage_threshold_keeps_recall_when_the_setting_is_off(monk
     _patch_vector(monkeypatch, [])
     monkeypatch.setattr(retrieve_module.settings, "term_coverage_ratio", 0.0)
     monkeypatch.setattr(retrieve_module.settings, "term_coverage_min", 0)
+    monkeypatch.setattr(retrieve_module.settings, "term_rare_df_max", -1)
 
     result = await retrieve("농협 명함 제작 논의", store=store, now=_NOW)
 
@@ -626,16 +806,39 @@ async def test_strategies_override_runs_only_the_given_strategies(monkeypatch):
     result = await retrieve("report_v2.pdf 리스크 항목 요약해줘", store=store, now=_NOW, strategies_override=["vector"])
 
     assert result.strategies == ["vector"]
-    # `vector` 하나만 지정해도 어휘 arm(document_lookup/lexical step)이 따라붙는다 -
-    # arm은 전략 선택의 산물이 아니라 vector 실행의 일부다(retrieve.py::_keyword_arm).
+    # **회귀 테스트**: `["vector"]`는 정말로 벡터 단독이어야 한다. 어휘 arm이 이름 없이
+    # `vector()` 끝에 붙어 있던 동안 이 override는 document_search#semantic +
+    # lexical_search#semantic까지 돌렸고(steps로 실측), "순수 벡터 baseline"이라고 적힌
+    # docstring이 거짓이라 그 값으로 잰 A/B가 전부 무효였다. 그 드리프트를 막지 못한 것이
+    # 바로 이 단언의 부재였다 - source까지 봐야 한다(step.strategy만 보면 arm의 step이
+    # document_lookup/lexical로 찍혀 있어 눈치채기 어렵다).
+    assert {s.source for s in result.steps} == {"vector_search"}
+    assert store.title_calls == [] and store.chunk_calls == []
+    assert result.documents_read == []
+    assert result.document_ids == ["d1"]
+    assert calls[0][0] == result.constraints["semantic_query"]
+
+
+async def test_strategies_override_can_put_the_keyword_arm_back(monkeypatch):
+    """위 테스트의 짝 - `["vector", "keyword_arm"]`이 기본 라우팅과 같은 하이브리드다
+    (`suggest_strategies`는 vector를 넣을 때 arm을 항상 같이 넣는다). arm의 step은 실제로
+    부른 검색을 따라 document_lookup/lexical로 찍히고 `arm="semantic_query"`로 구분된다."""
+    store = _FakeStore(title_hits={None: [_doc_hit("title-only", 1.0)]})
+    calls: list = []
+    _patch_vector(monkeypatch, [_chunk_hit("d1", "c1", 0.9)], calls)
+
+    result = await retrieve(
+        "report_v2.pdf 리스크 항목 요약해줘", store=store, now=_NOW, strategies_override=["vector", "keyword_arm"]
+    )
+
+    # 실행 순서는 vector의 ANN 조회 → arm의 제목/본문 조회다 - `_claim_anchor`가 먼저 잡힌
+    # anchor를 덮어쓰지 않아서, 이 순서가 바뀌면 지표가 움직인다.
     assert [s.strategy for s in result.steps] == ["vector", "document_lookup", "lexical"]
     assert [q for q, _limit in store.title_calls] == [result.constraints["semantic_query"]]
-    assert result.documents_read == []
     # 'title-only'는 어휘 arm의 제목 조회가 물어온 것 - vector 히트 'd1'과 함께 RRF에 들어간다.
     # 점수 1.0(제목 substring 완전 일치)에 경쟁자가 없어 arm이 anchor로 삼으므로 최상위 고정
     # (retrieve.py::_claim_anchor - 제목이 정확히 맞은 문서는 벡터 유사도와 무관하게 답이다).
     assert result.document_ids == ["title-only", "d1"]
-    assert calls[0][0] == result.constraints["semantic_query"]
 
 
 async def test_result_to_dict_is_json_serializable_and_carries_the_contract_fields(monkeypatch):

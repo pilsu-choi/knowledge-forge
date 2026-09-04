@@ -58,8 +58,37 @@ def _message_text(message: Message) -> str:
     return "\n".join(parts)
 
 
+# id(message) -> (the text that was counted, its token count). `run_agent`
+# calls `compact_messages` once per loop iteration on a transcript that only
+# ever grows at the tail, so re-tokenizing every message every time is
+# quadratic in transcript length - and tiktoken encoding is by far the most
+# expensive thing in this module. Keyed by identity because `Message` is a
+# plain (unhashable) dataclass, and validated against the stored text so
+# neither a mutated message nor a recycled `id()` can return a stale count:
+# a hit requires the text to be byte-identical, in which case the count is
+# too. `_message_token_counts` rewrites the cache to exactly the live set on
+# every call, so it can't grow unbounded across a long `--interactive`
+# session either.
+_TOKEN_CACHE: dict[int, tuple[str, int]] = {}
+
+
+def _message_token_counts(messages: list[Message]) -> list[int]:
+    fresh: dict[int, tuple[str, int]] = {}
+    counts: list[int] = []
+    for message in messages:
+        text = _message_text(message)
+        entry = _TOKEN_CACHE.get(id(message))
+        if entry is None or entry[0] != text:
+            entry = (text, count_tokens(text))
+        fresh[id(message)] = entry
+        counts.append(entry[1])
+    _TOKEN_CACHE.clear()
+    _TOKEN_CACHE.update(fresh)
+    return counts
+
+
 def count_messages_tokens(messages: list[Message]) -> int:
-    return sum(count_tokens(_message_text(m)) for m in messages)
+    return sum(_message_token_counts(messages))
 
 
 def _is_boundary_clean(messages: list[Message], idx: int) -> bool:
@@ -128,7 +157,7 @@ async def compact_messages(
     budget purely from one huge tool result); the caller sends as-is either
     way, same as hermes's `still_over_limit` case.
     """
-    turn_tokens = [count_tokens(_message_text(m)) for m in messages]
+    turn_tokens = _message_token_counts(messages)
     total_tokens = sum(turn_tokens)
     if total_tokens <= max_tokens:
         return messages

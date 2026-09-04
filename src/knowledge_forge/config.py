@@ -114,6 +114,28 @@ class Settings(BaseSettings):
     # 소수점 두 자리로 어림하지 말고 실제로 재라.
     term_coverage_ratio: float = 2 / 3
     term_coverage_min: int = 2
+    # 위의 개수 기준과 **함께**(AND) 거는 변별력 기준 - `search/retrieve.py::_required_terms`.
+    # 개수만 세면 코퍼스가 커질수록 필연적으로 무너진다: 흔한 term끼리 우연히 겹치는 문서는
+    # 코퍼스 크기에 비례해 늘어나기 때문이다. 실제로 코드 변경 없이 263 → 326 문서(24% 증가)
+    # 만으로 v0 none_correct가 1.000 → 0.667로 내려갔다("Kubernetes 클러스터 구성 가이드"가
+    # 흔한 term 3개만 겹친 문서를 물어 왔다). 그래서 "질의에서 df가 가장 낮은 term(들)을 그
+    # 문서가 반드시 담아야 한다"를 추가로 요구한다. 이 값은 그 최소 df 위에 얹는 **절대 하한**
+    # 이다: 0이면 순수하게 "가장 희귀한 term(동점이면 전부)"만 요구하고, 올릴수록 df가 그 이하인
+    # term을 전부 요구해 더 조인다. 음수면 이 게이트를 끈다(옛 개수 전용 동작).
+    #
+    # 기본 0은 v0 골든셋 스윕(-1/0/1/2/3/4/5/6/8)에서 고른 값이다(wiki/search-evaluation.md의
+    # 표). 0 이상이면 어디서든 none_correct 1.000 / recall@5 0.888 / exhaustive_recall 0.908로
+    # 필수 조건을 만족하고, ndcg@10만 0~2에서 0.886, 3~5에서 0.892(질의 2개 차이, 95% CI가 0을
+    # 포함)로 갈린 뒤 8에서 절벽이다(recall@5 0.881 / exhaustive_recall 0.891).
+    # 더 높은 고원(3~5)의 +0.006을 일부러 버렸다. 이유는 이 노브가 **절대** df라 코퍼스가 작을수록
+    # 더 조이기 때문이다 - 지금 코퍼스(326문서)에서 cap=4는 질의 term의 평균 30%를 요구하지만
+    # 코퍼스가 1/3로 작아지면 같은 4가 거의 모든 term을 요구해, 재현율이 무너진 cap=8(평균 45%
+    # 요구)과 같은 자리에 선다. 이번 수정 자체가 "코퍼스 크기에 따라 무너지는 판정을 없앤다"는
+    # 것이므로, 질의 두 개짜리 이득보다 크기 불변성을 택했다. 0은 최소 df만 따라가므로 코퍼스가
+    # 커지든 작아지든 "질의에서 가장 희귀한 term"이라는 의미가 유지된다.
+    # (구현상 0과 1은 완전히 같은 규칙이다: 최소 df가 1 이상이면 하한 1이 아무 영향이 없고,
+    # 최소 df가 0이면 그 term을 담은 문서가 없어 어차피 전부 기각이다.)
+    term_rare_df_max: int = 0
     # `latest` 후처리가 시각 내림차순으로 재정렬할 때 대상으로 삼는 **관련도 상위 문서 수**.
     # 전체 후보를 시각으로 정렬하면 관련도 랭킹이 통째로 버려져 "질의와 상관없이 가장 최근
     # 문서"가 1위가 된다 - 후보가 늘어날수록 나빠진다(v0-latest-001/002가 그렇게 0.000이 됐다).
@@ -213,6 +235,24 @@ class Settings(BaseSettings):
     # tuning knob so much as a safety net against a model that keeps calling
     # tools without ever producing a final answer.
     agent_max_iterations: int = 8
+    # 에이전트에게 노출할 **검색 도구 표면**(agent/tools.py::default_tools).
+    #
+    # "minimal"(기본): 검색 도구는 `search`(통합 검색, search/retrieve.py) +
+    # `read_document` + `sql_search`뿐이다. `search/retrieve.py`가 존재하는 이유가
+    # "어떤 검색을 어떤 순서로 돌릴지"를 LLM에게서 빼앗아 결정론적 함수로 만드는
+    # 것인데(그 모듈 docstring), 도구 목록이 개별 검색 도구를 여덟 개 늘어놓으면
+    # 그 결정을 다시 모델에게 돌려주는 셈이다 - 게다가 골든셋 평가(eval-ir,
+    # wiki/search-evaluation.md)가 재는 경로는 `search` 하나뿐이라, 모델이 고른
+    # 다른 경로는 측정된 적이 없는 경로다. `sql_search`는 집계/속성 조건처럼
+    # `search`가 다루지 못하는 구조화 질의용 비상구로 남기고, `read_document`는
+    # 검색이 아니라 "특정한 문서를 끝까지 읽는" 후속 동작이라 남는다.
+    # Postgres가 없는 OKF 전용 배포에서는 이 셋이 전부 빠지므로 `file_search`가
+    # 대신 들어간다 - 그 구성에서 유일하게 동작하는 검색 경로다.
+    #
+    # "full": 예전 표면 그대로 - `file_search`/`vector_search`/`document_search`/
+    # `lexical_search`/`plan_search`까지 전부 노출한다. `search`가 놓치는 질의를
+    # 손으로 파고들 때(디버깅, A/B 비교)를 위해 지운 게 아니라 설정 뒤로 옮겼다.
+    agent_tool_surface: Literal["minimal", "full"] = "minimal"
     # Runtime context compaction (agent/compaction.py, ported from
     # refs/hermes-agent's trajectory_compressor.py) - once `messages` in
     # agent/loop.py::run_agent crosses this token budget, the oldest

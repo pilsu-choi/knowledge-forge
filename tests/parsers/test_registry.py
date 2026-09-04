@@ -3,7 +3,7 @@ import pytest
 from knowledge_forge.exceptions import UnsupportedFormatError
 from knowledge_forge.parsers.csv import CsvParser
 from knowledge_forge.parsers.markdown import MarkdownParser
-from knowledge_forge.parsers.registry import ParserRegistry, default_registry
+from knowledge_forge.parsers.registry import ParserRegistry, default_registry, extension_for
 from knowledge_forge.parsers.txt import TxtParser
 
 
@@ -43,3 +43,9 @@ def test_default_registry_resolves_csv_via_gdrive_filename_fallback():
         filename="report.csv",
     )
     assert isinstance(parser, CsvParser)
+
+
+def test_extension_for_prefers_the_uri_and_falls_back_to_the_filename():
+    assert extension_for("/some/doc.md") == ".md"
+    assert extension_for("https://drive.google.com/file/d/abc123/view?usp=drivesdk", "REPORT.XLSX") == ".xlsx"
+    assert extension_for("https://drive.google.com/file/d/abc123/view?usp=drivesdk", "Makefile") == ""

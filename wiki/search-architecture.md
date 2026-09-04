@@ -81,6 +81,7 @@ query("그 프로젝트는?" → 이전 대화의 entity 복원)까지 포함하
 | `lexical` | `identifiers` 또는 `quoted_phrases` | 본문 정확 일치(Exact Match) - 임베딩은 에러코드에 의미가 없어 못 잡음 |
 | `metadata_filter` | authors/participants/source_types/document_types/time_range 중 하나 | `sources.metadata`/타임스탬프 WHERE 필터. 단독 랭킹이 아니라 다른 전략과 결합 |
 | `vector` | `semantic_query` 비어 있지 않음 | 제약 표현을 걷어낸 재작성 질의로 임베딩 검색 |
+| `keyword_arm` | `vector`와 동일(항상 짝) | 같은 `semantic_query`를 제목·본문에도 거는 어휘 arm. 라우팅에서는 절대 갈라지지 않고, `strategies_override`로 A/B 할 때만 한쪽을 끈다 |
 | `latest` | `wants_latest` | 소스 타임스탬프 내림차순 상위 N |
 | `exhaustive` | `wants_exhaustive` 또는 `is_negative` | top-k 절단 없이 조건 만족 전부 수집 |
 | `count` | `wants_count` | 후보 개수가 답 - 필터 조건에서 SQL COUNT 직행 가능 |
@@ -122,7 +123,8 @@ hits(각 hit에 document_id/target_kind/score 필수), document_ids(hits에서 �
 | `document_lookup` | `document_reference`/`identifiers`/`quoted_phrases` 각각 `document_search` | 문서 단위 최고 점수가 1.0(제목 substring)이고 2위와 0.2 이상 벌어지면 그 문서가 **anchor**. 2위도 1.0이면("AGENTS.md" vs "agents-skills-AGENTS.md") ambiguous - 후보 전부 히트로 |
 | `lexical` | `identifiers`/`quoted_phrases` 각각 `lexical_search` | anchor가 있으면 그 문서 히트만 남김(하나도 없으면 좁히지 않고 `anchor_narrowing="no_hits_in_anchor"` 기록) |
 | `metadata_filter` | authors/participants/source_types/document_types/time_range를 `sources`/`documents` WHERE로 - `execute_readonly_query`(READ ONLY + 강제 롤백) | 값은 `'`→`''` 이스케이프로 인라인(스토어가 문자열만 받음), SQL은 detail에. 작성자/참여자는 `sources.metadata->>'participants'` 텍스트 ILIKE + `documents.metadata->>'author'`(개발 DB의 gmail이 `participants`만 갖고 `from`이 없어서), 문서 타입은 `documents.title ILIKE`("메일"은 제목이 아니라 gmail 소스 타입으로 해석). 상한 500행 |
-| `vector` | `semantic_query`로 `vector_search`(since/until 전달) → **항상** 어휘 arm(`_keyword_arm`)을 이어서 실행 | 임베딩 0행/임베더 미구성이면 빈 결과 + `error` 기록(예외 아님). 유사도가 `KF_VECTOR_MIN_SCORE`(기본 0.45) 미만인 히트는 버리고 `dropped_below_min_score`에 기록 - ANN에는 관련도 하한이 없어 "관련 문서 없음"이 정답인 질의도 후보가 찬다. 어휘 arm은 `document_search#semantic` + `lexical_search#semantic` 소스로 RRF에 합류 |
+| `vector` | `semantic_query`로 `vector_search`(since/until 전달) | 임베딩 0행/임베더 미구성이면 빈 결과 + `error` 기록(예외 아님). 유사도가 `KF_VECTOR_MIN_SCORE`(기본 0.45) 미만인 히트는 버리고 `dropped_below_min_score`에 기록 - ANN에는 관련도 하한이 없어 "관련 문서 없음"이 정답인 질의도 후보가 찬다 |
+| `keyword_arm` | 같은 `semantic_query`를 `document_search`(제목) + `lexical_search`(본문)에, **`vector` 바로 다음에** | `document_search#semantic` + `lexical_search#semantic` 소스로 RRF에 별도 투표자로 합류. 제목 1.0 일치면 anchor도 잡는다(`document_lookup`과 공유). 순서가 계약이다 - `_claim_anchor`는 먼저 잡힌 anchor를 덮어쓰지 않으므로 arm을 vector 앞으로 옮기면 지표가 움직인다. 둘 다 빈손이면 `_term_fallback`(아래) |
 | `comparison` | `comparison_targets` 각각 `document_search`(대상 안의 시간 표현은 그 대상에만 적용), 없으면 `lexical_search` | 대상별 최상위 문서를 anchor 다음으로 최상위 고정 |
 | `multihop` | provider 있으면 `plan_and_search` 근거를 한 소스로 RRF 합류 | 없으면 `skipped="no_provider"`. document_id 없는 히트(OKF file_search)는 채점 단위가 없어 버림 |
 | `latest` | **관련도 상위 `KF_LATEST_RELEVANCE_POOL`(기본 5) 문서 안에서만** `content_at` 내림차순, 같은 `version_family`는 `version_sort_key`로 최신 하나만 남기고 나머지는 뒤로 | family 안에서는 버전 표기(최종 > vN > 무표기 > 초안)가 시각보다 우선 - 구버전을 나중에 다시 올린 경우 때문. pool 밖 후보는 관련도 순 그대로 뒤에 붙는다 - 후보 전체를 시각 정렬하면 "질의와 상관없이 가장 최근 문서"가 1위가 된다(아래) |
@@ -130,10 +132,11 @@ hits(각 hit에 document_id/target_kind/score 필수), document_ids(hits에서 �
 | `count` | `predicted_count` = 최종 문서 수. 필터 단독 결과면 같은 WHERE로 `SELECT COUNT(*)` | count도 exhaustive 수집을 함의 |
 | `whole_document` | anchor(없으면 상위 2개 문서)를 `read_document`로 읽어 `documents_read`에, 청크를 문서 순서대로 히트 맨 앞에 | 같은 청크를 가리키던 검색 히트는 중복이라 제거 |
 
-**키워드 fallback (vector가 빈손일 때)**:
+**어휘 arm (`keyword_arm`)**:
 
-임베딩이 없는 배포/개발 DB에서 실행기가 "아무것도 못 찾음"이 되지 않게 하는 degrade 경로다.
-두 단계로 돈다.
+`semantic_query`를 제목·본문에도 거는 하이브리드의 어휘 쪽 팔이다. 원래는 vector가 빈손일 때만
+도는 degrade 경로였고(임베딩 0행 배포용), 상시 arm으로 승격한 경위는
+[`search-evaluation.md`](search-evaluation.md) 다섯 번째 실측에 있다. 두 단계로 돈다.
 
 1. **전체 질의**: `semantic_query` 문자열 그대로 `document_search`(제목) + `lexical_search`(본문).
 2. **term 분해** (`_term_fallback`) — 1단계가 **양쪽 다 빈손일 때만**. `keyword_terms`가 질의를
@@ -151,13 +154,21 @@ conversation_thread(0.250)/sequence(0.343)가 낮았던 실제 원인이 이것�
 더하므로, 나누면 "질의의 term을 더 많이 담은 문서"가 자동으로 위로 온다. 한 리스트에 몰아넣으면
 그 신호가 사라진다.
 
-두 개의 안전장치가 붙어 있다. 둘 다 실측으로 필요성이 확인된 것이다(수치는
+세 개의 안전장치가 붙어 있다. 전부 실측으로 필요성이 확인된 것이다(수치는
 `search-evaluation.md`의 스윕 표):
 
 - **coverage 임계값** (`KF_TERM_COVERAGE_RATIO` 기본 2/3, `KF_TERM_COVERAGE_MIN` 기본 2):
   질의의 term을 `ceil(term수 × ratio)`개 이상 담은 문서만 후보로 남긴다. 없으면 term 하나만 스친
   문서까지 전부 후보가 되어, "관련 문서 없음"이 정답인 질의(null/negative)가 전부 무언가를
   돌려주고(`none_correct` 1.000 → 0.000) 개수 질의가 부풀었다(`count_match` 0.500 → 0.000).
+- **변별력 게이트** (`KF_TERM_RARE_DF_MAX` 기본 0, `_required_terms`): 위 임계값과 **AND**로
+  걸린다. 질의에서 문서 빈도(df)가 **가장 낮은 term(동점이면 전부)** 을 담고 있어야 후보로
+  남는다. 개수만 세는 임계값은 코퍼스가 커질수록 반드시 무너지기 때문이다 — 흔한 term끼리
+  우연히 겹치는 문서는 코퍼스 크기에 비례해 늘어난다. 실제로 **코드 변경 없이** 263 → 326
+  문서(24% 증가)만으로 `none_correct`가 1.000 → 0.667로 떨어졌다("Kubernetes 클러스터 구성
+  가이드"가 흔한 `클러스터`/`구성`/`가이드` 세 개만 겹친 무관한 문서를 물어 왔다). df=0인
+  term(코퍼스에 아예 없는 개념)은 어떤 문서도 담을 수 없으니 **전부 기각**이 된다 — 의도한
+  동작이다. `KF_TERM_RARE_DF_MAX`는 최소 df 위에 얹는 절대 하한이고, 음수면 게이트를 끈다.
 - **1단계가 빈손일 때만 실행**: 질의 문자열이 통째로 걸렸으면 그게 term 하나하나보다 강한 신호다.
   항상 돌리면 제목이 정확히 맞은 질의를 term 히트가 밀어낸다(`v0-navigational-002` "codex README":
   ndcg@10 1.000 → 0.356).
@@ -165,6 +176,26 @@ conversation_thread(0.250)/sequence(0.343)가 낮았던 실제 원인이 이것�
 term당 조회는 `_TERM_FETCH_LIMIT`(20)으로 따로 막는다 — exhaustive/negative/count 질의는
 `fetch_limit`이 200이고 최종 컷오프도 없어서, term 열 개 × 200이 그대로 답에 실리면 재현율보다
 정밀도를 더 깎는다.
+
+**df는 term별 히트 수로 근사하면 안 된다.** term마다 `lexical_search`를 이미 부르고 있어 그
+히트에서 세면 추가 질의가 0회지만, `search_chunks_lexical`이 `LIMIT`(=20)을
+`is_substring DESC, sim DESC, document_id` 순으로 자르기 때문에 **흔한 term일수록 상위 20청크가
+같은 문서 몇 개에 몰려** df가 극단적으로 과소평가된다(실측: `인터뷰` 절단 df=3 / 실제 37,
+`OCR` 1 / 34, `애자일소다` 1 / 33, `risk-agent` 4 / 51). v0의 per_term 질의 26개 중 **7개에서
+"가장 희귀한 term"의 신원이 뒤집혔다** — 판정 자체가 바뀌므로 별도 count가 필요하다. 그래서
+`_term_document_frequency_sql`이 term 전부의 df를 **읽기 전용 질의 한 번**(UNION ALL)으로 세고,
+그 값과 실측 df의 `max`를 쓴다. `max`인 이유: SQL은 substring 티어만 세어 fuzzy로만 걸린 term을
+0으로 보고, 실측은 절단으로 흔한 term을 낮게 본다 — 둘 다 과소평가만 하므로 큰 쪽이 진실에
+가깝고, 무엇보다 "히트는 있는데 df=0이라 전부 기각"이라는 모순(오타/동의어 질의가 통째로 빈손이
+되는 경로)이 생기지 않는다.
+
+**1단계(`lexical_search#semantic`, 질의 문자열 통째)에는 같은 취약점이 없다.**
+`search_chunks_lexical`의 3티어 중 1·2티어는 "질의 전체가 한 청크의 substring" /
+"질의의 모든 토큰(최대 8개)이 **한 청크 안에** 전부 있음"이라 **흔한 term만으로는 성립할 수
+없고**(희귀 term도 반드시 포함해야 한다), 3티어는 질의 전체에 대한 `word_similarity ≥ 0.5`라
+개수가 아니라 관련도 하한이다. 즉 "코퍼스가 커지면 우연한 겹침이 늘어난다"는 메커니즘이 여기엔
+적용되지 않는다. 실측으로도 v0의 none 질의 6개 전부 이 경로가 limit=200에서도 0히트다(그래서
+term 분해로 내려간 것이다). 게이트를 여기까지 확장하지 않은 이유다.
 
 
 **`latest`가 관련도를 버리지 않게 하는 이유**:
@@ -188,17 +219,38 @@ term당 조회는 `_TERM_FETCH_LIMIT`(20)으로 따로 막는다 — exhaustive/
   소스의 다수결로 이걸 밀어내면 Navigational/Specific-document QA가 무너진다. 고정은 순서를 지키는
   partition이라 나머지 랭킹은 그대로다.
 - **metadata_filter 교집합**: 필터는 랭킹 신호가 아니라 범위다(작성자/기간이 틀린 문서는 아무리
-  유사해도 오답). 그래서 RRF 점수에 섞지 않고 병합 뒤 교집합으로 건다. 단 (a) 필터 질의 결과가 0행이면
-  필터 자체가 틀린 것으로 보고 무시(`applied="filter_empty_ignored"`), (b) 후보 생성 전략이 없거나
-  교집합이 비면 필터 집합 자체를 최신순 결과로 쓴다(`filter_only`/`no_overlap_fallback_to_filter`) -
-  "지난주 김철수 메일"은 필터만으로 답이 되는 질의라서.
+  유사해도 오답). 그래서 RRF 점수에 섞지 않고 병합 뒤 교집합으로 건다. **단 필터를 얼마나 믿을지는
+  필터 안에 든 술어의 종류로 가른다** - 아래 표. `applied` 값은 `metadata_filter` step의 detail에
+  그대로 남아서 실패를 추적할 수 있다.
+
+  | 상황 | `applied` | 결과 |
+  |---|---|---|
+  | 필터 질의가 0행 | `filter_empty_ignored` | 필터 무시, 관련도 랭킹 그대로 |
+  | 후보 생성 전략이 하나도 히트 없음 | `filter_only` | 필터 집합을 최신순으로 - "지난주 김철수 메일"은 필터만으로 답이 되는 질의다 |
+  | 필터가 **어휘 힌트뿐**(`source_type IN (...)` 하나) | `source_hint_not_applied` | 필터 무시, 관련도 랭킹 그대로 |
+  | 그 밖에 교집합이 있음 | `intersected:N->M` | 교집합 |
+  | 그 밖에 교집합이 0 | `no_overlap_fallback_to_filter` | 필터 집합을 최신순으로 |
+
+  **어휘 힌트뿐인 필터를 하드 필터에서 뺀 이유**(`_is_source_hint_only_filter`): `source_types`는
+  `SOURCE_TYPE_MARKERS` 정규식이 질의 표면 어휘만 보고 찍은 추측이고 - LLM 보강 대상 필드도 아니다
+  (`LLM_ENRICHABLE_FIELDS`) - 그 어휘 → source_type 매핑은 방향이 자주 반대다. 개발 코퍼스 실측으로
+  본문에 "Google Drive"/"드라이브"를 언급하는 문서의 source_type은 **gmail 11건 / slack 4건 /
+  google_drive 3건**이었다. Drive에 저장된 파일은 본문에 "Google Drive"라고 쓸 이유가 없고, Drive
+  공유요청 알림 메일은 항상 쓴다. 반대로 작성자/참여자/시간/제목 종류는 질의가 명시한 구조적
+  술어라 교집합이 0이어도 필터 쪽을 믿는다(자세한 근거는 wiki/search-evaluation.md의 회귀 기록).
 - `limit`은 최종 `document_ids` 길이다. 소스별 조회는 3배 over-fetch해서 필터/anchor 좁히기 뒤에도
-  limit개가 남게 한다(`strategies_override=["vector"]`, limit=10이면 vector 20건 → 상위 10문서 -
-  순수 벡터 baseline).
+  limit개가 남게 한다.
+- `strategies_override`는 목록에 적힌 전략**만** 돌린다 - 어휘 arm도 `"keyword_arm"`으로 적어야
+  돈다. 즉 `["vector"]`가 순수 벡터 baseline이고 `["vector", "keyword_arm"]`이 기본 하이브리드와
+  같다. arm이 이름 없이 `vector()` 안에 숨어 있던 동안에는 `["vector"]`가 arm까지 돌렸고, 그래서
+  "순수 벡터"라고 기록된 v0 ndcg@10 0.736은 사실 vector+arm의 값이었다. 이름을 갈라 다시 재보니
+  기본 라우팅 **0.893** / `vector,keyword_arm` **0.736** / `keyword_arm` 단독 **0.663** /
+  `vector` 단독 **0.477**(76질의, `--no-llm`) - 이 코퍼스에서 검색을 지탱하는 것은 어휘 쪽이고
+  벡터 단독은 하이브리드의 절반 조금 넘는 수준이다.
 
 **한계**:
 
-- 임베딩이 없으면(개발 DB 기준 0행) `vector`는 항상 비고 키워드 fallback으로 돈다 - 패러프레이즈/
+- 임베딩이 없으면(개발 DB 기준 0행) `vector`는 항상 비고 어휘 arm만 남는다 - 패러프레이즈/
   개념 질의는 제목·본문에 그 단어가 그대로 있을 때만 잡힌다. term 분해가 "질의의 단어를 여러 개
   담은 문서"까지는 끌어올리지만(v0 factoid 0.497 → 0.969), 단어가 하나도 겹치지 않는 패러프레이즈는
   여전히 못 푼다 - 그건 임베딩이 있어야 한다. 골든셋 v0
@@ -379,6 +431,107 @@ Search Evaluation / Feedback Loop 절과 판정기를 공유하는 옵션 확장
     필터로 바로 잇는 파라미터(지금은 모델이 후보를 고른 뒤 `sql_search`나 본문 검색을 이어 부른다),
     Slack 채널 ID → 채널 이름 해석(제목이 `#C0BGQEQG1L6 2026-08-11` 형태로 남는다 - 컬렉터가
     `channel_name`을 메타데이터에 넣으면 파생 로직은 이미 그걸 우선 쓴다).
+
+### 유니코드 정규화(NFC) — 어휘 경로가 구조적으로 못 맞던 버그 (2026-09-04 수정)
+
+`src/knowledge_forge/text_normalize.py`, 커밋 브랜치 `fix/nfc-normalization`.
+
+**정체.** 한글 "관"은 코드포인트 표현이 둘이다 — NFC의 완성형 음절 `U+AD00` 하나, NFD의 자모
+분해 `U+1100 U+1161 U+11AB` 셋. 눈으로는 구분이 안 되지만 파이썬 `in`, SQL `ILIKE`, pg_trgm
+`word_similarity`에는 완전히 다른 문자열이다. macOS·Google Drive를 거친 파일명은 NFD로 들어오고,
+그 파일명이 Drive 공유 알림 **메일 제목**에 박히면 `documents.title` 한 행 안에서 파일명 부분만
+NFD, 나머지 한글은 NFC인 **혼합 정규화**가 된다.
+
+실례 (`document_id=410852b07001b87f56a3b1f23e73ab58`):
+
+```
+title = 이제 ‘프로젝트 투입 관리_2026-031_한국자산관리공사.xlsx’의 소유자가 되었습니다
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^
+             NFD: '한' = U+1112 U+1161 U+11AB (자모 3개)      NFC: '의' = U+C758 (1개)
+```
+
+그래서 3단 랭킹의 **① substring(score 1.0) 단계가 통째로 죽고** ③ trigram으로 떨어진다. 파일명이
+정확히 일치하는 문서가 0.4286점 9위로 밀리고, 식별자가 **다른** 문서들(`2026-032_동양생명` 2건,
+`2026-038-G`/`2026-038-J_농협은행`)이 0.4762점으로 1~4위를 차지했다. 5~8위(`2026-012_현대모비스`,
+`2026-023_한화손해보험`, `2026-024_광주은행` 2건)는 정답과 같은 0.4286점인데 tie-break가 제목/
+document_id 순이라 정답보다 앞에 왔다.
+
+`retrieve.py`의 anchor 판정이 "1위가 제목 substring 1.0"을 조건으로 삼기 때문에, 이 문서는
+anchor도 못 잡는다 — Navigational/Exact 질의에서 어휘 경로가 반드시 맞아야 하는 자리에 정확히
+꽂힌 버그다.
+
+**영향 범위(개발 DB 실측).** `documents.title` 4/263행, `chunks.text` 4/936행 — 전부
+`source_type=gmail`. 좁아 보이지만 더 중요한 건 상류다: `sources.metadata`의 Drive `name` 77건 +
+Gmail `subject` 4건 = **81/502행이 이미 NFD**다. 그 77건은 아직 문서 행이 없어서 제목 통계에
+안 잡혔을 뿐, 적재되는 순간 같은 증상이 된다.
+
+**왜 적재·질의 양쪽을 다 고쳐야 하나.** 한쪽만으로는 절반만 맞는다.
+
+| 고친 곳 | 남는 구멍 |
+|---|---|
+| 저장만 | 사용자가 macOS/Drive에서 복사한 **NFD 질의**를 붙여넣으면 NFC 저장값에 못 맞는다 |
+| 질의만 | 이미 저장된 **NFD 행**에 못 맞는다 (마이그레이션 전 데이터, 재적재 안 된 소스) |
+
+그래서 걸어둔 지점은 네 곳이고 전부 같은 `to_nfc()`를 쓴다.
+
+- 적재: `storage/document_title.py::_clean` → `derive_document_title`의 모든 출구, 즉
+  `save_document`와 `backfill_document_titles`가 규칙을 공유한다.
+- 적재: `PostgresStore.save_chunks`.
+- 질의: `PostgresStore.search_documents_by_title` / `search_chunks_lexical` 진입점 — 최하단이라
+  `search/service.py`의 도구든 평가 하네스든 store를 직접 쓰는 코드든 전부 덮인다.
+
+`sources.metadata`(수집기가 API에서 받은 원본 기록)와 `documents.elements`(파서 출력)는 일부러
+안 건드렸다. 있는 그대로의 기록이라는 게 그 컬럼들의 존재 이유고, **사용 지점**(제목 파생·청크
+저장)에서 정규화하면 이미 NFD로 들어와 있는 81개 소스 행도 적재될 때 함께 낫는다.
+
+**왜 NFC이고 NFKC가 아닌가.** `ingest_version.py::family_key_of`는 이미 NFKC+casefold를 쓰고
+있어서 선례가 있지만, 그건 화면에 안 나오고 비교에만 쓰이는 **파생 키**다. 전각/반각·기호까지
+공격적으로 접어도 잃을 게 없다. 반면 `documents.title`/`chunks.text`는 검색 대상인 동시에
+**그대로 사용자에게 보여지는 원문**이라 기준이 다르다.
+
+- 이 버그는 "같은 문자를 다른 코드포인트 열로 적은" 정준 등가(canonical equivalence) 문제다.
+  NFC가 정확히 그것만 고치는 최소 수정이다.
+- NFKC는 호환 문자까지 접는다: `㈜`→`(주)`, `Ⅳ`→`IV`, 전각 `ＡＢ`→`AB`, `①`→`1`, NBSP→공백.
+  국내 문서 파일명에 `㈜`·전각 괄호·로마숫자가 실제로 흔해서, 저장값을 NFKC로 접으면 사용자가
+  아는 파일명과 **다른 문자열을 보여주게 된다**(표시 손실). 매칭만 놓고 보면 NFKC도 틀리지 않지만,
+  같은 컬럼이 표시 문자열이라 그 대가를 치를 이유가 없다.
+- 저장·교환 문자열 표준 권고도 NFC다(W3C Character Model).
+- 나중에 호환 문자까지 접는 매칭이 필요해지면 저장값을 바꾸지 말고 **NFKC 파생 키를 따로** 두는
+  게 맞다 — `family_key_of`가 그 선례다.
+
+**기존 데이터 마이그레이션.** `knowledge-forge db normalize-unicode`
+(`PostgresStore.normalize_unicode_text`). 재적재가 아니라 전용 마이그레이션을 만든 이유:
+
+- 이 행들은 **내용이 멀쩡하고 표현 형태만** 틀렸다. 재적재는 파싱·추출·임베딩(LLM 호출 포함)을
+  전부 다시 돌리면서 결국 같은 `document_id`/`chunk_id`를 덮어쓸 뿐이라 대가가 너무 크고,
+  Gmail처럼 원본을 다시 못 받는 소스도 있다.
+- `db backfill-titles --overwrite`는 제목은 고칠 수 있지만 `chunks.text`는 못 고치고, 제목 파생
+  규칙 전체를 재적용하는 훨씬 넓은 연산이다.
+- 판정·변환을 파이썬이 아니라 서버의 `normalize(text, NFC)`(PG 13+, 개발 DB는 16.15)로 한다 —
+  쓰기 트랜잭션을 짧게 끝내기 위해서다(개발 DB를 다른 프로세스가 동시에 읽는다). 재실행하면
+  0건이 나오는 멱등 연산이고, `updated_at`은 안 건드린다(내용 개정이 아니라 표현 정규화).
+
+실제 실행 결과: 문서 제목 4건 + 청크 본문 4건 수정, 재실행 시 (0, 0). 실행 뒤 DB에 남은 비-NFC
+행은 `documents.title` 0, `chunks.text` 0.
+
+**수정 전후 (`search_documents_by_title`, 개발 DB 전체 대상).**
+
+| 질의 | 수정 전 | 수정 후 |
+|---|---|---|
+| `관리_2026-031_한국자산관리공사` | `410852b07001` 0.4286 / **9위**, 1~4위는 `2026-032`·`2026-038` 오답 0.4762 | `410852b07001` **1.0000 / 1위**, 2위 0.4762 |
+| `프로젝트 투입 관리_2026-031_한국자산관리공사` | 상위 10위 안에 **아예 없음**, 1위는 `2026-032_동양생명` 0.6207 | `410852b07001` **1.0000 / 1위**, 2위 0.6207 |
+| 위 질의의 NFD 표기 | (측정 안 함 — 저장·질의 둘 다 NFD라 우연히 맞을 수도) | `410852b07001` **1.0000 / 1위** |
+
+**회귀 테스트.** `tests/storage/test_document_title.py`(순수 함수: NFD Drive 이름/Gmail 제목/헤딩이
+NFC로 저장되는가, 300자 자르기가 정규화 **뒤에** 오는가 — 순서가 바뀌면 NFD 3코드포인트가 NFC
+1글자로 합쳐지면서 자르는 위치가 달라진다), `tests/storage/test_lexical_store.py`(DB: NFD 제목↔NFC
+질의, NFC 제목↔NFD 질의, 청크 양방향, `normalize_unicode_text`의 수정 건수·멱등성). DB 쪽은
+`KF_TEST_DATABASE_URL`이 있어야 돈다.
+
+**남겨둔 것.** `record_chunk_embeddings`는 저장 직전의 **메모리상 `Chunk` 객체**를 임베딩하므로,
+NFD로 파싱된 청크는 NFC로 저장되면서도 임베딩은 NFD 텍스트로 만들어진다. 토크나이저가 다르게
+쪼개니 벡터 품질에 미세한 영향이 있을 수 있지만, 이번에 깨진 건 어휘 arm이고 임베딩 쪽은 측정한
+바가 없어 범위 밖으로 뒀다. 고친다면 `Chunk` 모델이나 청커 출력이 정규화 지점이 된다.
 
 ### 벡터 경로(pgvector) — 임베딩이 실제로 채워졌을 때 (2026-09-04 검증)
 

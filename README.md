@@ -25,6 +25,7 @@ Collector → Context Reconstruction → Parser → Adaptive Chunker → Knowled
 - [Docker로 실행하기](#docker로-실행하기)
 - [프로젝트 구조](#프로젝트-구조)
 - [테스트](#테스트)
+  - [DB 테스트](#db-테스트)
 - [로드맵과 스코프](#로드맵과-스코프)
 - [문서](#문서)
 
@@ -191,6 +192,7 @@ uv sync --extra xlsx --extra pptx --extra hwpx --extra slack --extra google --ex
 | `OPENAI_API_KEY` | (없음) | 임베딩 API 키 (`KF_`-접두사 아님, 프로바이더가 직접 읽음) |
 | `KF_AGENT_PROVIDER` | `anthropic` | `anthropic` \| `openai_compatible` — `knowledge-forge agent`의 백엔드 (`llm_provider`와 별도 키) |
 | `KF_AGENT_MODEL` | `claude-sonnet-5` | `knowledge-forge agent`가 쓰는 모델 |
+| `KF_AGENT_TOOL_SURFACE` | `minimal` | `minimal` \| `full` — 에이전트에게 노출할 검색 도구 범위 (아래 `agent` 절 참고) |
 
 임베딩/에이전트 관련 전체 환경변수는 [`wiki/embeddings.md`](wiki/embeddings.md), [`wiki/agent-runtime.md`](wiki/agent-runtime.md) 참고.
 
@@ -298,15 +300,21 @@ KF_OKF_DIR=./okf uv run knowledge-forge agent "인증 방식을 OAuth로 바꾸�
 KF_OKF_DIR=./okf uv run knowledge-forge agent --interactive   # REPL, Ctrl-D로 종료
 ```
 
+기본으로 노출되는 도구(`KF_AGENT_TOOL_SURFACE=minimal`):
+
 | 도구 | 조건 | 역할 |
 |---|---|---|
-| `file_search` | `KF_OKF_DIR` | OKF 파일 트리를 키워드/frontmatter로 검색 — 정확한 문자열/ID에 강함. `time_range`로 "어제"/"지난주" 등 자연어 시간 필터링 가능 |
-| `vector_search` | `KF_DATABASE_URL` (pgvector 임베딩 필요, 아래 `embed` 참고) | KnowledgeObject 임베딩을 의미 기반으로 검색 — 자연어 패러프레이즈에 강함. `time_range` 지원은 file_search와 동일 |
-| `sql_search` | `KF_DATABASE_URL` | Knowledge Base를 PostgreSQL SQL로 직접 조회(Text-to-SQL) — 특정 사람/속성이 언급된 항목, 집계, 시간 범위+속성값을 함께 거는 조건처럼 file_search/vector_search로 안 되는 질문에 씀. 읽기 전용만 허용 |
-| `plan_search` | 항상 | 여러 단계 추론이 필요한 복합 질문을 하위 질의로 분해해, 독립적인 것은 병렬로 검색하고, 두 소스 결과는 RRF로 병합/재정렬(cross-source dedup 포함)해 근거를 반환 — 하위 질의 문장의 시간 표현도 자동 인식 (Query Planning + Routing + Reranking + Temporal Search) |
+| `search` | `KF_DATABASE_URL` | **통합 검색.** 질의 의도를 분석해 제목 조회/렉시컬/벡터/메타데이터 필터/멀티홉/문서 전체 읽기를 결정론적으로 조합한다 — 어떤 검색을 어떤 순서로 돌릴지는 모델이 아니라 `search/retrieve.py`가 정한다(골든셋 평가가 재는 경로도 이것). 질문을 자연어 그대로 넘기면 시간 표현·파일명·에러 코드까지 알아서 읽는다 |
+| `read_document` | `KF_DATABASE_URL` | 검색으로 특정한 문서 하나의 청크 전체를 순서대로 읽는다 — 전체 요약/부재 확인("언급되지 않은 것")/순서 비교처럼 top-k로는 답할 수 없는 질문용 |
+| `sql_search` | `KF_DATABASE_URL` | Knowledge Base를 PostgreSQL SQL로 직접 조회(Text-to-SQL) — 집계(COUNT/GROUP BY), 여러 조건의 AND/OR, 특정 사람/속성이 언급된 항목처럼 `search`가 다루지 못하는 구조화 질의용. 읽기 전용만 허용 |
+| `file_search` | `KF_DATABASE_URL`이 **없을 때** (+ `KF_OKF_DIR`) | OKF 파일 트리를 키워드/frontmatter로 검색 — Postgres 없이 동작하는 유일한 검색 도구라, 위 셋이 빠지는 OKF 전용 배포에서 그 자리를 대신한다 |
 | `read_file` / `write_file` / `edit_file` / `list_dir` | `KF_OKF_DIR` | OKF 루트 트리 범위로 제한된 파일 읽기/쓰기 |
 | `write_memory` | 항상 | 세션이 끝나도 남을 사실/결정을 프로젝트별 기억 파일에 기록 |
 | `delegate_task` | 항상 | 독립적인 하위 조사를 새 대화의 서브에이전트에게 위임 |
+
+`KF_AGENT_TOOL_SURFACE=full`로 두면 개별 검색 도구(`file_search`/`vector_search`/`document_search`/
+`lexical_search`/`plan_search`)까지 전부 노출된다 — `search`가 놓친 질의를 손으로 파고들 때용이다.
+표와 이유는 [`wiki/agent-runtime.md`](wiki/agent-runtime.md)의 "도구 표면" 절 참고.
 
 `vector_search`를 쓰려면 먼저 KnowledgeObject를 임베딩해 둬야 한다:
 
@@ -393,6 +401,21 @@ uv run pytest
 ```
 
 `tests/test_pipeline_e2e.py`가 LLM을 모킹한 상태로 Collector→Parser→Chunker→Extraction 전체를 실행해 provenance 체인까지 검증하는 스모크 테스트다. 자세한 내용은 [`wiki/dev-guide.md`](wiki/dev-guide.md#테스트) 참고.
+
+### DB 테스트
+
+위 명령은 `789 passed, 89 skipped`로 끝난다. 건너뛴 89개는 실제 Postgres가 있어야 도는 테스트(`tests/storage/`, `tests/search/test_retrieve.py`, `tests/test_worker.py` 등)이고, `storage/postgres_store.py`의 pgvector/pg_trgm 검색 SQL을 검증하는 것도 여기 있다. `docker compose up -d postgres redis`로 인프라를 띄운 뒤 DSN을 주면 전부 돈다(redis는 DB 테스트가 아니라 `tests/api/test_api.py`가 Celery `apply_async`를 타면서 필요로 한다):
+
+```bash
+KF_TEST_DATABASE_URL=postgresql://kf:kf@localhost:15432/knowledge_forge uv run pytest -q
+# 878 passed
+```
+
+공용 코퍼스가 담긴 `knowledge_forge` 대신 빈 DB를 쓰고 싶으면 아무 데이터베이스나 새로 만들어 가리키면 된다 — 스키마와 확장은 `init_schema()`가 알아서 만든다(단 `pgvector/pgvector:pg16`처럼 pgvector가 실린 이미지여야 한다).
+
+`KF_REQUIRE_DB_TESTS=1`을 함께 주면 이 89개가 skip되는 순간 run이 실패한다. DSN을 빠뜨린 채 초록불을 보는 사고를 막는 스위치이고, CI가 항상 켜 둔다.
+
+CI(`.github/workflows/ci.yml`)는 push/PR마다 `docker-compose.yml`과 같은 pgvector Postgres·Redis 서비스를 띄워 Python 3.10과 3.13에서 `ruff check` → `mypy` → `pytest`를 돌린다. 즉 DB 테스트는 로컬에서 깜빡해도 CI에서는 반드시 실행된다.
 
 ## 로드맵과 스코프
 

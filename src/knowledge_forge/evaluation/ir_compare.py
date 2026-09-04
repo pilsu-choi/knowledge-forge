@@ -16,6 +16,11 @@ Comparability rules, enforced here rather than trusted to the caller:
   delta may be drift rather than a retrieval change; the caller decides.
 - queries with an `error` in either run (empty metrics) are simply not
   shared and drop out of the pairing - `n` says how many survived.
+- 코드 프로버넌스(`git_commit`)는 비교를 막지는 않지만 **반드시 보인다**.
+  dirty 작업 트리에서 잰 run은 기록된 커밋만으로 되살릴 수 없고, base commit이
+  같은데 코드 상태가 다른 두 run을 "같은 커밋 = 같은 코드"로 읽는 게 정확히
+  이 표 하나를 못 믿게 만든 사고였다(b470057 밑에 0.736과 0.477이 나란히).
+  그래서 조용히 넘어가지 않고 `warnings`/`provenance_mismatch`로 올린다.
 """
 
 from __future__ import annotations
@@ -24,11 +29,31 @@ from collections.abc import Sequence
 from typing import Any
 
 from knowledge_forge.evaluation.ir_metrics import bootstrap_ci, paired_delta
+from knowledge_forge.evaluation.ir_runner import base_commit, is_dirty_commit
 from knowledge_forge.storage.eval_store import EvalRun, EvalRunQuery
 
 
 def _metrics_by_query(rows: Sequence[EvalRunQuery]) -> dict[str, dict[str, float]]:
     return {r.query_id: dict(r.metrics) for r in rows if r.error is None and r.metrics}
+
+
+def _provenance_warnings(run_a: EvalRun, run_b: EvalRun) -> tuple[list[str], bool]:
+    """(경고 목록, provenance_mismatch). mismatch는 "base commit은 같은데 실제로
+    돈 코드는 다르다" - 커밋 해시만 보고 짝지으면 안 되는 그 경우다."""
+    out: list[str] = []
+    for name, run in (("A", run_a), ("B", run_b)):
+        if is_dirty_commit(run.git_commit):
+            n = len(run.dirty_files or [])
+            out.append(
+                f"run {name}({run.run_id})는 수정된 작업 트리에서 측정됐다 "
+                f"(git_commit={run.git_commit}, 변경 파일 {n}개) - 기록된 커밋을 체크아웃해도 그 코드가 아니다"
+            )
+    mismatch = base_commit(run_a.git_commit) == base_commit(run_b.git_commit) and run_a.git_commit != run_b.git_commit
+    if mismatch:
+        out.append(
+            "두 run의 base commit은 같지만 실제로 돈 코드가 다르다 - 커밋 해시만 보고 '같은 코드'로 읽으면 안 된다"
+        )
+    return out, mismatch
 
 
 def _win_loss_tie(deltas: Sequence[float]) -> dict[str, int]:
@@ -64,6 +89,8 @@ def compare_runs(
         )
     if run_a.config_hash == run_b.config_hash:
         warnings.append("both runs share config_hash - the delta measures run-to-run noise, not a config change")
+    prov_warnings, provenance_mismatch = _provenance_warnings(run_a, run_b)
+    warnings.extend(prov_warnings)
 
     a = _metrics_by_query(queries_a)
     b = _metrics_by_query(queries_b)
@@ -76,9 +103,22 @@ def compare_runs(
     out: dict = {
         "metric": metric,
         "golden_version": run_a.golden_version,
-        "run_a": {"run_id": run_a.run_id, "label": run_a.label, "config_hash": run_a.config_hash},
-        "run_b": {"run_id": run_b.run_id, "label": run_b.label, "config_hash": run_b.config_hash},
+        "run_a": {
+            "run_id": run_a.run_id,
+            "label": run_a.label,
+            "config_hash": run_a.config_hash,
+            "git_commit": run_a.git_commit,
+            "dirty": is_dirty_commit(run_a.git_commit),
+        },
+        "run_b": {
+            "run_id": run_b.run_id,
+            "label": run_b.label,
+            "config_hash": run_b.config_hash,
+            "git_commit": run_b.git_commit,
+            "dirty": is_dirty_commit(run_b.git_commit),
+        },
         "snapshot_mismatch": snapshot_mismatch,
+        "provenance_mismatch": provenance_mismatch,
         "warnings": warnings,
         "n_boot": n_boot,
         "seed": seed,

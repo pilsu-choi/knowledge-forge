@@ -86,6 +86,15 @@ backfill_document_titles` - NULL인 행만, `--overwrite`면 전부 재파생; `
 이미지가 필요 없다. 왜 tsvector가 아니라 trigram인지는 [`search-architecture.md`](search-architecture.md)
 ③ 참고.
 
+**유니코드 정규화(NFC)**: `documents.title`과 `chunks.text`는 저장 시 NFC로 정규화한다
+(`text_normalize.py::to_nfc`, 각각 `document_title.py::_clean`과 `PostgresStore.save_chunks`).
+macOS·Google Drive를 거친 파일명이 한글 자모가 분해된 NFD로 들어와 `ILIKE`/trigram이 NFC 질의와
+구조적으로 못 만나기 때문이고, 질의 쪽도 `search_documents_by_title`/`search_chunks_lexical`
+진입점에서 같은 NFC를 건다(한쪽만 고치면 절반만 맞는다). 정규화 전에 쌓인 행은
+`knowledge-forge db normalize-unicode [--project-id P]`(`PostgresStore.normalize_unicode_text`,
+멱등, `updated_at` 안 건드림)로 한 번 고친다. NFKC가 아니라 NFC인 이유와 실측 수치는
+[`search-architecture.md`](search-architecture.md) ③ "유니코드 정규화(NFC)" 절 참고.
+
 **`project_id`(멀티테넌시 키)**: `sources`/`documents`는 각각 `project_id TEXT NOT NULL
 DEFAULT 'default'` 컬럼을 갖는다. `Source`가 만들어질 때(`pipeline._make_source`) 한 번
 지정되면 `SourceRef.project_id`를 통해 `Document`까지 그대로 전파되므로, `Document` 모델

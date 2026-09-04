@@ -1,6 +1,9 @@
-"""Suite-wide fixtures.
+"""Suite-wide fixtures and hooks.
 
-The only thing here is an isolation guard, and it exists because of a real
+Two guards live here, both against the same class of problem: a test run that
+looks green while it is quietly measuring less than it claims to.
+
+The first is an `.env` isolation guard, and it exists because of a real
 failure rather than as a precaution: `Settings` (config.py) is a module-level
 singleton built with `env_file=".env"`, so the values it holds depend on
 whatever the developer happens to have in the repo's `.env` at the moment
@@ -28,11 +31,18 @@ Only the `embedding_*` group is pinned, deliberately:
 Defaults are read back off the model fields rather than repeated as literals
 here, so changing a default in config.py doesn't silently leave a stale copy
 behind in the test harness.
+
+The second guard is `KF_REQUIRE_DB_TESTS` at the bottom of this file: it turns
+"the Postgres-backed tests all skipped" from a green run into a red one. See
+the comment there for why the default skip-if-no-DSN convention needed one.
 """
+
+import os
 
 import pytest
 
 from knowledge_forge.config import Settings, settings
+from knowledge_forge.embedding.cache import query_embedding_cache
 
 # Every field the `.env` embedding block can set. Kept as an explicit list
 # rather than a `startswith("embedding_")` scan so that adding a setting is a
@@ -60,3 +70,66 @@ def _pin_embedding_settings_to_defaults(monkeypatch):
     """
     for field in _PINNED_EMBEDDING_FIELDS:
         monkeypatch.setattr(settings, field, Settings.model_fields[field].default)
+
+
+@pytest.fixture(autouse=True)
+def _clear_query_embedding_cache():
+    """`vector_search`의 질의 임베딩 캐시(embedding/cache.py)를 테스트마다 비운다.
+
+    캐시 키가 `(embedding_model, query)`뿐이라, 같은 모델 이름 + 같은 질의 문자열을 쓰는
+    두 테스트가 서로 다른 가짜 임베더를 monkeypatch해도 두 번째 테스트는 첫 번째의 벡터를
+    받는다. 프로덕션에서는 그게 정확히 원하는 동작이고(같은 모델이면 같은 벡터), 테스트에서만
+    '앞 테스트가 어떤 벡터를 심었는지'에 결과가 달라지는 순서 의존이 된다 - 위의 설정 핀 고정과
+    같은 이유(스위트가 자기 밖의 상태를 읽지 않게)로 여기서 끊는다."""
+    query_embedding_cache.clear()
+    yield
+    query_embedding_cache.clear()
+
+
+# --- DB 테스트가 조용히 건너뛰어지는 것을 막는 가드 --------------------------
+#
+# tests/storage/, tests/search/test_retrieve.py, tests/test_worker.py 등 89개
+# 테스트는 `KF_TEST_DATABASE_URL`이 없으면 `pytest.mark.skipif`으로 통째로
+# 건너뛴다. 개발자 로컬에서는 합리적인 규약이지만 실패 방식이 조용하다는 게
+# 문제다 - DSN을 빠뜨린 CI는 `789 passed, 89 skipped`를 초록불로 보고하고,
+# postgres_store.py(리포지토리 최대 모듈이자 pgvector/pg_trgm 검색 SQL 전부)는
+# 아무도 눈치채지 못한 채 회귀 방어를 잃는다.
+#
+# `KF_REQUIRE_DB_TESTS`가 켜져 있으면 그 skip을 실패로 승격한다.
+# CI(.github/workflows/ci.yml)는 항상 켜므로 Postgres 서비스나 DSN 설정이
+# 깨지면 초록불 대신 빨간불이 난다. 기본값은 꺼짐이라 Postgres 없이
+# `uv run pytest`를 돌리던 기존 로컬 흐름은 그대로다.
+_DB_SKIP_REASON = "KF_TEST_DATABASE_URL"
+
+
+def _require_db_tests() -> bool:
+    return os.environ.get("KF_REQUIRE_DB_TESTS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def pytest_configure(config):
+    """DSN이 비어 있는 경우를 89개 실패가 아니라 한 줄로 끝낸다.
+
+    가장 흔한 사고(워크플로에서 `env:` 한 줄 누락)를 수집 전에, 무엇이
+    잘못됐는지 바로 읽히는 메시지로 잡기 위한 것이다. DSN은 있는데 DB
+    테스트가 여전히 건너뛰어지는 나머지 경우는 아래 훅이 담당한다."""
+    if _require_db_tests() and not os.environ.get("KF_TEST_DATABASE_URL"):
+        raise pytest.UsageError(
+            "KF_REQUIRE_DB_TESTS is set but KF_TEST_DATABASE_URL is empty - every "
+            "DB-backed test would skip and the run would still be green. Point "
+            "KF_TEST_DATABASE_URL at a Postgres that has the `vector` and `pg_trgm` "
+            "extensions available, or unset KF_REQUIRE_DB_TESTS to run the suite "
+            "without a database."
+        )
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item, call):
+    """DB 부재로 인한 skip을 실패로 바꾼다(`KF_REQUIRE_DB_TESTS`일 때만).
+
+    skip 사유 문자열로 판단하므로, 앞으로 다른 조건(예: pgvector 확장 부재)의
+    DB 관련 skipif가 추가돼도 사유에 환경변수 이름만 남아 있으면 함께 잡힌다."""
+    report = yield
+    if _require_db_tests() and report.skipped and _DB_SKIP_REASON in str(report.longrepr):
+        report.outcome = "failed"
+        report.longrepr = f"KF_REQUIRE_DB_TESTS is set, but this DB-backed test skipped: {report.longrepr}"
+    return report

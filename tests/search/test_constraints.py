@@ -403,6 +403,24 @@ def test_recent_korean_word_quantity_is_stripped_from_semantic_query():
     assert c.semantic_query == "장애 원인"
 
 
+def test_source_type_markers_never_leave_half_a_phrase_in_the_semantic_query():
+    """마커 스트리핑은 구절을 통째로 처리한다 - 반쪽만 남기면 안 된다.
+
+    실측 버그: `\\bg?drive\\b`가 "Google Drive"에서 "Drive"만 지워 semantic_query가
+    "애자일소다 Google 폴더 공유 시 ..."라는 반쪽짜리 구절이 됐고, 남은 "Google"이 벡터 arm의
+    검색어를 흐렸다. "Google Drive"는 코퍼스 본문(Drive 공유요청 알림 메일)의 내용어이기도 해서
+    **통째로 남기는 쪽**을 골랐고(`_MARKER_KEEP_PATTERN`), "구글 메일"처럼 내용어가 아닌 쪽은
+    통째로 지운다."""
+    c = extract_constraints_rules("애자일소다 Google Drive 폴더 공유 역할", now=NOW)
+    assert c.source_types == ["google_drive"]
+    assert c.semantic_query == "애자일소다 Google Drive 폴더 공유 역할"
+
+    # 맨 종류어는 그대로 걷어낸다 - "구글"만 남기지 않는다.
+    c = extract_constraints_rules("구글 메일 계약 조건", now=NOW)
+    assert c.source_types == ["gmail"]
+    assert c.semantic_query == "계약 조건"
+
+
 def test_bare_recent_still_means_latest():
     """회귀 방지: 수량 없는 "최근"은 여전히 정렬 신호다."""
     c = extract_constraints_rules("최근 업무보고서", now=NOW)
@@ -427,7 +445,15 @@ def test_suggest_strategies_orders_candidate_generation_before_postprocessing():
         wants_latest=True,
         wants_count=True,
     )
-    assert suggest_strategies(c) == ["document_lookup", "lexical", "metadata_filter", "vector", "latest", "count"]
+    assert suggest_strategies(c) == [
+        "document_lookup",
+        "lexical",
+        "metadata_filter",
+        "vector",
+        "keyword_arm",
+        "latest",
+        "count",
+    ]
 
 
 def test_suggest_strategies_is_empty_for_empty_constraints():
@@ -436,7 +462,23 @@ def test_suggest_strategies_is_empty_for_empty_constraints():
 
 def test_negative_implies_exhaustive_collection():
     c = QueryConstraints(query="q", is_negative=True, semantic_query="기술")
-    assert suggest_strategies(c) == ["vector", "exhaustive", "negative"]
+    assert suggest_strategies(c) == ["vector", "keyword_arm", "exhaustive", "negative"]
+
+
+def test_vector_always_brings_the_keyword_arm_with_it():
+    """둘은 하이브리드 한 쌍이라 라우팅에서 갈라지지 않는다. arm은 원래 이름 없이
+    `retrieve.py::_Run.vector()` 안에서 무조건 이어 돌던 부작용이었고, 이름을 준 것은
+    A/B에서 한쪽만 끄기 위해서지 기본 동작을 바꾸려는 게 아니다 - 이 테스트가 그
+    "기본 동작은 그대로"를 못 박는다(전략 이름이 하나 늘었다고 라우팅이 달라지면
+    v0 ndcg@10 0.893이 재현되지 않는다)."""
+    for c in (
+        QueryConstraints(query="q", semantic_query="장애 원인"),
+        QueryConstraints(query="q", identifiers=["ERR_X"], semantic_query="장애 원인"),
+    ):
+        strategies = suggest_strategies(c)
+        assert strategies.index("keyword_arm") == strategies.index("vector") + 1
+    # semantic_query가 없으면 둘 다 없다 - arm 혼자 도는 라우팅은 없다.
+    assert suggest_strategies(QueryConstraints(query="q", identifiers=["ERR_X"])) == ["document_lookup", "lexical"]
 
 
 # --- LLM 보강 단계 ------------------------------------------------------------

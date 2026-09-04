@@ -10,7 +10,7 @@
 |---|---|---|---|
 | (A) 로깅 인프라 | query/answer/evidence를 Postgres에 기록 | 불필요 | **구현됨** |
 | (B) Groundedness/Citation 자동 평가 | LLM-as-judge로 claim-evidence 매칭, 비동기 배치 | 불필요 | **구현됨** |
-| (C) Recall/Precision/MRR/NDCG | relevance judgment 필요 | **필요** | **구현됨**(골든셋 v0·지표 모듈·`eval-ir`/`eval-gen` CLI). v1은 사람 검수 대기 |
+| (C) Recall/Precision/MRR/NDCG | relevance judgment 필요 | **필요** | **구현됨**(골든셋 v0·지표 모듈·`eval-ir`/`eval-gen` CLI). v1-draft/v2-draft는 사람 검수 대기 |
 | (D) 명시적 Groundedness Gate | (B)의 판정기를 온라인 게이트로 재사용, iterative retrieval 강화 | 불필요 | 설계만, 미구현 |
 
 ## (A) 로깅 인프라 — **구현됨**, `storage/eval_store.py::EvalStore`
@@ -393,7 +393,8 @@ knowledge-forge eval-ir --list --golden-version v1
 ```
 
 옵션: `--project-id`(골든셋의 `project_id`가 있으면 그쪽 우선), `--limit 10`, `--k 1,3,5,10`,
-`--strategies vector,lexical`(라우팅 무시), `--no-llm`(provider 생성 안 함,
+`--strategies vector,lexical`(라우팅 무시 — 적은 전략**만** 돌아간다. 어휘 arm도
+`keyword_arm`으로 적어야 도니 하이브리드를 재현하려면 `vector,keyword_arm`이다), `--no-llm`(provider 생성 안 함,
 `use_llm_constraints=False`), `--provider/--model`(`eval`과 동일), `--label`, `--type`(multi-label
 `types` 중 하나라도 맞으면 포함), `--query-id`(반복), `--split dev|test`(분할된 골든셋의 한쪽만 —
 분할이 없는 파일에 걸면 0개를 조용히 채점하는 대신 에러다. `config`에 들어가므로 dev run과
@@ -516,6 +517,100 @@ flag 비율이 높은 건 대체로 생성기 문제가 아니라 **검증 환�
   채우는데, 사람이 실제로 칠 질의는 아니다. 검수 때 이 부류를 걷어내거나
   `--source-type gdrive`로 소스를 좁히는 게 현실적이다.
 - 개인 이름은 실제로 들어가지 않았다(프롬프트 규칙이 지켜짐).
+
+### 두 번째 생성 결과 (2026-09-04, `tests/eval/golden/v2-draft.json`) — gdrive 한정 재생성
+
+1차의 최대 약점(짧은 slack 청크 → 채널 id로 때운 질의)이 소스 편향에서 온다는 가설을 검증하려고
+**`--source-type google_drive`로 좁혀 더 크게** 다시 뽑았다.
+
+```bash
+knowledge-forge eval-gen \
+  --source-type google_drive --chunks 30 --per-chunk 2 --max-queries 40 \
+  --max-per-document 13 --min-tokens 80 --seed 0 \
+  --provider openai_compatible --model anthropic/claude-sonnet-5 \
+  --golden-version v2-draft --out tests/eval/golden/v2-draft.json \
+  --stats-json out/gen-stats-v2.json
+```
+
+통계(`out/gen-stats-v2.json`, `out/`는 gitignore라 여기에 남긴다):
+
+```json
+{"candidates": 32, "sampled_chunks": 30, "sampled_by_source_type": {"google_drive": 30},
+ "llm_calls": 30, "llm_failures": 1, "raw_queries": 58,
+ "rejected": {"copied_from_chunk": 8}, "accepted": 40, "verified": 40, "flagged_hard": 5}
+```
+
+유형 분포: factoid 21 / parent_child 8 / exact_match 5 / specific_document_qa 3 /
+entity_centric 2 / temporal 1. 검증 rank 분포: rank1 19, rank2 13, rank3 2, rank4 1,
+미발견(`[review:hard]`) 5.
+
+#### provider를 `openai_compatible`(OpenRouter)로 바꿨다
+
+1차의 `claude_agent_sdk`는 그 시점에 API 키가 없어 로컬 `claude` CLI를 경유한 것이었다.
+지금은 `.env`에 `OPENROUTER_API_KEY`가 있으므로 `get_chat_provider(provider="openai_compatible")`
++ `anthropic/claude-sonnet-5`를 썼다. 서브프로세스로 CLI를 다시 부르지 않아 실패 모드가 단순하고,
+JSON을 코드펜스 없이 그대로 뱉어 `parse_generation_response`의 복구 경로를 탈 일이 없다
+(1차에서 CLI가 JSON 앞뒤에 설명을 붙이던 문제). 30회 호출 중 파싱 실패는 1회.
+
+**함정**: `.env`의 `OPENROUTER_API_KEY`는 pydantic-settings가 `os.environ`에 넣어주지 않는다
+(`Settings(env_prefix="KF_")`라 접두사 없는 키는 로드 대상이 아니고, `config.py` 주석대로
+"OpenRouter provider가 직접 환경에서 읽는다"는 전제). 그런데 `OpenAICompatibleChatProvider`는
+`os.environ.get("OPENROUTER_API_KEY")`로 읽으므로, `.env`에만 있으면 `api_key="unset"`으로
+401이 난다. 실행 셸에서 명시적으로 export해야 한다. 이건 알려진 구멍이고 여기서 고치지 않았다.
+
+#### 파라미터를 조정한 이유 — gdrive 코퍼스가 생각보다 얕다
+
+`--max-per-document 13`은 임의 값이 아니라 **어쩔 수 없이** 올린 값이다. 실측:
+
+| source_type | `min_tokens=80` 후보 청크 | 그 청크가 속한 문서 수 |
+|---|---|---|
+| google_drive | **32** | **7** |
+| slack | 124 | 124 |
+| gmail | 101 | 52 |
+
+`sources_by_type`의 google_drive 246은 *source* 행 수이지 청크를 가진 문서 수가 아니다.
+실제로 80토큰 이상 청크를 가진 gdrive 문서는 **7개뿐**이고, 32개 청크 중 **27개가 문서 2개**에
+몰려 있다(15개 + 12개). 기본값 `--max-per-document 2`로는 gdrive 전체에서 14개밖에 못 뽑아
+`--chunks 30`이 성립하지 않는다. 30을 채우려면 상한이 13이어야 한다(13+12+1×5=30).
+`--min-tokens`는 80을 유지했다 — 40으로 내리면 후보가 50개로 늘지만 문서 수는 그대로 7이고,
+"짧은 청크 → 앵커 없는 질의"가 1차의 실패 원인이었으므로 하한을 낮출 이유가 없다.
+
+#### 가설 검증: gdrive 한정은 **질의 문장 품질에서는 확실히 나았고, 골든셋 설계로는 나쁘다**
+
+*나아진 것 — 채널 id 문제는 완전히 사라졌다.* 40개 중 소스 내부 식별자로 때운 질의는 0개다.
+대부분이 사람이 실제로 검색창에 칠 법한 문장으로 나왔다. gdrive 문서가 제목·머리말·표를 갖춘
+기술 문서라 프롬프트 규칙 3("가리키는 말 대신 고유명사를 넣어라")을 지킬 재료가 실제로 있었다.
+
+- `ProjectIntel Codex 작업 시 기준 브랜치는 무엇인가요?` (factoid, 정답 `deploy-main`, rank=1)
+- `dashboard 502 에러 발생 시 처음 확인해야 할 3가지는?` (factoid, rank=1)
+- `대시보드 Playwright e2e 테스트에서 로컬 포트가 겹칠 때 사용하는 환경변수는 무엇인가?` (exact_match)
+
+*그대로 남은 것 — 앵커 없는 질의.* 청크가 규칙 목록이면 고유명사가 아예 안 나오는 문단이 있고,
+그럴 때 1차와 같은 실패가 형태만 바꿔 재발한다. 어느 문서를 묻는지 사람도 특정할 수 없다:
+
+- `기존 문서를 대체할 때 삭제하는 대신 어떤 표시를 우선해야 하는가?`
+- `MR/PR 제목과 본문은 어떤 언어로 작성해야 하나요?`
+- `바이브 코딩은 AI에게 크게 맡기는 방식인가요?` (청크 첫 문장을 그대로 뒤집은 예/아니오 질문)
+
+`copied_from_chunk`는 8건을 잡았고 남은 40개에 통문장 복사는 없다. 다만 위 3번째처럼
+**문장을 부정문/의문문으로 살짝 비틀면 최장 공통 부분 문자열 25자 기준을 빠져나간다** —
+필터가 잡는 건 복사지 "청크 문장 1개를 그대로 되묻는 것"이 아니다.
+
+*나쁜 것 — 정답 문서가 5개뿐이다.* 채택 40개의 정답 문서 분포는 20 / 14 / 2 / 2 / 2로,
+**34개가 문서 2개에 몰린다**. 문서 263개 코퍼스에서 40개 질의가 사실상 5-way 문제가 되므로,
+이 상태로 nDCG/MRR을 재면 "그 두 문서를 얼마나 잘 찾나"를 재는 것이지 검색 성능이 아니다.
+1차가 18개 질의로 소스 3종을 덮은 것보다 **평가셋으로서는 후퇴**다.
+
+*`[review:hard]` 5/40(12.5%)은 1차 12/18(67%)과 비교하면 안 된다.* 1차 때는 임베딩이 0행이라
+`vector` arm이 항상 비어 있었고, 지금은 청크 936개가 임베딩돼 있다. 조건이 다르다.
+게다가 정답 문서가 5개뿐이면 되돌려 검색이 쉬워지는 게 당연하다(rank1+rank2가 32/40).
+낮은 flag 비율을 생성 품질 개선의 증거로 읽으면 안 된다.
+
+**결론**: 소스를 gdrive로 좁히는 건 *질의 문장*을 고치는 데는 효과가 있었지만, 이 개발 DB의
+gdrive는 문서 7개짜리 얕은 코퍼스라 **골든셋 하나를 통째로 gdrive로 만들면 안 된다**.
+현실적인 다음 수는 (a) v2-draft에서 앵커 없는 질의를 검수로 걷어내 gdrive 파트로만 쓰고,
+(b) slack/gmail은 청크 길이 하한을 올리거나(`--min-tokens`를 150+로) 스레드 단위로 합친 뒤
+따로 생성해 합치는 것이다. gdrive 문서를 더 인제스트하기 전에는 gdrive 단독 확대는 의미가 없다.
 
 ### 다음 단계
 
@@ -710,7 +805,8 @@ provider를 붙이고(`wiki/embeddings.md`) 청크 936개를 `openai/text-embedd
 `identifiers`/`quoted_phrases`/`document_reference`가 잡혔을 때뿐이라 평범한 자연어 질의는
 그 그물에 안 걸리는데, fallback은 semantic_query를 통째로 거는 훨씬 넓은 그물이었다.
 
-→ fallback을 상시 하이브리드 arm으로 승격(`retrieve.py::_keyword_arm`). 이미 전략이 돌았어도
+→ fallback을 상시 하이브리드 arm으로 승격(`retrieve.py::_Run.keyword_arm`, 당시 이름은
+`_keyword_arm`). 이미 전략이 돌았어도
 끄지 않고 **소스 이름을 나눠**(`document_search#semantic`/`lexical_search#semantic`) RRF의
 별도 투표자로 넣는다 — `_term_fallback`의 `lexical_search#<term>`과 같은 수법이고, 같은
 소스에 append하면 서로 다른 질의의 순위가 한 리스트에 섞여 `1/(k+rank)`가 의미를 잃는다.
@@ -801,6 +897,371 @@ win/loss/tie 9/5/56. `navigational`은 −0.096 → **−0.055**(2승 3패)로 �
 토큰 집합 기반(순서 무관, 구분자 정규화)으로 바꾸는 것**이다. 임계값을 낮추면
 `v0-ambiguous-002`처럼 진짜 모호한 질의에 엉뚱한 anchor가 박힌다.
 
+### 어휘 arm에 이름 주기 — 일곱 번째 실측 (2026-09-04)
+
+**지금까지의 "순수 벡터 baseline" A/B는 전부 무효였다.** `retrieve()`의 docstring은
+`strategies_override=["vector"]`가 순수 벡터라고 적어 뒀지만, 다섯 번째 실측에서 arm을
+상시화하면서 `_Run.vector()` **끝에 무조건 이어 부르는 부작용**으로 넣었기 때문에 그
+override는 arm까지 돌리고 있었다. 실제 `steps`의 소스가 그 증거다 —
+`["document_search#semantic", "lexical_search", "lexical_search#semantic", "vector_search"]`.
+
+→ arm을 이름 있는 전략(`STRATEGY_KEYWORD_ARM = "keyword_arm"`)으로 꺼내고, 호출을
+`retrieve()`의 전략 디스패치로 옮겼다. `suggest_strategies`는 `vector`를 넣을 때 항상 arm을
+같이 넣으므로 **기본 라우팅은 한 자리도 안 움직인다**(아래 표 1열 = 여섯 번째 실측 채택값).
+실행 순서(vector의 ANN → arm의 제목/본문 → 둘 다 빈손일 때만 `_term_fallback`)도 그대로 뒀다 —
+`_claim_anchor`가 "먼저 잡힌 anchor를 덮어쓰지 않는다"에 기대고 있어 순서가 곧 지표다.
+
+이제야 어휘 arm의 값을 잴 수 있다(76질의, `--no-llm`):
+
+| | 기본 라우팅 | `vector,keyword_arm` | `keyword_arm` | `vector` |
+|---|---|---|---|---|
+| run_id | `f30be053f611…` | `084711f4169b…` | `3dd747a86b0f…` | `c8c6128714fb…` |
+| hit@1 | **0.843** | 0.671 | 0.600 | 0.414 |
+| recall@5 | **0.897** | 0.772 | 0.681 | 0.508 |
+| mrr | **0.893** | 0.733 | 0.676 | 0.498 |
+| ndcg@10 | **0.893** | 0.736 | 0.663 | 0.477 |
+| exhaustive_recall | 0.908 | 0.708 | 0.599 | 0.384 |
+| count_match | 0.333 | — | — | — |
+| none_correct | 1.000 | 1.000 | 1.000 | 1.000 |
+
+읽는 법 세 가지:
+
+1. **"vector 단독 0.736"으로 기록돼 있던 값은 vector+arm이다.** 진짜 벡터 단독은 **0.477**로,
+   arm 단독(0.663)보다도 낮다. 이 코퍼스에서 검색을 지탱하는 것은 어휘 쪽이고 벡터는 보강이다 —
+   다섯 번째 실측의 "0.709 → 0.865는 degrade 경로가 만든 점수"라는 결론이 훨씬 강한 형태로 재확인된다.
+2. **arm과 vector는 서로를 실제로 보강한다**: 0.663 + 0.477 → 0.736. RRF 융합이 두 팔 중
+   나은 쪽보다 위다.
+3. **후처리 전략의 몫이 크다**: 0.736(vector+arm) → 0.893(기본 라우팅)의 차이는
+   `document_lookup`/`lexical`/`metadata_filter`/`latest`/`count` 등 라우터가 추가로 고르는
+   전략들이다. `--strategies`는 후처리까지 포함해 목록을 통째로 대체하므로, 위 3개 열에는
+   `count`/`latest`/`whole_document`가 없다(`count_match`가 `—`인 이유).
+
+`exact_match`(0.186 → 0.675)와 `set_query`(0.364 → 0.796)가 arm으로 가장 크게 오른다 —
+식별자·인용구가 임베딩에서 의미를 잃는다는 애초의 가설과 방향이 같다.
+
+```bash
+# 재현
+uv run knowledge-forge eval-ir --golden tests/eval/golden/v0.json --no-llm --label purity-default
+uv run knowledge-forge eval-ir --golden tests/eval/golden/v0.json --no-llm --strategies vector --label purity-vector-only
+uv run knowledge-forge eval-ir --golden tests/eval/golden/v0.json --no-llm --strategies vector,keyword_arm --label purity-vector-plus-arm
+uv run knowledge-forge eval-ir --golden tests/eval/golden/v0.json --no-llm --strategies keyword_arm --label purity-arm-only
+```
+### 어휘 source_type 힌트를 하드 필터에서 강등 — 여덟 번째 실측 (2026-09-04)
+
+**증상.** `v1-draft`의 두 질의가 **완전히 같은 7건을 같은 순서로** 돌려줬다.
+
+| id | 질의 | 정답 source_type |
+|---|---|---|
+| `v1-draft-factoid-003` | 애자일소다(프로젝트_인텔) Google Drive 폴더 공유 시 사용자에게 부여할 수 있는 역할은? | **gmail** |
+| `v1-draft-temporal-002` | AgentX 2팀 Google Drive 폴더 액세스 요청이 언제 들어왔나? | **gmail** |
+
+정답 2건은 `drive-shares-dm-noreply@google.com`이 보낸 Drive 공유요청 **알림 메일**이다.
+질의의 "Google **Drive**"가 `SOURCE_TYPE_MARKERS`에 걸려 `source_types=['google_drive']`
+하드 필터가 되고, 관련도 랭킹과 교집합이 0이 되자 `merge()`가 관련도 랭킹을 통째로 버리고
+필터 집합을 최신순으로 냈다(`no_overlap_fallback_to_filter`). `document_search`가 정답을
+score 1.0으로 1위에 잡아둔 채로 버려진 것이다. 질의에서 "Google Drive" 두 단어만 빼면 둘 다
+즉시 1위가 된다.
+
+**어휘 → source_type 매핑은 방향이 반대다.** 본문에 "Google Drive"/"드라이브"를 언급하는
+문서의 실제 source_type(개발 코퍼스 실측): **gmail 11 / slack 4 / google_drive 3.** Drive에
+저장된 원본 파일은 본문에 "Google Drive"라고 쓸 이유가 없고, 알림 메일은 항상 쓴다.
+
+**측정하면서 두 번 방향을 틀었다.** 처음 두 시도가 왜 틀렸는지가 이 절의 본론이다.
+
+1. **`no_overlap_fallback_to_filter`를 통째로 삭제** (필터를 항상 무시): 두 질의는 고쳐졌지만
+   v0에서 `metadata_filter` ndcg 0.817→0.543, `relative_temporal` 1.000→0.578으로 무너졌다
+   (`v0-metadata_filter-001` "nonghyup.com 도메인 발신자가 보낸 메일", `v0-relative_temporal-001`
+   "최근 3일 안에 농협 측에서 온 메일"이 각각 1.000→0.000). 이유는 명확하다 — 이런 질의는
+   제약을 걷어내고 나면 semantic_query가 "보낸" / "안에 농협 측 온"으로 쪼그라들어 **관련도 arm
+   쪽이 쓰레기**다. 필터가 유일하게 맞는 신호인데 그걸 버렸다.
+   → **필터의 신뢰도는 하나가 아니다.** 작성자/참여자/시간/제목 종류 같은 구조적 술어는
+   사용자가 명시한 것이라 틀릴 수 없고, `source_type`은 정규식이 표면 어휘로 찍은 추측이다.
+2. **교집합 0일 때만, 어휘 힌트뿐인 필터를 무시**: v0는 baseline과 완전히 동일(모든 지표 일치),
+   두 질의도 1위 회복. 안전하지만 **교집합이 우연히 조금 생기는 경우를 못 막는다** — 실제로
+   semantic_query를 함께 고치자(아래) 벡터 arm이 드라이브 파일 4건을 같이 물어와
+   `intersected:52->4`가 되면서 1위 정답이 다시 잘려나갔다.
+   → **교집합을 보기 전에 끊어야 한다.** 채택안: 어휘 힌트뿐인 필터
+   (`_is_source_hint_only_filter`: WHERE가 `source_type IN (...)` 하나뿐)는 후보가 있는 한
+   하드 필터로 쓰지 않는다(`applied="source_hint_not_applied"`). 구조적 술어가 하나라도 있으면
+   기존 `intersected` / `no_overlap_fallback_to_filter` 동작 그대로.
+
+**부수 수정: semantic_query 반쪽 스트리핑.** `\bg?drive\b`가 "Google Drive"에서 "Drive"만
+지워 semantic_query가 `"애자일소다 Google 폴더 공유 시 ..."`가 됐다. 통째로 지우는 쪽과 통째로
+남기는 쪽을 둘 다 재봤다(다른 조건 동일):
+
+| | 반쪽(옛 동작) | 통째로 지움 | **통째로 남김 (채택)** |
+|---|---|---|---|
+| hit@1 | 0.843 | 0.814 | **0.857** |
+| ndcg@10 | 0.893 | 0.890 | **0.897** |
+
+"Google Drive"는 마커이면서 **동시에 코퍼스 본문의 내용어**라 남기는 쪽이 이겼다(공유요청 알림
+메일 본문에 그대로 쓰여 있다). "드라이브"/"메일" 같은 맨 종류어는 정보량이 없어 그대로 지운다 —
+예외는 `_MARKER_KEEP_PATTERN` 하나로 좁혀 두었다.
+
+**채택안 v0 성적** (`--no-llm`). 측정 도중 **다른 작업이 코퍼스에 대량 적재를 했다.** 같은 main
+코드로 잰 baseline이 ndcg 0.893 → 0.879, none_correct 1.000 → 0.667로 내려갔다. 그래서
+**적재 이후 상태에서 baseline을 다시 찍어** 2분 간격으로 잰 쌍을 채택 근거로 삼는다.
+
+| | baseline `cc07618e12ee…` (12:41:04) | **채택 `31515a5cba68…` (12:39:10)** |
+|---|---|---|
+| hit@1 | 0.814 | **0.829** |
+| recall@5 | 0.886 | **0.886** |
+| mrr | 0.879 | **0.886** |
+| ndcg@10 | 0.879 | **0.882** |
+| exhaustive_recall | 0.908 | **0.908** |
+| count_match | 0.333 | **0.333** |
+| none_correct | 0.667 | **0.667** |
+
+paired: delta **+0.0036, 95% CI [-0.0021, +0.0115]** — 유의하지 않다. win/loss/tie **2/1/67**.
+움직인 질의는 셋뿐이다: `v0-aggregation-002` 0.688→0.864, `v0-set_query-001` 0.342→0.494,
+`v0-set_query-002` 0.936→**0.861**(유일한 회귀). 두 v1-draft 질의는 둘 다 1위로 회복했다.
+
+적재 **이전** 상태에서 잰 쌍(`6f553efe3b22…` → `aa69d1c758ba…` 12:27:54)도 같은 그림이었다:
+0.893 → 0.897, delta +0.0038 CI [-0.0013, +0.0112], 움직인 질의 동일한 셋. 위의 스트리핑
+비교표(0.814/0.890 vs 0.857/0.897)도 적재 이전 수치다. **두 쌍 모두 A와 B가 같은 코퍼스
+상태에서 측정됐으므로 delta 결론은 그대로 간다** — 절대값만 두 시점 사이에 평행이동했다.
+
+#### 정정: baseline 하락의 원인은 NFC 마이그레이션이 아니라 **코퍼스 증가**였다
+
+이 절은 처음에 하락을 "동시에 돌던 유니코드 NFC 마이그레이션 때문"이라고 적었다. **틀린 귀속이라
+정정한다.** NFC 마이그레이션이 실제로 바꾼 행은 `documents.title` 4건 + `chunks.text` 4건이고
+**전부 source_type=gmail**이다. 아래 두 문서는 google_drive라 대상이 아니었고 시점도 안 맞는다.
+
+진짜 원인은 같은 시각 다른 작업의 **대량 적재**다. 전체 코퍼스 **263 → 326 문서**,
+google_drive **7 → 70 문서**, 청크 **471 → 1426**. `eval_run.started_at`과
+`documents.created_at`을 대조하면 계단이 정확히 맞는다:
+
+| 시각 | 사건 | ndcg@10 |
+|---|---|---|
+| 12:28:24 | `perf-after-cold-2` | 0.893 |
+| **12:35** | **문서 52건 생성** | |
+| 12:35:00 | `perf-after` | 0.893 |
+| 12:36:02 | `perf-after-final` | **0.885** |
+| **12:37** | **문서 10건 생성** | |
+| 12:37:11 | `baseline-recheck-HEAD` | **0.879** |
+| 12:41:04 | `baseline-recheck` | 0.879 |
+
+`none_correct`를 깨뜨린 두 질의의 오답 문서는 **그날 12:35에 새로 생성된 문서**다(기존 263건은
+04:19 생성): `4bc1dbf1012e…` `seah_execution_plan_v3_1.html`,
+`1aab373c4cd6…` `NH농협은행 AI Agent MVP · 진행 현황.html` — 둘 다 google_drive.
+
+#### 그래서 드러난 것: **어휘 arm에 관련도 하한이 없다** (다음 과제)
+
+`none_correct`가 깨진 두 질의는 **어휘 arm(`lexical_search`)에서만** 결과가 나왔다(나머지 arm은
+전부 n=0, `kept_documents: 1`):
+
+| 질의 | 매칭된 term | 걸린 문서 |
+|---|---|---|
+| `Kubernetes 클러스터 구성 가이드` | `클러스터` | KV 추출 정확도 표 |
+| `연말정산 서류 제출 안내` | `제출` (`연말정산`은 0건) | OA 업무 매뉴얼 |
+
+둘 다 질의에 실제로 답하는 문서가 아니다. **골든셋 라벨은 여전히 맞고, 검색이 진짜로 틀렸다.**
+
+구조적 원인: `vector` arm에는 `KF_VECTOR_MIN_SCORE`(0.45) 관련도 하한이 있지만 **어휘 arm에는
+대응물이 없다.** `구성`/`가이드`/`서류`/`제출`/`안내` 같은 흔한 한국어 단어가 per-term으로
+매칭되고 `coverage_threshold`가 1건을 남긴다. **코퍼스가 커질수록 나빠진다** — 263문서에서
+1.000이던 `none_correct`가 326문서에서 0.667이 됐다. 즉 지금의 어휘 arm은 **263문서 규모에서만
+측정된 것이고 스케일하지 않는다.** 처방은 어휘 arm의 관련도 하한(term 희소성 가중 또는 점수
+하한)이고, "남은 것" 2번과 같은 뿌리다.
+
+#### 교훈: 페어드 비교에는 **코퍼스 상태**를 함께 기록해야 한다
+
+v0 절대값은 **코드를 한 줄도 안 고쳐도** 코퍼스가 늘면 움직인다. `eval-ir --compare`가 이미
+`index_snapshot differs between runs` 경고를 내주지만, 이번처럼 원인을 잘못 귀속하기 쉽다.
+앞으로 실측을 기록할 때는 run_id와 함께 **그 시점의 문서 수/청크 수**를 적고, A와 B가 같은
+코퍼스 상태인지 먼저 확인할 것. 다른 작업과 개발 DB를 공유하는 동안에는 baseline과 수정후를
+**연달아** 찍는 것이 유일하게 믿을 수 있는 방법이다.
+
+**정직하게 남기는 트레이드오프**: 어휘 힌트가 **맞았을 때**의 정밀도를 잃는다. v0 76개에서는
+손실이 관측되지 않았지만(내려간 지표 없음), v0는 사람 검수 안 된 스모크셋이고 source_type
+힌트가 맞는 질의가 많지 않다. `count`는 이 경로에서 SQL COUNT를 쓰지 않는다 — 믿지 못해
+랭킹에서 뺀 필터로 센 숫자를 답으로 내면 돌려준 목록과 모순된다.
+
+**버린 대안**: (a) `google_drive` 마커를 `['google_drive','gmail']`로 확장 — 이 두 질의만 낫고
+슬랙/노션에서 같은 모양으로 재발한다. (b) "LLM이 확정한 제약만 하드 필터" — `source_types`는
+애초에 LLM 보강 대상이 아니라(`LLM_ENRICHABLE_FIELDS`) provenance로는 갈리지 않는다. 그래서
+provenance 대신 **술어의 종류**로 갈랐다. (c) 하드 필터 대신 재정렬(교집합 먼저, 나머지 뒤) —
+`v1-draft-factoid-003`의 1위 정답이 드라이브 파일 4건 뒤 5위로 밀린다.
+
+### 어휘 arm의 변별력 게이트 — 아홉 번째 실측 (2026-09-04)
+
+일곱 번째 실측에서 드러난 "어휘 arm이 코퍼스 크기에 따라 무너진다"를 고친 것이다.
+`fix/lexical-term-idf` (`fix/filter-no-overlap` 위에서 작업).
+
+**측정 시점 코퍼스(전/후 동일)**: 326 문서 / 1891 청크 — gmail 59/268, google_drive 70/1426,
+slack 197/197. 스윕 내내 적재를 멈춰 두고 쟀다.
+
+#### 무엇이 문제였나
+
+`_term_fallback`의 coverage 판정은 **매칭된 term의 개수만** 센다(`_coverage_threshold`).
+4-term 질의면 임계값 3이다. 그런데 term의 변별력은 df로 천차만별이다:
+
+| 질의 | 변별력 term (df) | 흔한 term (df) | 개수 기준 결과 |
+|---|---|---|---|
+| `Kubernetes 클러스터 구성 가이드` | Kubernetes **1**, 클러스터 **1** | 구성 26, 가이드 25 | 흔한 것 + 클러스터가 한 문서에 겹쳐 통과 → **오답** |
+| `연말정산 서류 제출 안내` | 연말정산 **0** | 서류 7, 제출 6, 안내 13 | 흔한 것 3개 겹쳐 통과 → **오답** |
+| `Terraform으로 인프라를 프로비저닝하는 절차` | Terraform으로 0, 프로비저닝하 0 | 인프라 2, 절차 14 | 2개뿐이라 3 미달 → 정답 (**운이 좋았을 뿐**) |
+
+개수만 세면 **코퍼스가 커질수록 반드시 나빠진다** — 흔한 term끼리 우연히 겹치는 문서는
+코퍼스 크기에 비례해 늘어난다. 지금 정답인 것들도 코퍼스가 더 커지면 깨진다.
+
+점수 하한(`KF_VECTOR_MIN_SCORE`의 어휘판)은 쓸 수 없다. `search_chunks_lexical`의 score는
+매칭 **티어 표시**(전체 substring=1.0 / word_similarity=raw)라 관련도 측정치가 아니다 —
+`제출` 한 단어만 맞아도 1.000이 나온다.
+
+#### 고른 방식: "질의에서 가장 희귀한 term(들)을 담고 있어야 한다"
+
+`_required_terms`: df가 최소인 term 전부(`KF_TERM_RARE_DF_MAX`가 그 위에 얹는 절대 하한)를
+문서가 담고 있어야 통과. 기존 개수 임계값과 **AND**로 병존한다(대체가 아니다 — 개수 기준을
+빼고 게이트만 걸면 term arm이 남기는 노이즈 문서가 12 → 43건으로 는다).
+
+동점을 **전부** 요구하는 것이 계약의 핵심이다. negative-001이 정확히 그 경우다: Kubernetes와
+클러스터가 둘 다 df=1인데 **서로 다른 문서**에 있다. 하나만 요구하면 노이즈 문서가 살아남는다.
+
+**버린 대안**:
+- **IDF 가중 coverage**(`Σ idf(matched) / Σ idf(all) ≥ 임계값`). 분리가 안 된다. log-idf로
+  계산하면 negative-001의 오답 문서가 0.684, `v0-factoid-001`의 **정답** 문서가 0.653이다 —
+  오답이 정답보다 높아서 어떤 임계값으로도 가를 수 없다. `1/(df+1)` 가중으로 바꿔도 순서가
+  같다. 구조적으로 "가장 희귀한 term을 담았는가"가 판정의 본질이고, 질량비는 그걸 흐린다.
+- **"희귀 term을 하나라도 담으면 통과"**. negative-001의 오답 문서가 클러스터(df=1)를 담고
+  있어 그대로 통과한다.
+- **term별 히트 수를 df로 쓰기**(추가 질의 0회). 아래 절 참고 — 절단 때문에 판정이 뒤집힌다.
+
+#### df를 어디서 얻나 — 절단이 판정을 뒤집는다
+
+term마다 `lexical_search`를 이미 부르므로 그 히트에서 df를 세면 공짜다. **그런데 못 쓴다.**
+`search_chunks_lexical`은 `LIMIT`(`_TERM_FETCH_LIMIT`=20)을 `is_substring DESC, sim DESC,
+document_id` 순으로 자르기 때문에, 흔한 term일수록 상위 20청크가 **같은 문서 몇 개에 몰린다**:
+
+| term | 절단 df | 실제 df |
+|---|---|---|
+| 인터뷰 | 3 | 37 |
+| OCR | 1 | 34 |
+| 애자일소다 | 1 | 33 |
+| risk-agent | 4 | 51 |
+| AI | 4 | 162 |
+
+v0의 per_term 질의 26개 중 **7개에서 "가장 희귀한 term"의 신원이 뒤집혔다**. 판정 자체가
+바뀌므로 별도 count가 필요하다 — `_term_document_frequency_sql`이 term 전부를 UNION ALL로 묶어
+**읽기 전용 질의 한 번**에 센다(term당 한 번이 아니다). 값은 SQL df와 실측 df의 `max`다:
+SQL은 substring 티어만 세어 fuzzy로만 걸린 term을 0으로 보고, 실측은 절단으로 흔한 term을 낮게
+본다 — 둘 다 **과소평가만** 하므로 큰 쪽이 진실에 가깝고, "히트는 있는데 df=0이라 전부 기각"
+이라는 모순이 생기지 않는다.
+
+#### df=0을 어떻게 볼 것인가 — "전부 기각"으로 결정했다
+
+`연말정산`처럼 코퍼스에 아예 없는 term이 최소 df면 어떤 문서도 그것을 담을 수 없다. 그래서
+그 질의는 통째로 빈손이 된다. **의도한 동작이다** — 코퍼스에 없는 개념을 물었으면 "없다"가
+정답이다. v0-null-001/002, v0-negative-002/003이 이 규칙으로 지켜진다.
+
+반대 선택지("df=0 term은 판정에서 제외")도 실측했다: `none_correct`가 0.833에서 멈춘다
+(null-001이 그대로 샌다). 재현율 쪽 손해는 작다(term arm이 남기는 정답 4 → 5, 노이즈 4 → 6).
+즉 **null-001 한 건과 gold 한 건의 맞바꿈**이고, "없으면 없다고 말하기"를 필수 목표로 잡았으니
+veto를 택했다.
+
+veto의 진짜 위험은 오타/동의어로 df가 0이 되는 질의인데, `max(SQL df, 실측 df)`가 이걸
+막는다: fuzzy 티어로라도 걸린 문서가 있으면 df ≥ 1이 되어 veto가 아니라 "그 문서를 요구"로
+바뀐다(회귀 테스트 `test_term_document_frequency_takes_the_max_of_sql_and_observed`).
+
+한편 형태소 부스러기가 df=0이 되는 경우는 실재한다(`값들`, `결정됐고`, `다이제스트`). 이때
+그 질의의 term arm은 통째로 꺼진다. v0에서 그 대상은 3건이고 그중 term arm이 정답을 잡고 있던
+것은 `v0-factoid-001` 하나인데, 그 질의는 `document_lookup`/`lexical` 전략이 identifier
+`AGENTS.md`로 정답을 1위에 두고 있어 최종 지표가 그대로다(1.000). **term arm은 여러 arm 중
+하나라 arm 하나의 재현율 손실이 그대로 지표 손실은 아니다** — 이번 트레이드오프가 싸게 먹힌
+이유다.
+
+#### 임계값 스윕 (`KF_TERM_RARE_DF_MAX`)
+
+| cap | ndcg@10 | hit@1 | recall@5 | mrr | exhaustive_recall | count_match | none_correct | run_id |
+|---|---|---|---|---|---|---|---|---|
+| -1 (게이트 끔) | 0.882 | 0.829 | 0.886 | 0.886 | 0.908 | 0.333 | **0.667** | `cb88a08f8b684821bf70fc9204e1c433` |
+| **0 (기본)** | 0.886 | 0.843 | 0.888 | 0.893 | 0.908 | 0.333 | **1.000** | `a96d75bccfe440c09b77d0abd251a4f7` |
+| 1 | 0.886 | 0.843 | 0.888 | 0.893 | 0.908 | 0.333 | 1.000 | `906fd14029674c798bd8e5d857d71ffc` |
+| 2 | 0.886 | 0.843 | 0.888 | 0.893 | 0.908 | 0.333 | 1.000 | `530f7d8ac6ff457793c2019f1daacf0f` |
+| 3 | 0.892 | 0.857 | 0.888 | 0.900 | 0.908 | 0.333 | 1.000 | `6f3a1ba3a99c48dcbfd83f81aec38704` |
+| 4 | 0.892 | 0.857 | 0.888 | 0.900 | 0.908 | 0.333 | 1.000 | `f07e3ed6165949598f9a1825bf6a9791` |
+| 5 | 0.892 | 0.857 | 0.888 | 0.900 | 0.908 | 0.333 | 1.000 | `2b4a10bbeb194e70a2eae0f9127805a0` |
+| 8 | 0.886 | 0.857 | **0.881** | 0.900 | **0.891** | 0.333 | 1.000 | `8fb669d1dd10457993532f498ac5728f` |
+
+(cap=-1 run이 코드 변경 전 baseline `44d41c8934934c1bbdc59109563ae37b`과 소수점 셋째 자리까지
+일치한다 — 게이트를 끄면 옛 동작으로 정확히 돌아간다는 sanity check. cap=6은 딜록으로 n=72라
+표에서 뺐다.)
+
+고원이 두 층이다: 0~2가 ndcg 0.886, 3~5가 0.892. 8이 절벽(recall@5·exhaustive_recall 하락).
+**그런데 기본값은 위쪽 고원이 아니라 0으로 잡았다.** 이 노브는 **절대** df라 코퍼스가
+작을수록 더 조인다 — 지금(326문서) cap=4는 질의 term의 평균 30%를 요구하지만, 코퍼스가 1/3로
+작아지면 같은 4가 거의 모든 term을 요구해 재현율이 무너진 cap=8(평균 45% 요구)과 같은 자리에
+선다. 이번 수정 자체가 "코퍼스 크기에 따라 무너지는 판정을 없앤다"는 것이므로, 질의 두 개짜리
++0.006(95% CI가 0을 포함)보다 크기 불변성을 택했다. cap=0은 최소 df만 따라가므로 코퍼스가
+커지든 작아지든 "질의에서 가장 희귀한 term"이라는 의미가 유지된다.
+
+| cap | 요구 term 비율(평균) | 요구 term 비율(최대) |
+|---|---|---|
+| 0~2 | 0.22~0.24 | 0.50~0.60 |
+| 3~5 | 0.27~0.32 | 0.60~0.67 |
+| 8 | 0.45 | 0.80 |
+
+(구현상 cap 0과 1은 완전히 같은 규칙이다: 최소 df가 1 이상이면 하한 1이 아무 영향이 없고,
+최소 df가 0이면 어차피 전부 기각이다. 표에서 두 줄이 같은 이유.)
+
+#### 전/후 (기본값)
+
+baseline `44d41c8934934c1bbdc59109563ae37b` → `efa882e7954c48ebbc493d3a92359b65`
+
+| 지표 | 전 | 후 |
+|---|---|---|
+| ndcg@10 | 0.882 | **0.886** |
+| hit@1 | 0.829 | **0.843** |
+| recall@5 | 0.886 | **0.888** |
+| mrr | 0.886 | **0.893** |
+| exhaustive_recall | 0.908 | 0.908 |
+| count_match | 0.333 | 0.333 |
+| **none_correct** | **0.667** | **1.000** |
+
+페어드 비교(`eval-ir --compare`, n=70 — none 질의 6개는 compare 대상이 아니다):
+
+| 지표 | delta (B−A) | 95% CI | win/loss/tie |
+|---|---|---|---|
+| ndcg@10 | +0.0041 | [+0.0000, +0.0114] | 2/0/68 |
+| recall@5 | +0.0014 | [+0.0000, +0.0043] | 1/0/69 |
+| hit@1 | +0.0143 | [+0.0000, +0.0429] | 1/0/69 |
+| mrr | +0.0071 | [+0.0000, +0.0214] | 1/0/69 |
+
+전부 CI 하한이 0이라 **통계적으로 유의하지 않다**(움직인 질의가 70개 중 1~2개뿐이다).
+필수 목표였던 `none_correct` 0.667 → 1.000은 negative/null 각각 6건 중 2건이 고쳐진 것이다.
+
+**손해 본 유형은 없다** — 모든 지표에서 loss가 0이다. 이득은 `v0-multihop-001`
+(ndcg 0.387 → 0.613, hit@1 0 → 1: 흔한 term만 겹친 문서가 1위에서 빠졌다),
+`v0-set_query-002`(recall@5 0.400 → 0.500), `v0-exact_match` 소폭. 유형별로는
+cross_document_comparison(ndcg +0.057, hit@1 +0.250), multihop(+0.057, +0.250),
+exact_match(+0.007), set_query(+0.004)만 움직였고 나머지 16개 유형은 전부 tie다.
+
+**정직하게 남기는 트레이드오프**: term arm 자체의 재현율은 줄었다. 오프라인 시뮬레이션 기준
+term arm이 남기던 정답 문서 7 → 4, 노이즈 12 → 4다. 줄어든 정답 3건(`v0-factoid-001`,
+`v0-set_query-002`·`v0-sequence-002`의 정답 각 1건)은 다른 arm이 메워서 최종 지표에
+안 나타났지만(해당 유형 전부 tie 또는 개선), **arm이 하나뿐인
+질의에서 같은 일이 벌어지면 그때는 지표로 나타난다.** v0는 76개짜리 미검수 스모크셋이라
+이 손실을 잡아낼 해상도가 없다 — v1 검수 골든셋에서 다시 재야 한다.
+
+#### 어휘 arm 1단계(`lexical_search#semantic`)에는 같은 문제가 없다
+
+이번 2건에서 그쪽이 0히트라 안 걸린 게 아니라 **구조적으로 안 걸린다.**
+`search_chunks_lexical`의 3티어 중 1·2티어는 "질의 전체가 한 청크의 substring" / "질의의 모든
+토큰(`_MAX_QUERY_TOKENS`=8까지)이 **한 청크 안에** 전부 있음"이라, 흔한 term만으로는 성립할 수
+없다(희귀 term도 반드시 포함해야 통과한다). 3티어는 질의 전체에 대한 `word_similarity ≥ 0.5`로
+개수가 아니라 **관련도 하한**이고, 그 값은 코퍼스 크기와 무관하다. 즉 "코퍼스가 커지면 우연한
+겹침이 늘어난다"는 메커니즘이 여기엔 적용되지 않는다. 실측으로도 v0의 none 질의 6개 전부
+이 경로가 `limit=200`에서도 title/body 0히트다(그래서 term 분해로 내려갔다). 그래서 게이트를
+1단계로 확장하지 않았다. 남는 취약점은 토큰 8개 상한뿐인데(9번째 이후 토큰은 요구되지 않는다),
+"8개 토큰이 **한 청크 안에** 전부"는 문서 단위 2/3 겹침과는 비교가 안 되게 강한 조건이다.
+
+#### 주의: 랭킹 노브는 `config_hash`에 안 들어간다
+
+`eval-ir --compare`가 "both runs share config_hash" 경고를 낸다. `config_hash`는 CLI 인자
+(provider/model/limit/strategies/k)만 해싱하고 `KF_VECTOR_MIN_SCORE`/`KF_TERM_*` 같은 랭킹
+설정은 포함하지 않는다. 랭킹 노브 스윕에서는 이 경고를 무시하되, **label에 값을 박아 두는 것이
+유일한 기록**이다(이번 스윕은 `raredf-<cap>`).
+
 ### 남은 것 (우선순위 순)
 
 진단은 `eval_run_query.steps` 실측 기준이다.
@@ -809,16 +1270,22 @@ win/loss/tie 9/5/56. `navigational`은 −0.096 → **−0.055**(2승 3패)로 �
    `OPENAI_API_KEY` + `KF_EMBEDDING_SOURCE=chunk`로 채우기 전까지 위 튜닝은 전부 degrade
    경로 최적화다. 어휘 겹침이 0인 질의(`v0-latest-003`, `v0-relative_temporal-001`
    "농협"→`nonghyup.com`, `v0-metadata_filter-003`)는 원리적으로 못 푼다.
-2. **term별 희소성 가중** — 지금은 "Kubernetes"(df=0)와 "가이드"(df≥20)가 동등하다. 비율 기반
-   임계값이 재현율/정밀도 trade-off에 갇히는 근본 원인. 희소 term이 0건이면 답이 없다고 보는
-   규칙이 null/negative를 다른 유형 희생 없이 지킬 수 있다.
-3. **metadata_filter 교집합이 무조건적** — 키워드 히트가 1건이라도 있으면 `filter_only`가
+2. ~~**term별 희소성 가중 / 어휘 arm의 관련도 하한**~~ — **아홉 번째 실측에서 해결**
+   (`_required_terms`, `KF_TERM_RARE_DF_MAX`). `none_correct` 0.667 → 1.000, 내려간 지표 없음.
+   남은 것: term arm 자체의 재현율 손실(정답 7 → 4)이 다른 arm에 가려져 v0에서는 안 보인다 —
+   v1 검수셋에서 다시 재야 한다. 그리고 df가 이제 substring 티어 기준이라, 형태소 부스러기가
+   df=0이 되어 term arm이 통째로 꺼지는 질의가 있다(`값들`, `결정됐고`) — `keyword_terms`의
+   조사/접미사 처리를 손보면 같이 해결된다.
+3. **metadata_filter 교집합이 (거의) 무조건적** — 키워드 히트가 1건이라도 있으면 `filter_only`가
    `intersected`로 바뀐다. `filter_only` 경로가 baseline 5건 → 지금 0건. 신뢰도 낮은 term
    후보로 교집합을 걸지 말고 필터 집합을 랭킹 base로 두고 키워드를 가산점으로 쓰는 편이 안전하다
-   (`v0-set_query-002`, `v0-relative_temporal-001`).
-4. **fallback 경로에서 anchor가 안 잡힌다** — `_keyword_fallback`의 `document_search` 결과에는
-   `document_lookup()`의 anchor 판정이 안 걸린다. 제목 1.0 일치가 RRF 한 표로 전락한다.
-   더불어 RRF가 모든 소스를 1표로 보는 것도 재검토 대상이다.
+   (`v0-set_query-002`, `v0-relative_temporal-001`). **여덟 번째 실측에서 절반만 해결했다** —
+   어휘 힌트뿐인 필터는 이제 교집합을 걸지 않지만(`source_hint_not_applied`), 구조적 술어가
+   섞인 필터는 여전히 무조건 교집합이다. 진짜 처방은 필터를 RRF에 가산점으로 섞는 것이고,
+   그건 `rerank.py` 쪽 변경이다.
+4. ~~**fallback 경로에서 anchor가 안 잡힌다**~~ — 여섯 번째 실측에서 `_claim_anchor` 공유로
+   해결. 남은 것은 **RRF가 모든 소스를 1표로 본다**는 쪽이다. 일곱 번째 실측이 팔별 값을
+   따로 재 줬으니(arm 0.663 vs vector 0.477) 소스 가중을 근거 있게 논의할 수 있다.
 5. **슬랙 문서 제목이 197/197 채널 ID다**(`#C0BGQEQG1L6 2026-09-01`). 수집기가
    `sources.metadata.channel_name`을 안 채운다. 골든셋 정답 문서 90개 중 48개가 슬랙이라,
    제목 기반 조회/anchor 경로가 정답 절반 이상에 구조적으로 닿지 않는다 — 4번의 전제조건.
