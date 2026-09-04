@@ -2,6 +2,7 @@
 helpers in storage/postgres_store.py - no database needed, so these always
 run (the DB-backed counterparts live in test_lexical_store.py)."""
 
+import unicodedata
 from datetime import datetime, timezone
 
 from knowledge_forge.models.document import Heading, TextBlock
@@ -79,3 +80,40 @@ def test_lexical_snippet_centers_on_the_match_and_normalizes_whitespace():
 
 def test_lexical_snippet_falls_back_to_the_head_when_nothing_matches():
     assert _lexical_snippet("a  b   c", "zzz", 3) == "a b"
+
+
+# --- 유니코드 정규화 (NFC) -------------------------------------------------
+# macOS/Google Drive를 거친 파일명은 한글 자모가 분해된 NFD로 들어온다. 그대로 제목이
+# 되면 NFC로 친 질의가 `title ILIKE '%q%'`에 구조적으로 못 맞는다(text_normalize.py).
+
+_NFC_NAME = "프로젝트 투입 관리_2026-031_한국자산관리공사.xlsx"
+_NFD_NAME = unicodedata.normalize("NFD", _NFC_NAME)
+
+
+def test_drive_name_in_nfd_is_stored_as_nfc():
+    assert _NFD_NAME != _NFC_NAME  # 전제: 두 표현은 실제로 다른 문자열이다
+    assert _derive(source_metadata={"name": _NFD_NAME}) == _NFC_NAME
+
+
+def test_gmail_subject_mixing_nfd_and_nfc_is_fully_composed():
+    """실제 버그 모양 - 파일명 부분만 NFD이고 나머지 한글은 NFC인 혼합 정규화 제목."""
+    subject = f"이제 ‘{_NFD_NAME}’의 소유자가 되었습니다"
+
+    title = _derive(source_type="gmail", source_metadata={"subject": subject})
+
+    assert title == unicodedata.normalize("NFC", subject)
+    assert _NFC_NAME in (title or "")  # NFC 질의가 파이썬 `in`으로도 맞는다
+
+
+def test_nfd_heading_is_normalized_too():
+    assert _derive(first_heading=_NFD_NAME) == _NFC_NAME
+
+
+def test_title_is_truncated_after_normalization():
+    """자르기가 정규화보다 먼저면 NFD 3코드포인트가 1글자로 합쳐지면서 자르는 위치가
+    달라진다. 300자 상한은 NFC 기준 글자 수여야 한다."""
+    long_nfd = unicodedata.normalize("NFD", "한" * 400)
+
+    title = _derive(source_metadata={"name": long_nfd})
+
+    assert title == "한" * 300

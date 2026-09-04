@@ -215,6 +215,10 @@ class PipelineStore:
         """`knowledge-forge db backfill-titles` - see `PostgresStore.backfill_document_titles`."""
         return await self._db.backfill_document_titles(project_id, overwrite=overwrite)
 
+    async def normalize_unicode_text(self, project_id: str | None = None) -> tuple[int, int]:
+        """`knowledge-forge db normalize-unicode` - see `PostgresStore.normalize_unicode_text`."""
+        return await self._db.normalize_unicode_text(project_id)
+
     async def link_document(self, source: Source, document: Document) -> list[DocumentLink]:
         """Version-family relink + source-metadata links for one just-stored
         Document (document_links.link_document) - called by pipeline.py right

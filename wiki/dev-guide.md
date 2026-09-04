@@ -95,6 +95,19 @@ uv run knowledge-forge extract tests/fixtures/sample.md --pretty
 uv run knowledge-forge extract --source slack --project-id PRJ-DEFAULT --no-store
 ```
 
+### 이미 수집한 원본을 다시 파싱하기 (재적재)
+
+```bash
+uv run knowledge-forge reparse --source-type google_drive --dry-run
+uv run knowledge-forge reparse --source-type google_drive \
+    --extensions ".md,.html,.xlsx,.csv" --no-extract --no-embed
+```
+
+파서가 없거나 고장 나 있던 시점에 수집돼서 `sources` 행과 디스크 원본만 남고 `documents`가
+안 생긴 소스를, **원본 API를 다시 부르지 않고** `sources.raw_path`의 바이트로 다시 파싱한다.
+`--only-missing`(기본)이라 중간에 끊겨도 그냥 다시 돌리면 이어진다. `--extract`/`--embed`는
+`extract`와 달리 기본이 꺼짐이다. 배경과 설계는 [`reingest-replay.md`](reingest-replay.md).
+
 ### 주기 실행 (스케줄링)
 
 ```bash

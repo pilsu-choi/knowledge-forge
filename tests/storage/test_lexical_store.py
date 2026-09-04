@@ -9,6 +9,7 @@ already holds hundreds of real documents, and an unscoped query would let
 them crowd the test rows out of a `LIMIT`."""
 
 import os
+import unicodedata
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -251,3 +252,91 @@ async def test_search_chunks_lexical_respects_time_window(store):
     hits = await store.search_chunks_lexical("KF-1234", project_id=_PROJECT, since=_T0 + timedelta(days=15))
 
     assert [h["document_id"] for h in hits] == ["test-lex-d3"]
+
+
+# --- 유니코드 정규화 (NFC) -------------------------------------------------
+# 버그: macOS/Google Drive 유래 파일명이 NFD(한글 자모 분해)로 들어와 `documents.title`/
+# `chunks.text`에 그대로 저장되면, NFC로 친 질의가 substring tier(score 1.0)에 구조적으로
+# 못 맞고 trigram tier로 떨어진다 - 정확히 일치하는 문서가 식별자가 다른 문서들보다 아래로
+# 내려간다. 적재·질의 양쪽에 NFC를 걸어야 낫는다(text_normalize.py).
+
+_NFC_NAME = "프로젝트 투입 관리_2026-031_한국자산관리공사.xlsx"
+_NFD_NAME = unicodedata.normalize("NFD", _NFC_NAME)
+_NFD_SUBJECT = f"이제 ‘{_NFD_NAME}’의 소유자가 되었습니다"  # 파일명만 NFD인 혼합 정규화
+
+
+async def _nfd_document(store: PostgresStore) -> Document:
+    """NFD 제목을 가진 gmail 소스 하나 + 이름이 비슷하지만 식별자가 다른 이웃 하나.
+    이웃이 있어야 "trigram으로 떨어지면 엉뚱한 문서가 위로 온다"는 게 드러난다."""
+    src = _source(20, SourceType.GMAIL, {"subject": _NFD_SUBJECT})
+    other = _source(21, SourceType.GMAIL, {"subject": "이제 ‘프로젝트 투입 관리_2026-032_동양생명.xlsx’의 소유자가 되었습니다"})
+    await store.save_source(src, raw_path=None)
+    await store.save_source(other, raw_path=None)
+    doc = _document(20, src)
+    await store.save_document(doc)
+    await store.save_document(_document(21, other))
+    return doc
+
+
+async def test_nfd_source_subject_is_stored_as_nfc(store):
+    await _nfd_document(store)
+
+    title = (await _titles(store))["test-lex-d20"]
+
+    assert title == unicodedata.normalize("NFC", _NFD_SUBJECT)
+    assert unicodedata.normalize("NFC", title) == title
+
+
+async def test_search_documents_by_title_matches_an_nfd_title_with_an_nfc_query(store):
+    await _nfd_document(store)
+
+    hits = await store.search_documents_by_title(_NFC_NAME.removesuffix(".xlsx"), project_id=_PROJECT)
+
+    assert hits[0]["document_id"] == "test-lex-d20"
+    assert hits[0]["score"] == 1.0  # substring tier - 이웃이 위로 올라오지 않는다
+
+
+async def test_search_documents_by_title_accepts_an_nfd_query(store):
+    """사용자가 macOS/Drive에서 복사한 NFD 파일명을 그대로 붙여넣는 경우 - 저장값은 NFC라
+    질의 쪽 정규화가 없으면 못 맞는다."""
+    await _nfd_document(store)
+
+    hits = await store.search_documents_by_title(_NFD_NAME.removesuffix(".xlsx"), project_id=_PROJECT)
+
+    assert hits[0]["document_id"] == "test-lex-d20"
+    assert hits[0]["score"] == 1.0
+
+
+async def test_save_chunks_stores_nfc_and_matches_either_normalization(store):
+    doc = await _nfd_document(store)
+    await store.save_chunks([_chunk(20, doc, f"첨부 파일 {_NFD_NAME} 를 공유했습니다")])
+
+    row = await (await store.conn.execute("SELECT text FROM chunks WHERE chunk_id = 'test-lex-c20-0'")).fetchone()
+    by_nfc = await store.search_chunks_lexical(_NFC_NAME, project_id=_PROJECT)
+    by_nfd = await store.search_chunks_lexical(_NFD_NAME, project_id=_PROJECT)
+
+    assert unicodedata.normalize("NFC", row[0]) == row[0]
+    assert [h["chunk_id"] for h in by_nfc] == ["test-lex-c20-0"] and by_nfc[0]["score"] == 1.0
+    assert [h["chunk_id"] for h in by_nfd] == ["test-lex-c20-0"] and by_nfd[0]["score"] == 1.0
+
+
+async def test_normalize_unicode_text_fixes_rows_written_before_the_fix(store):
+    """마이그레이션(`db normalize-unicode`) - 적재 경로에 NFC가 걸리기 전에 쌓인 행.
+    저장 경로가 이제 정규화하므로 NFD 행은 raw SQL로 직접 만든다."""
+    doc = await _nfd_document(store)
+    await store.save_chunks([_chunk(20, doc, f"첨부 파일 {_NFC_NAME} 를 공유했습니다")])
+    await store.conn.execute("UPDATE documents SET title = %s WHERE document_id = 'test-lex-d20'", (_NFD_SUBJECT,))
+    await store.conn.execute(
+        "UPDATE chunks SET text = normalize(text, NFD) WHERE chunk_id = 'test-lex-c20-0'"
+    )
+    broken = await store.search_documents_by_title(_NFC_NAME, project_id=_PROJECT)
+    assert all(h["score"] < 1.0 for h in broken)  # 버그 재현: substring tier가 죽고 trigram만 남는다
+
+    documents, chunks = await store.normalize_unicode_text(_PROJECT)
+
+    assert (documents, chunks) == (1, 1)
+    assert (await _titles(store))["test-lex-d20"] == unicodedata.normalize("NFC", _NFD_SUBJECT)
+    hits = await store.search_documents_by_title(_NFC_NAME, project_id=_PROJECT)
+    assert hits[0]["document_id"] == "test-lex-d20" and hits[0]["score"] == 1.0
+    assert [h["chunk_id"] for h in await store.search_chunks_lexical(_NFC_NAME, project_id=_PROJECT)] == ["test-lex-c20-0"]
+    assert await store.normalize_unicode_text(_PROJECT) == (0, 0)  # 멱등

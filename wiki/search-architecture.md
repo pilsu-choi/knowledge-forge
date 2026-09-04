@@ -389,6 +389,107 @@ Search Evaluation / Feedback Loop 절과 판정기를 공유하는 옵션 확장
     Slack 채널 ID → 채널 이름 해석(제목이 `#C0BGQEQG1L6 2026-08-11` 형태로 남는다 - 컬렉터가
     `channel_name`을 메타데이터에 넣으면 파생 로직은 이미 그걸 우선 쓴다).
 
+### 유니코드 정규화(NFC) — 어휘 경로가 구조적으로 못 맞던 버그 (2026-09-04 수정)
+
+`src/knowledge_forge/text_normalize.py`, 커밋 브랜치 `fix/nfc-normalization`.
+
+**정체.** 한글 "관"은 코드포인트 표현이 둘이다 — NFC의 완성형 음절 `U+AD00` 하나, NFD의 자모
+분해 `U+1100 U+1161 U+11AB` 셋. 눈으로는 구분이 안 되지만 파이썬 `in`, SQL `ILIKE`, pg_trgm
+`word_similarity`에는 완전히 다른 문자열이다. macOS·Google Drive를 거친 파일명은 NFD로 들어오고,
+그 파일명이 Drive 공유 알림 **메일 제목**에 박히면 `documents.title` 한 행 안에서 파일명 부분만
+NFD, 나머지 한글은 NFC인 **혼합 정규화**가 된다.
+
+실례 (`document_id=410852b07001b87f56a3b1f23e73ab58`):
+
+```
+title = 이제 ‘프로젝트 투입 관리_2026-031_한국자산관리공사.xlsx’의 소유자가 되었습니다
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^
+             NFD: '한' = U+1112 U+1161 U+11AB (자모 3개)      NFC: '의' = U+C758 (1개)
+```
+
+그래서 3단 랭킹의 **① substring(score 1.0) 단계가 통째로 죽고** ③ trigram으로 떨어진다. 파일명이
+정확히 일치하는 문서가 0.4286점 9위로 밀리고, 식별자가 **다른** 문서들(`2026-032_동양생명` 2건,
+`2026-038-G`/`2026-038-J_농협은행`)이 0.4762점으로 1~4위를 차지했다. 5~8위(`2026-012_현대모비스`,
+`2026-023_한화손해보험`, `2026-024_광주은행` 2건)는 정답과 같은 0.4286점인데 tie-break가 제목/
+document_id 순이라 정답보다 앞에 왔다.
+
+`retrieve.py`의 anchor 판정이 "1위가 제목 substring 1.0"을 조건으로 삼기 때문에, 이 문서는
+anchor도 못 잡는다 — Navigational/Exact 질의에서 어휘 경로가 반드시 맞아야 하는 자리에 정확히
+꽂힌 버그다.
+
+**영향 범위(개발 DB 실측).** `documents.title` 4/263행, `chunks.text` 4/936행 — 전부
+`source_type=gmail`. 좁아 보이지만 더 중요한 건 상류다: `sources.metadata`의 Drive `name` 77건 +
+Gmail `subject` 4건 = **81/502행이 이미 NFD**다. 그 77건은 아직 문서 행이 없어서 제목 통계에
+안 잡혔을 뿐, 적재되는 순간 같은 증상이 된다.
+
+**왜 적재·질의 양쪽을 다 고쳐야 하나.** 한쪽만으로는 절반만 맞는다.
+
+| 고친 곳 | 남는 구멍 |
+|---|---|
+| 저장만 | 사용자가 macOS/Drive에서 복사한 **NFD 질의**를 붙여넣으면 NFC 저장값에 못 맞는다 |
+| 질의만 | 이미 저장된 **NFD 행**에 못 맞는다 (마이그레이션 전 데이터, 재적재 안 된 소스) |
+
+그래서 걸어둔 지점은 네 곳이고 전부 같은 `to_nfc()`를 쓴다.
+
+- 적재: `storage/document_title.py::_clean` → `derive_document_title`의 모든 출구, 즉
+  `save_document`와 `backfill_document_titles`가 규칙을 공유한다.
+- 적재: `PostgresStore.save_chunks`.
+- 질의: `PostgresStore.search_documents_by_title` / `search_chunks_lexical` 진입점 — 최하단이라
+  `search/service.py`의 도구든 평가 하네스든 store를 직접 쓰는 코드든 전부 덮인다.
+
+`sources.metadata`(수집기가 API에서 받은 원본 기록)와 `documents.elements`(파서 출력)는 일부러
+안 건드렸다. 있는 그대로의 기록이라는 게 그 컬럼들의 존재 이유고, **사용 지점**(제목 파생·청크
+저장)에서 정규화하면 이미 NFD로 들어와 있는 81개 소스 행도 적재될 때 함께 낫는다.
+
+**왜 NFC이고 NFKC가 아닌가.** `ingest_version.py::family_key_of`는 이미 NFKC+casefold를 쓰고
+있어서 선례가 있지만, 그건 화면에 안 나오고 비교에만 쓰이는 **파생 키**다. 전각/반각·기호까지
+공격적으로 접어도 잃을 게 없다. 반면 `documents.title`/`chunks.text`는 검색 대상인 동시에
+**그대로 사용자에게 보여지는 원문**이라 기준이 다르다.
+
+- 이 버그는 "같은 문자를 다른 코드포인트 열로 적은" 정준 등가(canonical equivalence) 문제다.
+  NFC가 정확히 그것만 고치는 최소 수정이다.
+- NFKC는 호환 문자까지 접는다: `㈜`→`(주)`, `Ⅳ`→`IV`, 전각 `ＡＢ`→`AB`, `①`→`1`, NBSP→공백.
+  국내 문서 파일명에 `㈜`·전각 괄호·로마숫자가 실제로 흔해서, 저장값을 NFKC로 접으면 사용자가
+  아는 파일명과 **다른 문자열을 보여주게 된다**(표시 손실). 매칭만 놓고 보면 NFKC도 틀리지 않지만,
+  같은 컬럼이 표시 문자열이라 그 대가를 치를 이유가 없다.
+- 저장·교환 문자열 표준 권고도 NFC다(W3C Character Model).
+- 나중에 호환 문자까지 접는 매칭이 필요해지면 저장값을 바꾸지 말고 **NFKC 파생 키를 따로** 두는
+  게 맞다 — `family_key_of`가 그 선례다.
+
+**기존 데이터 마이그레이션.** `knowledge-forge db normalize-unicode`
+(`PostgresStore.normalize_unicode_text`). 재적재가 아니라 전용 마이그레이션을 만든 이유:
+
+- 이 행들은 **내용이 멀쩡하고 표현 형태만** 틀렸다. 재적재는 파싱·추출·임베딩(LLM 호출 포함)을
+  전부 다시 돌리면서 결국 같은 `document_id`/`chunk_id`를 덮어쓸 뿐이라 대가가 너무 크고,
+  Gmail처럼 원본을 다시 못 받는 소스도 있다.
+- `db backfill-titles --overwrite`는 제목은 고칠 수 있지만 `chunks.text`는 못 고치고, 제목 파생
+  규칙 전체를 재적용하는 훨씬 넓은 연산이다.
+- 판정·변환을 파이썬이 아니라 서버의 `normalize(text, NFC)`(PG 13+, 개발 DB는 16.15)로 한다 —
+  쓰기 트랜잭션을 짧게 끝내기 위해서다(개발 DB를 다른 프로세스가 동시에 읽는다). 재실행하면
+  0건이 나오는 멱등 연산이고, `updated_at`은 안 건드린다(내용 개정이 아니라 표현 정규화).
+
+실제 실행 결과: 문서 제목 4건 + 청크 본문 4건 수정, 재실행 시 (0, 0). 실행 뒤 DB에 남은 비-NFC
+행은 `documents.title` 0, `chunks.text` 0.
+
+**수정 전후 (`search_documents_by_title`, 개발 DB 전체 대상).**
+
+| 질의 | 수정 전 | 수정 후 |
+|---|---|---|
+| `관리_2026-031_한국자산관리공사` | `410852b07001` 0.4286 / **9위**, 1~4위는 `2026-032`·`2026-038` 오답 0.4762 | `410852b07001` **1.0000 / 1위**, 2위 0.4762 |
+| `프로젝트 투입 관리_2026-031_한국자산관리공사` | 상위 10위 안에 **아예 없음**, 1위는 `2026-032_동양생명` 0.6207 | `410852b07001` **1.0000 / 1위**, 2위 0.6207 |
+| 위 질의의 NFD 표기 | (측정 안 함 — 저장·질의 둘 다 NFD라 우연히 맞을 수도) | `410852b07001` **1.0000 / 1위** |
+
+**회귀 테스트.** `tests/storage/test_document_title.py`(순수 함수: NFD Drive 이름/Gmail 제목/헤딩이
+NFC로 저장되는가, 300자 자르기가 정규화 **뒤에** 오는가 — 순서가 바뀌면 NFD 3코드포인트가 NFC
+1글자로 합쳐지면서 자르는 위치가 달라진다), `tests/storage/test_lexical_store.py`(DB: NFD 제목↔NFC
+질의, NFC 제목↔NFD 질의, 청크 양방향, `normalize_unicode_text`의 수정 건수·멱등성). DB 쪽은
+`KF_TEST_DATABASE_URL`이 있어야 돈다.
+
+**남겨둔 것.** `record_chunk_embeddings`는 저장 직전의 **메모리상 `Chunk` 객체**를 임베딩하므로,
+NFD로 파싱된 청크는 NFC로 저장되면서도 임베딩은 NFD 텍스트로 만들어진다. 토크나이저가 다르게
+쪼개니 벡터 품질에 미세한 영향이 있을 수 있지만, 이번에 깨진 건 어휘 arm이고 임베딩 쪽은 측정한
+바가 없어 범위 밖으로 뒀다. 고친다면 `Chunk` 모델이나 청커 출력이 정규화 지점이 된다.
+
 ### 벡터 경로(pgvector) — 임베딩이 실제로 채워졌을 때 (2026-09-04 검증)
 
 `knowledge_object_embeddings`가 개발 DB에서 0행이라, `vector_search` → `search_by_embedding`

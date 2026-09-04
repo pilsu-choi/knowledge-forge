@@ -23,6 +23,8 @@ from collections.abc import Iterable
 from datetime import datetime
 from typing import Any
 
+from knowledge_forge.text_normalize import to_nfc
+
 # Where a title lives in `sources.metadata`, per collector (see
 # collectors/saas/*.py) - checked in order, first non-empty wins. `name` is
 # also what a local_file/notion collector would most naturally use, so it
@@ -40,9 +42,17 @@ _MAX_TITLE_CHARS = 300
 
 
 def _clean(value: Any) -> str | None:
+    """공백 정리 + NFC 정규화 + 길이 제한. NFC가 여기 있는 이유: 제목의 원재료인
+    `sources.metadata`의 Drive `name` / Gmail `subject`가 macOS·Google Drive를
+    거치며 한글 자모가 분해된 NFD로 들어온다(현재 dev DB 81/502행). 그대로 저장하면
+    `search_documents_by_title`의 substring tier가 NFC 질의에 구조적으로 못 맞는다.
+    `derive_document_title`의 모든 출구가 이 함수를 지나므로 `save_document`와
+    `backfill_document_titles`가 같은 규칙을 공유한다. NFC를 고른 이유는
+    `text_normalize.py` 참고. 자르기는 정규화 뒤에 한다 - NFD 3코드포인트가 NFC
+    1글자로 합쳐지므로 순서가 바뀌면 자르는 위치가 달라진다."""
     if not isinstance(value, str):
         return None
-    text = " ".join(value.split())
+    text = to_nfc(" ".join(value.split()))
     if not text:
         return None
     return text[:_MAX_TITLE_CHARS]

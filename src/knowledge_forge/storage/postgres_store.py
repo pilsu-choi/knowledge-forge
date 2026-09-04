@@ -29,6 +29,7 @@ from knowledge_forge.models.link import DocumentLink
 from knowledge_forge.models.relation import Relation
 from knowledge_forge.models.source import Source, SourceRef
 from knowledge_forge.storage.document_title import derive_document_title, first_heading_text
+from knowledge_forge.text_normalize import to_nfc
 
 if TYPE_CHECKING:
     from knowledge_forge.embedding.base import EmbeddingRecord
@@ -427,6 +428,13 @@ class PostgresStore:
         )
 
     async def save_chunks(self, chunks: list[Chunk]) -> None:
+        """청크 본문은 NFC로 정규화해서 저장한다(`text_normalize.py`) - `chunks.text`는
+        `search_chunks_lexical`의 ILIKE/trigram 대상이라, macOS·Drive 유래 NFD 파일명이
+        본문에 인용돼 들어오면 NFC 질의로는 구조적으로 못 맞는다. 파서 출력 원본인
+        `documents.elements`는 그대로 두고 여기서만 정규화한다 - 청크는 `element_ids`로
+        엘리먼트를 참조하지 문자열로 맞대보지 않으므로 둘이 달라도 깨지는 곳이 없다.
+        `token_count`는 재계산하지 않는다: NFC 합성은 코드포인트 수만 줄일 뿐이고,
+        토큰 수는 어차피 청킹 시점의 근사치다."""
         now = datetime.now(timezone.utc)
         rows: list[tuple[Any, ...]] = [
             (
@@ -436,7 +444,7 @@ class PostgresStore:
                 chunk.hierarchy_level.value,
                 chunk.sequence_index,
                 chunk.parent_chunk_id,
-                chunk.text,
+                to_nfc(chunk.text),
                 chunk.token_count,
                 Jsonb(chunk.element_ids),
                 chunk.page_range[0] if chunk.page_range else None,
@@ -1226,6 +1234,45 @@ class PostgresStore:
             await cur.executemany("UPDATE documents SET title = %s WHERE document_id = %s", updates)
         return len(updates)
 
+    async def normalize_unicode_text(self, project_id: str | None = None) -> tuple[int, int]:
+        """이미 저장된 `documents.title` / `chunks.text` 중 NFC가 아닌 행을 NFC로 고친다
+        (`knowledge-forge db normalize-unicode`). 적재 경로에 NFC를 건 뒤 남는 과거 데이터를
+        위한 일회성 마이그레이션이고, 재실행해도 0건이 나오는 멱등 연산이다.
+
+        재적재가 아니라 전용 마이그레이션인 이유: 이 행들의 내용은 멀쩡하고 **표현 형태만**
+        틀렸다. 재적재는 파싱·추출·임베딩(LLM 호출 포함)을 전부 다시 돌리면서도 결국 같은
+        `document_id`/`chunk_id`를 덮어쓸 뿐이라, 표현 형태 하나 고치자고 치르기엔 비싸고
+        Gmail처럼 원본을 다시 못 받는 소스도 있다. `db backfill-titles --overwrite`는 제목은
+        고칠 수 있지만 `chunks.text`는 못 고치고, 제목 파생 규칙 전체를 재적용하는 넓은 연산이다.
+
+        NFC 판정과 변환을 파이썬이 아니라 서버의 `normalize(text, NFC)`(PG 13+)로 하는 이유는
+        쓰기 트랜잭션을 짧게 끝내기 위해서다 - 개발 DB를 다른 프로세스가 동시에 읽는다.
+        `updated_at`은 건드리지 않는다: 내용 개정이 아니라 표현 정규화라
+        `backfill_document_titles`와 같은 판단이다.
+
+        반환값은 `(고친 documents 행 수, 고친 chunks 행 수)`."""
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE documents SET title = normalize(title, NFC)
+                WHERE title IS NOT NULL AND title <> normalize(title, NFC)
+                  AND (%s::text IS NULL OR project_id = %s)
+                """,
+                (project_id, project_id),
+            )
+            documents = cur.rowcount
+            await cur.execute(
+                """
+                UPDATE chunks c SET text = normalize(c.text, NFC)
+                WHERE c.text <> normalize(c.text, NFC)
+                  AND (%s::text IS NULL
+                       OR EXISTS (SELECT 1 FROM documents d WHERE d.document_id = c.document_id AND d.project_id = %s))
+                """,
+                (project_id, project_id),
+            )
+            chunks = cur.rowcount
+        return documents, chunks
+
     async def search_documents_by_title(
         self,
         query: str,
@@ -1258,7 +1305,13 @@ class PostgresStore:
         similarity for tier 3, so it stays in [0, 1] and monotonic with the
         tiers. `since`/`until` filter on `COALESCE(s.modified_at,
         s.collected_at)` - the same real-content timestamp `search_by_embedding`
-        uses (its docstring explains why not a pipeline timestamp)."""
+        uses (its docstring explains why not a pipeline timestamp).
+
+        질의는 NFC로 정규화해서 쓴다(`text_normalize.py`): 사용자가 macOS/Google Drive에서
+        복사한 NFD 파일명을 붙여넣어도 NFC로 저장된 제목과 만나야 한다. 적재 쪽 정규화와
+        짝이라 한쪽만으로는 절반만 맞는다 - 저장만 고치면 NFD 질의가, 질의만 고치면 이미
+        저장된 NFD 행이 남는다."""
+        query = to_nfc(query)
         pattern = _like_pattern(query)
         token_patterns = _token_patterns(query)
         async with self._read_conn() as conn, conn.cursor() as cur:
@@ -1354,7 +1407,11 @@ class PostgresStore:
         `word_similarity()` per row instead of the index-backed `<%` operator
         because that operator reads its threshold from a session GUC; at the
         current table sizes the explicit function call is fast enough, and
-        the trigram index still serves the `ILIKE` tiers."""
+        the trigram index still serves the `ILIKE` tiers.
+
+        질의 NFC 정규화 이유는 `search_documents_by_title` 참고 - `_lexical_snippet`의
+        일치 지점 탐색도 같은 정규화된 질의를 쓴다."""
+        query = to_nfc(query)
         pattern = _like_pattern(query)
         token_patterns = _token_patterns(query)
         async with self._read_conn() as conn, conn.cursor() as cur:
