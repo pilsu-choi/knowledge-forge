@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import psycopg
+from pgvector import Vector
 from psycopg.types.json import Jsonb
 
 from knowledge_forge.models.chunk import Chunk
@@ -534,7 +535,13 @@ class PostgresStore:
             (
                 rec.knowledge_object_id,
                 rec.embedding_model,
-                rec.embedding,
+                # register_vector_async() (connect(), above) only registers a
+                # dumper for pgvector.Vector/numpy.ndarray, not a plain
+                # list[float] - passed as-is, psycopg adapts it as a
+                # double precision[] array instead of `vector`, and this
+                # INSERT fails with "column is of type vector but expression
+                # is of type double precision[]".
+                Vector(rec.embedding),
                 rec.embedded_text,
                 rec.embedded_text_hash,
                 rec.project_id,
@@ -622,10 +629,13 @@ class PostgresStore:
         """Nearest-neighbor search over `knowledge_object_embeddings`' HNSW
         index (wiki/agent-search.md's vector_search) - `ORDER BY embedding
         <=> %s` (pgvector's cosine-distance operator, matching the index's
-        `vector_cosine_ops`) `LIMIT %s`. `embedding` is a plain `list[float]`,
-        not a pgvector type - `connect()`'s `register_vector_async` call
-        already teaches psycopg how to adapt it, the same as `save_embeddings`
-        relies on for the INSERT side.
+        `vector_cosine_ops`) `LIMIT %s`. `embedding` arrives as a plain
+        `list[float]` but is wrapped in `pgvector.Vector` before being bound
+        as a query parameter - `register_vector_async()` (`connect()`) only
+        registers a dumper for `Vector`/`numpy.ndarray`, not a bare `list`,
+        so an unwrapped list gets sent as a `double precision[]` array and
+        `<=>` against `vector` fails with "operator does not exist" (the
+        same reason `save_embeddings` wraps it on the INSERT side).
 
         `since`/`until` (search/temporal.py, "⑥ Temporal Search") filter on
         `ko.extracted_at` - `until` is exclusive, matching
@@ -635,6 +645,7 @@ class PostgresStore:
         enough to decide relevance (type/summary/topics) plus a similarity
         `score`, not the full envelope (evidence/content/version/...) every
         other `list_*`/`get_*` method here returns."""
+        vector = Vector(embedding)
         async with self.conn.cursor() as cur:
             await cur.execute(
                 """
@@ -652,7 +663,7 @@ class PostgresStore:
                 LIMIT %s
                 """,
                 (
-                    embedding,
+                    vector,
                     embedding_model,
                     project_id,
                     project_id,
@@ -662,7 +673,7 @@ class PostgresStore:
                     since,
                     until,
                     until,
-                    embedding,
+                    vector,
                     limit,
                 ),
             )
@@ -700,14 +711,22 @@ class PostgresStore:
            upstream check anticipated.
 
         `limit` is enforced by wrapping the caller's query as a subquery
-        (`SELECT * FROM (sql) AS sql_search LIMIT %s`) rather than trusting
-        whatever `LIMIT` (if any) `sql` itself contains - a result set is
-        capped no matter what the caller wrote or forgot to write."""
-        wrapped = f"SELECT * FROM (\n{sql}\n) AS sql_search LIMIT %s"
+        (`SELECT * FROM (sql) AS sql_search LIMIT <limit>`) rather than
+        trusting whatever `LIMIT` (if any) `sql` itself contains - a result
+        set is capped no matter what the caller wrote or forgot to write.
+        `limit` is interpolated as a literal `int(limit)` (never passed as a
+        `%s` query parameter alongside `sql`) - `sql` is untrusted, arbitrary
+        text that legitimately contains literal `%` (e.g. `ILIKE '%김%'`),
+        and psycopg's client-side placeholder scanner runs over the *whole*
+        query string whenever a `params` tuple is given, so a stray `%` in
+        `sql` gets misparsed as a broken placeholder. `int()` makes the
+        literal-interpolation safe (whatever `limit` was, only its digits
+        ever reach the query)."""
+        wrapped = f"SELECT * FROM (\n{sql}\n) AS sql_search LIMIT {int(limit)}"
         async with self.conn.transaction(force_rollback=True):
             await self.conn.execute("SET TRANSACTION READ ONLY")
             async with self.conn.cursor() as cur:
-                await cur.execute(wrapped, (limit,))
+                await cur.execute(wrapped)
                 rows = await cur.fetchall()
                 columns = [d.name for d in cur.description] if cur.description else []
         return rows, columns
