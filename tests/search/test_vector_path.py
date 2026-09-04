@@ -357,6 +357,9 @@ async def test_time_filter_applies_to_vector_hits(store):
 async def test_vector_only_run_ranks_the_semantically_matching_document_first(store):
     result = await retrieve(_LEAVE_QUERY, store=store, project_id=_PROJECT, now=_NOW, strategies_override=["vector"])
 
+    # `["vector"]`는 진짜 벡터 단독이다 - 어휘 arm이 이름 없이 `vector()` 안에 붙어 있던
+    # 동안에는 여기에 document_search#semantic/lexical_search#semantic도 섞여 있었다.
+    assert {s.source for s in result.steps} == {"vector_search"}
     step = next(s for s in result.steps if s.strategy == "vector")
     assert step.detail["error"] is None
     assert step.n_hits > 0
@@ -370,7 +373,7 @@ async def test_vector_hit_survives_rrf_next_to_a_lexical_only_hit(store):
     d1과 개념이 같다(vector). 최종 랭킹에 둘 다 남아야 벡터 히트가 RRF를 통과한 것이다."""
     result = await retrieve(f'"롤백 절차" {_LEAVE_QUERY}', store=store, project_id=_PROJECT, now=_NOW)
 
-    assert result.strategies == ["lexical", "vector"]
+    assert result.strategies == ["lexical", "vector", "keyword_arm"]
     lexical = next(s for s in result.steps if s.strategy == "lexical")
     vector = next(s for s in result.steps if s.strategy == "vector")
     assert vector.detail["query"] == _LEAVE_QUERY
@@ -396,9 +399,14 @@ async def test_keyword_arm_runs_alongside_vector_once_embeddings_exist(store):
     (run 9ad2bba2). `steps`를 열어 보니 "Dev Handover README" 같은 질의가 vector 단독
     30히트만으로 랭킹되고 있었다 - 0.865를 만든 어휘 경로가 통째로 꺼진 것이다.
 
-    그래서 fallback을 하이브리드 arm으로 승격시켰다(retrieve.py::_keyword_arm). 이제
-    vector가 히트를 돌려줘도 어휘 조회가 같이 돌고 RRF에 별도 투표자로 들어간다."""
-    result = await retrieve(_LEAVE_QUERY, store=store, project_id=_PROJECT, now=_NOW, strategies_override=["vector"])
+    그래서 fallback을 하이브리드 arm으로 승격시켰다(retrieve.py::_Run.keyword_arm). 이제
+    vector가 히트를 돌려줘도 어휘 조회가 같이 돌고 RRF에 별도 투표자로 들어간다.
+
+    arm은 이제 이름 있는 전략이라 override에 명시해야 돈다 - `["vector"]`는 벡터 단독이다
+    (바로 위 `test_vector_only_run_...`). 기본 라우팅은 여전히 이 둘을 함께 고른다."""
+    result = await retrieve(
+        _LEAVE_QUERY, store=store, project_id=_PROJECT, now=_NOW, strategies_override=["vector", "keyword_arm"]
+    )
 
     arm_sources = [s.source for s in result.steps if s.detail.get("arm") == "semantic_query"]
     assert arm_sources == ["document_search#semantic", "lexical_search#semantic"]

@@ -81,6 +81,7 @@ query("그 프로젝트는?" → 이전 대화의 entity 복원)까지 포함하
 | `lexical` | `identifiers` 또는 `quoted_phrases` | 본문 정확 일치(Exact Match) - 임베딩은 에러코드에 의미가 없어 못 잡음 |
 | `metadata_filter` | authors/participants/source_types/document_types/time_range 중 하나 | `sources.metadata`/타임스탬프 WHERE 필터. 단독 랭킹이 아니라 다른 전략과 결합 |
 | `vector` | `semantic_query` 비어 있지 않음 | 제약 표현을 걷어낸 재작성 질의로 임베딩 검색 |
+| `keyword_arm` | `vector`와 동일(항상 짝) | 같은 `semantic_query`를 제목·본문에도 거는 어휘 arm. 라우팅에서는 절대 갈라지지 않고, `strategies_override`로 A/B 할 때만 한쪽을 끈다 |
 | `latest` | `wants_latest` | 소스 타임스탬프 내림차순 상위 N |
 | `exhaustive` | `wants_exhaustive` 또는 `is_negative` | top-k 절단 없이 조건 만족 전부 수집 |
 | `count` | `wants_count` | 후보 개수가 답 - 필터 조건에서 SQL COUNT 직행 가능 |
@@ -122,7 +123,8 @@ hits(각 hit에 document_id/target_kind/score 필수), document_ids(hits에서 �
 | `document_lookup` | `document_reference`/`identifiers`/`quoted_phrases` 각각 `document_search` | 문서 단위 최고 점수가 1.0(제목 substring)이고 2위와 0.2 이상 벌어지면 그 문서가 **anchor**. 2위도 1.0이면("AGENTS.md" vs "agents-skills-AGENTS.md") ambiguous - 후보 전부 히트로 |
 | `lexical` | `identifiers`/`quoted_phrases` 각각 `lexical_search` | anchor가 있으면 그 문서 히트만 남김(하나도 없으면 좁히지 않고 `anchor_narrowing="no_hits_in_anchor"` 기록) |
 | `metadata_filter` | authors/participants/source_types/document_types/time_range를 `sources`/`documents` WHERE로 - `execute_readonly_query`(READ ONLY + 강제 롤백) | 값은 `'`→`''` 이스케이프로 인라인(스토어가 문자열만 받음), SQL은 detail에. 작성자/참여자는 `sources.metadata->>'participants'` 텍스트 ILIKE + `documents.metadata->>'author'`(개발 DB의 gmail이 `participants`만 갖고 `from`이 없어서), 문서 타입은 `documents.title ILIKE`("메일"은 제목이 아니라 gmail 소스 타입으로 해석). 상한 500행 |
-| `vector` | `semantic_query`로 `vector_search`(since/until 전달) → **항상** 어휘 arm(`_keyword_arm`)을 이어서 실행 | 임베딩 0행/임베더 미구성이면 빈 결과 + `error` 기록(예외 아님). 유사도가 `KF_VECTOR_MIN_SCORE`(기본 0.45) 미만인 히트는 버리고 `dropped_below_min_score`에 기록 - ANN에는 관련도 하한이 없어 "관련 문서 없음"이 정답인 질의도 후보가 찬다. 어휘 arm은 `document_search#semantic` + `lexical_search#semantic` 소스로 RRF에 합류 |
+| `vector` | `semantic_query`로 `vector_search`(since/until 전달) | 임베딩 0행/임베더 미구성이면 빈 결과 + `error` 기록(예외 아님). 유사도가 `KF_VECTOR_MIN_SCORE`(기본 0.45) 미만인 히트는 버리고 `dropped_below_min_score`에 기록 - ANN에는 관련도 하한이 없어 "관련 문서 없음"이 정답인 질의도 후보가 찬다 |
+| `keyword_arm` | 같은 `semantic_query`를 `document_search`(제목) + `lexical_search`(본문)에, **`vector` 바로 다음에** | `document_search#semantic` + `lexical_search#semantic` 소스로 RRF에 별도 투표자로 합류. 제목 1.0 일치면 anchor도 잡는다(`document_lookup`과 공유). 순서가 계약이다 - `_claim_anchor`는 먼저 잡힌 anchor를 덮어쓰지 않으므로 arm을 vector 앞으로 옮기면 지표가 움직인다. 둘 다 빈손이면 `_term_fallback`(아래) |
 | `comparison` | `comparison_targets` 각각 `document_search`(대상 안의 시간 표현은 그 대상에만 적용), 없으면 `lexical_search` | 대상별 최상위 문서를 anchor 다음으로 최상위 고정 |
 | `multihop` | provider 있으면 `plan_and_search` 근거를 한 소스로 RRF 합류 | 없으면 `skipped="no_provider"`. document_id 없는 히트(OKF file_search)는 채점 단위가 없어 버림 |
 | `latest` | **관련도 상위 `KF_LATEST_RELEVANCE_POOL`(기본 5) 문서 안에서만** `content_at` 내림차순, 같은 `version_family`는 `version_sort_key`로 최신 하나만 남기고 나머지는 뒤로 | family 안에서는 버전 표기(최종 > vN > 무표기 > 초안)가 시각보다 우선 - 구버전을 나중에 다시 올린 경우 때문. pool 밖 후보는 관련도 순 그대로 뒤에 붙는다 - 후보 전체를 시각 정렬하면 "질의와 상관없이 가장 최근 문서"가 1위가 된다(아래) |
@@ -130,10 +132,11 @@ hits(각 hit에 document_id/target_kind/score 필수), document_ids(hits에서 �
 | `count` | `predicted_count` = 최종 문서 수. 필터 단독 결과면 같은 WHERE로 `SELECT COUNT(*)` | count도 exhaustive 수집을 함의 |
 | `whole_document` | anchor(없으면 상위 2개 문서)를 `read_document`로 읽어 `documents_read`에, 청크를 문서 순서대로 히트 맨 앞에 | 같은 청크를 가리키던 검색 히트는 중복이라 제거 |
 
-**키워드 fallback (vector가 빈손일 때)**:
+**어휘 arm (`keyword_arm`)**:
 
-임베딩이 없는 배포/개발 DB에서 실행기가 "아무것도 못 찾음"이 되지 않게 하는 degrade 경로다.
-두 단계로 돈다.
+`semantic_query`를 제목·본문에도 거는 하이브리드의 어휘 쪽 팔이다. 원래는 vector가 빈손일 때만
+도는 degrade 경로였고(임베딩 0행 배포용), 상시 arm으로 승격한 경위는
+[`search-evaluation.md`](search-evaluation.md) 다섯 번째 실측에 있다. 두 단계로 돈다.
 
 1. **전체 질의**: `semantic_query` 문자열 그대로 `document_search`(제목) + `lexical_search`(본문).
 2. **term 분해** (`_term_fallback`) — 1단계가 **양쪽 다 빈손일 때만**. `keyword_terms`가 질의를
@@ -193,12 +196,18 @@ term당 조회는 `_TERM_FETCH_LIMIT`(20)으로 따로 막는다 — exhaustive/
   교집합이 비면 필터 집합 자체를 최신순 결과로 쓴다(`filter_only`/`no_overlap_fallback_to_filter`) -
   "지난주 김철수 메일"은 필터만으로 답이 되는 질의라서.
 - `limit`은 최종 `document_ids` 길이다. 소스별 조회는 3배 over-fetch해서 필터/anchor 좁히기 뒤에도
-  limit개가 남게 한다(`strategies_override=["vector"]`, limit=10이면 vector 20건 → 상위 10문서 -
-  순수 벡터 baseline).
+  limit개가 남게 한다.
+- `strategies_override`는 목록에 적힌 전략**만** 돌린다 - 어휘 arm도 `"keyword_arm"`으로 적어야
+  돈다. 즉 `["vector"]`가 순수 벡터 baseline이고 `["vector", "keyword_arm"]`이 기본 하이브리드와
+  같다. arm이 이름 없이 `vector()` 안에 숨어 있던 동안에는 `["vector"]`가 arm까지 돌렸고, 그래서
+  "순수 벡터"라고 기록된 v0 ndcg@10 0.736은 사실 vector+arm의 값이었다. 이름을 갈라 다시 재보니
+  기본 라우팅 **0.893** / `vector,keyword_arm` **0.736** / `keyword_arm` 단독 **0.663** /
+  `vector` 단독 **0.477**(76질의, `--no-llm`) - 이 코퍼스에서 검색을 지탱하는 것은 어휘 쪽이고
+  벡터 단독은 하이브리드의 절반 조금 넘는 수준이다.
 
 **한계**:
 
-- 임베딩이 없으면(개발 DB 기준 0행) `vector`는 항상 비고 키워드 fallback으로 돈다 - 패러프레이즈/
+- 임베딩이 없으면(개발 DB 기준 0행) `vector`는 항상 비고 어휘 arm만 남는다 - 패러프레이즈/
   개념 질의는 제목·본문에 그 단어가 그대로 있을 때만 잡힌다. term 분해가 "질의의 단어를 여러 개
   담은 문서"까지는 끌어올리지만(v0 factoid 0.497 → 0.969), 단어가 하나도 겹치지 않는 패러프레이즈는
   여전히 못 푼다 - 그건 임베딩이 있어야 한다. 골든셋 v0

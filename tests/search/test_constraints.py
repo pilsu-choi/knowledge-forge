@@ -427,7 +427,15 @@ def test_suggest_strategies_orders_candidate_generation_before_postprocessing():
         wants_latest=True,
         wants_count=True,
     )
-    assert suggest_strategies(c) == ["document_lookup", "lexical", "metadata_filter", "vector", "latest", "count"]
+    assert suggest_strategies(c) == [
+        "document_lookup",
+        "lexical",
+        "metadata_filter",
+        "vector",
+        "keyword_arm",
+        "latest",
+        "count",
+    ]
 
 
 def test_suggest_strategies_is_empty_for_empty_constraints():
@@ -436,7 +444,23 @@ def test_suggest_strategies_is_empty_for_empty_constraints():
 
 def test_negative_implies_exhaustive_collection():
     c = QueryConstraints(query="q", is_negative=True, semantic_query="기술")
-    assert suggest_strategies(c) == ["vector", "exhaustive", "negative"]
+    assert suggest_strategies(c) == ["vector", "keyword_arm", "exhaustive", "negative"]
+
+
+def test_vector_always_brings_the_keyword_arm_with_it():
+    """둘은 하이브리드 한 쌍이라 라우팅에서 갈라지지 않는다. arm은 원래 이름 없이
+    `retrieve.py::_Run.vector()` 안에서 무조건 이어 돌던 부작용이었고, 이름을 준 것은
+    A/B에서 한쪽만 끄기 위해서지 기본 동작을 바꾸려는 게 아니다 - 이 테스트가 그
+    "기본 동작은 그대로"를 못 박는다(전략 이름이 하나 늘었다고 라우팅이 달라지면
+    v0 ndcg@10 0.893이 재현되지 않는다)."""
+    for c in (
+        QueryConstraints(query="q", semantic_query="장애 원인"),
+        QueryConstraints(query="q", identifiers=["ERR_X"], semantic_query="장애 원인"),
+    ):
+        strategies = suggest_strategies(c)
+        assert strategies.index("keyword_arm") == strategies.index("vector") + 1
+    # semantic_query가 없으면 둘 다 없다 - arm 혼자 도는 라우팅은 없다.
+    assert suggest_strategies(QueryConstraints(query="q", identifiers=["ERR_X"])) == ["document_lookup", "lexical"]
 
 
 # --- LLM 보강 단계 ------------------------------------------------------------
