@@ -5,6 +5,7 @@ so every write here is an idempotent upsert - re-running the pipeline on
 unchanged input is safe to repeat.
 """
 
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -43,6 +44,12 @@ class PostgresStore:
     def __init__(self, dsn: str):
         self._dsn = dsn
         self._conn: psycopg.AsyncConnection | None = None
+        # `execute_readonly_query` opens an explicit transaction on the single
+        # shared connection. Two coroutines doing that at once interleave
+        # BEGIN/ROLLBACK and psycopg raises OutOfOrderTransactionNesting, so
+        # that one method serializes on this lock. Everything else on the
+        # store runs in autocommit and needs no lock.
+        self._tx_lock = asyncio.Lock()
 
     async def connect(self) -> "PostgresStore":
         self._conn = await psycopg.AsyncConnection.connect(self._dsn, autocommit=True)
@@ -939,12 +946,13 @@ class PostgresStore:
         literal-interpolation safe (whatever `limit` was, only its digits
         ever reach the query)."""
         wrapped = f"SELECT * FROM (\n{sql}\n) AS sql_search LIMIT {int(limit)}"
-        async with self.conn.transaction(force_rollback=True):
-            await self.conn.execute("SET TRANSACTION READ ONLY")
-            async with self.conn.cursor() as cur:
-                await cur.execute(wrapped)
-                rows = await cur.fetchall()
-                columns = [d.name for d in cur.description] if cur.description else []
+        async with self._tx_lock:
+            async with self.conn.transaction(force_rollback=True):
+                await self.conn.execute("SET TRANSACTION READ ONLY")
+                async with self.conn.cursor() as cur:
+                    await cur.execute(wrapped)
+                    rows = await cur.fetchall()
+                    columns = [d.name for d in cur.description] if cur.description else []
         return rows, columns
 
     async def backfill_document_titles(self, project_id: str | None = None, *, overwrite: bool = False) -> int:

@@ -19,64 +19,52 @@
 | `3e8ad1a` | 인제스트 버전 메타데이터 `ingest_version.py` + `document_links` 테이블 + `db backfill-links` |
 | `b27dd09` | `knowledge-forge eval-ir` CLI + `eval_run`/`eval_run_query` 테이블 + paired A/B 비교 |
 | `6a975e1` | (문서) search-evaluation.md 상태 갱신 |
+| `5a0a20e` | `search/retrieve.py` — 검색 전략 실행기 + 에이전트 `search` 도구 |
+| `2c4b1da` | `RetrieveFn` 프로토콜 `steps`를 읽기 전용 속성으로(mypy) |
+| (HEAD) | `execute_readonly_query` 직렬화 + v0 baseline 실측 기록 |
 
-게이트 상태(`6a975e1` 기준): `uv run ruff check src tests` 통과, `uv run mypy src` 통과,
+게이트 상태: `uv run ruff check src tests` 통과, `uv run mypy src` 통과,
 `KF_TEST_DATABASE_URL=postgresql://kf:kf@localhost:15432/knowledge_forge uv run pytest tests -q --deselect tests/api/test_api.py`
-→ **718 passed**. (`tests/api/test_api.py`의 ingest/jobs 테스트는 Redis(:6379)가 없어서 실패하는
+→ **744 passed**. (`tests/api/test_api.py`의 ingest/jobs 테스트는 Redis(:6379)가 없어서 실패하는
 기존 환경 문제라 deselect한다.)
 
-## 2. 아직 안 끝난 것 — 가장 먼저 할 일
+계획했던 1·2단계는 **전부 머지됐고 v0 baseline도 실측했다.** 아래 2절은 다음 세션이 할 일이다.
 
-### (a) `search/retrieve.py` 브랜치 머지 ← **여기서부터 시작**
+## 2. 다음에 할 일
 
-`worktree-agent-a89a74559b56d94b1` 브랜치 / worktree
-`.claude/worktrees/agent-a89a74559b56d94b1`에 **작업이 전부 staged 상태이지만 커밋되지 않았다.**
-(서브에이전트가 커밋 직전에 멈춤. worktree가 `locked`이면 `git worktree unlock <path>`.)
+### (a) 임베딩 채우고 baseline 다시 — **가장 큰 미지수**
 
-staged 파일:
-
-```
-src/knowledge_forge/search/retrieve.py   (신규, 717줄)
-src/knowledge_forge/agent/tools.py       (search 도구 추가)
-src/knowledge_forge/agent/prompts.py
-tests/search/test_retrieve.py            (신규, 640줄)
-tests/agent/test_tools.py
-wiki/search-architecture.md              (① Query Understanding 절 갱신)
-```
-
-이어받는 절차:
+지금 baseline은 임베딩 0행이라 `vector` 전략이 통째로 빠진 숫자다. `.env`에
+`OPENAI_API_KEY`를 넣고 `KF_EMBEDDING_SOURCE=chunk`로 임베딩을 생성한 뒤 다시 돌려
+`--compare`로 벡터가 실제로 얼마나 보태는지 본다.
 
 ```bash
-cd /home/pilsu/projects/Knowledge-Forge/.claude/worktrees/agent-a89a74559b56d94b1
-uv run ruff check src tests && uv run mypy src
-KF_TEST_DATABASE_URL=postgresql://kf:kf@localhost:15432/knowledge_forge \
-  uv run pytest tests/search tests/agent tests/test_cli.py -q
-git commit -m "feat: 검색 계획 실행기 search/retrieve.py + search 에이전트 도구"   # 한글 메시지 + 트레일러
-cd ../search-strategy && git merge --no-ff --no-edit worktree-agent-a89a74559b56d94b1
+knowledge-forge eval-ir --golden tests/eval/golden/v0.json --label with-vector --json out/v0-vector.json
+knowledge-forge eval-ir --compare fc96003a531547a0b04267a2ca7b2844 <new_run_id> --metric ndcg@10
 ```
 
-충돌 예상 지점: `agent/tools.py`, `tests/agent/test_tools.py`, `wiki/search-architecture.md`.
-지금까지의 충돌은 전부 "both added" 형태였고 **양쪽을 다 남기는 방식**으로 해결했다.
-도구 등록 순서는 `file_search, vector_search, sql_search, document_search, lexical_search,
-read_document, search, plan_search`.
+`--no-llm` 없이 돌리는 것도 별도 축이다. **multihop이 0.000인 건 검색 품질이 아니라
+`--no-llm`이면 planner가 안 도는 탓**이므로, LLM을 켠 run이 먼저 필요하다.
 
-### (b) 골든셋 v0 baseline 실측
+### (b) `knowledge-forge eval-gen` — 골든셋 v1
 
-머지 후 개발 DB에 대해 한 번 돌리고 `run_id`를 `wiki/search-evaluation.md`에 기록한다.
+v0는 손으로 쓴 미검수 스모크셋이다(5절). 절대값 기준이 되려면 `chunks.text`에서 층화 샘플링 →
+LLM 질의 생성 → 자동 필터 → 사람 검수(Tier A)를 거친 **v1**이 필요하다. v0는 그대로 둔다.
+설계는 `search-evaluation.md` (C) "다음 단계"에 있다.
 
-```bash
-knowledge-forge eval-ir --golden tests/eval/golden/v0.json --no-llm --label baseline \
-  --json out/v0-baseline.json
-```
+### (c) 낮은 유형 파고들기
 
-이후 전략을 바꾸면 `eval-ir --compare <baseline_run_id> <new_run_id> --metric ndcg@10`.
+`conversation_thread` 0.250 / `sequence` 0.343 / `factoid` 0.497. 앞의 둘은 `document_links`의
+`thread_sequence`/`same_channel_sequence`를 `retrieve()`가 아직 랭킹에 쓰지 않는 게 원인일
+가능성이 크다(링크는 백필돼 있다). 질의별 `steps`가 `eval_run_query`에 통째로 남아 있으니
+검색을 다시 돌리지 않고 어느 전략이 뭘 반환했는지 볼 수 있다.
 
-### (c) 마무리
+### (d) 정리
 
-- `wiki/search-evaluation.md` "다음 단계"에 baseline `run_id` 기록
-- 메모리 `search-strategy-wip.md` 삭제, `search-eval-golden-set-plan.md`를 "1~3번 완료, 다음은
-  eval-gen"으로 갱신
-- 다 끝나면 서브에이전트 worktree 정리: `git worktree remove .claude/worktrees/agent-*`
+- `feature/search-strategy`를 `main`에 머지할지 결정 (**지금까지 push 안 함**)
+- 서브에이전트 worktree 정리: `git worktree remove .claude/worktrees/agent-*`
+  (7개: `a226ccc74a9477241`, `a4644f1c29a501ab7`, `a5d65861b553e5bf9`, `a68b5d9fb87fdefef`,
+  `a89a74559b56d94b1`, `ac412f1706e93dea8`, `af32819753682d15b`)
 
 ## 3. 이번 작업의 배경 결정 (코드에 안 남는 것)
 
@@ -109,6 +97,22 @@ knowledge-forge eval-ir --golden tests/eval/golden/v0.json --no-llm --label base
   질의는 현재 데이터로는 근거가 약하다.
 - 작업 중 `idx_sources_project_id` btree 인덱스가 깨져 있어 `REINDEX`로 고쳤다. 비슷한
   증상(정상 쿼리가 빈 결과)이 나오면 인덱스를 의심할 것.
+
+### v0 baseline 실측 (`run_id=fc96003a531547a0b04267a2ca7b2844`)
+
+```
+n=76 hit@1=0.657 recall@5=0.697 mrr=0.706 ndcg@10=0.709
+     exhaustive_recall=0.778 count_match=0.500 none_correct=1.000
+```
+
+잘 됨: long_range_context/parent_child 1.000, exact_match 0.952, version 0.947, navigational 0.830.
+안 됨: multihop 0.000(=`--no-llm`이라 planner 미실행), conversation_thread 0.250, sequence 0.343,
+factoid 0.497(벡터 없이 패러프레이즈를 못 푼다). 유형별 표는 `search-evaluation.md`.
+
+**동시 실행 함정**: `PostgresStore`는 커넥션 하나를 공유하는데 `execute_readonly_query`만
+명시적 트랜잭션을 연다. `--concurrency`가 1보다 크면 겹쳐서 `OutOfOrderTransactionNesting`이
+났다(첫 baseline에서 76개 중 20개 실패). 그 메서드에 `asyncio.Lock`을 걸어 고쳤다. 앞으로
+`PostgresStore`에 트랜잭션을 여는 메서드를 추가하면 **같은 락을 써야 한다.**
 
 ## 5. 골든셋 v0의 성격 — 그대로 믿으면 안 됨
 

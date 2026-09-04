@@ -318,8 +318,40 @@ run 행은 시작 시 한 번(summary 비움), 종료 시 한 번 더 upsert —
 2. **`eval-gen --from-traffic`** — `search_feedback.rating='up' ∧ groundedness ≥ 0.9`인
    `search_log`의 evidence를 `origin: "feedback"`으로 편입(Tier C). 노이즈가 크므로 큐레이션 셋을
    대체하지 않는다.
-3. **v0 첫 실측 baseline** — `search/retrieve.py`가 합류하면 `--label baseline`으로 한 번 돌려
-   `run_id`를 이 문서에 기록, 이후 전략 변경은 그 run과 `--compare`.
+### v0 첫 실측 baseline (2026-09-04)
+
+`knowledge-forge eval-ir --golden tests/eval/golden/v0.json --no-llm --label baseline`
+→ **`run_id=fc96003a531547a0b04267a2ca7b2844`**. 이후 전략을 바꾸면 이 run과 `--compare`한다.
+
+개발 DB 기준, **`--no-llm`(규칙 기반 제약 추출만)이고 임베딩 0행이라 `vector`는 항상 비어
+키워드 fallback으로 돈다** — 아래 숫자는 렉시컬/메타데이터/문서 조회만의 성능이다.
+
+```
+overall: n=76 hit@1=0.657 recall@5=0.697 mrr=0.706 ndcg@10=0.709
+         exhaustive_recall=0.778 count_match=0.500 none_correct=1.000
+```
+
+| 잘 되는 유형 | ndcg@10 | 안 되는 유형 | ndcg@10 |
+|---|---|---|---|
+| long_range_context / parent_child | 1.000 | **multihop** | 0.000 |
+| exact_match | 0.952 | conversation_thread | 0.250 |
+| version | 0.947 | sequence | 0.343 |
+| ambiguous | 0.941 | factoid | 0.497 |
+| navigational | 0.830 | latest | 0.544 |
+
+읽는 법: 제목·식별자가 질의에 그대로 있는 유형(navigational/exact_match/version)은 pg_trgm만으로
+거의 다 잡힌다. **multihop 0.000은 `--no-llm`이면 planner가 아예 안 도는 게 원인**이고(검색 품질
+문제가 아니다), factoid 0.497은 패러프레이즈를 벡터 없이 푸는 한계다. `count_match=0.500`은
+"본문에 언급만 된 문서"를 정답 집합에 셀지에 대한 골든셋 v0의 판단이 흔들린다는 신호 — v1
+검수 때 정리 대상이다.
+
+다음 baseline은 (1) `OPENAI_API_KEY` + `KF_EMBEDDING_SOURCE=chunk`로 임베딩을 채우고,
+(2) `--no-llm` 없이(=planner/LLM 제약 추출 켜고) 다시 돌려 세 조건을 `--compare`로 비교한다.
+
+4. **동시 실행 주의** — `PostgresStore`는 커넥션 하나를 공유하고 `execute_readonly_query`만
+   명시적 트랜잭션을 연다. `eval-ir --concurrency`가 1을 넘으면 이게 겹쳐
+   `OutOfOrderTransactionNesting`이 났었다(첫 baseline에서 76개 중 20개 실패). 지금은 그 메서드가
+   `asyncio.Lock`으로 직렬화한다.
 
 ## (D) 명시적 Groundedness Gate — Iterative Retrieval 강화, 옵션
 
