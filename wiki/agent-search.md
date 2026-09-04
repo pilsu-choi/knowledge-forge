@@ -15,6 +15,7 @@
 | `vector_search` (agent 도구) | **구현됨** — [`agent-runtime.md`](agent-runtime.md), 아래 절 참고. `POST /search/vector` HTTP 엔드포인트 자체는 여전히 미구현 |
 | Query Planning + Query Routing (`plan_search` agent 도구) | **구현됨** — [`search-architecture.md`](search-architecture.md), [`agent-runtime.md`](agent-runtime.md) |
 | Text-to-SQL (`sql_search` agent 도구) | **구현됨** — [`search-architecture.md`](search-architecture.md), [`agent-runtime.md`](agent-runtime.md). Temporal join, entity/속성 필터, graph 1-hop 조회를 이걸로 대체 |
+| `read_document` (agent 도구, document expansion) + `GET /documents/{id}/chunks` | **구현됨** — [`search-architecture.md`](search-architecture.md) ⑤ "Document Expansion". 검색으로 특정한 문서 하나의 청크 전체를 순서대로 읽는다(전체 요약/부재 확인/순서 비교용) |
 | `GET /relations/expand` (graph_search, `depth>1` 재귀 탐색) | 설계만, 미구현 (1-hop 조회는 `sql_search`로 이미 가능) |
 | `GET /okf/search` (file_search, OKF 트리 기반) | 설계만, 미구현 (agent 도구 `file_search`는 이미 구현됨 — [`agent-runtime.md`](agent-runtime.md)) |
 | `knowledge-forge mcp-server` | 설계만, 미구현 |
@@ -113,6 +114,18 @@ join, entity/속성 필터, graph 1-hop 조회까지 한 번에 대체했다 - "
 처럼 `since`/`until`만으로는 못 푸는 질문이 그 동기다. Context Engineering의 나머지(conflict
 탐지 등)/Map-Reduce/Evidence Grounding 파이프라인/Feedback Loop 같은 더 넓은 RAG 아키텍처
 레이어들의 구현 여부도 그 문서의 상태표에 있다.
+
+### `read_document` (agent 도구, document expansion) — **구현됨**
+
+세 검색 도구가 전부 top-k 히트만 돌려주는 반면, "이 보고서 요약해줘"/"보고서 전체에서 리스크만"/
+"처음 제안 vs 최종 결정"/"언급되지 않은 기술은?" 같은 질의는 문서 하나를 **통째로 순서대로** 읽어야
+답이 성립한다. `read_document`는 `document_search`/`vector_search`(청크 grain 히트가 `document_id`를
+싣는다)로 문서를 특정한 뒤 그 문서의 청크 전체를 `sequence_index` 순으로 돌려주는 도구다 -
+`search/document.py::read_document()`가 서비스 함수, `agent/tools.py::_make_read_document_tool()`이
+`ToolSpec` 어댑터, `GET /documents/{document_id}/chunks`가 같은 응답 모양의 HTTP 면이다. 긴 문서는
+`max_chars`(기본 20,000자, 상한 50,000자) 예산으로 청크 경계에서 끊어 `next_offset`으로 이어 읽는다.
+왜 모든 hierarchy_level을 한 시퀀스로 돌려주는지, 예산 수치의 근거는
+[`search-architecture.md`](search-architecture.md) ⑤ "Document Expansion" 참고.
 
 ### `GET /relations/expand` (graph_search)
 

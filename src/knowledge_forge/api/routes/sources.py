@@ -10,9 +10,10 @@ belong to the caller's project.
 from fastapi import APIRouter, Depends, HTTPException
 
 from knowledge_forge.api.deps import get_read_store
-from knowledge_forge.api.schemas import DocumentResponse, Page, SourceResponse
+from knowledge_forge.api.schemas import DocumentChunksResponse, DocumentResponse, Page, SourceResponse
 from knowledge_forge.models.document import Document
 from knowledge_forge.models.source import Source
+from knowledge_forge.search.document import read_document
 from knowledge_forge.storage.postgres_store import PostgresStore
 
 router = APIRouter()
@@ -92,3 +93,28 @@ async def get_document(document_id: str, store: PostgresStore = Depends(get_read
     if document is None:
         raise HTTPException(status_code=404, detail=f"document not found: {document_id}")
     return _document_to_response(document)
+
+
+@router.get(
+    "/documents/{document_id}/chunks",
+    response_model=DocumentChunksResponse,
+    tags=["Documents"],
+    summary="Read a document's chunks in reading order (document expansion)",
+    responses={404: {"description": "document not found"}},
+)
+async def get_document_chunks(
+    document_id: str,
+    offset: int = 0,
+    max_chars: int | None = None,
+    store: PostgresStore = Depends(get_read_store),
+) -> DocumentChunksResponse:
+    """The HTTP face of the agent's `read_document` tool - `offset` is a
+    chunk index (pass back `next_offset`), `max_chars` a per-page text
+    budget (omit for the whole document); see
+    `search/document.py::read_document` for the pagination contract."""
+    if max_chars is not None and max_chars < 1:
+        raise HTTPException(status_code=422, detail="max_chars must be positive")
+    result = await read_document(document_id, store, max_chars=max_chars, offset=offset)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"document not found: {document_id}")
+    return DocumentChunksResponse.model_validate(result)

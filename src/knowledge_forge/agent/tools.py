@@ -21,6 +21,7 @@ from knowledge_forge.agent.plan import PlanState, make_plan_tool
 from knowledge_forge.agent.providers.base import ChatProvider, ToolSpec
 from knowledge_forge.config import settings
 from knowledge_forge.okf.fs_service import edit_file, list_dir, read_file, write_file
+from knowledge_forge.search.document import read_document
 from knowledge_forge.search.planner import DEFAULT_LIMIT_PER_SUBQUERY, plan_and_search
 from knowledge_forge.search.service import file_search, vector_search
 from knowledge_forge.search.sql import describe_schema, sql_search
@@ -33,6 +34,15 @@ from knowledge_forge.search.temporal import parse_temporal_expression
 # 잘 동작하는 모델에겐 힌트일 뿐이라, 핸들러에서도 반드시 clamp한다.
 _MAX_SEARCH_LIMIT = 50
 _MAX_PLAN_SEARCH_LIMIT_PER_SUBQUERY = 20
+
+# `read_document`의 한 페이지 본문 글자 수 예산. 기본 20,000자는 개발 DB 기준 문서
+# 대부분(평균 ~770자, 최장 ~21.6K자)을 한 번에 담으면서도 한국어 기준 대략 15~25K
+# 토큰 - 컨텍스트 윈도우의 한 자리 수 % - 에 머무는 값이고, 상한 50,000자는 모델이
+# 큰 값을 불러도 tool_result 하나가 예산을 통째로 날리지 못하게 막는다(위
+# `_MAX_SEARCH_LIMIT`와 같은 "모델이 부른 값을 그대로 믿지 않는다" 패턴). 긴 문서는
+# next_offset으로 이어 읽게 하는 편이 한 번에 다 싣는 것보다 낫다.
+_READ_DOCUMENT_DEFAULT_MAX_CHARS = 20_000
+_READ_DOCUMENT_MAX_CHARS = 50_000
 
 
 def _clamp_limit(value: Any, default: int, maximum: int) -> int:
@@ -127,6 +137,31 @@ PLAN_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
         },
     },
     "required": ["query"],
+}
+
+READ_DOCUMENT_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "document_id": {
+            "type": "string",
+            "description": "읽을 문서의 document_id - document_search/vector_search 결과의 document_id를 그대로 쓸 것.",
+        },
+        "offset": {
+            "type": "integer",
+            "description": "이어 읽기를 시작할 청크 인덱스 - 이전 결과의 next_offset을 그대로 넘긴다. 생략하면 처음부터.",
+            "default": 0,
+        },
+        "max_chars": {
+            "type": "integer",
+            "description": (
+                f"한 번에 돌려줄 본문 글자 수 예산 (기본 {_READ_DOCUMENT_DEFAULT_MAX_CHARS}, 서버가 "
+                f"{_READ_DOCUMENT_MAX_CHARS}로 상한을 둔다). 예산이 차면 truncated: true와 next_offset이 돌아온다."
+            ),
+            "default": _READ_DOCUMENT_DEFAULT_MAX_CHARS,
+            "maximum": _READ_DOCUMENT_MAX_CHARS,
+        },
+    },
+    "required": ["document_id"],
 }
 
 SQL_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
@@ -279,6 +314,47 @@ def _make_vector_search_tool(database_url: str) -> ToolSpec:
     )
 
 
+def _make_read_document_tool(database_url: str) -> ToolSpec:
+    """`read_document`(document expansion, `search/document.py`)는
+    `vector_search`와 같은 이유로 `KF_DATABASE_URL`이 있을 때만 추가되고
+    호출마다 `PipelineStore`를 열고 닫는다. 검색 도구들이 top-k 청크/KO만
+    돌려주는 것과 달리 문서 하나의 청크 **전체**를 순서대로 돌려준다 - 문서
+    전체 요약, "보고서에서 리스크만 전부", "처음 제안 vs 최종 결정", "언급되지
+    않은 것" 같은 질의는 상위 k건으로는 답할 수 없기 때문. 없는 document_id는
+    `read_file`의 FileNotFoundError와 같은 방식으로 예외를 던져 `agent/loop.py`가
+    "error: ..." tool_result로 바꾸게 한다 - 모델이 잘못 짚은 ID를 다시 검색하게
+    만드는 신호로는 그게 가장 분명하다."""
+    from knowledge_forge.storage.store import PipelineStore
+
+    async def _handler(args: dict[str, Any]) -> dict[str, Any]:
+        document_id = args["document_id"]
+        try:
+            offset = max(0, int(args.get("offset") or 0))
+        except (TypeError, ValueError):
+            offset = 0
+        max_chars = _clamp_limit(
+            args.get("max_chars"), default=_READ_DOCUMENT_DEFAULT_MAX_CHARS, maximum=_READ_DOCUMENT_MAX_CHARS
+        )
+        async with PipelineStore(database_url, settings.data_dir) as store:
+            result = await read_document(document_id, store, max_chars=max_chars, offset=offset)
+        if result is None:
+            raise LookupError(f"document not found: {document_id}")
+        return result
+
+    return ToolSpec(
+        name="read_document",
+        description=(
+            "document_search/vector_search로 document_id를 특정한 뒤, 문서 전체 요약·문서 내부 질문·"
+            "부재 확인('언급되지 않은 것은?')·순서 비교('처음 제안 vs 최종 결정')처럼 검색 top-k로는 답할 수 "
+            "없는 질문에 쓴다 - 그 문서의 청크 전체를 원문 순서(sequence_index)로 돌려준다. 단순 사실 "
+            "검색에는 쓰지 말 것. 긴 문서는 truncated: true와 next_offset이 돌아오므로 offset에 그 값을 "
+            "넣어 이어 읽을 것."
+        ),
+        input_schema=READ_DOCUMENT_INPUT_SCHEMA,
+        handler=_handler,
+    )
+
+
 def _make_sql_search_tool(database_url: str) -> ToolSpec:
     """`sql_search`(Text-to-SQL, `search/sql.py`)는 `vector_search`와 같은
     이유로 `KF_DATABASE_URL`이 있을 때만 추가되고 호출마다 `PipelineStore`를
@@ -409,7 +485,7 @@ def default_tools(
     """The full tool set: file_search + read_file/write_file/edit_file/
     list_dir (OKF-root-scoped, `okf/fs_service.py`) + write_memory
     (project-scoped, `agent/memory.py`) + write_plan, plus vector_search/
-    sql_search when `KF_DATABASE_URL` is configured, plan_search (Query
+    sql_search/read_document when `KF_DATABASE_URL` is configured, plan_search (Query
     Planning/Routing) when a `provider` is given, and delegate_task
     (SubAgents) when a `provider`/`system` are both given.
 
@@ -419,7 +495,7 @@ def default_tools(
     넘겨서 turn 사이에 계획이 유지되게 한다 - `history`가 유지되는 것과 같은
     이유.
 
-    `vector_search`/`sql_search`는 `settings.database_url`(`KF_DATABASE_URL`)
+    `vector_search`/`sql_search`/`read_document`는 `settings.database_url`(`KF_DATABASE_URL`)
     이 설정되어 있을 때만 도구 목록에 추가된다 - `file_search`/파일시스템
     도구와 달리 Postgres 없이는 아예 실행할 수 없는 도구라, `embedding_enabled`
     (`--embed`)와 같은 "설정 안 되어 있으면 조용히 빠짐" 컨벤션을 따른다.
@@ -438,7 +514,7 @@ def default_tools(
     추가된다 - 자식 에이전트 턴을 실제로 돌리려면 둘 다 필요하기 때문이다.
     자식에게 넘기는 도구 집합은 `include_delegate=False`로 만든
     `default_tools()`를 그대로 쓴다 - **delegate_task 자신만 빠지고
-    나머지(file_search/vector_search/sql_search/plan_search/파일시스템/
+    나머지(file_search/vector_search/sql_search/read_document/plan_search/파일시스템/
     write_plan/write_memory)는 부모와 동일** - 이렇게 위임 한 단계 안에서
     재귀적 위임을 구조적으로 차단한다(자식의 도구 목록에는 애초에
     delegate_task가 없으므로)."""
@@ -456,6 +532,7 @@ def default_tools(
     if settings.database_url:
         tools.append(_make_vector_search_tool(settings.database_url))
         tools.append(_make_sql_search_tool(settings.database_url))
+        tools.append(_make_read_document_tool(settings.database_url))
     if provider is not None:
         tools.append(_make_plan_search_tool(provider=provider, database_url=settings.database_url, project_id=project_id))
     tools.extend(
