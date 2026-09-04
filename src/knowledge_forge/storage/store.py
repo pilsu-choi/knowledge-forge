@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from knowledge_forge.collectors.base import RawItem
-from knowledge_forge.models.chunk import Chunk
+from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.document import Document
 from knowledge_forge.models.knowledge_object import KnowledgeObject
 from knowledge_forge.models.relation import Relation
@@ -156,6 +156,21 @@ class PipelineStore:
         return await self._db.search_by_embedding(
             embedding, embedding_model, project_id, type, limit, since, until, target_kind
         )
+
+    async def get_document(self, document_id: str) -> Document | None:
+        return await self._db.get_document(document_id)
+
+    async def get_source(self, source_id: str) -> Source | None:
+        return await self._db.get_source(source_id)
+
+    async def list_chunks_by_document(
+        self, document_id: str, *, hierarchy_level: HierarchyLevel | None = None
+    ) -> list[Chunk]:
+        """`search/document.py::read_document`'s entry point into storage
+        (with `get_document`/`get_source` above) - reading order, every
+        hierarchy level unless narrowed, see
+        `PostgresStore.list_chunks_by_document` for why."""
+        return await self._db.list_chunks_by_document(document_id, hierarchy_level=hierarchy_level)
 
     async def execute_readonly_query(self, sql: str, limit: int) -> tuple[list[tuple[Any, ...]], list[str]]:
         """`search/sql.py::sql_search`'s single entry point into storage."""

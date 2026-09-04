@@ -12,6 +12,9 @@ _SYSTEM_PROMPT_TEMPLATE = """당신은 knowledge-forge의 OKF 지식 베이스�
 - vector_search가 도구 목록에 있다면(Postgres+pgvector 임베딩 구성됨) 정확한 문자열/ID/에러
   코드를 찾을 때는 file_search를, 자연어 패러프레이즈나 개념으로 찾을 때는 vector_search를
   우선 시도할 것 - 하나가 결과 없음을 반환해도 다른 하나로 다시 시도해볼 것.
+- read_document가 도구 목록에 있다면, 특정 문서 전체 요약·문서 내부 질문·"언급되지 않은 것" 확인·
+  순서 비교처럼 검색 top-k로는 답할 수 없는 질문은 검색으로 document_id를 특정한 뒤 read_document로
+  문서 전체를 순서대로 읽을 것 - truncated: true면 next_offset을 offset으로 넘겨 끝까지 이어 읽을 것.
 - 답변에서 근거로 삼은 검색 결과의 path/project_id(vector_search는 knowledge_object_id/project_id)를 인용할 것.
 - 질문에 "어제"/"지난주"/"지난달"/"이번 분기"/"2025년 Q3"/"최근 3일" 같은 시간 표현이 있으면
   file_search/vector_search의 time_range 인자에 그 표현을 그대로(자연어 그대로) 넘길 것 -

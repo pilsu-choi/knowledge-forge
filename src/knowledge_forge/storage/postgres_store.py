@@ -13,7 +13,7 @@ import psycopg
 from pgvector import Vector
 from psycopg.types.json import Jsonb
 
-from knowledge_forge.models.chunk import Chunk
+from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.document import Document
 from knowledge_forge.models.knowledge_object import (
     DocumentRef,
@@ -300,6 +300,52 @@ class PostgresStore:
                 """,
                 rows,
             )
+
+    async def list_chunks_by_document(
+        self, document_id: str, *, hierarchy_level: HierarchyLevel | None = None
+    ) -> list[Chunk]:
+        """Every chunk of one document in reading order (`sequence_index`) -
+        `search/document.py::read_document`'s single storage entry point.
+
+        `hierarchy_level=None` (the default, and what `read_document` uses)
+        returns every level together on purpose: `chunking/adaptive.py` only
+        materializes *leaf* units - an ancestor that got split is never
+        itself emitted (`parent_chunk_id` is always None today, and
+        `(document_id, sequence_index)` is unique) - so one document's chunks
+        across all levels are a single non-overlapping sequence, and
+        filtering by level would silently drop text (the dev DB's two
+        mixed-level documents are a paragraph+sentence email thread and a
+        chapter+section report). The filter exists for callers that want a
+        single grain (e.g. a future multi-resolution chunk store)."""
+        level = hierarchy_level.value if hierarchy_level is not None else None
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT chunk_id, document_id, source_id, hierarchy_level, sequence_index,
+                       parent_chunk_id, text, token_count, element_ids, page_start, page_end
+                FROM chunks
+                WHERE document_id = %s
+                  AND (%s::text IS NULL OR hierarchy_level = %s)
+                ORDER BY sequence_index
+                """,
+                (document_id, level, level),
+            )
+            rows = await cur.fetchall()
+        return [
+            Chunk(
+                chunk_id=row[0],
+                document_id=row[1],
+                source_id=row[2],
+                hierarchy_level=row[3],
+                sequence_index=row[4],
+                parent_chunk_id=row[5],
+                text=row[6],
+                token_count=row[7],
+                element_ids=row[8],
+                page_range=(row[9], row[10]) if row[9] is not None and row[10] is not None else None,
+            )
+            for row in rows
+        ]
 
     async def save_knowledge_objects(self, objects: list[KnowledgeObject]) -> None:
         rows: list[tuple[Any, ...]] = [

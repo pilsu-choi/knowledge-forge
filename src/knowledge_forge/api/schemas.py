@@ -89,6 +89,38 @@ class DocumentResponse(BaseModel):
     updated_at: datetime | None = None
 
 
+class DocumentChunkResponse(BaseModel):
+    chunk_id: str
+    sequence_index: int
+    page_start: int | None = None
+    page_end: int | None = None
+    text: str
+
+
+class DocumentChunksSourceResponse(BaseModel):
+    source_id: str
+    source_type: str
+    uri: str
+    modified_at: datetime | None = None
+
+
+class DocumentChunksResponse(BaseModel):
+    """`GET /documents/{document_id}/chunks` - the same shape
+    `search/document.py::read_document` returns (the agent's `read_document`
+    tool result), so a UI paginating a long document uses the same
+    `offset`/`next_offset` contract the agent does."""
+
+    document_id: str
+    title: str | None = None
+    source: DocumentChunksSourceResponse
+    total_chunks: int
+    total_tokens: int
+    offset: int
+    chunks: list[DocumentChunkResponse]
+    truncated: bool
+    next_offset: int | None = None
+
+
 class KnowledgeObjectResponse(BaseModel):
     knowledge_object_id: str
     type: str

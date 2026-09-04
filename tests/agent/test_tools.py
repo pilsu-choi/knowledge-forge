@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from knowledge_forge.agent.plan import PlanState
@@ -260,7 +262,7 @@ async def test_default_tools_includes_vector_search_and_sql_search_right_after_f
 
     tools = default_tools()
 
-    assert [t.name for t in tools] == ["file_search", "vector_search", "sql_search"] + _EXPECTED_BASE_TOOL_NAMES[1:]
+    assert [t.name for t in tools] == ["file_search", "vector_search", "sql_search", "read_document"] + _EXPECTED_BASE_TOOL_NAMES[1:]
 
 
 class _FakeConnectedStore:
@@ -367,6 +369,7 @@ async def test_default_tools_orders_vector_search_and_sql_search_before_plan_sea
         "file_search",
         "vector_search",
         "sql_search",
+        "read_document",
         "plan_search",
     ] + _EXPECTED_BASE_TOOL_NAMES[1:]
 
@@ -542,3 +545,144 @@ async def test_default_tools_sql_search_opens_a_store_and_forwards_the_query(mon
     assert captured["database_url"] == "postgresql://kf:kf@localhost/kf"
     assert captured["store"] is sentinel_store
     assert captured["sql"] == "SELECT 1 AS x"
+
+
+async def test_default_tools_read_document_opens_a_store_and_forwards_arguments(monkeypatch):
+    captured = {}
+    sentinel_store = object()
+
+    def _fake_pipeline_store(database_url, data_dir):
+        captured["database_url"] = database_url
+        return _FakeConnectedStore(sentinel_store)
+
+    async def _fake_read_document(document_id, store, *, max_chars=None, offset=0):
+        captured.update(document_id=document_id, store=store, max_chars=max_chars, offset=offset)
+        return {"document_id": document_id, "chunks": [], "truncated": False, "next_offset": None}
+
+    monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
+    monkeypatch.setattr("knowledge_forge.storage.store.PipelineStore", _fake_pipeline_store)
+    monkeypatch.setattr("knowledge_forge.agent.tools.read_document", _fake_read_document)
+
+    tool = next(t for t in default_tools() if t.name == "read_document")
+    result = await tool.handler({"document_id": "doc-1", "offset": 7, "max_chars": 1234})
+
+    assert result["document_id"] == "doc-1"
+    assert captured["database_url"] == "postgresql://kf:kf@localhost/kf"
+    assert captured["store"] is sentinel_store
+    assert captured["document_id"] == "doc-1"
+    assert captured["offset"] == 7
+    assert captured["max_chars"] == 1234
+
+
+async def test_default_tools_read_document_defaults_and_clamps_max_chars(monkeypatch):
+    from knowledge_forge.agent.tools import _READ_DOCUMENT_DEFAULT_MAX_CHARS, _READ_DOCUMENT_MAX_CHARS
+
+    captured = []
+
+    def _fake_pipeline_store(database_url, data_dir):
+        return _FakeConnectedStore(object())
+
+    async def _fake_read_document(document_id, store, *, max_chars=None, offset=0):
+        captured.append((max_chars, offset))
+        return {"document_id": document_id}
+
+    monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
+    monkeypatch.setattr("knowledge_forge.storage.store.PipelineStore", _fake_pipeline_store)
+    monkeypatch.setattr("knowledge_forge.agent.tools.read_document", _fake_read_document)
+
+    tool = next(t for t in default_tools() if t.name == "read_document")
+    await tool.handler({"document_id": "doc-1"})
+    await tool.handler({"document_id": "doc-1", "max_chars": 999_999_999, "offset": -5})
+    await tool.handler({"document_id": "doc-1", "max_chars": "not-a-number", "offset": "nope"})
+
+    assert captured == [
+        (_READ_DOCUMENT_DEFAULT_MAX_CHARS, 0),
+        (_READ_DOCUMENT_MAX_CHARS, 0),
+        (_READ_DOCUMENT_DEFAULT_MAX_CHARS, 0),
+    ]
+
+
+async def test_default_tools_read_document_raises_a_clear_error_for_an_unknown_document(monkeypatch):
+    def _fake_pipeline_store(database_url, data_dir):
+        return _FakeConnectedStore(object())
+
+    async def _fake_read_document(document_id, store, *, max_chars=None, offset=0):
+        return None
+
+    monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
+    monkeypatch.setattr("knowledge_forge.storage.store.PipelineStore", _fake_pipeline_store)
+    monkeypatch.setattr("knowledge_forge.agent.tools.read_document", _fake_read_document)
+
+    tool = next(t for t in default_tools() if t.name == "read_document")
+    with pytest.raises(LookupError, match="document not found: doc-nope"):
+        await tool.handler({"document_id": "doc-nope"})
+
+
+_TEST_DSN = os.environ.get("KF_TEST_DATABASE_URL")
+
+
+@pytest.mark.skipif(not _TEST_DSN, reason="KF_TEST_DATABASE_URL not set - no Postgres to test against")
+async def test_read_document_tool_reads_a_real_document_in_order_and_pages_with_next_offset(monkeypatch, tmp_path):
+    """End-to-end through the real tool handler and a real PipelineStore -
+    seeds under a test-only prefix and cleans up, since the dev DB holds
+    real data."""
+    from datetime import datetime, timezone
+
+    from knowledge_forge.models.chunk import Chunk, HierarchyLevel
+    from knowledge_forge.models.document import Document, DocumentMetadata, TextBlock
+    from knowledge_forge.models.source import Source, SourceRef, SourceType
+    from knowledge_forge.storage.postgres_store import PostgresStore
+
+    src = Source(
+        source_id="test-rdt-s1",
+        source_type=SourceType.LOCAL_FILE,
+        uri="file:///meeting.md",
+        content_hash="h-rdt",
+        collected_at=datetime.now(timezone.utc),
+        project_id="test-read-document-tool",
+    )
+    doc = Document(
+        document_id="test-rdt-d1",
+        source=SourceRef.from_source(src),
+        elements=[TextBlock(element_id="e1", text="x")],
+        metadata=DocumentMetadata(title="회의록"),
+    )
+    chunks = [
+        Chunk(
+            chunk_id=f"test-rdt-c{i}",
+            document_id="test-rdt-d1",
+            source_id="test-rdt-s1",
+            hierarchy_level=HierarchyLevel.PARAGRAPH,
+            sequence_index=i,
+            text=f"{i}번째 안건 " * 10,
+            token_count=10,
+            element_ids=[f"e{i}"],
+        )
+        for i in (2, 0, 1)
+    ]
+    async with PostgresStore(_TEST_DSN) as db:
+        await db.init_schema()
+        await db.save_source(src, None)
+        await db.save_document(doc)
+        await db.save_chunks(chunks)
+    try:
+        monkeypatch.setattr(settings, "database_url", _TEST_DSN)
+        monkeypatch.setattr(settings, "data_dir", tmp_path)
+        tool = next(t for t in default_tools() if t.name == "read_document")
+
+        first = await tool.handler({"document_id": "test-rdt-d1", "max_chars": len("0번째 안건 " * 10) + 1})
+        assert first["title"] == "회의록"
+        assert [c["sequence_index"] for c in first["chunks"]] == [0]
+        assert first["truncated"] is True and first["next_offset"] == 1
+
+        rest = await tool.handler({"document_id": "test-rdt-d1", "offset": first["next_offset"]})
+        assert [c["sequence_index"] for c in rest["chunks"]] == [1, 2]
+        assert rest["truncated"] is False
+
+        with pytest.raises(LookupError):
+            await tool.handler({"document_id": "test-rdt-missing"})
+    finally:
+        async with PostgresStore(_TEST_DSN) as db:
+            await db.conn.execute("DELETE FROM chunks WHERE chunk_id LIKE 'test-rdt-%'")
+            await db.conn.execute("DELETE FROM documents WHERE document_id LIKE 'test-rdt-%'")
+            await db.conn.execute("DELETE FROM sources WHERE source_id LIKE 'test-rdt-%'")

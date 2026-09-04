@@ -229,13 +229,74 @@ consistency, relevance filtering, evidence clustering)은 없다. 지금 규모(
 질의당 최대 5건, 소스 최대 2개)에서는 모델 컨텍스트 윈도우에 그대로 넣어도 감당 가능하다고 보고
 미룬 것 - evidence 개수/소스 수가 늘어나면 가장 먼저 필요해질 레이어.
 
-## ⑤ Map-Reduce / Hierarchical Retrieval — 설계만, 미구현
+## ⑤ Map-Reduce / Hierarchical Retrieval — 부분 구현 (document expansion만, `search/document.py`)
 
 "지난 1년간 회사 AI 전략 변화 요약" 같은, 문서 수천~수만 개를 partition→map→reduce하거나
 Message→Chunk 요약→Document 요약→Project 요약처럼 계층적으로 사전 요약해 둬야 하는 질문은 지금
 스코프 밖이다. `pipeline.py`가 이미 문서 단위 map-reduce 요약(`extraction/schemas.py`의
 `ExtractionResult.summary`를 모아 재요약)을 고민한 흔적이 `roadmap.md`(7단계 이전 문서 요약
 설계)에 있으니, 필요해지면 그 설계를 확장하는 방향이 될 것.
+
+### Document Expansion (`read_document` 도구, `search/document.py`) — **구현됨**
+
+위 문단의 "수천 문서 map→reduce"는 여전히 스코프 밖이지만, 그 계층의 가장 작은 단위 - **문서
+하나를 통째로, 순서대로 읽는 것** - 은 top-k 검색만으로는 아예 답할 수 없는 질의 유형이 실제
+질문에서 반복돼서 먼저 구현했다. 청크 grain 임베딩(`embeddings.md`)이 들어오면서 `vector_search`가
+`document_id`를 히트마다 싣게 됐으니, "검색으로 문서를 특정 → 그 문서를 확장(expand)해서 읽는다"
+는 2단계가 자연스럽게 열린 것이기도 하다.
+
+**왜 필요했는가 - top-k로 못 푸는 네 가지 질의 유형**:
+
+| 유형 | 예 | top-k가 실패하는 이유 |
+|---|---|---|
+| whole-document summary | "2025_SH_업무_보고서 요약해줘" | 요약은 문서 전체가 입력이어야 한다 - 상위 k청크는 "잘 매칭된 일부"일 뿐 |
+| long-range extraction | "보고서 전체에서 핵심 리스크만 정리" | 리스크는 문서 곳곳에 흩어져 있고 질의 임베딩과 개별 청크의 유사도는 낮다 |
+| sequence / ordering | "회의에서 처음 제안된 내용과 최종 결정 비교" | "처음"/"최종"은 문서 내 **순서** 정보인데 랭킹은 순서를 버린다 |
+| negative / absence | "A 프로젝트에서 언급되지 않은 기술은?" | 부재는 전체를 다 봐야 증명된다 - 검색 결과에 없다는 것은 문서에 없다는 뜻이 아니다 |
+
+**무엇을 만들었나** (계층 설계는 `agent-runtime.md`의 원칙 그대로 - 서비스 함수 하나, 얇은 어댑터 둘):
+
+- `PostgresStore.list_chunks_by_document(document_id, *, hierarchy_level=None)` (+`PipelineStore` 위임):
+  `sequence_index` 순 정렬. **기본이 "모든 hierarchy_level"인 이유**: `chunking/adaptive.py`는 leaf
+  단위만 Chunk로 물질화한다 - 분할된 상위 단위는 emit되지 않고 `parent_chunk_id`는 항상 None,
+  `(document_id, sequence_index)`는 유일하다. 즉 한 문서의 청크는 레벨이 섞여 있어도(개발 DB 263건
+  중 2건: paragraph+sentence 이메일 스레드, chapter+section 보고서) 겹치지 않는 하나의 시퀀스라,
+  특정 레벨만 고르면 본문이 빠진다. `hierarchy_level` 필터는 나중에 multi-resolution 저장소가 생겼을
+  때를 위한 것이고 `read_document`는 쓰지 않는다.
+- `search/document.py::read_document(document_id, store, *, max_chars=None, offset=0)`: `{document_id,
+  title, source{source_id, source_type, uri, modified_at}, total_chunks, total_tokens, offset, chunks[{chunk_id,
+  sequence_index, page_start, page_end, text}], truncated, next_offset}`. 없는 문서는 None. `title`은
+  `documents.metadata.title`만 본다(별도 컬럼 가정 없음). `store`는 Protocol이라 `PipelineStore`(도구)와
+  `PostgresStore`(HTTP 라우트) 둘 다 받는다.
+- agent 도구 `read_document` (`agent/tools.py::_make_read_document_tool`): `vector_search`와 같은
+  "`KF_DATABASE_URL` 있을 때만 등록, 호출마다 `PipelineStore` 열기" 패턴. 없는 ID는 `read_file`의
+  FileNotFoundError처럼 예외 → `agent/loop.py`가 "error: document not found: …" tool_result로 바꾼다.
+- `GET /documents/{document_id}/chunks?offset=&max_chars=` (`api/routes/sources.py`): 같은 응답 모양
+  (`DocumentChunksResponse`) - UI가 긴 문서를 넘겨볼 때 에이전트와 같은 `next_offset` 계약을 쓴다.
+
+**컨텍스트 예산 결정** - 검색 히트에 `_CHUNK_HIT_SUMMARY_CHARS`(500자)/`_MAX_SEARCH_LIMIT`(50)을
+두는 것과 같은 걱정을 문서 단위로 옮긴 것:
+
+- 페이지 단위는 **글자 수 예산(`max_chars`) + 청크 인덱스 오프셋(`offset`)**. 청크를 중간에서 자르지
+  않는다(자르면 그 뒷부분을 다시 읽을 방법이 없다). 예산이 차면 `truncated: true`와 다음 청크 인덱스
+  `next_offset`을 돌려주고, 시스템 프롬프트가 "끝까지 이어 읽으라"고 지시한다 - 부재 확인 질의는
+  마지막 페이지까지 읽어야 답이 성립하기 때문.
+- **페이지의 첫 청크는 예산을 넘어도 항상 포함**한다 - 청크 하나가 `max_chars`보다 길 때 빈 페이지 +
+  같은 `next_offset`을 돌려주면 호출자가 영원히 제자리걸음이다. 청크 상한은 chunker의 토큰 예산(기본
+  4000×0.8)이라 초과 폭은 유한하다.
+- 도구 기본 `max_chars`는 **20,000자**, 서버 상한 **50,000자**. 근거는 개발 DB 실측(문서 263건/청크
+  936건 기준 문서당 평균 ~770자, 최장 ~21.6K자/437청크): 기본값이면 거의 모든 문서를 한 번에 읽고
+  최장 문서도 두 페이지면 끝난다. 한국어 20K자는 대략 15~25K 토큰 - 컨텍스트 윈도우의 한 자리 수 %
+  - 이고, 상한은 모델이 큰 값을 불러도 tool_result 하나가 예산을 통째로 날리지 못하게 막는다
+  (`_clamp_limit`, "모델이 부른 값을 그대로 믿지 않는다"). `total_tokens`(청크 `token_count` 합)를 같이
+  실어서 모델이 "몇 페이지짜리 문서인지"를 첫 호출에서 가늠하게 했다.
+- 매 페이지 청크 전체를 읽고 서비스에서 자른다 - 현재 규모에서 한 번의 조회가 충분히 싸고,
+  페이지마다 총계를 다시 세는 별도 쿼리보다 단순하다. 문서가 수천 청크로 커지면 store에 LIMIT/OFFSET을
+  내리고 총계 쿼리를 분리하는 게 다음 단계.
+
+**여전히 안 한 것**: 문서 여러 개를 한 질문에 확장하는 map-reduce(문서 N개 × 20K자는 예산 안에 안 든다 -
+그때는 `delegate_task`로 문서당 서브에이전트를 돌려 요약을 모으는 것이 지금 도구로 가능한 우회),
+문서 요약의 사전 계산/캐시(`roadmap.md`의 문서 요약 설계), 청크 텍스트 안의 표/이미지 전사 품질.
 
 ## ⑥ Temporal Search — 구현됨, `search/temporal.py` + `search/sql.py`
 

@@ -126,6 +126,23 @@ class _FakeReadStore:
     async def get_document(self, document_id: str):
         return _sample_document() if document_id == "doc-1" else None
 
+    async def list_chunks_by_document(self, document_id: str, *, hierarchy_level=None):
+        from knowledge_forge.models.chunk import Chunk, HierarchyLevel
+
+        return [
+            Chunk(
+                chunk_id=f"chunk-{i}",
+                document_id=document_id,
+                source_id="src-1",
+                hierarchy_level=HierarchyLevel.PARAGRAPH,
+                sequence_index=i,
+                text=f"paragraph {i}",
+                token_count=2,
+                page_range=(i + 1, i + 1),
+            )
+            for i in range(3)
+        ]
+
 
 def _make_client(job_store: _FakeJobStore, read_store: _FakeReadStore) -> TestClient:
     app = create_app()
@@ -381,6 +398,36 @@ def test_get_document_404():
     client = _make_client(_FakeJobStore(), _FakeReadStore())
     resp = client.get("/documents/nope")
     assert resp.status_code == 404
+
+
+def test_get_document_chunks_returns_ordered_chunks_and_pagination_fields():
+    client = _make_client(_FakeJobStore(), _FakeReadStore())
+
+    resp = client.get("/documents/doc-1/chunks", params={"max_chars": 25})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["document_id"] == "doc-1"
+    assert body["title"] == "T"
+    assert body["source"]["source_id"] == "src-1"
+    assert body["source"]["source_type"] == "local_file"
+    assert body["total_chunks"] == 3
+    assert body["total_tokens"] == 6
+    assert [c["sequence_index"] for c in body["chunks"]] == [0, 1]
+    assert body["chunks"][0] == {"chunk_id": "chunk-0", "sequence_index": 0, "page_start": 1, "page_end": 1, "text": "paragraph 0"}
+    assert body["truncated"] is True
+    assert body["next_offset"] == 2
+
+    resp = client.get("/documents/doc-1/chunks", params={"offset": body["next_offset"]})
+    assert resp.status_code == 200
+    assert [c["sequence_index"] for c in resp.json()["chunks"]] == [2]
+    assert resp.json()["truncated"] is False
+
+
+def test_get_document_chunks_404_and_422():
+    client = _make_client(_FakeJobStore(), _FakeReadStore())
+    assert client.get("/documents/nope/chunks").status_code == 404
+    assert client.get("/documents/doc-1/chunks", params={"max_chars": 0}).status_code == 422
 
 
 class _FakeLifespanJobStore:
