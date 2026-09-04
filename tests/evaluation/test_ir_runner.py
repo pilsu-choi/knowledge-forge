@@ -12,6 +12,7 @@ import pytest
 from knowledge_forge.evaluation.golden import GoldenExpected, GoldenQuery, GoldenSet, IndexSnapshot
 from knowledge_forge.evaluation.ir_runner import (
     EXHAUSTIVE_LIMIT,
+    RANKING_SETTING_FIELDS,
     config_hash,
     effective_limit,
     run_ir_eval,
@@ -263,7 +264,12 @@ async def test_config_hash_is_stable_and_records_names():
         "strategies_override": None,
         "use_llm_constraints": True,
         "k_values": [1, 5],
+        # 랭킹 노브도 config에 들어간다 - 값 자체는 프로세스의 settings에서 오므로
+        # 여기서는 "키가 있고 이름이 화이트리스트와 같다"까지만 고정한다(값 고정은
+        # test_eval_provenance.py가 주입으로 한다).
+        "settings": run1.config["settings"],
     }
+    assert set(run1.config["settings"]) == set(RANKING_SETTING_FIELDS)
     assert run1.config_hash == run2.config_hash == config_hash(run1.config)
     assert run1.config_hash != run3.config_hash
     assert len(run1.config_hash) == 12

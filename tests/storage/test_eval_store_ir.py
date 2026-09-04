@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 import pytest
 from psycopg.types.json import Jsonb
 
+from knowledge_forge.evaluation.ir_runner import embedding_consistency
 from knowledge_forge.storage.eval_store import EvalRun, EvalRunQuery, EvalStore
 
 DSN = os.environ.get("KF_TEST_DATABASE_URL")
@@ -52,6 +53,11 @@ async def _cleanup():
     async with EvalStore(DSN) as store:
         # eval_run_query cascades from eval_run.
         await store.conn.execute("DELETE FROM eval_run WHERE run_id LIKE %s", (PREFIX + "%",))
+        # 임베딩 -> 청크 -> 문서 순으로(외래키). 스냅샷 테스트가 청크/임베딩까지 만든다.
+        await store.conn.execute(
+            "DELETE FROM knowledge_object_embeddings WHERE document_id LIKE %s", (PREFIX + "%",)
+        )
+        await store.conn.execute("DELETE FROM chunks WHERE document_id LIKE %s", (PREFIX + "%",))
         await store.conn.execute("DELETE FROM documents WHERE document_id LIKE %s", (PREFIX + "%",))
         await store.conn.execute("DELETE FROM sources WHERE source_id LIKE %s", (PREFIX + "%",))
 
@@ -213,13 +219,20 @@ async def test_snapshot_index_and_content_hashes_for():
     project = PREFIX + "proj"
     async with EvalStore(DSN) as store:
         before = await store.snapshot_index()
-        assert set(before) == {"documents", "chunks", "knowledge_objects", "embeddings_by_kind"}
+        assert set(before) == {
+            "documents",
+            "chunks",
+            "knowledge_objects",
+            "embeddings_by_kind",
+            "embeddings_by_model_and_kind",
+        }
         assert isinstance(before["embeddings_by_kind"], dict)
         assert await store.snapshot_index(project) == {
             "documents": 0,
             "chunks": 0,
             "knowledge_objects": 0,
             "embeddings_by_kind": {},
+            "embeddings_by_model_and_kind": {},
         }
 
         await store.conn.execute(
@@ -242,3 +255,56 @@ async def test_snapshot_index_and_content_hashes_for():
         hashes = await store.content_hashes_for([doc_id, PREFIX + "does-not-exist"])
         assert hashes == {doc_id: "hash-1"}
         assert await store.content_hashes_for([]) == {}
+
+
+async def test_snapshot_counts_embeddings_per_model_not_only_per_grain():
+    """모델별로 쪼개 세는 게 핵심이다 - 검색은 `WHERE embedding_model = %s`로 거르므로
+    (`search/service.py::vector_search`) 다른 모델의 벡터는 이번 run의 벡터 arm에
+    존재하지 않는 것과 같다. grain 합계만 보면 "청크 2개 / 임베딩 2개 = 정합"이지만
+    실제로는 활성 모델 벡터가 1개뿐인 상황을 구분해야 한다."""
+    source_id = PREFIX + "src-" + uuid.uuid4().hex[:8]
+    doc_id = PREFIX + "doc-" + uuid.uuid4().hex[:8]
+    project = PREFIX + "proj-emb-" + uuid.uuid4().hex[:6]
+    vector = "[" + ",".join(["0"] * 1536) + "]"
+    async with EvalStore(DSN) as store:
+        await store.conn.execute(
+            """
+            INSERT INTO sources (source_id, source_type, uri, content_hash, collected_at, metadata, project_id)
+            VALUES (%s, 'local_file', %s, 'hash-1', %s, %s, %s)
+            """,
+            (source_id, f"file:///{source_id}", datetime.now(timezone.utc), Jsonb({}), project),
+        )
+        await store.conn.execute(
+            "INSERT INTO documents (document_id, source_id, elements, metadata, project_id) VALUES (%s, %s, %s, %s, %s)",
+            (doc_id, source_id, Jsonb([]), Jsonb({}), project),
+        )
+        chunk_ids = [PREFIX + "chunk-" + uuid.uuid4().hex[:8] for _ in range(2)]
+        for i, chunk_id in enumerate(chunk_ids):
+            await store.conn.execute(
+                """
+                INSERT INTO chunks (chunk_id, document_id, source_id, hierarchy_level, sequence_index, text, token_count)
+                VALUES (%s, %s, %s, 'paragraph', %s, 'text', 100)
+                """,
+                (chunk_id, doc_id, source_id, i),
+            )
+        # 청크 2개, 임베딩 2개 - 그러나 모델이 서로 다르다.
+        for chunk_id, model in zip(chunk_ids, ["model-a", "model-b"], strict=True):
+            await store.conn.execute(
+                """
+                INSERT INTO knowledge_object_embeddings
+                    (embedding_id, target_kind, chunk_id, document_id, embedding_model, embedding,
+                     embedded_text, embedded_text_hash, project_id, created_at)
+                VALUES (%s, 'chunk', %s, %s, %s, %s, 'text', 'h', %s, %s)
+                """,
+                (uuid.uuid4().hex, chunk_id, doc_id, model, vector, project, datetime.now(timezone.utc)),
+            )
+
+        snapshot = await store.snapshot_index(project)
+        assert snapshot["chunks"] == 2
+        assert snapshot["embeddings_by_kind"] == {"chunk": 2}  # 합계만 보면 "정합"
+        assert snapshot["embeddings_by_model_and_kind"] == {"model-a": {"chunk": 1}, "model-b": {"chunk": 1}}
+
+        consistency = embedding_consistency(snapshot, "model-a")
+        assert consistency["status"] == "mismatch"
+        assert consistency["grains"]["chunk"] == {"total": 2, "embedded": 1, "coverage": 0.5}
+        assert consistency["other_models"] == {"model-b": 1}

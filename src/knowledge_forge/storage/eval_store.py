@@ -456,7 +456,11 @@ class EvalStore:
         time rather than copied from the gold file so a drifted index shows
         up as a snapshot mismatch in `eval-ir --compare`. chunks/knowledge_
         objects carry no project_id of their own, so they are scoped through
-        their document."""
+        their document.
+
+        `evaluation/ir_runner.py`가 이걸 run 시작과 종료에 **두 번** 부른다(그
+        사이에 코퍼스가 변했는지 보려고). 그러니 여기는 비싸면 안 된다 - 지금은
+        count 4개, 인덱스만 훑는다."""
         async with self.conn.cursor() as cur:
             await cur.execute(
                 "SELECT count(*) FROM documents WHERE (%s::text IS NULL OR project_id = %s)",
@@ -479,20 +483,30 @@ class EvalStore:
                 (project_id, project_id),
             )
             knowledge_objects = (await cur.fetchone() or (0,))[0]
+            # 모델 이름까지 쪼개서 센다. 검색은 `WHERE embedding_model = %s`로 거르므로
+            # (`search/service.py::vector_search`) 다른 모델의 벡터는 이번 run의 벡터
+            # arm에 존재하지 않는 것과 같다 - grain 합계만 보면 그 상황이 "정합"으로
+            # 보인다. `embeddings_by_kind`는 이 값의 모델 합산이고, 이 컬럼을 읽던
+            # 기존 코드/기존 행을 위해 그대로 남긴다.
             await cur.execute(
                 """
-                SELECT target_kind, count(*) FROM knowledge_object_embeddings
+                SELECT embedding_model, target_kind, count(*) FROM knowledge_object_embeddings
                 WHERE (%s::text IS NULL OR project_id = %s)
-                GROUP BY target_kind ORDER BY target_kind
+                GROUP BY embedding_model, target_kind ORDER BY embedding_model, target_kind
                 """,
                 (project_id, project_id),
             )
-            by_kind = {kind: n for kind, n in await cur.fetchall()}
+            by_model: dict[str, dict[str, int]] = {}
+            by_kind: dict[str, int] = {}
+            for model, kind, n in await cur.fetchall():
+                by_model.setdefault(model, {})[kind] = n
+                by_kind[kind] = by_kind.get(kind, 0) + n
         return {
             "documents": documents,
             "chunks": chunks,
             "knowledge_objects": knowledge_objects,
             "embeddings_by_kind": by_kind,
+            "embeddings_by_model_and_kind": by_model,
         }
 
     async def content_hashes_for(self, document_ids: list[str]) -> dict[str, str]:
