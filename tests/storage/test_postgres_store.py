@@ -530,3 +530,58 @@ async def test_execute_readonly_query_rejects_a_write_at_the_database_level(stor
 
     unchanged = await store.get_knowledge_object(objects[0].knowledge_object_id)
     assert unchanged.summary != "hacked"
+
+
+async def test_connect_succeeds_and_embeddings_work_on_a_database_with_no_vector_extension_yet():
+    """A brand new database has no `vector` type at all until `init_schema()`
+    creates the extension - `connect()` must not raise before `init_schema()`
+    is even reachable (real bug found by running this project's own onboarding
+    steps - `docker compose up -d postgres` + `knowledge-forge db init` -
+    against a genuinely fresh database: `connect()` used to call
+    `register_vector_async()` unconditionally, which raised
+    `vector type not found in the database` and made `db init` impossible to
+    ever complete on a first run)."""
+    import urllib.parse
+
+    import psycopg
+
+    parts = urllib.parse.urlsplit(DSN)
+    admin_dsn = urllib.parse.urlunsplit(parts._replace(path="/postgres"))
+    fresh_db = "kf_bootstrap_test"
+    fresh_dsn = urllib.parse.urlunsplit(parts._replace(path=f"/{fresh_db}"))
+
+    admin_conn = await psycopg.AsyncConnection.connect(admin_dsn, autocommit=True)
+    try:
+        await admin_conn.execute(f"DROP DATABASE IF EXISTS {fresh_db}")
+        await admin_conn.execute(f"CREATE DATABASE {fresh_db}")
+
+        async with PostgresStore(fresh_dsn) as store:  # must not raise
+            await store.init_schema()
+
+            from knowledge_forge.embedding.base import EmbeddingRecord
+
+            src, doc, chunk, objects, _relation = _sample_records()
+            await store.save_source(src, raw_path=None)
+            await store.save_document(doc)
+            await store.save_chunks([chunk])
+            await store.save_knowledge_objects(objects)
+
+            ko_id = objects[0].knowledge_object_id
+            vector = [1.0] + [0.0] * 1535
+            await store.save_embeddings(
+                [
+                    EmbeddingRecord(
+                        knowledge_object_id=ko_id,
+                        embedding_model="test-model",
+                        embedding=vector,
+                        embedded_text="Acme",
+                        embedded_text_hash="hash1",
+                        project_id=src.project_id,
+                    )
+                ]
+            )
+            results = await store.search_knowledge_objects_by_embedding(vector, "test-model", None, None, 10)
+            assert ko_id in {r["knowledge_object_id"] for r in results}
+    finally:
+        await admin_conn.execute(f"DROP DATABASE IF EXISTS {fresh_db}")
+        await admin_conn.close()

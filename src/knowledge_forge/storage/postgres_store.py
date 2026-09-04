@@ -36,10 +36,25 @@ class PostgresStore:
 
     async def connect(self) -> "PostgresStore":
         self._conn = await psycopg.AsyncConnection.connect(self._dsn, autocommit=True)
+        await self._register_vector_types()
+        return self
+
+    async def _register_vector_types(self) -> None:
+        """Teaches psycopg how to adapt `pgvector.Vector`/`numpy.ndarray`
+        to/from the `vector` column type - required before any
+        embedding-column read/write. Tolerates the `vector` extension not
+        existing yet (a brand new database, before `init_schema()` has ever
+        run) rather than raising: `connect()` itself must succeed against a
+        fresh database so `init_schema()` can be reached at all to create
+        the extension in the first place - this would otherwise be a
+        chicken-and-egg failure on every first-time `knowledge-forge db init`.
+        `init_schema()` calls this again once the extension actually exists."""
         from pgvector.psycopg import register_vector_async
 
-        await register_vector_async(self._conn)
-        return self
+        try:
+            await register_vector_async(self._conn)
+        except psycopg.ProgrammingError:
+            pass
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -60,6 +75,11 @@ class PostgresStore:
 
     async def init_schema(self) -> None:
         await self.conn.execute(_SCHEMA_PATH.read_text(encoding="utf-8"))
+        # The schema above is what actually creates the `vector` extension
+        # on a brand new database - `connect()`'s registration attempt was
+        # a no-op if this is the first time this database has ever seen it,
+        # so retry it now that the type genuinely exists.
+        await self._register_vector_types()
 
     async def save_source(self, source: Source, raw_path: str | None) -> None:
         await self.conn.execute(
