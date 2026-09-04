@@ -262,7 +262,7 @@ async def test_default_tools_includes_vector_search_and_sql_search_right_after_f
 
     tools = default_tools()
 
-    assert [t.name for t in tools] == ["file_search", "vector_search", "sql_search", "document_search", "lexical_search", "read_document"] + _EXPECTED_BASE_TOOL_NAMES[1:]
+    assert [t.name for t in tools] == ["file_search", "vector_search", "sql_search", "document_search", "lexical_search", "read_document", "search"] + _EXPECTED_BASE_TOOL_NAMES[1:]
 
 
 class _FakeConnectedStore:
@@ -429,6 +429,7 @@ async def test_default_tools_orders_vector_search_and_sql_search_before_plan_sea
         "document_search",
         "lexical_search",
         "read_document",
+        "search",
         "plan_search",
     ] + _EXPECTED_BASE_TOOL_NAMES[1:]
 
@@ -675,6 +676,75 @@ async def test_default_tools_read_document_raises_a_clear_error_for_an_unknown_d
     tool = next(t for t in default_tools() if t.name == "read_document")
     with pytest.raises(LookupError, match="document not found: doc-nope"):
         await tool.handler({"document_id": "doc-nope"})
+
+
+async def test_default_tools_search_opens_a_store_forwards_provider_and_caps_hits(monkeypatch):
+    """The unified `search` tool is a thin adapter over `search/retrieve.py::retrieve`
+    - it must hand the session provider/project_id through, clamp `limit`, and
+    return only the top-limit hits with each summary capped."""
+    from knowledge_forge.search.retrieve import RetrievalResult, RetrievalStep
+
+    captured = {}
+    sentinel_store = object()
+    provider = _FakeProvider()
+
+    def _fake_pipeline_store(database_url, data_dir):
+        captured["database_url"] = database_url
+        return _FakeConnectedStore(sentinel_store)
+
+    async def _fake_retrieve(query, *, store, provider=None, project_id=None, now=None, limit=10, **kwargs):
+        captured.update(query=query, store=store, provider=provider, project_id=project_id, limit=limit)
+        hits = [{"document_id": f"d{i}", "target_kind": "chunk", "score": 1.0, "summary": "x" * 1000} for i in range(60)]
+        return RetrievalResult(
+            query=query,
+            constraints={},
+            strategies=["vector"],
+            steps=[RetrievalStep(strategy="vector", source="vector_search", n_hits=60, detail={})],
+            hits=hits,
+            document_ids=[h["document_id"] for h in hits],
+            scores=[1.0] * 60,
+            predicted_count=None,
+            documents_read=[],
+            elapsed_ms=1.0,
+        )
+
+    monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
+    monkeypatch.setattr("knowledge_forge.storage.store.PipelineStore", _fake_pipeline_store)
+    monkeypatch.setattr("knowledge_forge.agent.tools.retrieve", _fake_retrieve)
+
+    from knowledge_forge.agent.tools import _MAX_SEARCH_LIMIT, _SEARCH_HIT_SUMMARY_CHARS
+
+    tool = next(t for t in default_tools(project_id="proj-a", provider=provider) if t.name == "search")
+    assert "통합 검색" in tool.description
+    result = await tool.handler({"query": "지난주 회의록 요약해줘", "limit": 999_999})
+
+    assert captured["store"] is sentinel_store
+    assert captured["provider"] is provider
+    assert captured["project_id"] == "proj-a"
+    assert captured["limit"] == _MAX_SEARCH_LIMIT
+    assert len(result["hits"]) == _MAX_SEARCH_LIMIT
+    assert all(len(h["summary"]) == _SEARCH_HIT_SUMMARY_CHARS for h in result["hits"])
+    assert result["steps"][0]["strategy"] == "vector"
+    assert result["document_ids"][0] == "d0"
+
+
+async def test_default_tools_search_query_project_id_overrides_default(monkeypatch):
+    captured = {}
+
+    async def _fake_retrieve(query, *, store, provider=None, project_id=None, now=None, limit=10, **kwargs):
+        captured["project_id"] = project_id
+        from knowledge_forge.search.retrieve import RetrievalResult
+
+        return RetrievalResult(query, {}, [], [], [], [], [], None, [], 0.0)
+
+    monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
+    monkeypatch.setattr("knowledge_forge.storage.store.PipelineStore", lambda *a, **k: _FakeConnectedStore(object()))
+    monkeypatch.setattr("knowledge_forge.agent.tools.retrieve", _fake_retrieve)
+
+    tool = next(t for t in default_tools(project_id="default-proj") if t.name == "search")
+    await tool.handler({"query": "q", "project_id": "override-proj"})
+
+    assert captured["project_id"] == "override-proj"
 
 
 _TEST_DSN = os.environ.get("KF_TEST_DATABASE_URL")

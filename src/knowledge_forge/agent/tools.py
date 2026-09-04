@@ -23,6 +23,7 @@ from knowledge_forge.config import settings
 from knowledge_forge.okf.fs_service import edit_file, list_dir, read_file, write_file
 from knowledge_forge.search.document import read_document
 from knowledge_forge.search.planner import DEFAULT_LIMIT_PER_SUBQUERY, plan_and_search
+from knowledge_forge.search.retrieve import retrieve
 from knowledge_forge.search.service import document_search, file_search, lexical_search, vector_search
 from knowledge_forge.search.sql import describe_schema, sql_search
 from knowledge_forge.search.temporal import parse_temporal_expression
@@ -43,6 +44,8 @@ _MAX_PLAN_SEARCH_LIMIT_PER_SUBQUERY = 20
 # next_offset으로 이어 읽게 하는 편이 한 번에 다 싣는 것보다 낫다.
 _READ_DOCUMENT_DEFAULT_MAX_CHARS = 20_000
 _READ_DOCUMENT_MAX_CHARS = 50_000
+# `search` 도구 결과의 히트당 본문 상한 - `postgres_store.py::_CHUNK_HIT_SUMMARY_CHARS`와 같은 500자.
+_SEARCH_HIT_SUMMARY_CHARS = 500
 
 
 def _clamp_limit(value: Any, default: int, maximum: int) -> int:
@@ -224,6 +227,30 @@ READ_DOCUMENT_INPUT_SCHEMA: dict[str, Any] = {
         },
     },
     "required": ["document_id"],
+}
+
+SEARCH_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": (
+                "사용자의 질문을 자연어 그대로 - 시간 표현('지난주'), 파일명/에러 코드, '요약해줘'/'전부'/"
+                "'몇 건' 같은 의도 표현을 지우지 말고 넣을 것(그걸 보고 전략을 고른다)."
+            ),
+        },
+        "project_id": {
+            "type": "string",
+            "description": "특정 프로젝트로 범위를 좁힌다. 생략하면 세션 기본 project_id(있다면)를 쓴다.",
+        },
+        "limit": {
+            "type": "integer",
+            "description": f"반환할 최대 문서 수 (서버가 {_MAX_SEARCH_LIMIT}로 상한을 둔다).",
+            "default": 10,
+            "maximum": _MAX_SEARCH_LIMIT,
+        },
+    },
+    "required": ["query"],
 }
 
 SQL_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
@@ -413,6 +440,62 @@ def _make_read_document_tool(database_url: str) -> ToolSpec:
             "넣어 이어 읽을 것."
         ),
         input_schema=READ_DOCUMENT_INPUT_SCHEMA,
+        handler=_handler,
+    )
+
+
+def _make_search_tool(database_url: str, *, provider: ChatProvider | None, project_id: str | None) -> ToolSpec:
+    """`search`(통합 검색, `search/retrieve.py`) - `vector_search`와 같은 "database_url이 있을
+    때만, 호출마다 `PipelineStore`를 열고 닫는" 패턴. 개별 도구(document/lexical/vector/sql/
+    read_document)를 모델이 고르는 대신 질의 제약(`search/constraints.py`)으로 전략을 결정론적으로
+    조합한다 - 평가 하네스가 쓰는 것과 같은 경로라, 여기서 좋아진 것은 평가 지표에도 그대로
+    반영된다. `provider`가 있으면 제약 보강과 멀티홉 분해에 쓴다(없으면 규칙만).
+
+    결과는 `RetrievalResult.to_dict()`에서 hits 상위 limit개 + steps 요약만 싣는다 - 청크 원문은
+    검색 소스가 이미 500자로 자르지만(`postgres_store.py::_CHUNK_HIT_SUMMARY_CHARS`) 여기서도
+    같은 상한을 다시 건다(`_MAX_SEARCH_LIMIT`와 같은 "값을 그대로 믿지 않는다" 패턴)."""
+    from knowledge_forge.storage.store import PipelineStore
+
+    async def _handler(args: dict[str, Any]) -> dict[str, Any]:
+        limit = _clamp_limit(args.get("limit"), default=10, maximum=_MAX_SEARCH_LIMIT)
+        async with PipelineStore(database_url, settings.data_dir) as store:
+            result = await retrieve(
+                args["query"],
+                store=store,
+                provider=provider,
+                project_id=args.get("project_id") or project_id,
+                limit=limit,
+            )
+        payload = result.to_dict()
+        hits = []
+        for hit in payload["hits"][:limit]:
+            summary = hit.get("summary")
+            if isinstance(summary, str) and len(summary) > _SEARCH_HIT_SUMMARY_CHARS:
+                hit["summary"] = summary[:_SEARCH_HIT_SUMMARY_CHARS]
+            hits.append(hit)
+        return {
+            "strategies": payload["strategies"],
+            "constraints": payload["constraints"],
+            "steps": [
+                {"strategy": s["strategy"], "source": s["source"], "n_hits": s["n_hits"], "detail": s["detail"]}
+                for s in payload["steps"]
+            ],
+            "document_ids": payload["document_ids"][:limit],
+            "documents_read": payload["documents_read"],
+            "predicted_count": payload["predicted_count"],
+            "hits": hits,
+        }
+
+    return ToolSpec(
+        name="search",
+        description=(
+            "질의 의도를 분석해 제목/렉시컬/벡터/메타데이터/문서 전체 읽기 전략을 자동으로 조합하는 통합 검색 - "
+            "어떤 도구를 쓸지 모르겠으면 이것부터. 질문을 자연어 그대로 넣으면 시간 표현·파일명·에러 코드·"
+            "'요약해줘'/'전부'/'몇 건' 같은 의도를 읽어 필요한 검색을 골라 실행하고, 결과(document_id/"
+            "chunk_id/summary)와 함께 어떤 전략을 어떻게 돌렸는지(steps)를 돌려준다. 결과가 부족하면 "
+            "steps를 보고 document_search/lexical_search/vector_search/sql_search/read_document로 보충할 것."
+        ),
+        input_schema=SEARCH_INPUT_SCHEMA,
         handler=_handler,
     )
 
@@ -625,7 +708,7 @@ def default_tools(
     넘겨서 turn 사이에 계획이 유지되게 한다 - `history`가 유지되는 것과 같은
     이유.
 
-    `vector_search`/`sql_search`/`read_document`는 `settings.database_url`(`KF_DATABASE_URL`)
+    `vector_search`/`sql_search`/`read_document`/`search`는 `settings.database_url`(`KF_DATABASE_URL`)
     이 설정되어 있을 때만 도구 목록에 추가된다 - `file_search`/파일시스템
     도구와 달리 Postgres 없이는 아예 실행할 수 없는 도구라, `embedding_enabled`
     (`--embed`)와 같은 "설정 안 되어 있으면 조용히 빠짐" 컨벤션을 따른다.
@@ -665,6 +748,7 @@ def default_tools(
         tools.append(_make_document_search_tool(settings.database_url))
         tools.append(_make_lexical_search_tool(settings.database_url))
         tools.append(_make_read_document_tool(settings.database_url))
+        tools.append(_make_search_tool(settings.database_url, provider=provider, project_id=project_id))
     if provider is not None:
         tools.append(_make_plan_search_tool(provider=provider, database_url=settings.database_url, project_id=project_id))
     tools.extend(

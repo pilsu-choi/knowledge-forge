@@ -11,7 +11,7 @@ Grounding까지)을 레이어별로 정리한다. 실제 프로덕션 엔터프�
 
 | 레이어 | 상태 |
 |---|---|
-| ① Query Understanding (intent/entity/temporal) | **부분 구현** — `search/constraints.py`가 질의를 구조화된 제약(`QueryConstraints`: 시간 범위/작성자/식별자/문서 참조/소스·문서 타입)과 의도 플래그(latest/exhaustive/count/summary/whole_document/negative/comparison/multihop)로 분해하고 `suggest_strategies()`로 검색 전략 이름을 내놓는다(규칙 1단계 + 선택적 LLM 보강 2단계). temporal parsing(`search/temporal.py`)을 재사용. 아직 없는 것: conversation-aware 질의 복원, 동의어/약어 확장, 이 제약을 실제로 소비하는 통합 실행기(`search/retrieve.py`, 다음 단계) |
+| ① Query Understanding (intent/entity/temporal) | **부분 구현** — `search/constraints.py`가 질의를 구조화된 제약(`QueryConstraints`: 시간 범위/작성자/식별자/문서 참조/소스·문서 타입)과 의도 플래그(latest/exhaustive/count/summary/whole_document/negative/comparison/multihop)로 분해하고 `suggest_strategies()`로 검색 전략 이름을 내놓는다(규칙 1단계 + 선택적 LLM 보강 2단계). temporal parsing(`search/temporal.py`)을 재사용. 그 전략 목록을 실제로 실행해 하나의 랭킹으로 합치는 실행기가 `search/retrieve.py`(아래 "Retrieval Plan 실행기" 절, 에이전트 `search` 도구와 `eval-ir`가 공유). 아직 없는 것: conversation-aware 질의 복원, 동의어/약어 확장 |
 | ② Query Planning (multi-hop 분해) | **구현됨** — `search/planner.py`, 아래 절 참고 |
 | Query Routing (소스 선택) | **구현됨** — `search/router.py`, 아래 절 참고 |
 | ③ Hybrid Retrieval (BM25+Vector+Metadata+Graph) | **부분 구현** — keyword(`file_search`)+semantic(`vector_search`)+metadata(`project_id`/`type`/시간 범위) 병행 실행 + RRF reranking까지 있음. 문서 제목/원문 청크의 pg_trgm 렉시컬 검색(`document_search`/`lexical_search`)도 있음. Graph 전용 API(`graph_search`)는 미구현이지만 `sql_search`로 `relations` 테이블을 직접 JOIN하는 것으로 상당 부분 대체 가능 |
@@ -72,7 +72,7 @@ query("그 프로젝트는?" → 이전 대화의 entity 복원)까지 포함하
 
 ### 전략 이름 계약 (`suggest_strategies()` → `search/retrieve.py`)
 
-다음 단계의 통합 실행기 `search/retrieve.py`는 이 이름 목록을 받아 실제 검색을 조합한다.
+통합 실행기 `search/retrieve.py`(아래 절)는 이 이름 목록을 받아 실제 검색을 조합한다.
 앞쪽은 후보 생성, 뒤쪽은 후처리/집계이며 각 그룹 안은 우선순위 순이다.
 
 | 전략 | 켜지는 조건 | 의미 |
@@ -89,8 +89,75 @@ query("그 프로젝트는?" → 이전 대화의 entity 복원)까지 포함하
 | `negative` | `is_negative` | 대상 집합을 exhaustive로 모은 뒤 부재 판정 - 유사도는 "없음"을 증명 못 함 |
 | `multihop` | `is_multihop` | `search/planner.py`로 분해 실행 |
 
-아직 없는 것: 이 제약을 실제로 소비하는 `retrieve.py`(다음 단계), conversation-aware 질의 복원,
-동의어/약어 확장, `route_query()`와의 통합(router는 sub-query용 2-소스 선택기로 그대로 둔다).
+아직 없는 것: conversation-aware 질의 복원, 동의어/약어 확장, `route_query()`와의 통합(router는
+sub-query용 2-소스 선택기로 그대로 둔다).
+
+### Retrieval Plan 실행기 (`search/retrieve.py`) — **구현됨**
+
+`retrieve(query, *, store, provider=None, project_id=None, now=None, limit=10, use_llm_constraints=True,
+strategies_override=None) -> RetrievalResult`. 위 전략 이름 목록을 실제 검색 호출로 바꿔 **하나의
+랭킹**으로 합치는 함수이며, 에이전트 루프 없이 호출된다.
+
+**왜 필요했나.** 소비자가 둘이고 둘 다 "어떤 도구를 어떤 순서로 부를지"를 LLM 판단에 맡길 수 없다.
+(1) 골든셋 IR 평가 하네스(`eval-ir`, [`search-evaluation.md`](search-evaluation.md) (C))는 에이전트
+턴 없이 질의 → `document_ids` 랭킹을 얻어야 하고, 같은 입력에 같은 출력이어야 지표 비교가
+성립한다. (2) 에이전트에게 도구가 7개(document/lexical/vector/sql/read_document/plan/file)로
+늘면서 "이 질의엔 뭘 먼저?"를 매 턴 다시 추론하는 비용과 편차가 커졌다 - `search` 도구
+(`agent/tools.py::_make_search_tool`)는 이 실행기를 그대로 감싼 것이라, 실행기가 좋아지면
+평가 지표와 에이전트 경험이 같이 좋아진다(분리돼 있으면 둘이 따로 논다). LLM은 (a) 제약 보강
+(`extract_constraints`), (b) 멀티홉 분해(`plan_and_search`)에만 쓰이고 `provider=None`이면 둘 다
+건너뛴다 - 결정론적 기준선.
+
+**반환 계약** (`eval-ir`와 공유, 변경하려면 양쪽 동시에): `RetrievalResult{query, constraints
+(QueryConstraints.to_dict()), strategies, steps: [RetrievalStep{strategy, source, n_hits, detail}],
+hits(각 hit에 document_id/target_kind/score 필수), document_ids(hits에서 첫 등장 순 중복 제거 -
+채점 단위), scores(문서별 최고 점수), predicted_count(wants_count일 때), documents_read
+(read_document한 문서), elapsed_ms}`. `steps`는 사람이 실패 원인을 추적하는 용도다 - 어떤 SQL을
+돌렸는지, anchor를 왜 못 잡았는지, vector가 왜 비었는지가 전부 `detail`에 남는다.
+
+**전략별 실행 규칙**:
+
+| 전략 | 실행 | 비고 |
+|---|---|---|
+| `document_lookup` | `document_reference`/`identifiers`/`quoted_phrases` 각각 `document_search` | 문서 단위 최고 점수가 1.0(제목 substring)이고 2위와 0.2 이상 벌어지면 그 문서가 **anchor**. 2위도 1.0이면("AGENTS.md" vs "agents-skills-AGENTS.md") ambiguous - 후보 전부 히트로 |
+| `lexical` | `identifiers`/`quoted_phrases` 각각 `lexical_search` | anchor가 있으면 그 문서 히트만 남김(하나도 없으면 좁히지 않고 `anchor_narrowing="no_hits_in_anchor"` 기록) |
+| `metadata_filter` | authors/participants/source_types/document_types/time_range를 `sources`/`documents` WHERE로 - `execute_readonly_query`(READ ONLY + 강제 롤백) | 값은 `'`→`''` 이스케이프로 인라인(스토어가 문자열만 받음), SQL은 detail에. 작성자/참여자는 `sources.metadata->>'participants'` 텍스트 ILIKE + `documents.metadata->>'author'`(개발 DB의 gmail이 `participants`만 갖고 `from`이 없어서), 문서 타입은 `documents.title ILIKE`("메일"은 제목이 아니라 gmail 소스 타입으로 해석). 상한 500행 |
+| `vector` | `semantic_query`로 `vector_search`(since/until 전달) | 임베딩 0행/임베더 미구성이면 빈 결과 + `error` 기록(예외 아님). 비면 semantic_query로 `document_search`+`lexical_search`를 대신 돌린다(`fallback_from="vector"`) |
+| `comparison` | `comparison_targets` 각각 `document_search`(대상 안의 시간 표현은 그 대상에만 적용), 없으면 `lexical_search` | 대상별 최상위 문서를 anchor 다음으로 최상위 고정 |
+| `multihop` | provider 있으면 `plan_and_search` 근거를 한 소스로 RRF 합류 | 없으면 `skipped="no_provider"`. document_id 없는 히트(OKF file_search)는 채점 단위가 없어 버림 |
+| `latest` | 병합 결과를 `content_at` 내림차순, 같은 `version_family`는 `version_sort_key`로 최신 하나만 남기고 나머지는 뒤로 | family 안에서는 버전 표기(최종 > vN > 무표기 > 초안)가 시각보다 우선 - 구버전을 나중에 다시 올린 경우 때문 |
+| `exhaustive`/`negative` | 소스별 limit을 200으로, 최종 컷오프 없음 | 부재 판정은 LLM 몫 - 실행기는 후보만 |
+| `count` | `predicted_count` = 최종 문서 수. 필터 단독 결과면 같은 WHERE로 `SELECT COUNT(*)` | count도 exhaustive 수집을 함의 |
+| `whole_document` | anchor(없으면 상위 2개 문서)를 `read_document`로 읽어 `documents_read`에, 청크를 문서 순서대로 히트 맨 앞에 | 같은 청크를 가리키던 검색 히트는 중복이라 제거 |
+
+**병합 결정과 이유**:
+
+- **RRF**(`search/rerank.py`): 소스별 점수 척도가 다르다(제목 tier 1.0/0.5+sim/2, trigram, 코사인).
+  planner가 이미 같은 이유로 RRF를 쓰고, 여기서 새 척도를 만들 이유가 없다.
+- **anchor 최상위 고정**: 사용자가 파일명을 그대로 적었다면 그 문서가 답의 범위다 - RRF가 다른
+  소스의 다수결로 이걸 밀어내면 Navigational/Specific-document QA가 무너진다. 고정은 순서를 지키는
+  partition이라 나머지 랭킹은 그대로다.
+- **metadata_filter 교집합**: 필터는 랭킹 신호가 아니라 범위다(작성자/기간이 틀린 문서는 아무리
+  유사해도 오답). 그래서 RRF 점수에 섞지 않고 병합 뒤 교집합으로 건다. 단 (a) 필터 질의 결과가 0행이면
+  필터 자체가 틀린 것으로 보고 무시(`applied="filter_empty_ignored"`), (b) 후보 생성 전략이 없거나
+  교집합이 비면 필터 집합 자체를 최신순 결과로 쓴다(`filter_only`/`no_overlap_fallback_to_filter`) -
+  "지난주 김철수 메일"은 필터만으로 답이 되는 질의라서.
+- `limit`은 최종 `document_ids` 길이다. 소스별 조회는 3배 over-fetch해서 필터/anchor 좁히기 뒤에도
+  limit개가 남게 한다(`strategies_override=["vector"]`, limit=10이면 vector 20건 → 상위 10문서 -
+  순수 벡터 baseline).
+
+**한계**:
+
+- 임베딩이 없으면(개발 DB 기준 0행) `vector`는 항상 비고 키워드 fallback으로 돈다 - 패러프레이즈/
+  개념 질의(factoid/entity_centric)는 제목·본문에 그 단어가 그대로 있을 때만 잡힌다. 골든셋 v0
+  스모크(provider=None, 임베딩 없음): navigational/whole_document_summary/exact_match 각 1건은
+  1위, aggregation(`caddy-drift` 6건)은 6건 전부 상위 6 안이지만 predicted_count=8(본문에
+  caddy-drift가 언급된 다른 메시지 2건 포함).
+- LLM이 없으면 `document_reference`는 규칙(파일명/연결 토큰)으로만 잡히고 "codex README" 같은 자연어
+  제목 참조는 vector fallback의 `document_search`에 기댄다. multihop은 아예 돌지 않는다.
+- Slack `participants`는 user id라 이름 기반 작성자/참여자 필터가 닿지 않는다.
+- `search_documents_by_title`/`search_chunks_lexical`에 document_id 필터가 없어 anchor 좁히기는
+  사후 필터(over-fetch 뒤 걸러냄)다 - anchor 문서의 일치 청크가 fetch 범위 밖이면 놓친다.
 
 ## ② Query Planning — **구현됨**, `search/planner.py`
 

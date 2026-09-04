@@ -15,6 +15,9 @@ _SYSTEM_PROMPT_TEMPLATE = """당신은 knowledge-forge의 OKF 지식 베이스�
 - document_search/lexical_search가 도구 목록에 있다면: "X 보고서 찾아줘"처럼 특정 문서를
   제목/파일명으로 찾을 때는 document_search로 후보(document_id)를 먼저 특정하고, 에러 코드/ID/
   정확한 문구가 원문 어디에 있는지 찾을 때는 lexical_search를 쓸 것.
+- search(통합 검색)가 도구 목록에 있다면, 시간 조건·파일명·요약·개수·비교처럼 조건이 둘 이상 섞인
+  복합 질의는 개별 도구를 고르기 전에 search부터 질문 원문 그대로 호출하고, 부족한 부분만 개별
+  도구로 보충할 것.
 - read_document가 도구 목록에 있다면, 특정 문서 전체 요약·문서 내부 질문·"언급되지 않은 것" 확인·
   순서 비교처럼 검색 top-k로는 답할 수 없는 질문은 검색으로 document_id를 특정한 뒤 read_document로
   문서 전체를 순서대로 읽을 것 - truncated: true면 next_offset을 offset으로 넘겨 끝까지 이어 읽을 것.
