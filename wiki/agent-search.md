@@ -12,16 +12,17 @@
 |---|---|
 | pgvector 스키마(`knowledge_object_embeddings`) | **구현됨** — [`embeddings.md`](embeddings.md) |
 | 임베딩 생성 파이프라인(`--embed`, `knowledge-forge embed`) | **구현됨** — [`embeddings.md`](embeddings.md) |
-| `POST /search/vector` (vector_search) | 설계만, 미구현 |
+| `vector_search` (agent 도구) | **구현됨** — [`agent-runtime.md`](agent-runtime.md), 아래 절 참고. `POST /search/vector` HTTP 엔드포인트 자체는 여전히 미구현 |
+| Query Planning + Query Routing (`plan_search` agent 도구) | **구현됨** — [`search-architecture.md`](search-architecture.md), [`agent-runtime.md`](agent-runtime.md) |
 | `GET /relations/expand` (graph_search) | 설계만, 미구현 |
-| `GET /okf/search` (file_search, OKF 트리 기반) | 설계만, 미구현 |
+| `GET /okf/search` (file_search, OKF 트리 기반) | 설계만, 미구현 (agent 도구 `file_search`는 이미 구현됨 — [`agent-runtime.md`](agent-runtime.md)) |
 | `knowledge-forge mcp-server` | 설계만, 미구현 |
 | Claude Code용 검색 skill | 설계만, 미구현 |
 
 이 문서의 나머지 절 중 "구현됨"이라고 표시되지 않은 것은 전부 설계 스케치이며, 실제로 동작하는
-코드가 없다. 코드로 이미 존재하는 부분(스키마/파이프라인)은 이 문서가 아니라
-[`embeddings.md`](embeddings.md)가 최신 상태의 기준이다 — 여기 남은 설명은 그 설계가 실제로
-왜 이렇게 구현됐는지를 잇는 배경 정도로만 참고할 것.
+코드가 없다. 코드로 이미 존재하는 부분(스키마/파이프라인/agent 도구)은 이 문서가 아니라
+[`embeddings.md`](embeddings.md)/[`agent-runtime.md`](agent-runtime.md)가 최신 상태의 기준이다 —
+여기 남은 설명은 그 설계가 실제로 왜 이렇게 구현됐는지를 잇는 배경 정도로만 참고할 것.
 
 ## pgvector 스키마 설계 — **구현됨**, `embeddings.md` 참고
 
@@ -44,12 +45,17 @@ Postgres 기반 라우터와 `GET /okf/*` 같은 파일시스템 기반 라우�
 쓰는지에 따라 엔드포인트를 나누는 편이 각 경로의 "무엇이 있어야 동작하는가"(Postgres+pgvector
 vs OKF 디렉터리)를 흐리지 않는다.
 
-### `POST /search/vector` (vector_search)
+### `vector_search` (agent 도구) — **구현됨**, `POST /search/vector` HTTP 엔드포인트는 미구현
 
-`knowledge_object_embeddings`의 HNSW 인덱스를 실제로 읽는 첫 번째 소비자. 설계 스케치:
+`knowledge_object_embeddings`의 HNSW 인덱스를 실제로 읽는 첫 소비자는 HTTP 엔드포인트가 아니라
+`knowledge-forge agent`의 도구로 먼저 구현됐다 — 아래 원래 설계 스케치의 요청 파라미터/필터
+결정 대부분이 그대로 코드로 옮겨졌다. 정확한 계약과 시스템 프롬프트 지침은
+[`agent-runtime.md`](agent-runtime.md)의 `vector_search` 절 참고. `search/service.py::vector_search()`
+가 아래 결정을 그대로 구현한 서비스 함수이고, `agent/tools.py::_make_vector_search_tool()`이
+그 위의 `ToolSpec` 어댑터다.
 
 ```
-POST /search/vector
+POST /search/vector   # 이 HTTP 경로 자체는 여전히 미구현 - 아래는 원래 설계 스케치
 {
   "query": "이번 분기 배포 일정 관련 결정",
   "project_id": "default",       // 선택, 필터
@@ -62,18 +68,37 @@ POST /search/vector
 - 쿼리 텍스트를 요청 시점에 `get_embedding_provider().embed([query])`로 임베딩한 뒤,
   `ORDER BY embedding <=> :query_vector LIMIT :top_k`로 조회 — `project_id`/`type` 필터는
   `knowledge_object_embeddings.project_id`(역정규화된 컬럼, join 없이 필터 가능)와
-  `knowledge_objects.type`를 WHERE 절에 추가.
-- 응답은 `GET /knowledge-objects`와 같은 `KnowledgeObjectResponse` 모양에 `score`(cosine
-  거리 또는 1-거리로 정규화한 유사도)만 얹는다 — 검색 결과도 결국 KnowledgeObject이므로
-  별도 응답 스키마를 새로 만들 이유가 없다는 판단.
+  `knowledge_objects.type`를 WHERE 절에 추가. **구현된 도구는 `type`을 배열이 아니라
+  `file_search`와 같은 단일 문자열 필터로 받는다** — 두 검색 도구의 입력 스키마를
+  맞추는 게(모델이 하나만 배우면 됨) 배열 필터보다 우선순위가 높다고 판단했다(스코프 축소).
+- 응답은 `GET /knowledge-objects`의 `KnowledgeObjectResponse` 전체가 아니라, 검색 결과가
+  실제로 필요로 하는 필드(`knowledge_object_id`/`type`/`summary`/`topics`/`document_type`/
+  `project_id`)에 `score`(1 - cosine 거리로 정규화한 유사도, 1.0이 가장 유사)만 얹은 얇은
+  dict다 — evidence/content/version 등 전체 envelope은 필요하면 에이전트가 이어서
+  `knowledge_object_id`로 `read_file`/`file_search`를 걸어 확인하면 된다는 판단(HTTP
+  엔드포인트를 나중에 추가할 때는 원래 설계대로 `KnowledgeObjectResponse` 모양을 쓸 수도
+  있다 - 이 얇은 dict는 agent 도구 전용 응답 모양).
 - `embedding_model`을 요청에 받는 이유: `knowledge_object_embeddings`의 PK가
   `(knowledge_object_id, embedding_model)`이라 여러 모델의 벡터가 동시에 존재할 수 있다
   ([`embeddings.md`](embeddings.md) "왜 별도 테이블인가" 참고) — 검색도 어느 모델의
   벡터 공간에서 비교할지 명시해야 한다. 생략 시 `KF_EMBEDDING_MODEL`(현재 활성 모델)로
-  기본값을 잡는다.
-- **아직 결정 안 된 것**: 임베딩이 없는 KnowledgeObject(백필 전, 또는 `--no-embed`로 저장된
-  것)를 검색 결과에서 어떻게 다룰지 — 그냥 안 나오는 것으로 둘지, 경고를 응답에 실을지는
-  실제 사용 패턴을 보고 정할 문제라 아직 정하지 않았다.
+  기본값을 잡는다. agent 도구는 이 파라미터를 도구 입력 스키마에 노출하지 않는다 - 모델이
+  임베딩 모델 이름까지 신경 쓸 이유가 없어서, 항상 `KF_EMBEDDING_MODEL` 기본값을 쓴다
+  (필요하면 `search/service.py::vector_search()`를 직접 호출할 때는 여전히 override 가능).
+- **결정됨**: 임베딩이 없는 KnowledgeObject(백필 전, 또는 `--no-embed`로 저장된 것)는 검색
+  결과에 그냥 나오지 않는다 - `knowledge_object_embeddings`에 INNER JOIN하는 쿼리라 애초에
+  후보에 없다. 에러도 경고도 없다 - `file_search`가 매치 없을 때 빈 리스트를 반환하는 것과
+  같은 "결과 없음"으로 취급.
+
+### Query Planning + Query Routing (`plan_search` agent 도구) — **구현됨**
+
+멀티홉 질문을 하위 질의로 분해해 병렬/의존성 인지 실행하는 `plan_search`와, 하위 질의마다
+`file_search`/`vector_search` 중 무엇을 쓸지 정하는 라우팅 휴리스틱을 구현했다 - 이 문서가 다루는
+세 검색 도구 자체보다 한 단계 위(도구 여러 개를 조합해 쓰는 계층)라, 전체 설계 근거와 상태는
+별도 문서 [`search-architecture.md`](search-architecture.md)에 정리했다 (`search/planner.py`,
+`search/router.py`, `agent/tools.py::_make_plan_search_tool`). Query Understanding/Hybrid
+rerank/Context Engineering/Map-Reduce/Temporal Search/Evidence Grounding/Feedback Loop 같은
+더 넓은 RAG 아키텍처 레이어들의 구현 여부도 그 문서의 상태표에 있다.
 
 ### `GET /relations/expand` (graph_search)
 
@@ -150,8 +175,18 @@ MCP 서버가 서고 나면, 그 tool들을 Claude Code 세션이 자연스럽�
 
 ## 왜 지금 여기서 멈추는가
 
-이번 pgvector/임베딩 구현이 끝난 시점에서 판단한 우선순위: 검색이 실제로 값어치가 있으려면
-"쌓인 벡터를 읽는 최소 한 경로"(`/search/vector`)가 가장 먼저 필요하고, 그래프 확장·OKF
-검색·MCP·skill은 그 위에 얹는 순서가 자연스럽다. 이번 작업 범위를 "임베딩이 쌓이는 것"까지로
-좁힌 이유는 [`roadmap.md`](roadmap.md)가 이미 세운 스코프 관리 원칙과 같다 — 검색 엔드포인트를
-서두르는 대신, 검색이 읽을 데이터(임베딩)가 먼저 정확하게 쌓이는지부터 확인하고 싶었다.
+pgvector/임베딩 구현이 끝난 뒤 "쌓인 벡터를 읽는 최소 한 경로"로 `vector_search`를 agent 도구로
+먼저 구현했다 - HTTP 엔드포인트(`/search/vector`)보다 agent 도구를 먼저 만든 이유는
+`agent-runtime.md`가 이미 `file_search`로 세운 "서비스 함수 + 얇은 `ToolSpec` 어댑터" 계층이
+그대로 재사용 가능했고, `knowledge-forge agent`가 이미 그 검증 표면(직접 질문해서 결과를
+확인)이기 때문이다. `/search/vector` 자체는 여전히 미구현 - 필요해지면
+`search/service.py::vector_search()`를 그대로 재사용하는 얇은 FastAPI 라우터만 추가하면 된다
+(`file_search`가 아직 `GET /okf/search`로 안 감싸여 있는 것과 같은 이유로 뒤로 미룸). 그래프
+확장·OKF 검색 엔드포인트·MCP·skill은 여전히 이번 스코프 밖 - [`roadmap.md`](roadmap.md)가
+세운 스코프 관리 원칙과 같다.
+
+이어서 검색 도구가 두 개(`file_search`/`vector_search`)로 늘어난 김에, 그 둘을 조합해 멀티홉
+질문을 처리하는 Query Planning + Query Routing(`plan_search`)도 같은 스코프 관리 원칙 아래
+구현했다 - 왜 이 둘을 다음 우선순위로 골랐고 나머지 넓은 RAG 아키텍처 레이어는 왜 아직
+설계만인지는 [`search-architecture.md`](search-architecture.md)의 "왜 지금 여기서 멈추는가"
+참고.

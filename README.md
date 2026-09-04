@@ -20,6 +20,7 @@ Collector → Context Reconstruction → Parser → Adaptive Chunker → Knowled
 - [빠른 시작](#빠른-시작)
 - [환경 변수](#환경-변수)
 - [CLI 명령어](#cli-명령어)
+- [에이전트로 지식 베이스 검색하기](#에이전트로-지식-베이스-검색하기)
 - [Docker로 실행하기](#docker로-실행하기)
 - [프로젝트 구조](#프로젝트-구조)
 - [테스트](#테스트)
@@ -183,6 +184,14 @@ uv sync --extra xlsx --extra pptx --extra hwpx --extra slack --extra google --ex
 | `KF_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API 엔드포인트 |
 | `OPENROUTER_API_KEY` | (없음) | OpenRouter API 키 |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` | (없음) | Anthropic 자격 증명 (SDK가 자동 탐색) |
+| `KF_OKF_DIR` | (없음) | `agent`/`/ui`/`GET /okf/*`가 읽는 OKF 파일 트리 루트 — `extract --okf-dir`로 함께 기록 |
+| `KF_EMBEDDING_ENABLED` | `false` | `extract`/`schedule`이 KnowledgeObject를 pgvector에 임베딩할지 (opt-in, `--embed`로도 override) |
+| `KF_EMBEDDING_MODEL` | `text-embedding-3-small` | 임베딩 모델 — `vector_search`도 같은 기본값을 검색 대상 모델로 쓴다 |
+| `OPENAI_API_KEY` | (없음) | 임베딩 API 키 (`KF_`-접두사 아님, 프로바이더가 직접 읽음) |
+| `KF_AGENT_PROVIDER` | `anthropic` | `anthropic` \| `openai_compatible` — `knowledge-forge agent`의 백엔드 (`llm_provider`와 별도 키) |
+| `KF_AGENT_MODEL` | `claude-sonnet-5` | `knowledge-forge agent`가 쓰는 모델 |
+
+임베딩/에이전트 관련 전체 환경변수는 [`wiki/embeddings.md`](wiki/embeddings.md), [`wiki/agent-runtime.md`](wiki/agent-runtime.md) 참고.
 
 ### SaaS 커넥터 자격 증명
 
@@ -278,6 +287,38 @@ KF_OKF_DIR=./okf uv run knowledge-forge serve --port 8000
 8000번 포트로 프록시)를 쓴다. 자세한 내용은 [`wiki/okf.md`](wiki/okf.md#브라우저로-확인하기-get-ui),
 아키텍처/디자인 근거는 [`wiki/ui.md`](wiki/ui.md) 참고.
 
+## 에이전트로 지식 베이스 검색하기
+
+`knowledge-forge agent`는 쌓인 Knowledge Base(OKF 파일 트리 + pgvector 임베딩)를 도구 호출
+루프로 검색/편집하는 모델 벤더 중립 에이전트다(Anthropic 네이티브 또는 OpenAI-호환/OpenRouter).
+
+```bash
+KF_OKF_DIR=./okf uv run knowledge-forge agent "인증 방식을 OAuth로 바꾸기로 한 결정이 있었나?"
+KF_OKF_DIR=./okf uv run knowledge-forge agent --interactive   # REPL, Ctrl-D로 종료
+```
+
+| 도구 | 조건 | 역할 |
+|---|---|---|
+| `file_search` | `KF_OKF_DIR` | OKF 파일 트리를 키워드/frontmatter로 검색 — 정확한 문자열/ID에 강함 |
+| `vector_search` | `KF_DATABASE_URL` (pgvector 임베딩 필요, 아래 `embed` 참고) | KnowledgeObject 임베딩을 의미 기반으로 검색 — 자연어 패러프레이즈에 강함 |
+| `plan_search` | 항상 | 여러 단계 추론이 필요한 복합 질문을 하위 질의로 분해해, 독립적인 것은 병렬로 검색하고 근거를 모아 반환 (Query Planning + Routing) |
+| `read_file` / `write_file` / `edit_file` / `list_dir` | `KF_OKF_DIR` | OKF 루트 트리 범위로 제한된 파일 읽기/쓰기 |
+| `write_memory` | 항상 | 세션이 끝나도 남을 사실/결정을 프로젝트별 기억 파일에 기록 |
+| `delegate_task` | 항상 | 독립적인 하위 조사를 새 대화의 서브에이전트에게 위임 |
+
+`vector_search`를 쓰려면 먼저 KnowledgeObject를 임베딩해 둬야 한다:
+
+```bash
+uv run knowledge-forge extract <path> --store --embed   # 추출과 동시에 임베딩
+uv run knowledge-forge embed                              # 이미 저장된 KO를 소급 임베딩(백필)
+```
+
+넓은 엔터프라이즈 RAG 아키텍처(Query Understanding, Hybrid rerank, Context Engineering,
+Map-Reduce, Temporal Search, Evidence Grounding, Feedback Loop) 관점에서 지금 무엇이 구현되어
+있고 무엇이 설계만 있는지는 [`wiki/search-architecture.md`](wiki/search-architecture.md) 참고.
+
+전체 도구 계약, 시스템 프롬프트, 컨텍스트 압축 등 harness 설계는 [`wiki/agent-runtime.md`](wiki/agent-runtime.md), 임베딩 파이프라인은 [`wiki/embeddings.md`](wiki/embeddings.md) 참고.
+
 ## Docker로 실행하기
 
 ```bash
@@ -312,6 +353,9 @@ src/knowledge_forge/
 ├── models/                # Pydantic 모델: Source/Document/Chunk/KnowledgeObject/Relation
 ├── storage/               # PipelineStore (Postgres + 디스크, opt-in) + JobStore (jobs 큐)
 ├── okf/                   # OKFWriter — 파일 기반 Knowledge Base (opt-in)
+├── embedding/             # EmbeddingProvider ABC + OpenAIEmbeddingProvider (pgvector 임베딩, opt-in)
+├── search/                # file_search/vector_search — agent 도구가 감싸는 검색 서비스 함수
+├── agent/                 # 모델 벤더 중립 Agent Runtime — knowledge-forge agent (wiki/agent-runtime.md)
 └── scheduling/             # APScheduler 기반 주기 실행
 
 tests/                     # pytest, asyncio_mode=auto — 모델/파서/청커는 네트워크 불필요,

@@ -1,10 +1,12 @@
-# Agent Runtime — 모델 벤더 중립 harness (Phase 1 구현됨)
+# Agent Runtime — 모델 벤더 중립 harness (Phase 1~4 구현됨)
 
 `refs/hermes-agent`를 참고해 세운 knowledge-forge 자체 agent runtime(harness). `wiki/agent-search.md`
-의 `file_search`/`vector_search`/`graph_search` 설계 중 **file_search를 실제로 들고 도는 에이전트
-프로세스를 이번에 구현했다** — `vector_search`/`graph_search`는 `wiki/embeddings.md`가 다루는
-임베딩 파이프라인이 API 경로(`POST /search/vector`, `GET /relations/expand`, agent-search.md 참고)
-까지 이어진 뒤 Phase 2로 추가한다.
+의 `file_search`/`vector_search`/`graph_search` 설계 중 **file_search(Phase 1)와 vector_search
+(Phase 3)를 실제로 들고 도는 에이전트 프로세스를 구현했고**, 그 위에 `wiki/search-architecture.md`
+가 다루는 넓은 RAG 파이프라인 중 **Query Planning + Query Routing(Phase 4, 아래 참고)도
+`plan_search` 도구로 구현했다** — `vector_search`는 `wiki/embeddings.md`의 pgvector 임베딩
+파이프라인을 읽는 agent 도구로 구현됐고(HTTP 경로 `POST /search/vector` 자체는 여전히 미구현,
+`agent-search.md` 참고), `graph_search`는 아직 설계만 있다.
 
 **핵심 요구사항: 모델 벤더에 종속되지 않는 범용 harness.** 대화형(`--interactive`)이든 1회성
 쿼리든 예외 없이 자체 `ChatProvider` 추상화 위에서 돈다 — 특정 벤더 SDK가 도구 호출 루프 자체를
@@ -31,6 +33,9 @@
 ```
 src/knowledge_forge/search/
     service.py            # file_search() - OKF 파일 트리 키워드/frontmatter 검색, Postgres 불필요
+                            # vector_search() - pgvector HNSW 인덱스 의미 검색, PipelineStore 필요
+    router.py              # route_query() - 질의당 file_search/vector_search 소스 선택 휴리스틱
+    planner.py              # decompose_query()/plan_and_search() - 멀티홉 질의 분해 + 병렬/의존 실행
 src/knowledge_forge/okf/
     fs_service.py          # read_file/write_file/edit_file/list_dir() - OKF 루트 트리로 스코프된 FS 도구
 src/knowledge_forge/agent/
@@ -177,6 +182,76 @@ hermes의 `tools/delegate_tool.py` 패턴(자식은 새 대화로 시작 + 부�
 필요하기 때문(`agent/runtime.py`의 `run_query`/`AgentSession` 둘 다 이제 시스템 프롬프트를 먼저 만든
 뒤 `default_tools()`에 넘긴다).
 
+## Phase 3 — `vector_search` (pgvector 의미 검색)
+
+`agent-search.md`의 vector_search 설계 중 HTTP 엔드포인트(`POST /search/vector`)가 아니라 이
+harness의 agent 도구로 먼저 구현했다 - Phase 1의 `file_search`와 나란한 두 번째 검색 도구.
+
+### `search/service.py::vector_search`
+
+`knowledge_object_embeddings`의 HNSW 인덱스(`embeddings.md`)를 실제로 읽는 첫 소비자
+(`agent-search.md`의 vector_search 계약 구현). `file_search`와 달리 자기 자신을 위한 Postgres
+연결을 묵시적으로 열 수 없어 `store: PipelineStore`를 인자로 받는다(이미 연결된 상태로) - 호출
+시점에 `get_embedding_provider(embedding_model or settings.embedding_model).embed([query])`로
+쿼리를 임베딩한 뒤 `store.search_by_embedding()`(`postgres_store.py`의 `ORDER BY embedding <=> %s`
+cosine 검색)로 조회한다. 응답은 `KnowledgeObject` 전체가 아니라 `knowledge_object_id`/`type`/
+`summary`/`topics`/`document_type`/`project_id` + `score`(1 - cosine 거리, 1.0이 가장 유사)만
+담은 얇은 dict - 전체 내용이 필요하면 에이전트가 이어서 `file_search`/`read_file`로 확인한다.
+임베딩이 없는 KnowledgeObject(백필 전/`--no-embed`)는 `knowledge_object_embeddings`에 INNER
+JOIN하는 쿼리 특성상 결과에 그냥 나오지 않는다(에러/경고 없음).
+
+### `agent/tools.py::_make_vector_search_tool`
+
+`settings.database_url`(`KF_DATABASE_URL`)이 설정되어 있을 때만 `default_tools()`의 도구
+목록에 추가된다 - `file_search`/파일시스템 도구와 달리 Postgres+pgvector 없이는 아예 실행할 수
+없는 도구라, `embedding_enabled`(`--embed`)와 같은 "설정 안 되어 있으면 조용히 빠짐" 컨벤션을
+따른다. 호출마다 `PipelineStore(database_url, settings.data_dir)`를 열고 닫는다(`cli.py`의
+`embed` 명령이 이미 쓰는 "그때그때 연결" 패턴과 동일) - 세션 전체에 커넥션 하나를 유지하는
+대신 매번 새로 여는 이유는, 도구 호출이 초당 여러 번 도는 핫 루프가 아니라 검색 한 번에 짧은
+지연을 감수할 수 있는 빈도라 세션 lifecycle에 커넥션 close를 새로 엮는 복잡도를 감수할 가치가
+없다고 판단했기 때문이다. 도구 입력 스키마는 `embedding_model`을 노출하지 않는다 - 모델이
+임베딩 모델 이름까지 신경 쓸 이유가 없어 항상 `KF_EMBEDDING_MODEL` 기본값을 쓴다.
+`OPENAI_API_KEY`(임베딩 프로바이더가 직접 읽음)가 없으면 첫 호출에서 `EmbeddingError`가 나고,
+이는 다른 도구 에러와 동일하게 `loop.py`가 잡아 tool_result로 돌려준다(런타임이 죽지 않음).
+
+`prompts.py`의 시스템 프롬프트는 vector_search가 도구 목록에 있을 때(=DB 구성됨) 정확한
+문자열/ID는 file_search로, 자연어 패러프레이즈/개념은 vector_search로 먼저 시도하고, 하나가
+결과 없음을 반환해도 다른 하나로 다시 시도해보라고 안내한다.
+
+## Phase 4 — `plan_search` (Query Planning + Query Routing)
+
+`wiki/search-architecture.md`가 다루는 넓은 RAG 아키텍처 중, 검색 소스가 여러 개로 늘어나는 걸
+대비한 두 레이어(멀티홉 질의 분해 + 소스 선택)를 `file_search`/`vector_search` 위에 얹었다 -
+전체 아키텍처 설계 근거/상태표는 그 문서, 여기서는 harness 통합 지점만 다룬다.
+
+### `search/router.py::route_query`
+
+`(query, available_sources) -> RouteDecision(sources, reason)`. LLM 호출이 아니라 순수 휴리스틱
+(따옴표/id-like 토큰 → file_search 포함, 질문형/긴 자연어 → vector_search 우선, 그 외 애매하면
+둘 다) - 상위 에이전트 자신은 이미 LLM이라 `file_search`/`vector_search`를 직접 호출할 땐
+스스로 판단하면 되고, 이 라우터는 모델 턴이 없는 `plan_search`의 프로그램적 하위 질의에만
+쓰인다. 근거는 `search-architecture.md`의 "Query Routing" 절.
+
+### `search/planner.py::plan_and_search`
+
+`decompose_query()`가 세션의 `ChatProvider`로 `agent/compaction.py`와 같은 패턴("별도 모델 없이
+같은 provider에 tools=[]로 한 번 더 send()") LLM 호출을 해 하위 질의(JSON, `depends_on`
+포함)를 얻고, `_topological_waves()`가 의존성 순서대로 wave를 나눠 같은 wave 안의 하위 질의는
+`asyncio.gather`로 동시 실행한다 - `agent/loop.py::run_agent`가 한 turn의 tool_call 여러 개도
+순차 실행하는 것(아래 "알려진 제약")과 달리, **이 harness에서 유일하게 진짜 병렬 검색이 일어나는
+경로**다. 의존하는 하위 질의는 의존 대상의 근거 스니펫(최대 3개)을 원 질의 뒤에 자연어로
+덧붙여 검색한다(별도 쿼리 치환 언어 없음). 분해 LLM 호출이 실패하거나 JSON이 아니면 원 질문
+하나짜리 계획으로 조용히 fallback한다 - `compact_messages`의 "압축 실패해도 원본 그대로 반환"과
+같은 원칙.
+
+### `agent/tools.py::_make_plan_search_tool`
+
+`vector_search`와 달리 `KF_DATABASE_URL` 유무와 무관하게 `provider`만 있으면 추가된다(하위
+질의 분해에 그 `provider`로 LLM 호출이 필요하므로) - DB 유무는 `plan_and_search()` 내부에서
+`vector_search`를 사용 가능한 소스 목록에 넣을지만 결정한다. `delegate_task`와 마찬가지로
+`include_delegate=False`로 만든 자식 도구 목록에도 그대로 포함된다(재귀 위임 차단 대상은
+`delegate_task` 자신뿐).
+
 ## 알려진 제약
 
 - 스트리밍 미지원 - 한 턴이 끝나야 출력.
@@ -190,7 +265,13 @@ hermes의 `tools/delegate_tool.py` 패턴(자식은 새 대화로 시작 + 부�
 
 ## 다음 단계
 
-1. `vector_search`/`graph_search`를 `search/service.py`·`agent/tools.py`에 추가 (embeddings.md의
-   파이프라인이 이미 있으므로 `POST /search/vector` 등 API 경로만 마저 구현하면 됨).
-2. `knowledge-forge mcp-server`(stdio) - 외부 host(Claude Code/Claude Desktop 등) 노출.
-3. permission mode(쓰기 도구 승인 흐름) / Skills 연동 - 별도 설계 문서.
+1. `graph_search`를 `search/service.py`·`agent/tools.py`에 추가 (`relations` 테이블은 이미 있으므로
+   조회 쿼리 + 도구 어댑터만 추가하면 됨 - `agent-search.md`의 `GET /relations/expand` 설계 참고).
+   추가되면 `search/router.py::route_query`의 소스 후보에도 자연스럽게 편입될 대상.
+2. `POST /search/vector` HTTP 엔드포인트 - agent 도구 `vector_search`가 이미 있는 `search/service.py::
+   vector_search()`를 그대로 감싸는 얇은 FastAPI 라우터만 추가하면 됨.
+3. `knowledge-forge mcp-server`(stdio) - 외부 host(Claude Code/Claude Desktop 등) 노출.
+4. permission mode(쓰기 도구 승인 흐름) / Skills 연동 - 별도 설계 문서.
+5. `wiki/search-architecture.md`가 정리한 더 넓은 RAG 레이어(Hybrid rerank, Context Engineering,
+   Map-Reduce, Temporal Search, Evidence Grounding 파이프라인, Feedback Loop) - 전부 설계만
+   있고 미착수, 그 문서의 "왜 지금 여기서 멈추는가" 참고.

@@ -123,11 +123,11 @@ Dashboard / Chat UI다. 이들을 지금 만들지 않는 이유는 스코프 �
 
 | 제외 항목 | 현재 설계가 막지 않는 이유 |
 |---|---|
-| Vector DB | **임베딩 생성까지는 구현 완료** — `KnowledgeObject.summary`/`content`/`topics`를 합친 텍스트를 OpenAI 임베딩 API로 벡터화해 pgvector(`knowledge_object_embeddings` 테이블, HNSW/cosine 인덱스)에 저장한다([`embeddings.md`](embeddings.md)). 다만 그 인덱스를 읽는 검색 엔드포인트(`/search/vector`)와 `knowledge-forge mcp-server`, Claude Code용 검색 skill은 여전히 설계만 있고 미착수다([`agent-search.md`](agent-search.md)). |
+| Vector DB | **임베딩 생성 + 검색까지 구현 완료** — `KnowledgeObject.summary`/`content`/`topics`를 합친 텍스트를 OpenAI 임베딩 API로 벡터화해 pgvector(`knowledge_object_embeddings` 테이블, HNSW/cosine 인덱스)에 저장하고([`embeddings.md`](embeddings.md)), 그 인덱스를 `vector_search` agent 도구로 실제로 읽는다([`agent-runtime.md`](agent-runtime.md)). `POST /search/vector` HTTP 엔드포인트, `knowledge-forge mcp-server`, Claude Code용 검색 skill은 여전히 설계만 있고 미착수다([`agent-search.md`](agent-search.md)). |
 | Graph DB | `KnowledgeObject`(노드)와 `Relation`(subject_id/object_id로 노드를 잇는 typed edge)이 이미 그래프 모델 그 자체다 — Phase 5에서 subject-predicate-object 텍스트 triple 대신 id 기반 edge로 바꿨다([`architecture.md`](architecture.md)). `relations` 테이블(PostgreSQL, [`storage.md`](storage.md)) 또는 OKF `relations/`([`okf.md`](okf.md))를 그대로 그래프 DB에 bulk-import하면 된다. |
 | Ontology/OWL | `Entity.type`/`document_type`이 자유 문자열이라, 추후 온톨로지 클래스 체계로 매핑하는 정규화 레이어를 얹기만 하면 된다. 지금 스키마를 바꿀 필요가 없다. |
-| Search/RAG | Knowledge Object 자체가 검색 인덱싱의 입력 단위로 설계되어 있다(청크 단위 + 요약 + 메타데이터). Vector DB/재순위 레이어를 앉힌 "정식" RAG는 여전히 스코프 밖이다. 다만 **DB 의존성 없이 OKF 파일 트리만으로 에이전트 컨텍스트를 구성하는 실험**([`okf.md`](okf.md))은 진행 중 스코프로 승격했다 - OKF가 이제 실제 [OKF v0.2 스펙](open-knowledge-format.md)을 따르는 markdown+frontmatter 트리라, grep + frontmatter 스캔 + `index.md`/`log.md`가 곧 검색 표면이다. |
-| Agent | Knowledge Extraction은 순수 함수형 파이프라인 단계(청크 → LLM 호출 → 구조화 출력)로, 에이전트형 도구 호출 루프가 필요 없다. 나중에 에이전트가 필요해지면 이 파이프라인을 도구(tool)로 감싸기만 하면 된다. OKF 파일 트리를 컨텍스트로 삼아 작업하는 에이전트(바로 위 Search/RAG 행)는 이 파이프라인 밖에서 트리를 소비하는 별도 스코프라 여기에 포함되지 않는다. |
+| Search/RAG | Knowledge Object 자체가 검색 인덱싱의 입력 단위로 설계되어 있다(청크 단위 + 요약 + 메타데이터). **Query Planning(멀티홉 질의 분해 + 병렬/의존 실행) + Query Routing(소스 선택)은 구현 완료**([`search-architecture.md`](search-architecture.md), `search/planner.py`/`search/router.py`) - `file_search`+`vector_search` 두 소스를 조합해 쓰는 `plan_search` 도구. Reranking/Context Engineering/Map-Reduce/Temporal Search/Evidence Grounding 파이프라인/Feedback Loop를 갖춘 "정식" RAG는 여전히 스코프 밖(같은 문서 참고). 다만 **DB 의존성 없이 OKF 파일 트리만으로 에이전트 컨텍스트를 구성하는 실험**([`okf.md`](okf.md))은 진행 중 스코프로 승격했다 - OKF가 이제 실제 [OKF v0.2 스펙](open-knowledge-format.md)을 따르는 markdown+frontmatter 트리라, grep + frontmatter 스캔 + `index.md`/`log.md`가 곧 검색 표면이다. |
+| Agent | Knowledge Extraction은 순수 함수형 파이프라인 단계(청크 → LLM 호출 → 구조화 출력)로, 에이전트형 도구 호출 루프가 필요 없다. 이 파이프라인 밖에서, Knowledge Base(OKF 파일 트리 + pgvector 임베딩)를 검색/편집하는 별도 스코프의 모델 벤더 중립 Agent Runtime은 **구현 완료** — `file_search`/`vector_search`/`plan_search`(Query Planning+Routing)/파일시스템(`read_file`/`write_file`/`edit_file`/`list_dir`)/`write_memory`/`delegate_task` 도구를 갖춘 `knowledge-forge agent` CLI([`agent-runtime.md`](agent-runtime.md)). |
 | Dashboard / Chat UI | 순수 데이터 처리 파이프라인이라 UI 레이어와 결합되어 있지 않다. CLI/JSONL 출력이 어떤 UI 위에도 얹힐 수 있는 형태다. |
 
 ## 단계별 후속 계획
@@ -327,18 +327,24 @@ Knowledge가 나온다.
 - **설정**: `document_summary_enabled: bool = False` 같은 `KF_*` 옵트인 플래그로 시작(기존
   `KF_DEDUP_SIMILARITY_THRESHOLD` 등과 같은 관례).
 
-### 7단계 — Agent Runtime, 모델 벤더 중립 harness (검색 전용 MVP) — Phase 1 구현됨
+### 7단계 — Agent Runtime, 모델 벤더 중립 harness (검색 전용 MVP) — Phase 1~4 구현됨
 
-`agent-search.md`의 `file_search`를 실제로 들고 도는 에이전트 프로세스를
+`agent-search.md`의 `file_search`/`vector_search`를 실제로 들고 도는 에이전트 프로세스를
 [`agent-runtime.md`](agent-runtime.md)에 구현했다 — `knowledge-forge agent "질문"` /
 `knowledge-forge agent --interactive`. 핵심 요구사항은 모델 벤더 중립성: 1회성 쿼리든 대화형이든
 예외 없이 자체 `ChatProvider` 추상화(Anthropic 네이티브 + OpenAI-호환, `agent/providers/`) 위에서
 돈다 — `claude_agent_sdk`(Anthropic 전용 완결 루프)는 harness의 어떤 모드에도 들어오지 않는다.
-검색 로직은 `search/service.py::file_search()`라는 프레임워크·벤더 독립 함수로 두고
-(Postgres 불필요, OKF 파일 트리만 있으면 동작), `agent/tools.py`가 이를 `ToolSpec`으로 감싸
+검색 로직은 `search/service.py`의 `file_search()`(Postgres 불필요, OKF 파일 트리만 있으면 동작)와
+`vector_search()`(`PipelineStore`로 pgvector HNSW 인덱스를 읽음, `KF_DATABASE_URL` 필요)라는
+프레임워크·벤더 독립 함수로 두고, `agent/tools.py`가 이를 `ToolSpec`으로 감싸
 `agent/loop.py::run_agent()`(도구 호출 루프, untrusted-output wrapping, max_iterations 상한)에
-등록한다. `vector_search`/`graph_search`는 `embeddings.md`의 pgvector 파이프라인이 API 경로
-(`POST /search/vector`, `GET /relations/expand`)까지 이어진 뒤 같은 패턴으로 추가할 후속 작업.
+등록한다(`vector_search`는 `KF_DATABASE_URL`이 설정된 경우에만 등록). 그 위에 `search/router.py`
+(소스 선택 휴리스틱)와 `search/planner.py`(멀티홉 질의 분해 + 병렬/의존 실행)로 Query Planning +
+Query Routing을 구현하고 `plan_search` 도구로 등록했다 — 더 넓은 엔터프라이즈 RAG 아키텍처(Query
+Understanding, Hybrid rerank, Context Engineering, Map-Reduce, Temporal Search, Evidence
+Grounding, Feedback Loop) 중 이 두 레이어를 먼저 고른 이유와 나머지 레이어의 상태는
+[`search-architecture.md`](search-architecture.md) 참고. `graph_search`와 `POST /search/vector`/
+`GET /relations/expand` HTTP 엔드포인트는 여전히 후속 작업.
 
 **한 줄 정의(향후 아키텍처 문서화 시 재사용)**: "Multi-source SaaS 및 File 데이터를 수집하고,
 source별 semantic context를 복원한 뒤 adaptive chunking과 knowledge extraction을 수행하여
