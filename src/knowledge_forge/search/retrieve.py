@@ -32,9 +32,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import time
+from collections.abc import Coroutine
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -180,6 +182,33 @@ def _unique(values: list[str | None]) -> list[str]:
             seen.add(value)
             out.append(value)
     return out
+
+
+@dataclass
+class _KeywordArmHits:
+    """`_Run._keyword_arm_fetch`가 미리 던져 둔 두 조회의 원본 결과 - `_keyword_arm`이
+    받아서 anchor 판정/좁히기를 한다. 튜플 대신 이름을 붙인 이유는 둘 다 같은 모양의
+    히트 리스트라 순서를 뒤집어도 타입 검사에 안 걸리기 때문이다(제목/본문이 바뀌면
+    anchor를 청크 본문 일치에서 잡게 되는 조용한 회귀)."""
+
+    title: list[dict[str, Any]]
+    body: list[dict[str, Any]]
+
+
+async def _capture_exception(
+    coro: Coroutine[Any, Any, list[dict[str, Any]]],
+) -> tuple[list[dict[str, Any]], BaseException | None]:
+    """코루틴을 돌리고 (결과, 예외) 쌍으로 돌려준다 - `asyncio.gather`에 실패해도 되는
+    코루틴을 넣을 때 쓴다.
+
+    `gather(..., return_exceptions=True)`를 쓰지 않는 이유: 그건 **모든** 인자에 적용돼서
+    같이 묶인 코루틴(어휘 arm)의 실제 버그까지 조용히 값으로 바꿔 버린다. 실패를 허용하는
+    쪽은 벡터 조회 하나뿐이고(임베더 미구성/원격 장애), 나머지는 예전처럼 그대로 터져야
+    한다."""
+    try:
+        return await coro, None
+    except Exception as exc:  # noqa: BLE001 - 호출자가 로깅/기록을 결정한다
+        return [], exc
 
 
 def _hit_score(hit: dict[str, Any]) -> float:
@@ -402,12 +431,19 @@ class _Run:
 
     async def document_lookup(self) -> None:
         queries = _unique([self.c.document_reference, *self.c.identifiers, *self.c.quoted_phrases])
-        collected: list[dict[str, Any]] = []
-        for q in queries:
-            hits = await document_search(
-                q, self.store, project_id=self.project_id, limit=self.fetch_limit, since=self.since, until=self.until
+        # 질의끼리는 서로의 결과에 의존하지 않으므로 DB 왕복을 겹친다. `gather`는 입력
+        # 순서대로 결과를 돌려주므로(`as_completed`가 아니다) `collected`에 쌓이는 순서는
+        # 순차 루프와 **정확히 같다** - 아래 `_claim_anchor`의 tie 처리와 RRF의 순위가 둘 다
+        # 리스트 위치에 걸려 있어서, 이 성질이 없으면 지표가 흔들린다.
+        per_query = await asyncio.gather(
+            *(
+                document_search(
+                    q, self.store, project_id=self.project_id, limit=self.fetch_limit, since=self.since, until=self.until
+                )
+                for q in queries
             )
-            collected.extend(hits)
+        )
+        collected: list[dict[str, Any]] = [hit for hits in per_query for hit in hits]
         anchor_reason, ranked = self._claim_anchor(collected)
         self.add_hits(SOURCE_DOCUMENT_SEARCH, collected)
         self.step(
@@ -422,13 +458,17 @@ class _Run:
 
     async def lexical(self) -> None:
         terms = _unique([*self.c.identifiers, *self.c.quoted_phrases])
-        collected: list[dict[str, Any]] = []
-        for term in terms:
-            collected.extend(
-                await lexical_search(
+        # `document_lookup`과 같은 이유로 term별 왕복을 겹친다(gather는 입력 순서 보존).
+        # anchor 좁히기는 전부 모은 뒤에 하므로 결과가 달라지지 않는다.
+        per_term = await asyncio.gather(
+            *(
+                lexical_search(
                     term, self.store, project_id=self.project_id, limit=self.fetch_limit, since=self.since, until=self.until
                 )
+                for term in terms
             )
+        )
+        collected: list[dict[str, Any]] = [hit for hits in per_term for hit in hits]
         collected, narrowing = _narrow_to_anchor(collected, self.anchor)
         self.add_hits(SOURCE_LEXICAL_SEARCH, collected)
         self.step(STRATEGY_LEXICAL, SOURCE_LEXICAL_SEARCH, len(collected), terms=terms, anchor_narrowing=narrowing)
@@ -460,14 +500,30 @@ class _Run:
         query = self.c.semantic_query
         hits: list[dict[str, Any]] = []
         error: str | None = None
+        keyword_arm: _KeywordArmHits | None = None
         if query:
-            try:
-                hits = await vector_search(
-                    query, self.store, project_id=self.project_id, limit=self.fetch_limit, since=self.since, until=self.until
-                )
-            except Exception as exc:  # noqa: BLE001 - 임베더 미구성 등이 실행기 전체를 막으면 안 된다
-                logger.warning("vector_search failed, continuing without it: %s", exc)
-                error = f"{type(exc).__name__}: {exc}"
+            # 벡터 조회와 어휘 arm(`_keyword_arm`)의 DB 왕복 두 개는 서로의 결과를 안 본다 -
+            # 셋을 겹쳐서 던진다. 이게 이 파일에서 가장 큰 지연시간 항목이다: 벡터 조회에는
+            # 원격 임베딩 왕복(실측 ~300ms, `embedding/cache.py` 참고)이 들어 있고, 지금까지는
+            # 그 300ms 동안 나머지 두 조회가 그냥 기다렸다.
+            #
+            # **결과 처리 순서는 바꾸지 않는다.** anchor는 이 실행기의 결정론이 걸린 상태라
+            # (`_keyword_arm`이 anchor를 claim할 수 있고, 벡터 히트는 anchor로 좁혀진다)
+            # 아래에서 벡터 → 어휘 arm 순으로, 순차 실행이던 때와 똑같은 순서로 해석한다.
+            # 겹치는 것은 "질의를 언제 던지느냐"뿐이고 "결과를 언제 읽느냐"가 아니다.
+            vector_call = vector_search(
+                query, self.store, project_id=self.project_id, limit=self.fetch_limit, since=self.since, until=self.until
+            )
+            (vector_hits, vector_error), keyword_arm = await asyncio.gather(
+                _capture_exception(vector_call), self._keyword_arm_fetch(query)
+            )
+            # 임베더 미구성/원격 장애가 실행기 전체를 막으면 안 된다 - 예전의 try/except와
+            # 같은 의미이고, 잡는 위치만 `_capture_exception`으로 옮겼다(그 docstring 참고).
+            if vector_error is not None:
+                logger.warning("vector_search failed, continuing without it: %s", vector_error)
+                error = f"{type(vector_error).__name__}: {vector_error}"
+            else:
+                hits = vector_hits
         hits, narrowing = _narrow_to_anchor(hits, self.anchor)
         # 관련도 하한 - config.py의 vector_min_score 주석 참고. anchor 좁히기 뒤에 거는 이유는
         # anchor가 이미 "제목이 정확히 맞은 문서"라는 더 강한 신호라, 그 안에서 유사도가 낮다고
@@ -490,9 +546,27 @@ class _Run:
             dropped_below_min_score=dropped,
         )
         if query:
-            await self._keyword_arm(query)
+            assert keyword_arm is not None  # query가 있으면 위에서 반드시 채워진다
+            await self._keyword_arm(query, keyword_arm)
 
-    async def _keyword_arm(self, query: str) -> None:
+    async def _keyword_arm_fetch(self, query: str) -> _KeywordArmHits:
+        """`_keyword_arm`이 쓸 두 조회를 **던지기만** 한다 - 해석은 `_keyword_arm`이 한다.
+
+        둘로 나눈 이유는 오직 하나, `vector()`가 이 두 왕복을 벡터 조회(임베딩 왕복 포함)와
+        겹칠 수 있게 하려고다. 제목/본문 조회는 서로도, 벡터 조회와도 입력이 독립이다 -
+        anchor를 보는 것은 반환된 히트를 좁힐 때뿐이고, 그건 전부 `_keyword_arm` 안에서
+        예전과 같은 순서로 일어난다."""
+        title_hits, body_hits = await asyncio.gather(
+            document_search(
+                query, self.store, project_id=self.project_id, limit=self.fetch_limit, since=self.since, until=self.until
+            ),
+            lexical_search(
+                query, self.store, project_id=self.project_id, limit=self.fetch_limit, since=self.since, until=self.until
+            ),
+        )
+        return _KeywordArmHits(title=title_hits, body=body_hits)
+
+    async def _keyword_arm(self, query: str, fetched: _KeywordArmHits) -> None:
         """semantic_query를 제목(`document_search`)과 청크 원문(`lexical_search`)에도 걸어
         RRF에 **벡터와 나란히** 넣는 어휘 arm. 이름 그대로 하이브리드 검색의 한쪽 팔이지,
         벡터가 실패했을 때의 degrade가 아니다.
@@ -510,10 +584,11 @@ class _Run:
         둘은 대체재가 아니다 - 그래서 전략이 이미 돌았어도 이 arm을 끄지 않고, 대신 **소스
         이름을 나눠**(`#semantic`) RRF의 별도 투표자로 넣는다. `_term_fallback`이
         `lexical_search#<term>`으로 소스를 나눈 것과 같은 수법이고, 같은 소스에 append하면
-        한 리스트 안에서 순위가 섞여 RRF가 망가지기 때문이다."""
-        title_hits = await document_search(
-            query, self.store, project_id=self.project_id, limit=self.fetch_limit, since=self.since, until=self.until
-        )
+        한 리스트 안에서 순위가 섞여 RRF가 망가지기 때문이다.
+
+        두 조회 자체는 `_keyword_arm_fetch`가 미리(벡터 조회와 겹쳐서) 던져 두고 여기는 그
+        결과를 받는다 - 해석 순서는 제목 → 본문으로, 두 조회를 순차로 하던 때와 같다."""
+        title_hits = fetched.title
         # anchor 판정을 `document_lookup`과 공유한다(`_claim_anchor` docstring 참고). 이미
         # anchor가 잡혀 있으면 다시 판정하지 않는다 - 그건 `document_reference`/`identifiers`
         # 같은 명시적 신호에서 나온 더 강한 anchor라 semantic_query가 덮어쓰면 안 된다.
@@ -531,10 +606,7 @@ class _Run:
             anchor=self.anchor,
             anchor_reason=anchor_reason,
         )
-        body_hits = await lexical_search(
-            query, self.store, project_id=self.project_id, limit=self.fetch_limit, since=self.since, until=self.until
-        )
-        body_hits, _ = _narrow_to_anchor(body_hits, self.anchor)
+        body_hits, _ = _narrow_to_anchor(fetched.body, self.anchor)
         self.add_hits(SOURCE_LEXICAL_SEARCH_SEMANTIC, body_hits)
         self.step(STRATEGY_LEXICAL, SOURCE_LEXICAL_SEARCH_SEMANTIC, len(body_hits), query=query, arm="semantic_query")
         # 질의 문자열 통째로 뭔가 걸렸으면 그게 term 하나하나보다 강한 신호다 - term 분해는
@@ -562,11 +634,17 @@ class _Run:
         limit = min(self.fetch_limit, _TERM_FETCH_LIMIT)
         hits_by_term: dict[str, list[dict[str, Any]]] = {}
         coverage: dict[str, set[str]] = {}
-        for term in terms:
-            hits = await lexical_search(
-                term, self.store, project_id=self.project_id, limit=limit, since=self.since, until=self.until
+        # term당 왕복 하나가 최대 열 번(`_MAX_FALLBACK_TERMS`)까지 나므로 이 arm이 이
+        # 실행기의 최악 지연시간이다 - 전부 겹친다. gather가 입력 순서를 지키므로
+        # `hits_by_term`의 키 순서(= 아래 `add_hits`가 RRF에 소스를 넣는 순서)도 그대로다.
+        per_term = await asyncio.gather(
+            *(
+                lexical_search(term, self.store, project_id=self.project_id, limit=limit, since=self.since, until=self.until)
+                for term in terms
             )
-            hits, _ = _narrow_to_anchor(hits, self.anchor)
+        )
+        for term, raw_hits in zip(terms, per_term, strict=True):
+            hits, _ = _narrow_to_anchor(raw_hits, self.anchor)
             hits_by_term[term] = hits
             for hit in hits:
                 document_id = hit.get("document_id")
@@ -598,13 +676,28 @@ class _Run:
     async def comparison(self) -> None:
         collected: list[dict[str, Any]] = []
         resolved: list[dict[str, Any]] = []
-        for target in self.c.comparison_targets:
-            time_range = parse_temporal_expression(target, now=self.now)
+        targets = list(self.c.comparison_targets)
+        ranges = [parse_temporal_expression(target, now=self.now) for target in targets]
+        # 대상별 제목 조회를 한꺼번에 던진다. 본문 폴백은 제목 조회가 빈손인 대상만 도는
+        # 2단계라 겹칠 수 없으므로 그대로 순차로 둔다(대개 0~1개다). `pinned` 순서는 아래
+        # 루프가 대상 순서대로 돌기 때문에 그대로 유지된다 - 그 순서가 최종 랭킹의 고정
+        # 순서(`merge()`)라서 바뀌면 안 된다.
+        title_results = await asyncio.gather(
+            *(
+                document_search(
+                    target,
+                    self.store,
+                    project_id=self.project_id,
+                    limit=_COMPARISON_PER_TARGET,
+                    since=(tr.start if tr else self.since),
+                    until=(tr.end if tr else self.until),
+                )
+                for target, tr in zip(targets, ranges, strict=True)
+            )
+        )
+        for target, time_range, hits in zip(targets, ranges, title_results, strict=True):
             since = time_range.start if time_range else self.since
             until = time_range.end if time_range else self.until
-            hits = await document_search(
-                target, self.store, project_id=self.project_id, limit=_COMPARISON_PER_TARGET, since=since, until=until
-            )
             via = SOURCE_DOCUMENT_SEARCH
             if not hits:
                 # 제목에 없는 대상("6/22 미팅 아젠다 메일")은 본문 일치로 - 대상별 문서 하나는 반드시 찾아야

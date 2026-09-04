@@ -275,6 +275,7 @@ async def vector_search(
     결과에 그냥 나오지 않는다 - `knowledge_object_embeddings`에 조인하는
     쿼리라 애초에 후보에 없다(agent-search.md의 "아직 결정 안 된 것"에 대한
     1차 답: 에러도 경고도 없이 조용히 빠짐)."""
+    from knowledge_forge.embedding.cache import query_embedding_cache
     from knowledge_forge.embedding.factory import get_embedding_provider
 
     query = query.strip()
@@ -282,8 +283,16 @@ async def vector_search(
         return []
 
     model = embedding_model or settings.embedding_model
-    embedder = get_embedding_provider(model=model)
-    [vector] = await embedder.embed([query])
+    # 질의 임베딩은 프로세스 안에서 캐시한다 - 원격 왕복 1회가 실측 ~300ms(p50 602ms의
+    # 절반)라 같은 문자열을 두 번 임베딩할 이유가 없다. 키가 `(model, query)`인 이유와
+    # 왜 provider가 아니라 여기에 두는지는 `embedding/cache.py`의 모듈 docstring 참고
+    # (요약: 적재 경로의 긴 배치가 캐시를 밀어내면 안 되고, `get_embedding_provider`는
+    # 호출마다 새 인스턴스라 provider 필드 캐시는 절대 적중하지 않는다).
+    vector = query_embedding_cache.get(model, query)
+    if vector is None:
+        embedder = get_embedding_provider(model=model)
+        [vector] = await embedder.embed([query])
+        query_embedding_cache.put(model, query, vector)
     return await store.search_by_embedding(
         vector,
         model,
