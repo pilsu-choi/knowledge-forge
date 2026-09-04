@@ -30,7 +30,8 @@ Agent SDK를 갈아 끼울 수 있게 만든 것과 똑같은 이유로, 임베�
   새 행이 아니라 제자리 upsert가 된다.
 - `embedding/factory.py`의 `get_embedding_provider()`가 `KF_EMBEDDING_PROVIDER`를 보고 구현체를
   고르는 유일한 분기점 — `extraction/factory.py::get_extractor()`와 같은 스위치 포인트 패턴이다.
-  지금은 `"openai"` 하나만 구현되어 있다(`config.py`의 `embedding_provider: Literal["openai"]`).
+  `"openai"`(기본)와 `"openrouter"` 두 개가 구현되어 있다(아래 "OpenRouter / OpenAI 호환
+  엔드포인트" 절).
 - `embedding/openai_provider.py`의 `OpenAIEmbeddingProvider`는
   `extraction/openrouter_extractor.py::OpenRouterExtractor`와 거의 같은 형태다: 지연 자격 증명
   해석(생성 시점에 키가 없어도 실패하지 않고, 실제 호출에서 401을 받으면 그때
@@ -51,15 +52,91 @@ Agent SDK를 갈아 끼울 수 있게 만든 것과 똑같은 이유로, 임베�
 | 환경변수 | 기본값 | 설명 |
 |---|---|---|
 | `KF_EMBEDDING_ENABLED` | `False` | `extract`가 기본적으로 임베딩을 생성할지. `--store`처럼 opt-in(꺼져 있으면 저장은 되지만 임베딩은 안 함) |
-| `KF_EMBEDDING_PROVIDER` | `openai` | 임베딩 백엔드 선택 스위치. 지금은 `"openai"`만 구현됨 |
-| `KF_EMBEDDING_MODEL` | `text-embedding-3-small` | 실제 호출할 임베딩 모델명 |
+| `KF_EMBEDDING_PROVIDER` | `openai` | 임베딩 백엔드 선택 스위치: `openai` 또는 `openrouter` |
+| `KF_EMBEDDING_MODEL` | `text-embedding-3-small` | 실제 호출할 임베딩 모델명. provider마다 형식이 다르다 — `openai`는 `text-embedding-3-small`, `openrouter`는 `openai/text-embedding-3-small` 같은 `vendor/model` 슬러그 |
+| `KF_EMBEDDING_API_KEY` | (없음) | 임베딩 API 키. **이 저장소에서 `Settings`에 들어간 유일한 자격 증명이며, `.env`에 적어서 실제로 동작하는 유일한 키다** — 아래 "왜 `KF_EMBEDDING_API_KEY`라는 예외를 뒀는가" 참고. provider에 따라 OpenAI 키 또는 OpenRouter 키를 넣는다 |
+| `KF_EMBEDDING_BASE_URL` | (없음 → provider 기본값) | 엔드포인트 override. 비우면 `openai`는 `api.openai.com`, `openrouter`는 `KF_OPENROUTER_BASE_URL`. 로컬 vLLM/TEI처럼 OpenAI 호환 서버를 붙일 때 provider는 `openai`로 두고 이 값만 바꾸면 된다 |
 | `KF_EMBEDDING_SOURCE` | `knowledge_object` | 무엇을 임베딩할지: `knowledge_object`(추출된 KO의 summary/content/topics) 또는 `chunk`(원시 청크 텍스트, 추출 없이도 가능). `extract`/`embed`의 `--embedding-source`로 실행마다 override 가능 — 아래 "청크 기반 vs KnowledgeObject 기반" |
 | `KF_EMBEDDING_DIMENSIONS` | `1536` | `schema.sql`의 `vector(N)` 차원과 반드시 일치해야 한다 — 다른 차원의 모델로 바꾸려면 마이그레이션이 필요(아래 "왜 별도 테이블인가" 참고) |
-| `OPENAI_API_KEY` | (없음) | OpenAI API 키. `KF_` 접두사가 아니다 — `OPENROUTER_API_KEY`/`ANTHROPIC_API_KEY`와 같은 원칙으로, `Settings`에 중복 저장하지 않고 `OpenAIEmbeddingProvider` 생성 시점에 환경에서 직접 읽는다 |
+| `OPENAI_API_KEY` / `OPENROUTER_API_KEY` | (없음) | `KF_EMBEDDING_API_KEY`가 비었을 때의 마지막 fallback(활성 provider에 맞는 쪽만 본다). `KF_` 접두가 아니라 `os.environ`에서 직접 읽으므로 **셸에서 export 해야만 읽힌다 — `.env`에 적으면 아무 효과가 없다** |
 
 임베딩 API 동시 요청 수는 별도 설정 없이 기존 `KF_MAX_CONCURRENT_LLM_REQUESTS`(기본 5)를
 그대로 재사용한다 — "동시 요청을 무한정 fan-out하지 않는다"는 같은 관심사라, 전용 설정을 따로
 둘 만큼의 근거가 아직 없다는 판단.
+
+### 왜 `KF_EMBEDDING_API_KEY`라는 예외를 뒀는가
+
+`config.py`의 `Settings` docstring은 "API 키는 `Settings`에 중복 저장하지 않는다"를 원칙으로
+못박아 뒀다(Anthropic/OpenRouter/OpenAI 모두 provider 클래스가 환경에서 직접 읽는다).
+`embedding_api_key`는 그 원칙의 **유일한 예외**이고, 취향이 아니라 기계적인 이유가 있다:
+
+- pydantic-settings는 `.env`를 **`Settings` 인스턴스로만** 읽는다. 그 값들을 `os.environ`에
+  주입하지 않으며, 이 저장소 어디에도 `load_dotenv()` 호출이 없다.
+- provider 클래스들은 키를 `os.environ.get("OPENAI_API_KEY")`로 읽는다. 즉 `.env`에
+  `OPENAI_API_KEY=sk-...`를 적어두면 **아무도 그 줄을 읽지 않는다** — 조용히 무시되고, 첫
+  호출에서 401이 난다. 실제로 동작하려면 셸에서 `export` 해야 한다.
+- "임베딩 키를 `.env`에 넣고 싶다"는 요구는 정당하고 흔한데, 위 구멍 때문에 그게 불가능했다.
+  `KF_` 접두가 붙은 키를 하나 두면 pydantic-settings가 `.env`에서 읽어 주므로, **`.env` 하나로
+  임베딩을 설정할 수 있게 하려면 키 하나를 `Settings`에 올리는 수밖에 없다.**
+
+두 provider의 자격 증명 우선순위는 동일하다:
+
+1. 생성자 인자 `api_key=` (테스트/프로그램적 주입)
+2. `settings.embedding_api_key` (= `.env`의 `KF_EMBEDDING_API_KEY`)
+3. `os.environ`의 `OPENAI_API_KEY`(openai) / `OPENROUTER_API_KEY`(openrouter) — 기존 동작
+   하위호환. 이미 export 해서 쓰던 환경은 아무것도 바꾸지 않아도 그대로 돌아간다.
+
+2가 3보다 앞서는 건 의도적이다 — 셸에 남아 있는 오래된 키가 방금 `.env`에 적은 키를 가리면
+디버깅이 불가능해진다. 이 우선순위와 ".env의 비-KF_ 키는 아무 효과가 없다"는 사실은
+`tests/embedding/test_embedding_settings.py`가 고정해 두었다(누군가 `load_dotenv()`를 넣으면
+그 테스트가 깨지면서 이 절을 다시 보게 된다).
+
+### OpenRouter / OpenAI 호환 엔드포인트
+
+`KF_EMBEDDING_PROVIDER=openrouter`는 OpenRouter의 OpenAI 호환 `/embeddings`
+(`POST https://openrouter.ai/api/v1/embeddings`, Bearer 인증)를 호출한다 —
+`embedding/openrouter_provider.py`. 프로토콜이 OpenAI와 같아서 `openai` SDK에 `base_url`과
+키만 바꿔 끼운 형태이고(`extraction/openrouter_extractor.py`와 같은 방식), 동기는 비용이 아니라
+**모델 선택의 유연성**이다([`llm-providers.md`](llm-providers.md)와 같은 이유).
+
+```bash
+# .env 만으로 설정 (export 불필요)
+KF_EMBEDDING_ENABLED=true
+KF_EMBEDDING_PROVIDER=openrouter
+KF_EMBEDDING_MODEL=openai/text-embedding-3-small
+KF_EMBEDDING_API_KEY=sk-or-...
+KF_EMBEDDING_DIMENSIONS=1536
+```
+
+`OpenAIEmbeddingProvider`와 다른 점 두 가지:
+
+- **`dimensions` 파라미터를 보내지 않는다.** OpenAI API는 text-embedding-3-* 계열에서 이 값을
+  받지만 OpenRouter의 `/embeddings` 문서엔 없다. 게이트웨이가 라우팅하는 모델마다 무시할지
+  400을 낼지 알 수 없으므로, 차원은 *요청*하지 않고 *검증*만 한다(아래).
+- **응답을 `index`로 재정렬한다.** OpenAI 본진 API는 `data`가 입력 순서라는 계약을 보장하지만,
+  OpenRouter는 남의 응답을 중계하는 게이트웨이라 그 보장이 간접적이다. `index` 필드가 모두
+  있으면 그걸로 정렬하고, 없으면 위치 순서로 fallback한다. 순서가 어긋나면 벡터가 **엉뚱한
+  KnowledgeObject/Chunk에 조용히 붙기** 때문에(파이프라인이 입력과 위치로 zip한다) 방어가
+  필요한 지점이다.
+
+`KF_EMBEDDING_BASE_URL`은 `openai` provider에도 적용된다 — 로컬 vLLM/TEI/LM Studio처럼 OpenAI
+호환 `/embeddings`를 제공하는 서버는 provider를 `openai`로 둔 채 base_url만 바꿔 붙이면 되고,
+세 번째 provider 클래스를 만들 이유가 없다(`agent_openai_compatible_base_url`이 에이전트
+런타임에 존재하는 이유와 같다).
+
+### 차원 가드 (`embedding/validation.py`)
+
+`embed()`는 반환 직전에 두 가지를 검사하고, 어긋나면 `EmbeddingError`를 던진다:
+
+1. **개수** — 입력 텍스트 수와 벡터 수가 다르면 중단. 위치로 zip하는 호출자(`pipeline.py`)에게
+   짧은 응답은 "실패"가 아니라 "잘못된 짝짓기"로 조용히 흘러가기 때문이다.
+2. **차원** — 첫 벡터의 길이가 `KF_EMBEDDING_DIMENSIONS`와 다르면 중단. 이 값은
+   `storage/schema.sql`의 `knowledge_object_embeddings.embedding vector(N)`과 반드시 같아야
+   하는데, 어기면 INSERT 시점에 원인에서 몇 겹 떨어진 pgvector 에러("expected 1536 dimensions,
+   not 3072")로만 드러난다. OpenRouter를 붙이면서 이 실수가 **설정 한 줄 거리**가 됐다 —
+   `openai/text-embedding-3-large`(3072), `qwen/qwen3-embedding-8b`(4096) 같은 모델이 흔하다.
+   그래서 모델명·기대 차원·실제 차원·"schema.sql도 같이 고쳐야 한다"를 한 번에 알려주는 한국어
+   에러를 provider 경계에서 던진다. 한 번의 API 호출은 한 모델의 출력이라 첫 벡터만 재면 된다.
 
 ## 청크 기반 vs KnowledgeObject 기반 — `KF_EMBEDDING_SOURCE`
 
@@ -259,6 +336,8 @@ docker compose up -d postgres   # postgres 이미지가 pgvector/pgvector:pg16�
 export KF_DATABASE_URL="postgresql://kf:kf@localhost:15432/knowledge_forge"
 export KF_DATA_DIR="./data"
 export OPENAI_API_KEY=sk-...    # 임베딩 API용 - Anthropic/OpenRouter 키와 별개
+# (또는 export 없이 .env에 KF_EMBEDDING_API_KEY=sk-... 한 줄 — 위 "왜 KF_EMBEDDING_API_KEY라는
+#  예외를 뒀는가" 절. .env의 OPENAI_API_KEY는 읽히지 않는다.)
 
 uv run knowledge-forge db init
 uv run knowledge-forge extract tests/fixtures/sample.md --store --embed
@@ -277,9 +356,13 @@ psql "postgresql://kf:kf@localhost:15432/knowledge_forge" -c \
 
 - `tests/embedding/` — `test_embedding_text.py`(`build_embedding_text()`/
   `build_chunk_embedding_text()` 단위 테스트), `test_embedding_record.py`(grain XOR 검증과
-  `embedding_id` 결정성), `test_openai_embedding_provider.py`(OpenAI 클라이언트를 모킹한
-  `OpenAIEmbeddingProvider` 단위 테스트). [`llm-providers.md`](llm-providers.md)의 "검증 상태"
-  절과 같은 철학 — 이 환경엔 `OPENAI_API_KEY`가 없어 라이브 검증은 못했다.
+  `embedding_id` 결정성), `test_openai_embedding_provider.py`/
+  `test_openrouter_embedding_provider.py`(OpenAI SDK 클라이언트를 모킹한 provider 단위 테스트 —
+  자격 증명 우선순위 3단계, base_url override, 배치 순서/`index` 재정렬, 개수·차원 불일치 에러,
+  401 한국어 힌트), `test_embedding_factory.py`(`KF_EMBEDDING_PROVIDER` 분기),
+  `test_embedding_settings.py`(`.env`에서 `KF_EMBEDDING_API_KEY`가 읽히는지 + 비-KF_ 키는
+  `os.environ`에 들어오지 않는지). [`llm-providers.md`](llm-providers.md)의 "검증 상태"
+  절과 같은 철학 — 이 환경엔 `OPENAI_API_KEY`/`OPENROUTER_API_KEY`가 없어 라이브 검증은 못했다.
 - `tests/storage/test_postgres_store.py` — `test_save_embeddings_upsert_is_idempotent`(같은
   대상+모델로 다시 저장하면 갱신되고 행이 늘지 않는지), `test_list_knowledge_objects_missing_embedding`
   / `test_list_chunks_missing_embedding_filters_by_model_and_project`(모델별/프로젝트별 필터링),
