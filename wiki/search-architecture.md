@@ -11,18 +11,18 @@ Grounding까지)을 레이어별로 정리한다. 실제 프로덕션 엔터프�
 
 | 레이어 | 상태 |
 |---|---|
-| ① Query Understanding (intent/entity/temporal) | **부분 구현** — temporal expression parsing(`search/temporal.py`)만 있음, 아래 절 참고. intent classification/entity extraction/conversation-aware query는 여전히 LLM 판단에 위임(설계만) |
+| ① Query Understanding (intent/entity/temporal) | **부분 구현** — temporal expression parsing(`search/temporal.py`)은 있음. entity/속성 필터는 `sql_search`(Text-to-SQL, 아래 참고)로 우회 지원됨 - 별도 entity extraction 전처리 단계는 여전히 없고, 그 판단을 모델이 SQL을 짤 때 직접 함 |
 | ② Query Planning (multi-hop 분해) | **구현됨** — `search/planner.py`, 아래 절 참고 |
 | Query Routing (소스 선택) | **구현됨** — `search/router.py`, 아래 절 참고 |
-| ③ Hybrid Retrieval (BM25+Vector+Metadata+Graph) | **부분 구현** — keyword(`file_search`)+semantic(`vector_search`)+metadata(`project_id`/`type`/시간 범위) 병행 실행 + RRF reranking까지 있음, graph는 미구현 |
+| ③ Hybrid Retrieval (BM25+Vector+Metadata+Graph) | **부분 구현** — keyword(`file_search`)+semantic(`vector_search`)+metadata(`project_id`/`type`/시간 범위) 병행 실행 + RRF reranking까지 있음. Graph 전용 API(`graph_search`)는 미구현이지만 `sql_search`로 `relations` 테이블을 직접 JOIN하는 것으로 상당 부분 대체 가능 |
 | Multi-stage Retrieval / Reranking | **부분 구현** — `search/rerank.py`의 Reciprocal Rank Fusion, 아래 절 참고. Cross-Encoder/LLM reranker는 미구현 |
 | ④ Context Engineering (dedup/conflict/compression) | **부분 구현** — 토큰 예산 압축(`agent/compaction.py`), cross-source dedup(`search/rerank.py`, knowledge_object_id 기준)은 있음. conflict 탐지/source reliability/temporal consistency/evidence clustering은 없음 |
 | ⑤ Map-Reduce / Hierarchical Retrieval | 설계만, 미구현 |
-| ⑥ Temporal Search (자연어 시간 표현 → 범위 필터) | **부분 구현** — `search/temporal.py`, 아래 절 참고. Text-to-SQL/서로 다른 KnowledgeObject 타입 간 temporal join(예: "지난달 결정 중 미완료인 것")은 미구현 |
-| Query Routing 확장 (SQL/Web 소스) | 설계만, 미구현 (현재 소스는 file_search/vector_search 둘뿐) |
+| ⑥ Temporal Search (자연어 시간 표현 → 범위 필터 / Text-to-SQL) | **구현됨** — `search/temporal.py`(자연어→범위 필터)와 `search/sql.py`(Text-to-SQL, `sql_search` 도구)로 시간 범위와 속성값 조건을 SQL WHERE/JOIN 하나로 결합하는 temporal join까지 가능해졌다. 아래 절 참고 |
+| Query Routing 확장 (SQL/Web 소스) | **부분 구현** — SQL 소스는 `sql_search`로 추가됐다(단, `search/router.py::route_query`의 자동 라우팅 대상에는 아직 없음 - 모델이 직접 판단해서 호출). Web 소스는 여전히 미구현 |
 | Evidence Grounding / Citation | **약하게 구현** — 시스템 프롬프트가 path/knowledge_object_id 인용을 지시할 뿐, claim-level 매칭/인용 파이프라인은 없음 |
-| Search Evaluation / Feedback Loop | 설계만, 미구현 |
-| Iterative / Agentic Retrieval | **이미 구현됨** — 별도로 만들 필요가 없었다, 아래 절 참고 |
+| Search Evaluation / Feedback Loop | 설계만, 미구현 — [`search-evaluation.md`](search-evaluation.md)에 구체 설계 |
+| Iterative / Agentic Retrieval | **이미 구현됨**(암묵적 판단) — 아래 절 참고. 명시적 groundedness gate로 강화하는 안은 [`search-evaluation.md`](search-evaluation.md) (D) |
 
 ---
 
@@ -117,7 +117,7 @@ router가 필요한 곳은 **프로그램적으로 생성된**(모델 턴이 없
 `search/rerank.py`로 병합한다(아래 ③ 참고) - 소스 선택은 라우터, 병합/재정렬은 rerank 모듈로
 역할이 나뉜다.
 
-## Iterative / Agentic Retrieval — **이미 구현됨**, 새로 만들 필요 없음
+## Iterative / Agentic Retrieval — **이미 구현됨**(암묵적 판단), 새로 만들 필요 없음
 
 "한 번 검색하고 끝내지 않고, 근거가 부족하면 재검색"이라는 요구사항은 `agent/loop.py::run_agent`
 의 도구 호출 루프 자체가 이미 제공한다 — 에이전트는 file_search/vector_search/plan_search 결과를
@@ -127,16 +127,23 @@ router가 필요한 곳은 **프로그램적으로 생성된**(모델 턴이 없
 이게 이미 tool-calling 에이전트의 기본 동작이기 때문 - 추가로 만들면 에이전트가 이미 하는 일을
 어설프게 다시 구현하는 셈이 된다.
 
+"충분한가?"의 판단 자체는 여전히 모델의 암묵적 자기평가에 전적으로 의존한다 - 강제되는 검증
+단계는 없다. 답변 확정 직전에 claim-evidence 매칭으로 한 번 더 검증하는 명시적 groundedness
+gate를 얹는 안은 [`search-evaluation.md`](search-evaluation.md) (D)에 설계해뒀다 - 아래
+Search Evaluation / Feedback Loop 절과 판정기를 공유하는 옵션 확장이라 그쪽에서 같이 다룬다.
+
 ## ③ Hybrid Retrieval — 부분 구현
 
 - Keyword(`file_search`, substring/frontmatter) + Semantic(`vector_search`, pgvector) 병행
   실행은 Query Routing을 통해 이미 가능(위 참고).
-- Metadata/entity filtering(`project_id`/`type`)도 두 도구 모두 1급 파라미터로 이미 지원한다 -
-  "김철수가 참여한 Project A 관련 논의"처럼 metadata 필터가 semantic similarity보다 중요한
-  경우, 에이전트가 `project_id`/`type` 인자로 좁혀 호출할 수 있다(단, "김철수가 참여한"이라는
-  **entity 필터**는 KnowledgeObject 스키마에 참여자 필드가 정규화되어 있지 않아 아직
-  구조화된 필터로 걸 수 없다 - `content`/`topics`의 자유 텍스트 매칭에 의존).
-- Graph 축(`GET /relations/expand`, `agent-search.md`)은 여전히 미구현.
+- Metadata filtering(`project_id`/`type`/시간 범위)은 `file_search`/`vector_search` 둘 다
+  1급 파라미터로 지원한다. "김철수가 참여한 Project A 관련 논의"처럼 **entity 필터**가
+  필요한 경우 - KnowledgeObject 스키마에 참여자 필드가 정규화되어 있지 않아 `project_id`/`type`
+  같은 전용 파라미터로는 못 걸지만, `sql_search`(아래 ⑥ Text-to-SQL 절)로 `knowledge_objects`
+  를 `relations`와 JOIN해서 우회할 수 있게 됐다 - 전용 파라미터가 아니라 임의 SQL이라는 점에서
+  "구조화된 필터"라 부르긴 이르지만, 실질적으로 이 gap을 메운다.
+- Graph 축 전용 API(`GET /relations/expand`, `agent-search.md`)는 여전히 미구현이지만,
+  `sql_search`로 `relations` 테이블을 직접 JOIN하는 1-hop 수준까지는 이미 가능(아래 ⑥ 참고).
 - **Reranking(RRF) — 구현됨**, `search/rerank.py::merge_and_rerank`. `plan_search`가 하위
   질의 하나에 대해 두 소스를 모두 호출하면, 두 결과 리스트를 Reciprocal Rank Fusion(RRF)으로
   병합한다 - `file_search`의 정수 가중치와 `vector_search`의 cosine 유사도는 스케일이 달라
@@ -170,7 +177,7 @@ Message→Chunk 요약→Document 요약→Project 요약처럼 계층적으로 
 `ExtractionResult.summary`를 모아 재요약)을 고민한 흔적이 `roadmap.md`(7단계 이전 문서 요약
 설계)에 있으니, 필요해지면 그 설계를 확장하는 방향이 될 것.
 
-## ⑥ Temporal Search — 부분 구현, `search/temporal.py`
+## ⑥ Temporal Search — 구현됨, `search/temporal.py` + `search/sql.py`
 
 "어제", "지난주", "이번 분기", "2025년 Q3", "최근 3일" 같은 상대/분기 시간 표현을
 `parse_temporal_expression(text, now=None) -> TimeRange | None`이 명시적 `[start, end)` UTC
@@ -195,12 +202,54 @@ Message→Chunk 요약→Document 요약→Project 요약처럼 계층적으로 
 - **타임존**: 항상 UTC 기준(`KnowledgeObject.extracted_at`이 항상 UTC로 저장되므로 데이터와
   일관성을 맞춘 것) - 호출자가 UTC와 먼 타임존에 있으면 "오늘"/"어제"의 자정 경계가 그 호출자의
   체감과 최대 하루 정도 어긋날 수 있다. 월요일을 주의 시작으로 본다(ISO, 한국 관례와 일치).
-- **아직 안 되는 것 (Temporal Join)**: "지난달 결정된 사항 중 아직 완료되지 않은 것"처럼 서로
-  다른 KnowledgeObject 타입(Decision과 ActionItem 등)에 각각 다른 조건(시간 범위 + 상태)을
-  걸어 join하는 건 여전히 미구현이다 - `content: dict`가 타입별 자유 스키마라 "완료 여부"
-  같은 상태 필드가 구조화된 필터로 걸 수 있게 정규화되어 있지 않은 게 근본 원인(Text-to-SQL을
-  만들어도 걸 조건 자체가 아직 없다). 시간 범위 하나로 한 소스를 필터링하는 것까지가 이번
-  구현의 범위.
+
+### Text-to-SQL (`sql_search` 도구, `search/sql.py`) — Temporal Join과 속성/entity 필터의 실제 해법
+
+"지난달 유지희가 진행한 업무 요약"처럼 **시간 범위 + 특정 사람(속성) 필터를 동시에** 거는
+질문은 `since`/`until` 파라미터 하나로는 풀리지 않는다 - "유지희" 쪽은 애초에 구조화된 필터
+파라미터가 없기 때문(위 ① Query Understanding, ③ Hybrid Retrieval의 "entity 필터 미구현"
+gap). 이걸 속성 하나마다 새 파라미터를 만드는 대신, **모델이 직접 SQL을 작성**해서 풀도록
+`sql_search` 도구를 추가했다:
+
+```sql
+-- "유지희"라는 entity를 언급한 항목 중 지난달 것만
+SELECT ko.summary, ko.extracted_at
+FROM knowledge_objects ko
+JOIN relations r ON r.subject_id = ko.knowledge_object_id AND r.type = 'mentions'
+JOIN knowledge_objects e ON e.knowledge_object_id = r.object_id AND e.type = 'entity'
+WHERE e.content->>'name' = '유지희'
+  AND ko.extracted_at >= '2026-08-01' AND ko.extracted_at < '2026-09-01'
+```
+
+- **왜 별도 자연어→SQL 변환 LLM 호출이 없는가**: `sql_search`를 호출하는 모델 자신이 이미 그
+  질문을 낸 LLM이다 - `agent/tools.py`가 도구 설명에 스키마(`search/sql.py::SCHEMA_DESCRIPTION`)
+  를 실어 보내는 것만으로, 모델이 도구 인자로 SQL을 바로 써서 넘긴다. `search/planner.py`의
+  `decompose_query()`처럼 별도 LLM 라운드트립을 도는 게 아니다 - 이미 하고 있는 추론을 다시
+  하게 만들 이유가 없다.
+- **읽기 전용 강제, 세 겹**: (1) `search/sql.py::_validate_readonly_sql`이 SELECT/WITH로
+  시작하는 단일 문인지, 쓰기/DDL 키워드가 없는지 문자열 단계에서 먼저 걸러낸다. (2)
+  `PostgresStore.execute_readonly_query`가 그 SQL을 `SET TRANSACTION READ ONLY` 트랜잭션
+  안에서 실행한다 - (1)이 놓친 게 있어도 Postgres 자체가 쓰기를 거부한다. (3) 그 트랜잭션은
+  `force_rollback=True`(psycopg3)로 성공하더라도 무조건 롤백된다. 셋 다 독립적인 방어선 -
+  잘 작동하는 모델이면 (1)만으로 충분하지만, 검색된 문서 내용을 통한 prompt injection처럼
+  모델이 나쁜 SQL을 쓰도록 유도당하는 경우까지 감안한 설계.
+- **행 수 제한**: 모델이 쓴 SQL의 `LIMIT`을 신뢰하지 않는다 - 전체 쿼리를 서브쿼리로 감싸
+  `SELECT * FROM (모델의 SQL) AS sql_search LIMIT 200`(기본값)을 서버가 강제한다.
+- **JSON 직렬화**: `agent/loop.py`의 tool_result 직렬화(`json.dumps`, `default=` 없음)가 임의
+  컬럼 타입(datetime/Decimal/UUID/bytes)을 만나면 그냥 죽는다 - `search/sql.py::_json_safe`가
+  모든 값을 미리 JSON-안전 타입으로 바꾼다. 1536차원 벡터처럼 긴 숫자 리스트는
+  `"<vector, N dims, omitted>"`로 치환한다(스키마 설명에도 embedding 컬럼을 SELECT하지 말라고
+  적어뒀지만, 실수로 걸리는 경우의 안전망).
+- **project_id 스코프는 강제되지 않는다** - 이 도구는 다른 도구들과 달리 `project_id` 파라미터가
+  없다(임의 SQL이라 외부에서 안전하게 주입할 방법이 마땅치 않다). 시스템 프롬프트가 "필요하면
+  SQL 안에 직접 sources와 JOIN해 WHERE로 걸 것"이라고 안내할 뿐이다 - 이 harness 전체가 이미
+  전제하는 "접근 제어 없음, 로컬/단일 사용자 실행"(agent-runtime.md의 "알려진 제약")과 같은
+  신뢰 경계.
+- **Graph 축도 부분적으로 대체**: `relations` 테이블을 직접 JOIN할 수 있으므로, 별도
+  `graph_search`(`GET /relations/expand`, 여전히 미구현) 없이도 "무엇이 무엇을 언급/인과하는지"
+  같은 질문의 상당 부분을 `sql_search`로 풀 수 있다 - 다만 `GET /relations/expand`가 설계해
+  둔 `depth>1` 재귀 탐색까지 모델이 매번 정확한 재귀 CTE를 직접 쓰길 기대하긴 어려워서, 얕은
+  1-hop JOIN 수준의 대체다.
 
 ## Evidence Grounding / Citation — 약하게 구현
 
@@ -214,6 +263,9 @@ claim을 추출해 evidence와 자동으로 매칭/인용하는 별도 단계(Cl
 Recall/Precision/MRR/NDCG, answer groundedness, citation accuracy 같은 지표도, 쿼리별 실패
 원인 추적도 없다 - 이 시스템에는 아직 "검색이 잘 됐는지" 평가할 방법이 코드로 존재하지 않는다.
 가장 먼저 필요해지는 시점은 실사용 트래픽이 쌓여 어떤 질의 유형이 자주 실패하는지 알아야 할 때.
+구체적인 설계(로깅 스키마, LLM-judge 기반 groundedness/citation 자동 평가, 골드셋이 필요한
+Recall/Precision/MRR/NDCG를 위한 별도 트랙, 위 Iterative Retrieval을 강화하는 온라인
+groundedness gate)는 [`search-evaluation.md`](search-evaluation.md) 참고.
 
 ## 왜 지금 여기서 멈추는가
 
@@ -238,7 +290,17 @@ map-reduce → citation → feedback loop)가 될 것 같지만, 실제 우선�
 
 이어서 **⑥ Temporal Search**(`search/temporal.py`)를 구현했다 - "어제 뭐 있었어" 같은 질문이
 지금까지 전혀 필터링되지 않고 그냥 키워드/의미 검색으로만 처리되는 게 가장 체감 격차가 큰
-남은 gap이었다. Text-to-SQL이나 서로 다른 KnowledgeObject 타입 간 temporal join까지는 손대지
-않았다 - 걸 조건(예: "완료 여부") 자체가 구조화되어 있지 않아 그 확장은 스키마 변경 없이는
-의미가 없다고 판단했다(위 절의 "아직 안 되는 것" 참고). 남은 순서(⑤ map-reduce → citation →
-feedback loop, 그리고 ④의 나머지인 conflict 탐지/reliability/clustering)는 여전히 설계만.
+남은 gap이었다.
+
+바로 뒤이어, "지난달 유지희가 진행한 업무 요약"처럼 시간 범위와 특정 사람/속성 필터를 **함께**
+거는 질문(Temporal Join)에서 `since`/`until`만으로는 "유지희" 쪽이 전혀 안 걸린다는 게
+분명해졌다 - entity 필터는 `project_id`/`type`처럼 전용 파라미터를 새로 만들어서는 대응이
+안 되는 문제였다(속성이 무한히 다양할 수 있으므로). 그래서 **Text-to-SQL**(`search/sql.py`,
+`sql_search` 도구)을 구현해 이 문제를 일반적으로 풀었다 - 속성 하나마다 파라미터를 추가하는
+대신, 모델이 스키마를 보고 직접 SQL(WHERE/JOIN)을 쓰게 한 것. 이 결정 하나로 entity 필터
+(③), temporal join(⑥), graph 1-hop 조회(③의 graph 축)까지 세 가지 이전 gap이 동시에
+상당 부분 메워졌다 - 각각을 개별 기능으로 만드는 것보다, "구조화된 질의가 필요하면 SQL을
+직접 쓰게 한다"는 하나의 결정이 더 일반적이고 쌌다.
+
+남은 순서(⑤ map-reduce → citation → feedback loop, 그리고 ④의 나머지인 conflict 탐지/
+reliability/clustering)는 여전히 설계만.

@@ -301,6 +301,7 @@ KF_OKF_DIR=./okf uv run knowledge-forge agent --interactive   # REPL, Ctrl-D로 
 |---|---|---|
 | `file_search` | `KF_OKF_DIR` | OKF 파일 트리를 키워드/frontmatter로 검색 — 정확한 문자열/ID에 강함. `time_range`로 "어제"/"지난주" 등 자연어 시간 필터링 가능 |
 | `vector_search` | `KF_DATABASE_URL` (pgvector 임베딩 필요, 아래 `embed` 참고) | KnowledgeObject 임베딩을 의미 기반으로 검색 — 자연어 패러프레이즈에 강함. `time_range` 지원은 file_search와 동일 |
+| `sql_search` | `KF_DATABASE_URL` | Knowledge Base를 PostgreSQL SQL로 직접 조회(Text-to-SQL) — 특정 사람/속성이 언급된 항목, 집계, 시간 범위+속성값을 함께 거는 조건처럼 file_search/vector_search로 안 되는 질문에 씀. 읽기 전용만 허용 |
 | `plan_search` | 항상 | 여러 단계 추론이 필요한 복합 질문을 하위 질의로 분해해, 독립적인 것은 병렬로 검색하고, 두 소스 결과는 RRF로 병합/재정렬(cross-source dedup 포함)해 근거를 반환 — 하위 질의 문장의 시간 표현도 자동 인식 (Query Planning + Routing + Reranking + Temporal Search) |
 | `read_file` / `write_file` / `edit_file` / `list_dir` | `KF_OKF_DIR` | OKF 루트 트리 범위로 제한된 파일 읽기/쓰기 |
 | `write_memory` | 항상 | 세션이 끝나도 남을 사실/결정을 프로젝트별 기억 파일에 기록 |
@@ -354,7 +355,7 @@ src/knowledge_forge/
 ├── storage/               # PipelineStore (Postgres + 디스크, opt-in) + JobStore (jobs 큐)
 ├── okf/                   # OKFWriter — 파일 기반 Knowledge Base (opt-in)
 ├── embedding/             # EmbeddingProvider ABC + OpenAIEmbeddingProvider (pgvector 임베딩, opt-in)
-├── search/                # file_search/vector_search — agent 도구가 감싸는 검색 서비스 함수
+├── search/                # file_search/vector_search/sql_search + planner/router/rerank/temporal — agent 도구가 감싸는 검색 서비스 함수
 ├── agent/                 # 모델 벤더 중립 Agent Runtime — knowledge-forge agent (wiki/agent-runtime.md)
 └── scheduling/             # APScheduler 기반 주기 실행
 

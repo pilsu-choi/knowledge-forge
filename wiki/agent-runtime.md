@@ -1,4 +1,4 @@
-# Agent Runtime — 모델 벤더 중립 harness (Phase 1~5 구현됨)
+# Agent Runtime — 모델 벤더 중립 harness (Phase 1~6 구현됨)
 
 `refs/hermes-agent`를 참고해 세운 knowledge-forge 자체 agent runtime(harness). `wiki/agent-search.md`
 의 `file_search`/`vector_search`/`graph_search` 설계 중 **file_search(Phase 1)와 vector_search
@@ -40,6 +40,7 @@ src/knowledge_forge/search/
     planner.py              # decompose_query()/plan_and_search() - 멀티홉 질의 분해 + 병렬/의존 실행
     rerank.py                # merge_and_rerank() - RRF로 다중 소스 결과 병합/재정렬 + cross-source dedup
     temporal.py              # parse_temporal_expression() - 자연어 시간 표현 -> [since, until) UTC 범위
+    sql.py                    # sql_search() - Text-to-SQL, 읽기 전용 강제 + 행 수 제한 + JSON 직렬화 안전망
 src/knowledge_forge/okf/
     fs_service.py          # read_file/write_file/edit_file/list_dir() - OKF 루트 트리로 스코프된 FS 도구
 src/knowledge_forge/agent/
@@ -304,6 +305,47 @@ resources/objects 파일에 이미 쓰고 있던 필드 - 새 필드 추가 없�
   (자연어 문자열) 인자를 추가했다 - `_resolve_time_range()`가 두 핸들러에서 공유하는 변환
   헬퍼. 모델이 이해 못 하는 표현을 넘겨도 에러 없이 필터 없는 검색으로 조용히 degrade한다.
 
+## Phase 6 — `sql_search` (Text-to-SQL)
+
+`wiki/search-architecture.md`의 "⑥ Temporal Search - Text-to-SQL" 구현이자, entity/속성
+필터(③ Hybrid Retrieval)와 graph 1-hop 조회(③의 graph 축)도 같이 대체하는 도구 - 시간 범위와
+"유지희가 언급된" 같은 속성 조건을 동시에 거는 질문(Temporal Join)은 `since`/`until` 파라미터
+하나로는 못 풀기 때문에 나온 결정. 전체 설계 근거는 그 문서, 여기서는 harness 통합 지점만
+다룬다.
+
+### `search/sql.py::sql_search`
+
+`file_search`/`vector_search`와 달리 이 도구는 query-understanding 레이어가 아예 없다 -
+`sql_search`를 호출하는 모델 자신이 자연어→SQL 번역을 이미 하고 있어서(도구 인자로 SQL을
+직접 써서 넘김), `search/planner.py::decompose_query`처럼 별도 LLM 라운드트립을 돌 필요가
+없다. `agent/tools.py`가 도구 설명에 `search/sql.py::SCHEMA_DESCRIPTION`(테이블/컬럼 요약,
+JSONB `content` 필드 접근법, `relations`로 entity를 조인하는 법)을 실어 보내는 것만으로
+모델이 스스로 스키마를 안다.
+
+안전장치 세 겹(독립적인 방어선 - 정상적인 모델이면 첫 번째만으로 충분하지만, 검색된 문서
+내용을 통한 prompt injection 등으로 모델이 나쁜 SQL을 쓰도록 유도당하는 경우까지 대비):
+1. `_validate_readonly_sql()` - SELECT/WITH로 시작하는 단일 문인지, 쓰기/DDL 키워드가 없는지
+   문자열 단계에서 먼저 거른다.
+2. `PostgresStore.execute_readonly_query()`가 `SET TRANSACTION READ ONLY` 트랜잭션 안에서
+   실행한다 - (1)이 놓쳐도 Postgres 자체가 쓰기를 거부한다.
+3. 그 트랜잭션은 psycopg3의 `force_rollback=True`로 성공해도 무조건 롤백된다.
+
+행 수는 모델이 쓴 `LIMIT`을 신뢰하지 않고, 전체 쿼리를 `SELECT * FROM (...) AS sql_search
+LIMIT %s`로 감싸 서버가 강제한다(기본 200행). `_json_safe()`가 임의 컬럼 타입(datetime/
+Decimal/UUID/bytes)을 `agent/loop.py`의 무설정(`default=` 없는) `json.dumps`가 그대로
+직렬화할 수 있는 형태로 미리 바꾸고, 1536차원 벡터 같은 긴 숫자 리스트는
+`"<vector, N dims, omitted>"`로 치환한다(스키마 설명도 embedding 컬럼을 SELECT하지 말라고
+안내하지만, 실수로 걸리는 경우의 안전망).
+
+### `agent/tools.py::_make_sql_search_tool`
+
+`vector_search`와 같은 조건(`KF_DATABASE_URL` 설정)에서만 도구 목록에 추가되고, 호출마다
+`PipelineStore`를 열고 닫는다(같은 "그때그때 연결" 패턴). `project_id`로 범위를 좁히는 전용
+파라미터가 없다 - 임의 SQL이라 외부에서 안전하게 주입할 방법이 마땅치 않기 때문에, 시스템
+프롬프트(`prompts.py`)가 필요하면 SQL 안에 직접 `sources`와 JOIN해 걸라고 안내한다 - 이
+harness 전체가 이미 전제하는 "접근 제어 없음, 로컬/단일 사용자 실행"과 같은 신뢰 경계(아래
+"알려진 제약" 참고).
+
 ## 알려진 제약
 
 - 스트리밍 미지원 - 한 턴이 끝나야 출력.
@@ -314,18 +356,23 @@ resources/objects 파일에 이미 쓰고 있던 필드 - 새 필드 추가 없�
   루트 트리 내부로 범위가 좁혀져 있지만, 그 트리 안에서는 별도 permission mode 없이 즉시 쓴다.
 - `delegate_task`는 부모와 동일한 `max_iterations`를 쓰고 부모 턴 안에서 동기적으로 완료를 기다린다 -
   병렬 실행/백그라운드 위임(hermes의 배치 모드) 없음.
+- `sql_search`는 `project_id` 스코프를 강제하지 않는다 - 다른 도구와 달리 임의 SQL이라 외부에서
+  안전하게 주입할 방법이 없고, 모델이 필요할 때 SQL 안에 직접 걸어야 한다(위 "접근 제어 없음"과
+  같은 신뢰 경계의 연장).
 
 ## 다음 단계
 
-1. `graph_search`를 `search/service.py`·`agent/tools.py`에 추가 (`relations` 테이블은 이미 있으므로
-   조회 쿼리 + 도구 어댑터만 추가하면 됨 - `agent-search.md`의 `GET /relations/expand` 설계 참고).
-   추가되면 `search/router.py::route_query`의 소스 후보에도 자연스럽게 편입될 대상.
-2. `POST /search/vector` HTTP 엔드포인트 - agent 도구 `vector_search`가 이미 있는 `search/service.py::
-   vector_search()`를 그대로 감싸는 얇은 FastAPI 라우터만 추가하면 됨.
+1. `GET /relations/expand`처럼 `depth>1` 재귀 그래프 탐색을 전용 API/도구로 만드는 것 -
+   `sql_search`가 1-hop JOIN 수준은 이미 대체하지만, 여러 단계 재귀 탐색을 모델이 매번 정확한
+   재귀 CTE로 쓰길 기대하긴 어렵다(`agent-search.md`의 `GET /relations/expand` 설계 참고).
+2. `POST /search/vector`/`POST /search/sql` 같은 HTTP 엔드포인트 - agent 도구가 이미 있는
+   `search/service.py::vector_search()`/`search/sql.py::sql_search()`를 그대로 감싸는 얇은
+   FastAPI 라우터만 추가하면 됨.
 3. `knowledge-forge mcp-server`(stdio) - 외부 host(Claude Code/Claude Desktop 등) 노출.
 4. permission mode(쓰기 도구 승인 흐름) / Skills 연동 - 별도 설계 문서.
 5. `wiki/search-architecture.md`가 정리한 더 넓은 RAG 레이어 중 남은 것(Context Engineering의
    conflict 탐지/reliability/clustering, Map-Reduce, Evidence Grounding 파이프라인, Feedback
-   Loop, Temporal Search의 서로 다른 KnowledgeObject 타입 간 join) - Hybrid rerank(RRF)/
-   cross-source dedup(`search/rerank.py`)과 단일 소스 시간 범위 필터(`search/temporal.py`)는
-   구현됐지만 나머지는 설계만 있고 미착수, 그 문서의 "왜 지금 여기서 멈추는가" 참고.
+   Loop) - Hybrid rerank(RRF)/cross-source dedup(`search/rerank.py`), 시간 범위 필터
+   (`search/temporal.py`), Text-to-SQL(`search/sql.py`, entity 필터/temporal join/graph
+   1-hop 대체 포함)은 구현됐지만 나머지는 설계만 있고 미착수, 그 문서의 "왜 지금 여기서
+   멈추는가" 참고.

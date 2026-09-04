@@ -14,7 +14,8 @@
 | 임베딩 생성 파이프라인(`--embed`, `knowledge-forge embed`) | **구현됨** — [`embeddings.md`](embeddings.md) |
 | `vector_search` (agent 도구) | **구현됨** — [`agent-runtime.md`](agent-runtime.md), 아래 절 참고. `POST /search/vector` HTTP 엔드포인트 자체는 여전히 미구현 |
 | Query Planning + Query Routing (`plan_search` agent 도구) | **구현됨** — [`search-architecture.md`](search-architecture.md), [`agent-runtime.md`](agent-runtime.md) |
-| `GET /relations/expand` (graph_search) | 설계만, 미구현 |
+| Text-to-SQL (`sql_search` agent 도구) | **구현됨** — [`search-architecture.md`](search-architecture.md), [`agent-runtime.md`](agent-runtime.md). Temporal join, entity/속성 필터, graph 1-hop 조회를 이걸로 대체 |
+| `GET /relations/expand` (graph_search, `depth>1` 재귀 탐색) | 설계만, 미구현 (1-hop 조회는 `sql_search`로 이미 가능) |
 | `GET /okf/search` (file_search, OKF 트리 기반) | 설계만, 미구현 (agent 도구 `file_search`는 이미 구현됨 — [`agent-runtime.md`](agent-runtime.md)) |
 | `knowledge-forge mcp-server` | 설계만, 미구현 |
 | Claude Code용 검색 skill | 설계만, 미구현 |
@@ -96,20 +97,26 @@ POST /search/vector   # 이 HTTP 경로 자체는 여전히 미구현 - 아래�
 `file_search`/`vector_search` 중 무엇을 쓸지 정하는 라우팅 휴리스틱을 구현했다 - 이 문서가 다루는
 세 검색 도구 자체보다 한 단계 위(도구 여러 개를 조합해 쓰는 계층)라, 전체 설계 근거와 상태는
 별도 문서 [`search-architecture.md`](search-architecture.md)에 정리했다 (`search/planner.py`,
-`search/router.py`, `search/rerank.py`, `search/temporal.py`, `agent/tools.py::_make_plan_search_tool`).
-두 소스 결과를 병합/재정렬하는 RRF reranking + cross-source dedup(`search/rerank.py`), 자연어
-시간 표현을 명시적 범위로 바꾸는 temporal filtering(`search/temporal.py`, "어제"/"지난주"/
-"2025년 Q3" 등)도 같은 후속 작업으로 구현됐다 - 후자는 `time_range` 인자로 `file_search`/
-`vector_search`에서도 직접 쓸 수 있다. Context Engineering의 나머지(conflict 탐지 등)/
-Map-Reduce/Evidence Grounding 파이프라인/Feedback Loop 같은 더 넓은 RAG 아키텍처 레이어들의
-구현 여부도 그 문서의
-상태표에 있다.
+`search/router.py`, `search/rerank.py`, `search/temporal.py`, `search/sql.py`,
+`agent/tools.py::_make_plan_search_tool`). 두 소스 결과를 병합/재정렬하는 RRF reranking +
+cross-source dedup(`search/rerank.py`), 자연어 시간 표현을 명시적 범위로 바꾸는 temporal
+filtering(`search/temporal.py`, "어제"/"지난주"/"2025년 Q3" 등)도 같은 후속 작업으로 구현됐다 -
+후자는 `time_range` 인자로 `file_search`/`vector_search`에서도 직접 쓸 수 있다. 이어서
+Text-to-SQL(`search/sql.py`, `sql_search` 도구)로 시간 범위 + 속성값을 함께 거는 temporal
+join, entity/속성 필터, graph 1-hop 조회까지 한 번에 대체했다 - "지난달 유지희가 언급된 항목"
+처럼 `since`/`until`만으로는 못 푸는 질문이 그 동기다. Context Engineering의 나머지(conflict
+탐지 등)/Map-Reduce/Evidence Grounding 파이프라인/Feedback Loop 같은 더 넓은 RAG 아키텍처
+레이어들의 구현 여부도 그 문서의 상태표에 있다.
 
 ### `GET /relations/expand` (graph_search)
 
 벡터 검색으로 KnowledgeObject 하나를 찾은 다음, 그 주변 그래프(무엇과 연결되어 있는지)를
 따라가는 용도 — `relations` 테이블이 이미 `subject_id`/`object_id`로 typed edge를 표현하고
 있으므로([`storage.md`](storage.md) 스키마 표), 새 저장 구조 없이 조회 쿼리만 추가하면 된다.
+**`depth=1`(1-hop) 수준은 이미 `sql_search`(Text-to-SQL, `search-architecture.md` "⑥" 절)로
+대체 가능해졌다** - 모델이 `knowledge_objects`를 `relations`와 직접 JOIN하면 된다. 이 절이
+여전히 미구현이라고 남겨두는 건 `depth>1` 재귀 탐색(아래) - 매번 정확한 재귀 CTE를 모델이
+직접 쓰길 기대하기보다 전용 엔드포인트/도구로 감싸는 편이 안정적이다.
 
 ```
 GET /relations/expand?knowledge_object_id=ko_123&depth=1&type=SUPERSEDES,DUPLICATE_OF
