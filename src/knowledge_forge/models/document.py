@@ -86,6 +86,18 @@ class DocumentMetadata(BaseModel):
     language: str | None = None
     page_count: int | None = None
     created_at: datetime | None = None
+    # Version signal parsed from the file name / subject at ingest
+    # (knowledge_forge.ingest_version, filled by document_links.
+    # apply_version_metadata) - "최종본"/"3차 수정본"/"이전 버전" questions
+    # can't be answered from content, so it has to be captured here.
+    # `version_family` groups every version of one logical document
+    # (same project); `version_number`/`is_final` order them. All None for
+    # sources without a meaningful name (Slack episodes) or rows written
+    # before these fields existed (`knowledge-forge db backfill-links`).
+    version_label: str | None = None
+    version_number: float | None = None
+    is_final: bool | None = None
+    version_family: str | None = None
 
 
 class Document(BaseModel):

@@ -12,6 +12,7 @@ from knowledge_forge.collectors.base import RawItem
 from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.document import Document
 from knowledge_forge.models.knowledge_object import KnowledgeObject
+from knowledge_forge.models.link import DocumentLink
 from knowledge_forge.models.relation import Relation
 from knowledge_forge.models.source import Source
 from knowledge_forge.storage.postgres_store import PostgresStore
@@ -208,6 +209,33 @@ class PipelineStore:
     async def backfill_document_titles(self, project_id: str | None = None, *, overwrite: bool = False) -> int:
         """`knowledge-forge db backfill-titles` - see `PostgresStore.backfill_document_titles`."""
         return await self._db.backfill_document_titles(project_id, overwrite=overwrite)
+
+    async def link_document(self, source: Source, document: Document) -> list[DocumentLink]:
+        """Version-family relink + source-metadata links for one just-stored
+        Document (document_links.link_document) - called by pipeline.py right
+        after `record_document`, which must come first so the family query
+        sees the new row."""
+        from knowledge_forge.document_links import link_document
+
+        return await link_document(self._db, source, document)
+
+    async def record_document_links(self, links: list[DocumentLink]) -> None:
+        await self._db.save_document_links(links)
+
+    async def list_document_links(
+        self, document_id: str, *, direction: str = "both", link_type: str | None = None
+    ) -> list[DocumentLink]:
+        return await self._db.list_document_links(document_id, direction=direction, link_type=link_type)
+
+    async def list_version_family(self, family_key: str, project_id: str) -> list[Document]:
+        """Oldest -> newest; see `PostgresStore.list_version_family`."""
+        return await self._db.list_version_family(family_key, project_id)
+
+    async def backfill_document_versions_and_links(self, project_id: str | None = None) -> dict[str, Any]:
+        """`knowledge-forge db backfill-links` - see document_links.py."""
+        from knowledge_forge.document_links import backfill_document_versions_and_links
+
+        return await backfill_document_versions_and_links(self._db, project_id)
 
     async def get_sync_cursor(self, source: str) -> dict[str, Any] | None:
         return await self._db.get_sync_cursor(source)

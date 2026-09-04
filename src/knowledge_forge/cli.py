@@ -688,6 +688,38 @@ def db_backfill_titles(
     typer.echo(f"문서 제목 백필 완료: {updated}건", err=True)
 
 
+@db_app.command("backfill-links")
+def db_backfill_links(
+    project_id: str | None = typer.Option(
+        None, "--project-id", help="이 프로젝트의 문서만 처리한다 (기본: 전체 프로젝트)."
+    ),
+) -> None:
+    """Parse version metadata (documents.metadata.version_*) and rebuild document_links
+    (PREVIOUS_VERSION / THREAD_PARENT / same_channel_sequence / thread_sequence) for rows
+    ingested before that stage existed - idempotent, safe to re-run (see document_links.py)."""
+    database_url = settings.database_url
+    if not database_url:
+        typer.echo("KF_DATABASE_URL이 설정되지 않았습니다.", err=True)
+        raise typer.Exit(1)
+
+    async def _run() -> dict:
+        async with PipelineStore(database_url, settings.data_dir) as store:
+            await store.init_schema()
+            return await store.backfill_document_versions_and_links(project_id)
+
+    stats = asyncio.run(_run())
+    typer.echo(
+        f"문서 {stats['documents_scanned']}건 스캔, 버전 family 부여 {stats['documents_versioned']}건"
+        f"(명시적 버전 표기 {stats['documents_with_marker']}건), family {stats['families']}개"
+        f"(2건 이상 {stats['families_multi']}개)",
+        err=True,
+    )
+    for link_type, count in stats["links_by_type"].items():
+        typer.echo(f"  {link_type}: {count}건", err=True)
+    if not stats["links_by_type"]:
+        typer.echo("  생성된 링크 없음", err=True)
+
+
 @db_app.command("export-okf")
 def db_export_okf(
     okf_dir: Path = typer.Option(..., "--okf-dir", help="Directory to write the OKF Knowledge Base tree to."),
