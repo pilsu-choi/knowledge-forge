@@ -25,6 +25,12 @@ dependencies = [
     "mdit-py-plugins>=0.4",
     "tenacity>=9.0",
     "psycopg[binary]>=3.2",
+    # 검색 읽기 전용 커넥션 풀(storage/postgres_store.py::_read_conn). psycopg3의 async
+    # 커넥션은 커넥션 하나에 대한 동시 실행을 내부 락으로 직렬화하기 때문에, 커넥션이
+    # 하나뿐이면 asyncio.gather로 질의를 겹쳐도 아무 이득이 없다(실측: lexical_search 5회가
+    # 순차 182ms / 한 커넥션 gather 183ms / 다섯 커넥션 gather 46ms). 별도 패키지인 이유는
+    # psycopg가 풀을 코어에서 분리해 배포하기 때문 - `psycopg[pool]` extra와 같은 것이다.
+    "psycopg-pool>=3.2",
     # pgvector column type adapter for psycopg3 (knowledge_object_embeddings,
     # wiki/embeddings.md) - openai (above) already covers the embedding API
     # client, no new dependency needed there.
