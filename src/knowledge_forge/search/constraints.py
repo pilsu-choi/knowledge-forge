@@ -65,6 +65,14 @@ STRATEGY_DOCUMENT_LOOKUP = "document_lookup"
 STRATEGY_LEXICAL = "lexical"
 STRATEGY_METADATA_FILTER = "metadata_filter"
 STRATEGY_VECTOR = "vector"
+# 어휘 arm(`retrieve.py::_Run.keyword_arm`) - semantic_query를 제목/본문에도 거는 하이브리드의
+# 한쪽 팔. 원래는 `vector()` 끝에서 무조건 호출되는 부작용이라 전략 목록에 이름이 없었고, 그
+# 탓에 `strategies_override=["vector"]`가 "순수 벡터"라는 문서상의 약속을 지키지 못했다(실제로는
+# vector + arm이 돌아 A/B의 벡터 단독 arm이 통째로 무효였다 - "vector 단독 0.736"으로 기록된
+# v0 ndcg@10은 실제로는 vector+arm의 값이고, 진짜 벡터 단독은 0.477이다). 이름을 주어 "arm 없는
+# vector"와 "vector 없는 arm"을 override로 표현할 수 있게 한 것이지, 기본 라우팅 동작은 그대로다 -
+# `suggest_strategies`가 vector를 넣을 때 항상 같이 넣는다.
+STRATEGY_KEYWORD_ARM = "keyword_arm"
 STRATEGY_LATEST = "latest"
 STRATEGY_EXHAUSTIVE = "exhaustive"
 STRATEGY_COUNT = "count"
@@ -765,6 +773,9 @@ def suggest_strategies(constraints: QueryConstraints) -> list[str]:
       sources.metadata/타임스탬프 WHERE 조건으로 건다(Metadata Filter/Temporal). 다른 후보 생성 전략과
       결합되는 필터이지 단독 랭킹이 아니다 - 단독이면 필터 결과를 최신순 정렬로 돌려준다.
     - "vector": `semantic_query`로 임베딩 유사도 검색(Entity-centric/Ambiguous/일반 QA).
+    - "keyword_arm": 같은 `semantic_query`를 제목(`document_search`)·본문(`lexical_search`)에도 걸어
+      벡터와 나란히 RRF에 넣는 어휘 arm. `vector`와 늘 짝으로 나온다(하이브리드 검색의 반대쪽 팔) -
+      따로 세워 둔 이유는 A/B에서 한쪽만 끄기 위해서다(`retrieve.py::_Run.keyword_arm`).
 
     후처리/집계:
     - "latest": 후보를 소스 타임스탬프 내림차순 정렬 후 상위 1~N만(Latest/Version).
@@ -790,7 +801,9 @@ def suggest_strategies(constraints: QueryConstraints) -> list[str]:
     ):
         strategies.append(STRATEGY_METADATA_FILTER)
     if constraints.semantic_query:
+        # 둘은 하이브리드 한 쌍이라 라우팅에서는 늘 함께 나간다 - 분리는 override 전용이다.
         strategies.append(STRATEGY_VECTOR)
+        strategies.append(STRATEGY_KEYWORD_ARM)
 
     if constraints.wants_latest:
         strategies.append(STRATEGY_LATEST)

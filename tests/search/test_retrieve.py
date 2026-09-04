@@ -234,7 +234,7 @@ async def test_keyword_arm_runs_alongside_vector_on_the_semantic_query(monkeypat
     """semantic_query를 제목/본문에도 거는 어휘 arm은 vector와 **나란히** 돈다 - vector가
     0히트일 때만 도는 fallback이 아니다. 원래는 fallback이었고, 임베딩이 0행인 동안에는
     vector가 늘 실패해서 항상 돌았다. 임베딩을 채우자 ANN이 언제나 `limit`개를 돌려주면서
-    경로가 통째로 꺼졌고 v0 ndcg@10이 0.865 → 0.804로 내려갔다(retrieve.py::_keyword_arm).
+    경로가 통째로 꺼졌고 v0 ndcg@10이 0.865 → 0.804로 내려갔다(retrieve.py::_Run.keyword_arm).
     소스 이름이 `#semantic`으로 갈리는 것까지 계약이다 - 같은 소스에 append하면 서로 다른
     질의의 순위가 한 리스트에 섞여 RRF가 망가진다."""
     store = _FakeStore(
@@ -245,7 +245,7 @@ async def test_keyword_arm_runs_alongside_vector_on_the_semantic_query(monkeypat
 
     result = await retrieve("codex README", store=store, now=_NOW)
 
-    assert result.strategies == ["vector"]
+    assert result.strategies == ["vector", "keyword_arm"]
     arm = [s for s in result.steps if s.detail.get("arm") == "semantic_query"]
     assert [s.source for s in arm] == ["document_search#semantic", "lexical_search#semantic"]
     assert result.document_ids == ["d1", "d2"]
@@ -626,16 +626,39 @@ async def test_strategies_override_runs_only_the_given_strategies(monkeypatch):
     result = await retrieve("report_v2.pdf 리스크 항목 요약해줘", store=store, now=_NOW, strategies_override=["vector"])
 
     assert result.strategies == ["vector"]
-    # `vector` 하나만 지정해도 어휘 arm(document_lookup/lexical step)이 따라붙는다 -
-    # arm은 전략 선택의 산물이 아니라 vector 실행의 일부다(retrieve.py::_keyword_arm).
+    # **회귀 테스트**: `["vector"]`는 정말로 벡터 단독이어야 한다. 어휘 arm이 이름 없이
+    # `vector()` 끝에 붙어 있던 동안 이 override는 document_search#semantic +
+    # lexical_search#semantic까지 돌렸고(steps로 실측), "순수 벡터 baseline"이라고 적힌
+    # docstring이 거짓이라 그 값으로 잰 A/B가 전부 무효였다. 그 드리프트를 막지 못한 것이
+    # 바로 이 단언의 부재였다 - source까지 봐야 한다(step.strategy만 보면 arm의 step이
+    # document_lookup/lexical로 찍혀 있어 눈치채기 어렵다).
+    assert {s.source for s in result.steps} == {"vector_search"}
+    assert store.title_calls == [] and store.chunk_calls == []
+    assert result.documents_read == []
+    assert result.document_ids == ["d1"]
+    assert calls[0][0] == result.constraints["semantic_query"]
+
+
+async def test_strategies_override_can_put_the_keyword_arm_back(monkeypatch):
+    """위 테스트의 짝 - `["vector", "keyword_arm"]`이 기본 라우팅과 같은 하이브리드다
+    (`suggest_strategies`는 vector를 넣을 때 arm을 항상 같이 넣는다). arm의 step은 실제로
+    부른 검색을 따라 document_lookup/lexical로 찍히고 `arm="semantic_query"`로 구분된다."""
+    store = _FakeStore(title_hits={None: [_doc_hit("title-only", 1.0)]})
+    calls: list = []
+    _patch_vector(monkeypatch, [_chunk_hit("d1", "c1", 0.9)], calls)
+
+    result = await retrieve(
+        "report_v2.pdf 리스크 항목 요약해줘", store=store, now=_NOW, strategies_override=["vector", "keyword_arm"]
+    )
+
+    # 실행 순서는 vector의 ANN 조회 → arm의 제목/본문 조회다 - `_claim_anchor`가 먼저 잡힌
+    # anchor를 덮어쓰지 않아서, 이 순서가 바뀌면 지표가 움직인다.
     assert [s.strategy for s in result.steps] == ["vector", "document_lookup", "lexical"]
     assert [q for q, _limit in store.title_calls] == [result.constraints["semantic_query"]]
-    assert result.documents_read == []
     # 'title-only'는 어휘 arm의 제목 조회가 물어온 것 - vector 히트 'd1'과 함께 RRF에 들어간다.
     # 점수 1.0(제목 substring 완전 일치)에 경쟁자가 없어 arm이 anchor로 삼으므로 최상위 고정
     # (retrieve.py::_claim_anchor - 제목이 정확히 맞은 문서는 벡터 유사도와 무관하게 답이다).
     assert result.document_ids == ["title-only", "d1"]
-    assert calls[0][0] == result.constraints["semantic_query"]
 
 
 async def test_result_to_dict_is_json_serializable_and_carries_the_contract_fields(monkeypatch):

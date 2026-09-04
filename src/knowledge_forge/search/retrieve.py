@@ -18,10 +18,11 @@
 두었다. 여기서는 코드가 따르는 순서만 요약한다:
 
 1. 후보 생성: document_lookup(제목/파일명) → lexical(식별자/따옴표 구절) → metadata_filter
-   (SQL WHERE, 후보 집합 겸 필터) → vector(semantic_query) → comparison(대상별 제목 조회) →
-   multihop(planner, provider 있을 때만). vector가 비면(임베딩 0행/임베더 미구성) semantic_query로
-   document_search+lexical_search를 대신 돌린다 - 임베딩이 없는 배포에서도 실행기가 "아무것도
-   못 찾음"이 아니라 키워드 기준선으로 동작하게.
+   (SQL WHERE, 후보 집합 겸 필터) → vector(semantic_query) → keyword_arm(같은 semantic_query를
+   제목/본문에도) → comparison(대상별 제목 조회) → multihop(planner, provider 있을 때만).
+   keyword_arm은 vector가 비었을 때의 degrade가 아니라 늘 함께 도는 하이브리드의 반대쪽 팔이다
+   (`_Run.keyword_arm`) - 임베딩이 없는 배포에서도 실행기가 "아무것도 못 찾음"이 아니라 키워드
+   기준선으로 동작하고, 임베딩이 있어도 어휘 신호가 RRF에 남는다.
 2. 병합: 소스별 히트 리스트를 `merge_and_rerank`(RRF)로 합치고, metadata_filter 집합이 있으면
    교집합, document_lookup이 anchor 문서를 특정했으면 그 문서 히트를 최상위로 고정.
 3. 후처리: latest(시각 내림차순 + version_family 압축) → whole_document(read_document로 본문
@@ -47,6 +48,7 @@ from knowledge_forge.search.constraints import (
     STRATEGY_COUNT,
     STRATEGY_DOCUMENT_LOOKUP,
     STRATEGY_EXHAUSTIVE,
+    STRATEGY_KEYWORD_ARM,
     STRATEGY_LATEST,
     STRATEGY_LEXICAL,
     STRATEGY_METADATA_FILTER,
@@ -74,7 +76,7 @@ logger = logging.getLogger(__name__)
 # 소스 이름 (RetrievalStep.source / merge_and_rerank 키)
 SOURCE_DOCUMENT_SEARCH = "document_search"
 SOURCE_LEXICAL_SEARCH = "lexical_search"
-# `_Run._keyword_arm`이 semantic_query 통째로 거는 조회의 소스 이름. 같은 검색 함수를
+# `_Run.keyword_arm`이 semantic_query 통째로 거는 조회의 소스 이름. 같은 검색 함수를
 # 쓰지만 질의가 다르므로(전략 쪽은 identifiers/quoted_phrases 단위) 위의 두 소스에
 # append하지 않고 별도 투표자로 분리한다 - 한 소스 리스트 안에 서로 다른 질의의 순위를
 # 섞으면 RRF의 `1/(k+rank)`가 의미를 잃는다. `_term_fallback`의 `lexical_search#<term>`과
@@ -377,7 +379,7 @@ class _Run:
         `>= 1.0`(제목 substring 완전 일치) + 2위와 `0.2` 이상 격차로 빡빡한 이유가 그것이다 -
         "AGENTS.md" vs "agents-skills-AGENTS.md"처럼 둘 다 1.0이면 ambiguous로 두고 포기한다.
 
-        `document_lookup`과 `_keyword_arm`이 공유한다. 원래는 `document_lookup`에만 있어서
+        `document_lookup`과 `keyword_arm`이 공유한다. 원래는 `document_lookup`에만 있어서
         **fallback(지금의 arm)이 물어온 제목 1.0 일치는 anchor가 되지 못하고 RRF 한 표로
         전락했다.** arm을 상시화하자 그 구멍이 v0에서 그대로 드러났다 -
         `v0-navigational-002`("codex README")/`-004`/`v0-version-001`이 baseline에서 1위였다가
@@ -489,13 +491,20 @@ class _Run:
             min_score=floor,
             dropped_below_min_score=dropped,
         )
-        if query:
-            await self._keyword_arm(query)
 
-    async def _keyword_arm(self, query: str) -> None:
+    async def keyword_arm(self) -> None:
         """semantic_query를 제목(`document_search`)과 청크 원문(`lexical_search`)에도 걸어
         RRF에 **벡터와 나란히** 넣는 어휘 arm. 이름 그대로 하이브리드 검색의 한쪽 팔이지,
         벡터가 실패했을 때의 degrade가 아니다.
+
+        호출은 `retrieve()`가 전략 목록(`STRATEGY_KEYWORD_ARM`)을 보고 한다. 예전에는
+        `vector()` 끝에서 무조건 이어 부르는 **부작용**이었고, 그래서 전략 목록에 이름이
+        없었다 - `strategies_override=["vector"]`가 "순수 벡터 baseline"이라는 docstring의
+        약속이 거짓이었고(실제 steps: document_search#semantic + lexical_search#semantic +
+        vector_search), 그 값으로 잰 A/B의 벡터 단독 arm이 전부 무효였다. 실행 순서는 그때와
+        같다(vector의 ANN 조회 → arm의 제목/본문 조회 → 둘 다 빈손일 때만 `_term_fallback`) -
+        `_claim_anchor`가 "먼저 잡은 anchor를 덮어쓰지 않는다"에 기대고 있어 순서를 바꾸면
+        지표가 움직인다.
 
         원래는 `if not hits`, 즉 vector가 0히트일 때만 도는 fallback이었다. 임베딩이 0행인
         동안은 vector가 항상 실패해서 이 경로가 **항상** 돌았고, v0 골든셋 ndcg@10 0.709 →
@@ -511,6 +520,9 @@ class _Run:
         이름을 나눠**(`#semantic`) RRF의 별도 투표자로 넣는다. `_term_fallback`이
         `lexical_search#<term>`으로 소스를 나눈 것과 같은 수법이고, 같은 소스에 append하면
         한 리스트 안에서 순위가 섞여 RRF가 망가지기 때문이다."""
+        query = self.c.semantic_query
+        if not query:
+            return
         title_hits = await document_search(
             query, self.store, project_id=self.project_id, limit=self.fetch_limit, since=self.since, until=self.until
         )
@@ -544,7 +556,7 @@ class _Run:
             await self._term_fallback()
 
     async def _term_fallback(self) -> None:
-        """`_keyword_fallback`의 두 번째 단계 - 질의 문자열 하나가 아니라 `keyword_terms`가
+        """`keyword_arm`의 두 번째 단계 - 질의 문자열 하나가 아니라 `keyword_terms`가
         쪼갠 term마다 `lexical_search`를 부른다.
 
         왜 나눠 부르나: `lexical_search`의 매칭은 (전체 질의 substring → 모든 토큰 substring →
@@ -591,7 +603,7 @@ class _Run:
             coverage_threshold=threshold,
             kept_documents=len(kept_documents),
             dropped_documents=len(coverage) - len(kept_documents),
-            fallback_from=STRATEGY_VECTOR,
+            fallback_from=STRATEGY_KEYWORD_ARM,
             mode="per_term",
         )
 
@@ -816,8 +828,13 @@ async def retrieve(
     - `now`: 상대 시간 표현("최근 3일", "올해")의 기준. 골든셋의 `as_of`를 넣어 재현한다.
     - `limit`: 최종 `document_ids` 길이 상한(exhaustive/negative/count면 `EXHAUSTIVE_LIMIT`까지
       컷오프 없음). 소스별 조회는 `_OVERFETCH`배로 더 가져와 병합 뒤에도 limit개가 남게 한다.
-    - `strategies_override`: `suggest_strategies` 대신 이 목록만 실행 - `["vector"]`면 순수 벡터
-      baseline, A/B용.
+    - `strategies_override`: `suggest_strategies` 대신 이 목록만 실행(A/B용). 이름은
+      `constraints.py`의 `STRATEGY_*` 값이고, 목록에 없는 전략은 돌지 않는다 - 어휘 arm도
+      `"keyword_arm"`으로 명시해야 돈다. 기본 라우팅은 `semantic_query`가 있으면 `vector`와
+      `keyword_arm`을 **함께** 넣으므로, `["vector", "keyword_arm"]`이 기본 하이브리드와 같고
+      `["vector"]`가 진짜 순수 벡터 baseline이다. v0 ndcg@10 실측(76질의, --no-llm):
+      기본 라우팅 0.893 / `vector,keyword_arm` 0.736 / `keyword_arm` 단독 0.663 /
+      `vector` 단독 0.477 - 어휘 arm 없는 벡터는 하이브리드의 절반 조금 넘는 수준이다.
     """
     started = time.perf_counter()
     now = now or datetime.now(timezone.utc)
@@ -838,6 +855,10 @@ async def retrieve(
         await run.metadata_filter()
     if STRATEGY_VECTOR in strategies:
         await run.vector()
+    # arm은 vector 다음이어야 한다 - `_claim_anchor`는 먼저 잡힌 anchor를 덮어쓰지 않고,
+    # `_narrow_to_anchor`는 그 시점의 anchor로 좁힌다. 순서를 바꾸면 지표가 움직인다.
+    if STRATEGY_KEYWORD_ARM in strategies:
+        await run.keyword_arm()
     if STRATEGY_COMPARISON in strategies:
         await run.comparison()
     if STRATEGY_MULTIHOP in strategies:

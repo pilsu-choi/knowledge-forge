@@ -269,7 +269,8 @@ knowledge-forge eval-ir --list --golden-version v0
 ```
 
 옵션: `--project-id`(골든셋의 `project_id`가 있으면 그쪽 우선), `--limit 10`, `--k 1,3,5,10`,
-`--strategies vector,lexical`(라우팅 무시), `--no-llm`(provider 생성 안 함,
+`--strategies vector,lexical`(라우팅 무시 — 적은 전략**만** 돌아간다. 어휘 arm도
+`keyword_arm`으로 적어야 도니 하이브리드를 재현하려면 `vector,keyword_arm`이다), `--no-llm`(provider 생성 안 함,
 `use_llm_constraints=False`), `--provider/--model`(`eval`과 동일), `--label`, `--type`(multi-label
 `types` 중 하나라도 맞으면 포함), `--query-id`(반복), `--concurrency 4`, `--no-store`(DB 미기록 —
 `index_snapshot`/staleness 검사도 생략), `--json PATH`. `KF_DATABASE_URL`은 세 모드 모두 필수.
@@ -582,7 +583,8 @@ provider를 붙이고(`wiki/embeddings.md`) 청크 936개를 `openai/text-embedd
 `identifiers`/`quoted_phrases`/`document_reference`가 잡혔을 때뿐이라 평범한 자연어 질의는
 그 그물에 안 걸리는데, fallback은 semantic_query를 통째로 거는 훨씬 넓은 그물이었다.
 
-→ fallback을 상시 하이브리드 arm으로 승격(`retrieve.py::_keyword_arm`). 이미 전략이 돌았어도
+→ fallback을 상시 하이브리드 arm으로 승격(`retrieve.py::_Run.keyword_arm`, 당시 이름은
+`_keyword_arm`). 이미 전략이 돌았어도
 끄지 않고 **소스 이름을 나눠**(`document_search#semantic`/`lexical_search#semantic`) RRF의
 별도 투표자로 넣는다 — `_term_fallback`의 `lexical_search#<term>`과 같은 수법이고, 같은
 소스에 append하면 서로 다른 질의의 순위가 한 리스트에 섞여 `1/(k+rank)`가 의미를 잃는다.
@@ -673,6 +675,56 @@ win/loss/tie 9/5/56. `navigational`은 −0.096 → **−0.055**(2승 3패)로 �
 토큰 집합 기반(순서 무관, 구분자 정규화)으로 바꾸는 것**이다. 임계값을 낮추면
 `v0-ambiguous-002`처럼 진짜 모호한 질의에 엉뚱한 anchor가 박힌다.
 
+### 어휘 arm에 이름 주기 — 일곱 번째 실측 (2026-09-04)
+
+**지금까지의 "순수 벡터 baseline" A/B는 전부 무효였다.** `retrieve()`의 docstring은
+`strategies_override=["vector"]`가 순수 벡터라고 적어 뒀지만, 다섯 번째 실측에서 arm을
+상시화하면서 `_Run.vector()` **끝에 무조건 이어 부르는 부작용**으로 넣었기 때문에 그
+override는 arm까지 돌리고 있었다. 실제 `steps`의 소스가 그 증거다 —
+`["document_search#semantic", "lexical_search", "lexical_search#semantic", "vector_search"]`.
+
+→ arm을 이름 있는 전략(`STRATEGY_KEYWORD_ARM = "keyword_arm"`)으로 꺼내고, 호출을
+`retrieve()`의 전략 디스패치로 옮겼다. `suggest_strategies`는 `vector`를 넣을 때 항상 arm을
+같이 넣으므로 **기본 라우팅은 한 자리도 안 움직인다**(아래 표 1열 = 여섯 번째 실측 채택값).
+실행 순서(vector의 ANN → arm의 제목/본문 → 둘 다 빈손일 때만 `_term_fallback`)도 그대로 뒀다 —
+`_claim_anchor`가 "먼저 잡힌 anchor를 덮어쓰지 않는다"에 기대고 있어 순서가 곧 지표다.
+
+이제야 어휘 arm의 값을 잴 수 있다(76질의, `--no-llm`):
+
+| | 기본 라우팅 | `vector,keyword_arm` | `keyword_arm` | `vector` |
+|---|---|---|---|---|
+| run_id | `f30be053f611…` | `084711f4169b…` | `3dd747a86b0f…` | `c8c6128714fb…` |
+| hit@1 | **0.843** | 0.671 | 0.600 | 0.414 |
+| recall@5 | **0.897** | 0.772 | 0.681 | 0.508 |
+| mrr | **0.893** | 0.733 | 0.676 | 0.498 |
+| ndcg@10 | **0.893** | 0.736 | 0.663 | 0.477 |
+| exhaustive_recall | 0.908 | 0.708 | 0.599 | 0.384 |
+| count_match | 0.333 | — | — | — |
+| none_correct | 1.000 | 1.000 | 1.000 | 1.000 |
+
+읽는 법 세 가지:
+
+1. **"vector 단독 0.736"으로 기록돼 있던 값은 vector+arm이다.** 진짜 벡터 단독은 **0.477**로,
+   arm 단독(0.663)보다도 낮다. 이 코퍼스에서 검색을 지탱하는 것은 어휘 쪽이고 벡터는 보강이다 —
+   다섯 번째 실측의 "0.709 → 0.865는 degrade 경로가 만든 점수"라는 결론이 훨씬 강한 형태로 재확인된다.
+2. **arm과 vector는 서로를 실제로 보강한다**: 0.663 + 0.477 → 0.736. RRF 융합이 두 팔 중
+   나은 쪽보다 위다.
+3. **후처리 전략의 몫이 크다**: 0.736(vector+arm) → 0.893(기본 라우팅)의 차이는
+   `document_lookup`/`lexical`/`metadata_filter`/`latest`/`count` 등 라우터가 추가로 고르는
+   전략들이다. `--strategies`는 후처리까지 포함해 목록을 통째로 대체하므로, 위 3개 열에는
+   `count`/`latest`/`whole_document`가 없다(`count_match`가 `—`인 이유).
+
+`exact_match`(0.186 → 0.675)와 `set_query`(0.364 → 0.796)가 arm으로 가장 크게 오른다 —
+식별자·인용구가 임베딩에서 의미를 잃는다는 애초의 가설과 방향이 같다.
+
+```bash
+# 재현
+uv run knowledge-forge eval-ir --golden tests/eval/golden/v0.json --no-llm --label purity-default
+uv run knowledge-forge eval-ir --golden tests/eval/golden/v0.json --no-llm --strategies vector --label purity-vector-only
+uv run knowledge-forge eval-ir --golden tests/eval/golden/v0.json --no-llm --strategies vector,keyword_arm --label purity-vector-plus-arm
+uv run knowledge-forge eval-ir --golden tests/eval/golden/v0.json --no-llm --strategies keyword_arm --label purity-arm-only
+```
+
 ### 남은 것 (우선순위 순)
 
 진단은 `eval_run_query.steps` 실측 기준이다.
@@ -688,9 +740,9 @@ win/loss/tie 9/5/56. `navigational`은 −0.096 → **−0.055**(2승 3패)로 �
    `intersected`로 바뀐다. `filter_only` 경로가 baseline 5건 → 지금 0건. 신뢰도 낮은 term
    후보로 교집합을 걸지 말고 필터 집합을 랭킹 base로 두고 키워드를 가산점으로 쓰는 편이 안전하다
    (`v0-set_query-002`, `v0-relative_temporal-001`).
-4. **fallback 경로에서 anchor가 안 잡힌다** — `_keyword_fallback`의 `document_search` 결과에는
-   `document_lookup()`의 anchor 판정이 안 걸린다. 제목 1.0 일치가 RRF 한 표로 전락한다.
-   더불어 RRF가 모든 소스를 1표로 보는 것도 재검토 대상이다.
+4. ~~**fallback 경로에서 anchor가 안 잡힌다**~~ — 여섯 번째 실측에서 `_claim_anchor` 공유로
+   해결. 남은 것은 **RRF가 모든 소스를 1표로 본다**는 쪽이다. 일곱 번째 실측이 팔별 값을
+   따로 재 줬으니(arm 0.663 vs vector 0.477) 소스 가중을 근거 있게 논의할 수 있다.
 5. **슬랙 문서 제목이 197/197 채널 ID다**(`#C0BGQEQG1L6 2026-09-01`). 수집기가
    `sources.metadata.channel_name`을 안 채운다. 골든셋 정답 문서 90개 중 48개가 슬랙이라,
    제목 기반 조회/anchor 경로가 정답 절반 이상에 구조적으로 닿지 않는다 — 4번의 전제조건.
