@@ -91,6 +91,19 @@ class PipelineStore:
     ) -> list[KnowledgeObject]:
         return await self._db.list_knowledge_objects_missing_embedding(embedding_model, project_id, limit)
 
+    async def search_by_embedding(
+        self,
+        embedding: list[float],
+        embedding_model: str,
+        project_id: str | None = None,
+        type: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """`search/service.py::vector_search`'s single entry point into
+        storage - mirrors `record_embeddings`' role of being the one place
+        the caller needs, rather than reaching into `PostgresStore` directly."""
+        return await self._db.search_knowledge_objects_by_embedding(embedding, embedding_model, project_id, type, limit)
+
     async def get_sync_cursor(self, source: str) -> dict[str, Any] | None:
         return await self._db.get_sync_cursor(source)
 

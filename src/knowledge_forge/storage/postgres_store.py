@@ -608,3 +608,57 @@ class PostgresStore:
             )
             for row in rows
         ]
+
+    async def search_knowledge_objects_by_embedding(
+        self,
+        embedding: list[float],
+        embedding_model: str,
+        project_id: str | None,
+        type: str | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        """Nearest-neighbor search over `knowledge_object_embeddings`' HNSW
+        index (wiki/agent-search.md's vector_search) - `ORDER BY embedding
+        <=> %s` (pgvector's cosine-distance operator, matching the index's
+        `vector_cosine_ops`) `LIMIT %s`. `embedding` is a plain `list[float]`,
+        not a pgvector type - `connect()`'s `register_vector_async` call
+        already teaches psycopg how to adapt it, the same as `save_embeddings`
+        relies on for the INSERT side.
+
+        Returns dict rows, not `KnowledgeObject` - a search hit only needs
+        enough to decide relevance (type/summary/topics) plus a similarity
+        `score`, not the full envelope (evidence/content/version/...) every
+        other `list_*`/`get_*` method here returns."""
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT ko.knowledge_object_id, ko.type, ko.summary, ko.topics, ko.document_type,
+                       s.project_id, e.embedding <=> %s AS distance
+                FROM knowledge_object_embeddings e
+                JOIN knowledge_objects ko ON ko.knowledge_object_id = e.knowledge_object_id
+                JOIN sources s ON s.source_id = ko.source_id
+                WHERE e.embedding_model = %s
+                  AND (%s::text IS NULL OR e.project_id = %s)
+                  AND (%s::text IS NULL OR ko.type = %s)
+                ORDER BY e.embedding <=> %s
+                LIMIT %s
+                """,
+                (embedding, embedding_model, project_id, project_id, type, type, embedding, limit),
+            )
+            rows = await cur.fetchall()
+
+        return [
+            {
+                "knowledge_object_id": row[0],
+                "type": row[1],
+                "summary": row[2],
+                "topics": row[3],
+                "document_type": row[4],
+                "project_id": row[5],
+                # Cosine distance is in [0, 2] - 1 - distance is the matching
+                # cosine similarity (1.0 = identical direction), easier for a
+                # caller/model to read as "higher is more relevant".
+                "score": 1.0 - float(row[6]),
+            }
+            for row in rows
+        ]

@@ -361,3 +361,59 @@ async def test_list_knowledge_objects_missing_embedding(store):
         "test-model", src.project_id, 50
     )
     assert fact_id in {ko.knowledge_object_id for ko in missing_right_project}
+
+
+async def test_search_knowledge_objects_by_embedding_orders_by_similarity_and_filters(store):
+    from knowledge_forge.embedding.base import EmbeddingRecord
+
+    src, doc, chunk, objects, _relation = _sample_records()
+    await store.save_source(src, raw_path=None)
+    await store.save_document(doc)
+    await store.save_chunks([chunk])
+    await store.save_knowledge_objects(objects)
+
+    entity_id = objects[0].knowledge_object_id  # type: entity
+    fact_id = objects[1].knowledge_object_id  # type: fact
+
+    # Two orthogonal unit vectors - a query equal to vector_a has cosine
+    # distance 0 (score 1.0) to it and distance 1 (score 0.0) to vector_b, so
+    # ordering/scores are exact rather than approximate-by-luck.
+    vector_a = [1.0] + [0.0] * 1535
+    vector_b = [0.0, 1.0] + [0.0] * 1534
+
+    await store.save_embeddings(
+        [
+            EmbeddingRecord(
+                knowledge_object_id=entity_id,
+                embedding_model="test-model",
+                embedding=vector_a,
+                embedded_text="Acme",
+                embedded_text_hash="hash1",
+                project_id=src.project_id,
+            ),
+            EmbeddingRecord(
+                knowledge_object_id=fact_id,
+                embedding_model="test-model",
+                embedding=vector_b,
+                embedded_text="Acme owns X",
+                embedded_text_hash="hash2",
+                project_id=src.project_id,
+            ),
+        ]
+    )
+
+    results = await store.search_knowledge_objects_by_embedding(vector_a, "test-model", None, None, 10)
+    assert [r["knowledge_object_id"] for r in results] == [entity_id, fact_id]
+    assert results[0]["score"] == pytest.approx(1.0, abs=1e-6)
+    assert results[1]["score"] == pytest.approx(0.0, abs=1e-6)
+
+    fact_only = await store.search_knowledge_objects_by_embedding(vector_a, "test-model", None, "fact", 10)
+    assert [r["knowledge_object_id"] for r in fact_only] == [fact_id]
+
+    wrong_project = await store.search_knowledge_objects_by_embedding(
+        vector_a, "test-model", "no-such-project", None, 10
+    )
+    assert wrong_project == []
+
+    other_model = await store.search_knowledge_objects_by_embedding(vector_a, "other-model", None, None, 10)
+    assert other_model == []

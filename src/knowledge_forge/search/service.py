@@ -1,27 +1,30 @@
-"""Keyword/frontmatter search over an OKF file tree - the `file_search` tool
-from wiki/agent-search.md. Postgres-free by design (unlike vector_search/
-graph_search, still design-only) so it works on an OKF-only deployment and
-needs no new infrastructure - see wiki/agent-search.md's "왜 세 가지 도구로
-나누는가".
+"""Search tools over the knowledge base - `file_search` (OKF file tree) and
+`vector_search` (pgvector) from wiki/agent-search.md. `file_search` is
+Postgres-free by design so it works on an OKF-only deployment and needs no
+new infrastructure - see wiki/agent-search.md's "왜 세 가지 도구로 나누는가"
+(`graph_search`, the third leg, is still design-only).
 
-This is a plain async function, not a class, and imports nothing from
+Both are plain async functions, not classes, and import nothing from
 FastAPI/MCP/the agent harness - wiki/agent-runtime.md's "계층 설계"
 principle is that every consumer (API route, MCP server, agent tool) is a
-thin adapter over this function, never the other way around.
+thin adapter over these functions, never the other way around.
 
-Reuses `okf.writer._parse_markdown` the same way `okf/reader.py` already
-does, so this never drifts from the frontmatter shape `OKFWriter` actually
-produces (see reader.py's own module docstring).
+`file_search` reuses `okf.writer._parse_markdown` the same way `okf/reader.py`
+already does, so this never drifts from the frontmatter shape `OKFWriter`
+actually produces (see reader.py's own module docstring).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterator
 
 from knowledge_forge.config import settings
 from knowledge_forge.okf.reader import list_projects
 from knowledge_forge.okf.writer import _parse_markdown
+
+if TYPE_CHECKING:
+    from knowledge_forge.storage.store import PipelineStore
 
 _RESOURCES_DIR = "resources"
 _OBJECTS_DIR = "objects"
@@ -160,3 +163,42 @@ async def file_search(
 
     hits.sort(key=lambda pair: (-pair[0], pair[1]["path"]))
     return [hit for _, hit in hits[:limit]]
+
+
+async def vector_search(
+    query: str,
+    store: "PipelineStore",
+    project_id: str | None = None,
+    type: str | None = None,
+    limit: int = 10,
+    embedding_model: str | None = None,
+) -> list[dict[str, Any]]:
+    """`knowledge_object_embeddings`의 HNSW 인덱스를 실제로 읽는 첫 소비자
+    (wiki/agent-search.md의 vector_search 계약) - `file_search`가 강한 정확한
+    문자열 일치 대신, 자연어 패러프레이즈/개념 검색에 강하다.
+
+    `query`를 요청 시점에 `get_embedding_provider(embedding_model)`로 임베딩한
+    뒤 `store.search_by_embedding()`(HNSW `<=>` ORDER BY)으로 조회한다 -
+    `file_search`와 달리 `store`를 요구하는 이유는 Postgres 연결 자체를 이
+    함수가 대신 열어줄 수 없기 때문(호출자가 `PipelineStore`를 이미 연결해
+    쥐고 있어야 함 - `agent/tools.py`의 `_make_vector_search_tool` 참고).
+
+    `embedding_model`을 생략하면 `KF_EMBEDDING_MODEL`(현재 활성 모델)을 쓴다 -
+    `knowledge_object_embeddings`의 PK가 `(knowledge_object_id,
+    embedding_model)`이라 여러 모델의 벡터가 동시에 존재할 수 있으므로, 검색도
+    어느 모델의 벡터 공간에서 비교할지 명시해야 한다(`embeddings.md` 참고).
+
+    임베딩이 없는 KnowledgeObject(백필 전, 또는 `--no-embed`로 저장된 것)는
+    결과에 그냥 나오지 않는다 - `knowledge_object_embeddings`에 조인하는
+    쿼리라 애초에 후보에 없다(agent-search.md의 "아직 결정 안 된 것"에 대한
+    1차 답: 에러도 경고도 없이 조용히 빠짐)."""
+    from knowledge_forge.embedding.factory import get_embedding_provider
+
+    query = query.strip()
+    if not query:
+        return []
+
+    model = embedding_model or settings.embedding_model
+    embedder = get_embedding_provider(model=model)
+    [vector] = await embedder.embed([query])
+    return await store.search_by_embedding(vector, model, project_id=project_id, type=type, limit=limit)
