@@ -342,6 +342,19 @@ def test_v1_carries_v0_forward_and_marks_new_queries():
     assert len(new_ids) >= 90
 
 
+def test_v1_synthetic_queries_record_where_they_came_from():
+    """`eval-gen` 초안에서 건져 온 질의는 출처를 notes에 남긴다 - 나중에
+    "합성 질의만 점수가 다른가"를 물을 수 있어야 하고, 그러려면 어느 초안의
+    몇 번이었는지가 파일에 있어야 한다."""
+    golden = load_golden(V1_PATH)
+    synthetic = [q for q in golden.queries if q.origin == "synthetic"]
+    assert synthetic, "v1 should carry the eval-gen queries that survived review"
+    for q in synthetic:
+        assert "출처:" in q.notes and "v2-draft" in q.notes, q.id
+    # v0에서 옮겨 온 것과 손으로 쓴 것은 전부 manual이다.
+    assert {q.origin for q in golden.queries} == {"manual", "synthetic"}
+
+
 def test_v1_ids_are_unique_and_snapshot_is_current():
     raw = json.loads(V1_PATH.read_text(encoding="utf-8"))
     ids = [q["id"] for q in raw["queries"]]

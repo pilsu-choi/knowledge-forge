@@ -37,7 +37,7 @@
       "notes": "정답: feat, fix, docs, chore, ci, test, refactor, style, perf, build, revert (Git Workflow 절).",
       "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v0-factoid-002",
@@ -64,7 +64,7 @@
       "notes": "정답: 3시간 이상(MinIO 패치가 데이터 양에 비례).",
       "source_hash": "345328d0c30d3e2804044826273828bcfc0cdcf679cfc54359f8c256675901ec",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v0-factoid-003",
@@ -92,7 +92,7 @@
       "notes": "정답: 농협타워 14층 화상회의실1(6명).",
       "source_hash": "6674ff940ae792100e0499257f77ea727eb16d6a2911443f29c451dfc9fb567e",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v0-factoid-004",
@@ -117,7 +117,7 @@
       "notes": "정답: 총 6팀(팀당 2~3명).",
       "source_hash": "6674ff940ae792100e0499257f77ea727eb16d6a2911443f29c451dfc9fb567e",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v0-factoid-005",
@@ -142,7 +142,7 @@
       "notes": "정답: 3개(대표이메일, 전체 리스크관리, 과제별 리스크 관리).",
       "source_hash": "6674ff940ae792100e0499257f77ea727eb16d6a2911443f29c451dfc9fb567e",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v0-factoid-006",
@@ -168,7 +168,7 @@
       "notes": "정답: 2개 이상(apps/dashboard, services/risk-agent, second-brain, infra, docs 중).",
       "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v0-factoid-007",
@@ -193,7 +193,7 @@
       "notes": "정답: PRJ-* 만 canonical, E-*/D-*/A-*/V-*/YYYY-NNN은 evidence metadata.",
       "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v0-factoid-008",
@@ -221,7 +221,7 @@
       "notes": "정답: 외부개발(그러나 3차 인터뷰 안내에는 내부개발로 기재되어 재전달).",
       "source_hash": "482e10e67eb0d773b85644dfd89ac54d24b68e6ad07dad363123eb924cc2e0d2",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v0-factoid-009",
@@ -246,7 +246,7 @@
       "notes": "정답: 2026-07-20 07:14:28 UTC.",
       "source_hash": "5d92ef1c07f3d7f26ab3501ac1626de7f20ca03fd8b54ffeef23688229b26ecd",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v0-factoid-010",
@@ -272,7 +272,7 @@
       "notes": "정답: Governance & Early-warning Based Operational Risk Intelligence Network (ProjectIntel 개명 제안).",
       "source_hash": "38bf37be2def5251071ff5101471fb4497ede5ce588014936168d358e52f1d0a",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v0-navigational-001",
@@ -388,7 +388,7 @@
       "notes": "437청크짜리 pptx - 문서 단위 요약.",
       "source_hash": "044e1ae91ea10984597d7def2a12376a9d69c6ba8b733e0281a551a196d8c88f",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v0-whole_document_summary-002",
@@ -412,7 +412,7 @@
       "notes": "정답 문서 1개. ProjectIntel 개발 인수인계 파일 묶음 - 첫 10분에 여는 파일, Drive 패키지 구성, 그리고 절대 공유하지 않을 것(.env/.secrets/OAuth token/service account JSON/고객사 원문).",
       "source_hash": "dfcad395da2dc605c028402a56a5bce7d9466a1f2453fcdb57f2127080bf5227",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v0-whole_document_summary-003",
@@ -436,7 +436,7 @@
       "notes": "'AGENTS.md'만 쓰면 agents-skills-AGENTS.md와 겹치므로 제목(# ProjectIntel Agent Guide)으로 한정.",
       "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v0-specific_document_qa-001",
@@ -462,7 +462,7 @@
       "notes": "정답: 계약/견적/금액/개인정보 가능 원문은 원문 embedding과 기본 검색 노출을 막는다.",
       "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v0-specific_document_qa-002",
@@ -488,7 +488,7 @@
       "notes": "정답: 못 돌린 이유를 한국어로 명시한다.",
       "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v0-specific_document_qa-003",
@@ -513,7 +513,7 @@
       "notes": "정답: .env, .env.jobs, .env.readiness 등 secret 원문.",
       "source_hash": "5d92ef1c07f3d7f26ab3501ac1626de7f20ca03fd8b54ffeef23688229b26ecd",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v0-specific_document_qa-004",
@@ -538,7 +538,7 @@
       "notes": "정답: codex-planner, product-planning-pipeline, development-workflow, codex-reviewer, codex-pr-creator, projectintel-orchestrator, ...",
       "source_hash": "89d6d853efc3faef312e067f1a57eed8cd9f8ea5597cb73c4652e6e1e3ae610e",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v0-temporal-001",
@@ -566,7 +566,7 @@
       "notes": "modified_at 07-27~07-31의 '아웃테이지 감지' 알림 4건. 07-29 00:50 복구 확인(30c56cce)은 감지 알림이 아니라 제외.",
       "source_hash": "c41c9632270c92be87740d098d1b634b1ed1248c89840a0b2c65adf05ab2a90f",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v0-temporal-002",
@@ -592,7 +592,7 @@
       "notes": "두 통 모두 modified_at 2026-08-13(Fwd).",
       "source_hash": "31727f381dffa89e5c65d3ccbb7af43b4f585fddae126d049def7822cd98f60a",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v0-temporal-003",
@@ -616,7 +616,7 @@
       "notes": "slack thread_ts 1788327909, modified_at 09-02 07:42.",
       "source_hash": "038a9a02561c9b4e82811d92f880958b400f37e7dc03ec1a26c5a84dc896fa73",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v0-relative_temporal-001",
@@ -640,7 +640,7 @@
       "notes": "as_of=2026-09-04T00:00:00Z 기준(금요일; 이번 주=08-31~09-06). sources.modified_at으로 판정. 09-01T00Z 이후 nonghyup.com 발신 메일은 09-02 '3차 인터뷰를 위한 회의자료 송부' 1통(08-31 oa업무도우미 메일은 범위 밖).",
       "source_hash": "77b1edce84ff3d0bfc0479a3edb81ce08ccec44b96d72c91f4fa6a2e5f8a3f94",
       "as_of": "2026-09-04T00:00:00Z",
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v0-relative_temporal-002",
@@ -664,7 +664,7 @@
       "notes": "as_of=2026-09-04T00:00:00Z 기준(금요일; 이번 주=08-31~09-06). sources.modified_at으로 판정. 'Re: [세아제강] 제조가부 샘플 자료 송부 건' modified_at 09-01.",
       "source_hash": "cc62b30c60c8eb20cc488194fa2c8052a004a0dea360091a30de0bfea0f9e868",
       "as_of": "2026-09-04T00:00:00Z",
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v0-relative_temporal-003",
@@ -691,7 +691,7 @@
       "notes": "as_of=2026-09-04T00:00:00Z 기준(금요일; 이번 주=08-31~09-06). sources.modified_at으로 판정. 08-28T00Z 이후 subject '공유 요청' 메일 3통(08-28 05:30 동양생명, 09-02 농협은행 G/J).",
       "source_hash": "32afb543f9026f6de5910a2ee53f48a56ba30bb071c763b2b51c852e7ba63305",
       "as_of": "2026-09-04T00:00:00Z",
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v0-metadata_filter-001",
@@ -1259,7 +1259,7 @@
       "notes": "정답: mimeType='text/markdown'인 Drive 문서 전부(= ProjectIntel 인수인계 패키지의 마크다운). [v1 보강] 정답 집합은 v0과 같지만 하드코딩을 걷어내고 코퍼스에서 다시 세도록 바꿨다. [이 스냅샷 기준 6건 - 위 규칙으로 코퍼스에서 다시 센 값]",
       "source_hash": "4fea0b16b02943e97ca596724183b998a44bc9ccaee0dc863163976b820f0ead",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v0-set_query-002",
@@ -1292,7 +1292,7 @@
       "notes": "chunks.text ilike '%3차 인터뷰 때 사용할 체크리스트 파일 전달드립니다%' 10건(과제 채널 10개).",
       "source_hash": "9e5ec5954fec5ddaecafef05af7f579f94750969173612241b446910e72d6e8a",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v0-set_query-003",
@@ -1321,7 +1321,7 @@
       "notes": "같은 subject의 공유 요청 6통(08-07~08-12).",
       "source_hash": "249ba9b20ae6537ded5f1681a92295b751f2bf214183880a7de243f9967eeb3d",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v0-negative-001",
@@ -1543,7 +1543,7 @@
       "notes": "같은 봇 공지의 8/14 마감 버전.",
       "source_hash": "18d003b181e13bff9ab4167be6039ac82cee9441d47bce66cb8d4396bc7c8357",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v0-version-002",
@@ -1568,7 +1568,7 @@
       "notes": "08-04 최초, 08-12 재요청.",
       "source_hash": "475a84a6869602e164b81ac0c0f62034c7ef180f1bcb30a1629872d0c5aeac7c",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v0-version-003",
@@ -1593,7 +1593,7 @@
       "notes": "08-10 00:31 / 00:40 두 통.",
       "source_hash": "465be535b15b129c54e083b66599a935b12137ff620e3370c994ac7e464564e2",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v0-parent_child-001",
@@ -1767,7 +1767,7 @@
       "notes": "07-29 00:00 감지 → 00:50 복구 확인. 순서는 modified_at.",
       "source_hash": "3768cb589d915a631b98b43c4363532262de3734b620f1182bdcfe9321920e25",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v0-sequence-002",
@@ -1794,7 +1794,7 @@
       "notes": "08-28 메일(예상) → 09-01 슬랙(확정) → 09-02 슬랙(16번 과제 시간 변경).",
       "source_hash": "86e346161bd527cb9a272ec57ce9ab6b2e04d2aea67e67d64237297d4a25b231",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v0-sequence-003",
@@ -1823,7 +1823,7 @@
       "notes": "08-03 연결 → 08-04 해제(2건) → 08-05 연결 → 08-28 연결. chunks.text ilike '%PRJ-40311C8D17D84F%' 5건.",
       "source_hash": "127c120d93aa89604bd35d54d95870936c1899ff4d7e8d0b28c4e98192ba3996",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v0-long_range_context-001",
@@ -2000,7 +2000,7 @@
       "notes": "정답: 0.22.0 (CVE-2026-48746, GHSA-94f4-hr76-p5j6, Critical CVSS 9.1).",
       "source_hash": "1d4d29b1019af63749321891d789e4c0ddd2f69efd210baa18591f8e62d4ba1a",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v1-factoid-002",
@@ -2025,7 +2025,7 @@
       "notes": "정답: 15. maximum은 block 수가 아니라 block당 equipment 수 상한이다.",
       "source_hash": "14dfcd96101791f27da22c0f5e4cc8cafd6016c43e5e689b8fb845caa27be40e",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v1-factoid-003",
@@ -2051,7 +2051,7 @@
       "notes": "정답: 전체 불가능. 확인 필요도 마찬가지로 하나라도 확인 필요면 전체 확인 필요.",
       "source_hash": "7f28a397c2fc413254efe597ece8c26ee5d18d161c4c85d5a3ecf7219d5eeec4",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v1-factoid-004",
@@ -2076,7 +2076,7 @@
       "notes": "정답: Persona-driven Experimental Testing & Validation (Gate 3의 자체 설계 검증 프레임워크).",
       "source_hash": "e055175bda7fb4b320cf571d45434c2f188ec22eeba55c2d9c29b6e4af2db9b2",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v1-factoid-005",
@@ -2102,7 +2102,7 @@
       "notes": "정답: 16384 bytes (REPORT_VALUE_MAX_BYTES). 채널 전체 상한은 262144(SESSION_VALUE_MAX_BYTES).",
       "source_hash": "dc709e3227e1d78e8a8e79b2044ade99061a14e2fd037a459fa9e88bbf86c28f",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v1-factoid-006",
@@ -2128,7 +2128,7 @@
       "notes": "정답: AI20260601-001.",
       "source_hash": "2788d88a2e23fb6c0107968cfba5171b130ef73465053d630032d20be3908e1c",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v1-factoid-007",
@@ -2153,7 +2153,7 @@
       "notes": "정답: 과제당 60~90분. 그래서 사전 조사서로 학습 부분을 인터뷰 밖으로 뺀다.",
       "source_hash": "c183b6fcc2c818b044fd6fd4fe5ebc61e21ac533a5cbd910618646065083a156",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v1-navigational-001",
@@ -2338,7 +2338,7 @@
       "notes": "정답 문서 1개. 공장 기준 자동 세팅부터 조항 Close/다운로드까지의 사용자 흐름 + 판정 체계(Note/Deviation/Clarification).",
       "source_hash": "2db0e3265eaebec5699687d0caba387669c4c0e9b9c549a247ac69affc1633f4",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v1-whole_document_summary-002",
@@ -2361,7 +2361,7 @@
       "notes": "정답 문서 1개. vLLM/vector/litellm 4개 이미지의 CVE 조사 결과와 잔여 리스크.",
       "source_hash": "1d4d29b1019af63749321891d789e4c0ddd2f69efd210baa18591f8e62d4ba1a",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v1-whole_document_summary-003",
@@ -2384,7 +2384,7 @@
       "notes": "정답 문서 1개. Gate 0~5(BRIDGE/BMAD/HARNESS/PETA-V/HITL-LOOP/SENTINEL) 구조와 추가 문제 4가지.",
       "source_hash": "e055175bda7fb4b320cf571d45434c2f188ec22eeba55c2d9c29b6e4af2db9b2",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v1-whole_document_summary-004",
@@ -2408,7 +2408,7 @@
       "notes": "정답 문서 1개. Product Goal/Persona/User Journey/AC/FR·NFR/미결 이슈/HITL까지의 PRD 초안.",
       "source_hash": "93c20304a82585f44be1767d95bf6784ea0ecb6fb18edd647f174034e5ff8f22",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v1-specific_document_qa-001",
@@ -2434,7 +2434,7 @@
       "notes": "정답: 해당 공장 관리자만(3.3 공장별 스펙 관리 - 포항·순천·창원 캐파 스펙).",
       "source_hash": "40f0c4b90d31ce6bf9cab47e98a06a80ffed19f03952cdc949aa476e8d8dfc4c",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v1-specific_document_qa-002",
@@ -2459,7 +2459,7 @@
       "notes": "정답: 준비, 수행중, 완료. RFP 대기/제안 진행/실주/드랍은 상태값이 아니라 비고에 남긴다.",
       "source_hash": "22d29e3ef69e612ef228fa8bf6e4d333eb9203108c3ff3bf7a745066a86792a9",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v1-specific_document_qa-003",
@@ -2485,7 +2485,7 @@
       "notes": "정답: GET /api/control/ready. 실패 시 HTTP 503.",
       "source_hash": "fb30418fd18fa349b9ca6a28ee27fd0b573a844df76f965fe8e3683b6cd6b6e4",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v1-specific_document_qa-004",
@@ -2511,7 +2511,7 @@
       "notes": "정답: deploy-main. 기준 repo는 /home/agilesoda/project_intel.",
       "source_hash": "5d92ef1c07f3d7f26ab3501ac1626de7f20ca03fd8b54ffeef23688229b26ecd",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v1-specific_document_qa-005",
@@ -2537,7 +2537,7 @@
       "notes": "정답: 90% 이상(전문가 검증 샘플 100건 기준, 11월 중순 부분오픈 후 2개월 튜닝 목표).",
       "source_hash": "2788d88a2e23fb6c0107968cfba5171b130ef73465053d630032d20be3908e1c",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v1-temporal-001",
@@ -2571,7 +2571,7 @@
       "notes": "정답: sources.modified_at의 연월이 2026-09인 google_drive 문서 전부. [이 스냅샷 기준 11건 - 위 규칙으로 코퍼스에서 다시 센 값]",
       "source_hash": "1702df4ad0b939fc40a529dc384535a9da1e998bed7e904c70e599050699c097",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v1-temporal-002",
@@ -2602,7 +2602,7 @@
       "notes": "정답: 2026-08-12 하루치 gmail 전부(공유 요청 + Drive 소유권 이전 알림). [이 스냅샷 기준 8건 - 위 규칙으로 코퍼스에서 다시 센 값]",
       "source_hash": "502da45de4de82b03e63b721035d1718dab259e09141e61bc83b4c291c9dcb20",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v1-temporal-003",
@@ -2626,7 +2626,7 @@
       "notes": "정답: 2026-07-29 하루치 slack 문서 전부 - risk-agent 아웃테이지 감지와 복구 확인 알림. [이 스냅샷 기준 2건 - 위 규칙으로 코퍼스에서 다시 센 값]",
       "source_hash": "3768cb589d915a631b98b43c4363532262de3734b620f1182bdcfe9321920e25",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v1-temporal-004",
@@ -2652,7 +2652,7 @@
       "notes": "정답: 2026-08-13 하루치 google_drive 문서 전부(linelist 엑셀 + LICO 가이드 2종). [이 스냅샷 기준 3건 - 위 규칙으로 코퍼스에서 다시 센 값]",
       "source_hash": "4dfa923d18574aa7e855d8043c985ce56dfbf590e56371cd24037a3ed928f66f",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v1-temporal-005",
@@ -2678,7 +2678,7 @@
       "notes": "정답: modified_at < 2026-07-01인 gmail 전부. [이 스냅샷 기준 3건 - 위 규칙으로 코퍼스에서 다시 센 값]",
       "source_hash": "9ff28f8253dc51859a099c3d6c6ee9f440086105147e2e469a89289a17131a0f",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v1-temporal-006",
@@ -2706,7 +2706,7 @@
       "notes": "정답: 2026-09-03 하루치 google_drive 문서 전부. [이 스냅샷 기준 5건 - 위 규칙으로 코퍼스에서 다시 센 값]",
       "source_hash": "72f1fbcd470b13bc7b98eb23131b84301cd97554b2f1115f9b9839010b788d95",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v1-relative_temporal-001",
@@ -2734,7 +2734,7 @@
       "notes": "as_of 기준 어제 = 2026-09-03. 그날의 google_drive 문서 전부가 정답이다. [이 스냅샷 기준 5건 - 위 규칙으로 코퍼스에서 다시 센 값]",
       "source_hash": "72f1fbcd470b13bc7b98eb23131b84301cd97554b2f1115f9b9839010b788d95",
       "as_of": "2026-09-04T00:00:00Z",
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v1-relative_temporal-002",
@@ -2759,7 +2759,7 @@
       "notes": "as_of 2026-08-14 기준 최근 이틀(8/12~8/13)에 올라온 LICO 가이드 전부. 파일명이 'LICO_'로 시작하는 Drive 문서가 정확히 그 이틀에만 있다. [이 스냅샷 기준 2건 - 위 규칙으로 코퍼스에서 다시 센 값]",
       "source_hash": "173b636db5331ff898e4a9e2de7dfedb63d777c49be5fb840ccfafd4bf6c7a63",
       "as_of": "2026-08-14T00:00:00Z",
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v1-relative_temporal-003",
@@ -2789,7 +2789,7 @@
       "notes": "as_of 기준 어제 = 2026-07-20. 그날 올라온 google_drive 문서가 곧 인수인계 패키지 전부다. [이 스냅샷 기준 7건 - 위 규칙으로 코퍼스에서 다시 센 값]",
       "source_hash": "dd4088ae42c42a44b7da8bdded21c0c23afea1cf68206e312b135cabe345d9c3",
       "as_of": "2026-07-21T00:00:00Z",
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v1-relative_temporal-004",
@@ -2814,7 +2814,7 @@
       "notes": "as_of 2026-09-04(금) 기준 이번 주(8/31~)에 온 '프로젝트 투입 관리 … 공유 요청' 메일 전부. [이 스냅샷 기준 2건 - 위 규칙으로 코퍼스에서 다시 센 값]",
       "source_hash": "c6cb442ca16a9debfdf3769977bac4be7161b16e76f8a8bfe540dc6ef887a2d3",
       "as_of": "2026-09-04T00:00:00Z",
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v1-metadata_filter-001",
@@ -3805,7 +3805,7 @@
       "notes": "정답: 파일명이 'LICO_'로 시작하는 Drive 문서 전부(control endpoint 디버깅 가이드, report_result 연동 가이드). [이 스냅샷 기준 2건 - 위 규칙으로 코퍼스에서 다시 센 값]",
       "source_hash": "173b636db5331ff898e4a9e2de7dfedb63d777c49be5fb840ccfafd4bf6c7a63",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v1-set_query-002",
@@ -3836,7 +3836,7 @@
       "notes": "정답: 파일명에 '제조가부'가 들어간 google_drive 문서 전부. 주의: Drive 파일명 상당수가 NFD(자모 분해)라 SQL like '%제조가부%'로는 절반만 잡힌다 - NFC 정규화 후 세야 한다. [이 스냅샷 기준 7건 - 위 규칙으로 코퍼스에서 다시 센 값]",
       "source_hash": "735ac83b3903a8bc95525189aa3143439e31d220616e6ed371622a5d5cd7e5f9",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v1-set_query-003",
@@ -3863,7 +3863,7 @@
       "notes": "정답: 파일명에 'fill-lowest-first'가 들어간 Drive 문서 전부 (fill-lowest-first.md 두 판본 + steps-fill-lowest-first-146/-56.html). [이 스냅샷 기준 4건 - 위 규칙으로 코퍼스에서 다시 센 값]",
       "source_hash": "8708232c221781e5ec9f2609c71b8aa33ef6188c215524e9b10948a8d16456bf",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v1-set_query-004",
@@ -3891,7 +3891,7 @@
       "notes": "정답: 파일명에 'pump-cut'이 들어간 Drive 문서 전부(모두 2026-08-06 수집). [이 스냅샷 기준 5건 - 위 규칙으로 코퍼스에서 다시 센 값]",
       "source_hash": "a425101d76df07b1e2aeddcd8d039f169645e3ae9ef79de9e9ed7f4491e0d2e1",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v1-negative-001",
@@ -4098,7 +4098,7 @@
       "notes": "정답: Equipment_Cata 계열 중 최신본이 아닌 것(현재 ver12.0, 2026-07-28). [이 스냅샷 기준 1건 - 위 규칙으로 코퍼스에서 다시 센 값]",
       "source_hash": "c5a78858731955a6e925bbb0729752d2aad7fae77d57b51c392b18bd5b97b6ff",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v1-version-002",
@@ -4122,7 +4122,7 @@
       "notes": "정답: '통합WBS_v260831' 계열 중 가장 늦은 것 = _삼성회신본(2026-09-03). 회신 전 원본은 2026-08-31. [이 스냅샷 기준 1건 - 위 규칙으로 코퍼스에서 다시 센 값]",
       "source_hash": "ebf7cd0746483d68a1a31085f6822bcba06a1ca94d481016b329a9205da0bb79",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v1-version-003",
@@ -4148,7 +4148,7 @@
       "notes": "정답: 같은 제목의 공유 요청 중 2026-08-12에 재전송된 것 전부(8/7, 8/9, 8/10 건은 별도). [이 스냅샷 기준 3건 - 위 규칙으로 코퍼스에서 다시 센 값]",
       "source_hash": "65960d9f0e4e4b6e2659d77a3b7f9b1ad0e9d97b6f590ed9971b1a11e372dea9",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v1-parent_child-001",
@@ -4368,7 +4368,7 @@
       "notes": "순서: proj_2025-038_nh농협은행_mvp -> proj_2026-038_nh농협은행_mvp(2026-08-27) -> proj_2026-038-0_nh농협은행_mvp(2026-08-28).",
       "source_hash": "369837d9eb7a84edffdf9f3c115a80cd82478b49df7e116ec6299ba3b7be0493",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v1-sequence-002",
@@ -4394,7 +4394,7 @@
       "notes": "순서: 사용자워크플로우(2026-08-26) -> IA 계층트리(2026-08-27) -> PRD 초안(2026-09-01).",
       "source_hash": "4a39958ad87d6c6c1272c525b7cbca64be8a13ecc4baf66ce51712316e3db70e",
       "as_of": null,
-      "split": "dev"
+      "split": "test"
     },
     {
       "id": "v1-sequence-003",
@@ -4420,7 +4420,7 @@
       "notes": "순서: 3차 인터뷰 준비 공지(슬랙 2026-09-01) -> 과제별 체크리스트 완료 점검(슬랙 2026-09-02) -> '3차 인터뷰를 위한 회의자료 송부' 메일(2026-09-02).",
       "source_hash": "0ee86c7e6879a411dd104273c013b9322e97236c0f22cadd34fcd45d3a5d3042",
       "as_of": null,
-      "split": "test"
+      "split": "dev"
     },
     {
       "id": "v1-long_range_context-001",
@@ -4678,6 +4678,235 @@
       "source_hash": null,
       "as_of": null,
       "split": "test"
+    },
+    {
+      "id": "v1-factoid-008",
+      "query": "dashboard 502 에러 발생 시 처음 확인해야 할 3가지는?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "specific_document_qa"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "c74586d8fd1e08b21dd95ba64f767495"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "정답: docker compose --env-file .env -f infra/docker/docker-compose.yml ps, docker logs caddy --tail=80, curl -fsSI http://localhost:3000 ('10. 빠른 장애 지도' 표의 dashboard 502 행). 청크 원문 대조로 확인했다. [출처: v2-draft-factoid-004 — eval-gen(google_drive 한정) 생성 초안 v2-draft, 사람 검수 통과]",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null,
+      "split": "dev"
+    },
+    {
+      "id": "v1-factoid-009",
+      "query": "ProjectIntel에서 Slack Socket Mode와 프로젝트 채널 프로비저닝을 담당하는 서비스 경로는?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "exact_match"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "23cd2609c0bb7cea045718fc0887305b"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "정답: services/slack-agent/ ('3. 서비스 구조' 표에서 역할이 'Slack Socket Mode, project channel/provisioning, Slack Q&A'인 행). 청크 원문 대조로 확인했다. v2-draft 생성 당시 [review:hard]로 표시됐으나 그 검증은 임베딩 0행 시절의 것이라 지금은 무의미하다. [출처: v2-draft-factoid-007 — eval-gen(google_drive 한정) 생성 초안 v2-draft, 사람 검수 통과]",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null,
+      "split": "test"
+    },
+    {
+      "id": "v1-factoid-010",
+      "query": "ProjectIntel 신규 담당자가 서버 권한이 없을 때 첫날에 해야 할 행동은?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid",
+        "specific_document_qa"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "4beb3a075d6e48ab2fa825757236e693"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "정답: 로컬 repo에서 git branch --show-current / git status --short를 확인하고, Slack workflow thread에 서버 권한·운영 확인 요청을 남긴 뒤 local-only 검증 가능한 범위만 작업한다 ('1. 첫날 30분 루트' 표의 '서버 권한 없음' 행). 유형은 검수에서 parent_child -> factoid로 고쳤다(절을 지목하는 질의가 아니라 사실 하나를 묻는다). [출처: v2-draft-parent_child-005 — eval-gen(google_drive 한정) 생성 초안 v2-draft, 사람 검수 통과]",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null,
+      "split": "dev"
+    },
+    {
+      "id": "v1-exact_match-005",
+      "query": "ProjectIntel 운영 서버 접속용 SSH alias 이름이 뭐야?",
+      "primary_type": "exact_match",
+      "types": [
+        "exact_match"
+      ],
+      "expected": {
+        "document_ids": [
+          "1e551c7fc23dfe1dee6059a13962d561"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "56723090a5cb90df7de7e0ed8cb5e332"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "정답: projectintel-server ('2. SSH 서버와 운영 기준' 표의 'SSH alias | projectintel-server'). 청크 원문 대조로 확인했다. [출처: v2-draft-exact_match-005 — eval-gen(google_drive 한정) 생성 초안 v2-draft, 사람 검수 통과]",
+      "source_hash": "b6abe4cb8a4a82e88f4adad712f5f7d20813149304c7ee113750dcf72c32a641",
+      "as_of": null,
+      "split": "dev"
+    },
+    {
+      "id": "v1-parent_child-005",
+      "query": "AGENTS.md의 Project Structure 절에 정의된 주요 실행 경계 디렉토리 목록은?",
+      "primary_type": "parent_child",
+      "types": [
+        "parent_child",
+        "specific_document_qa"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "5aed8aa1ecaa6fa78c583a489632ad09"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "정답 절: 'Project Structure' - apps/dashboard/(Next.js dashboard), services/risk-agent/(risk/project API와 RAG/second-brain 연동), services/slack-agent/(Slack 채널 에이전트), second-brain/(second-brain/RAG 관련 구성), infra/(Docker, compose, infra wiring). 질의문은 검수에서 다듬었다(원문은 'Project Structure 문서'라고 했는데 실제로는 AGENTS.md의 한 절이다). [출처: v2-draft-parent_child-006 — eval-gen(google_drive 한정) 생성 초안 v2-draft, 사람 검수 통과]",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null,
+      "split": "test"
+    },
+    {
+      "id": "v1-factoid-011",
+      "query": "ProjectIntel Codex agent 설정의 active TOML 파일과 inactive 파일은 각각 몇 개인가?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "e67879714f82001bd0d094c5da94de5e"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "정답: active 38개(Claude mirror 30 + ProjectIntel Codex-only specialist 8), inactive 20개, 총 58개. 청크 원문 대조로 확인했다. [출처: v2-draft-factoid-015 — eval-gen(google_drive 한정) 생성 초안 v2-draft, 사람 검수 통과]",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null,
+      "split": "test"
+    },
+    {
+      "id": "v1-exact_match-006",
+      "query": "대시보드 Playwright e2e 테스트에서 로컬 포트가 겹칠 때 쓰는 환경변수는?",
+      "primary_type": "exact_match",
+      "types": [
+        "exact_match"
+      ],
+      "expected": {
+        "document_ids": [
+          "217be20f362fae5df813e8054b92474f"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "7f27758cc334dc9a6fbc1282d581e32e"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "정답: DASHBOARD_E2E_PORT ('로컬 포트가 겹치면 DASHBOARD_E2E_PORT=<port> npm run e2e'). 청크 원문 대조로 확인했다. [출처: v2-draft-exact_match-002 — eval-gen(google_drive 한정) 생성 초안 v2-draft, 사람 검수 통과]",
+      "source_hash": "6f3dc4d9d5b532900a67f4b438b62e5113cde7a5bf713eca154fce5a30ba32cd",
+      "as_of": null,
+      "split": "test"
+    },
+    {
+      "id": "v1-factoid-012",
+      "query": "바이브 코딩에서 사람과 Codex의 역할 분담은 어떻게 되나요?",
+      "primary_type": "factoid",
+      "types": [
+        "factoid"
+      ],
+      "expected": {
+        "document_ids": [
+          "7f30ecf41ccd666f24c00b463f875774"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "ec288844dd6c00d3cd0b121002429670"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "정답: 사람은 방향·경계·승인을 잡고, Codex는 탐색·수정·검증을 빠르게 반복한다. 근거 청크가 95자짜리 한 문장이고 그 문서는 청크 437개짜리 pptx라, 긴 문서 안의 짧은 근거를 집어내는지 보는 질의다. 청크 원문 대조로 확인했다. [출처: v2-draft-factoid-010 — eval-gen(google_drive 한정) 생성 초안 v2-draft, 사람 검수 통과]",
+      "source_hash": "044e1ae91ea10984597d7def2a12376a9d69c6ba8b733e0281a551a196d8c88f",
+      "as_of": null,
+      "split": "dev"
+    },
+    {
+      "id": "v1-exact_match-007",
+      "query": "ProjectIntel 개발 인수인계 패키지가 업로드된 Google Drive 폴더 URL은?",
+      "primary_type": "exact_match",
+      "types": [
+        "exact_match"
+      ],
+      "expected": {
+        "document_ids": [
+          "eb41c306a7359b09d2c96684ecb4347d"
+        ],
+        "exhaustive": false,
+        "count": null,
+        "none": false,
+        "chunk_ids": [
+          "2a51ae4f0902adbe505bbb9cdb8d1a91"
+        ],
+        "knowledge_object_ids": []
+      },
+      "origin": "synthetic",
+      "notes": "정답: https://drive.google.com/drive/folders/1wEpG6WtR_wcXQi7mCnRlMfOXe3c7rK_p ('현재 업로드 기록' 표의 Drive folder URL). 청크 원문 대조로 확인했다. v2-draft 생성 당시 [review:hard]였으나 그 검증은 임베딩 0행 시절의 것이다. [출처: v2-draft-exact_match-001 — eval-gen(google_drive 한정) 생성 초안 v2-draft, 사람 검수 통과]",
+      "source_hash": "dfcad395da2dc605c028402a56a5bce7d9466a1f2453fcdb57f2127080bf5227",
+      "as_of": null,
+      "split": "dev"
     }
   ]
 }
