@@ -455,7 +455,13 @@ class _Run:
     async def _keyword_fallback(self, query: str) -> None:
         """vector가 아무것도 못 돌려줬을 때(임베딩 0행, 임베더 미구성)의 키워드 기준선 -
         semantic_query로 제목 조회 + 청크 원문 일치. 임베딩이 없는 개발 DB/평가 환경에서 실행기가
-        빈손이 되지 않게 하는 degrade이지 vector의 대체가 아니다(패러프레이즈는 못 잡는다)."""
+        빈손이 되지 않게 하는 degrade이지 vector의 대체가 아니다(패러프레이즈는 못 잡는다).
+
+        주의: 이 경로는 **임베딩이 채워지면 사실상 영원히 안 돈다** - ANN은 관련도와 무관하게
+        항상 `limit`개를 돌려주므로 `not hits` 조건이 성립하지 않는다. term 분해 fallback
+        (`_term_fallback`)이 v0 골든셋 ndcg@10을 0.709 → 0.865로 올린 경로라, 임베딩을 채운
+        뒤 지표를 비교할 때 반드시 감안해야 한다(wiki/search-architecture.md "벡터 경로").
+        하한(최소 유사도)을 둘지는 `eval-ir`로 재고 나서 결정할 문제다."""
         title_hits = await document_search(
             query, self.store, project_id=self.project_id, limit=self.fetch_limit, since=self.since, until=self.until
         )

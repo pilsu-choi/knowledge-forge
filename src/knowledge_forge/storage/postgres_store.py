@@ -6,6 +6,7 @@ unchanged input is safe to repeat.
 """
 
 import asyncio
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -28,6 +29,8 @@ from knowledge_forge.storage.document_title import derive_document_title, first_
 
 if TYPE_CHECKING:
     from knowledge_forge.embedding.base import EmbeddingRecord
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
@@ -54,6 +57,7 @@ class PostgresStore:
     async def connect(self) -> "PostgresStore":
         self._conn = await psycopg.AsyncConnection.connect(self._dsn, autocommit=True)
         await self._register_vector_types()
+        await self._configure_ann_search()
         return self
 
     async def _register_vector_types(self) -> None:
@@ -72,6 +76,39 @@ class PostgresStore:
             await register_vector_async(self.conn)
         except psycopg.ProgrammingError:
             pass
+
+    async def _configure_ann_search(self) -> None:
+        """Turns pgvector's iterative index scan on for this session - without
+        it `search_by_embedding` silently loses rows whenever a filter
+        (project_id / target_kind / embedding_model / since-until) selects a
+        minority of `knowledge_object_embeddings`.
+
+        Why: an HNSW index scan walks the graph in distance order and hands
+        the executor roughly `hnsw.ef_search` (40) rows; the WHERE clause is
+        applied *after* that, and the scan then reports "no more rows"
+        instead of walking further. So a query scoped to a small project can
+        come back with zero hits even though matching rows exist - measured
+        on this schema: 4000 rows in one project + 3 rows in another,
+        `search_by_embedding(..., project_id=<the small one>)` returned 0
+        with the default `hnsw.iterative_scan = off` and the correct 3 with
+        this setting (see wiki/search-architecture.md "벡터 경로"). It is not
+        a hypothetical: the executor filters by project_id on every call, and
+        `search/temporal.py` adds since/until on top.
+
+        `strict_order` rather than `relaxed_order`: the rows must come back in
+        exact distance order, because `search_by_embedding` turns the
+        distance into the `score` every caller ranks on. Work stays bounded by
+        pgvector's own `hnsw.max_scan_tuples` (20000 by default), and an
+        unfiltered query is unaffected (measured: same latency either way).
+
+        Tolerates the GUC not existing (pgvector < 0.8) the same way
+        `_register_vector_types` tolerates the extension not existing - a
+        missing knob degrades to today's behaviour, it must not make
+        `connect()` fail."""
+        try:
+            await self.conn.execute("SET hnsw.iterative_scan = strict_order")
+        except psycopg.Error:  # pragma: no cover - only on pgvector < 0.8
+            logger.warning("hnsw.iterative_scan is unavailable - filtered vector search may lose hits")
 
     async def close(self) -> None:
         if self._conn is not None:
@@ -97,6 +134,7 @@ class PostgresStore:
         # a no-op if this is the first time this database has ever seen it,
         # so retry it now that the type genuinely exists.
         await self._register_vector_types()
+        await self._configure_ann_search()
 
     async def save_source(self, source: Source, raw_path: str | None) -> None:
         await self.conn.execute(
@@ -796,6 +834,86 @@ class PostgresStore:
             )
             for row in rows
         ]
+
+    async def embedding_coverage(self, embedding_model: str, project_id: str | None = None) -> dict[str, Any]:
+        """벡터 검색이 왜 0히트인지 사람이 30초 안에 판정하기 위한 읽기 전용 진단.
+
+        벡터 경로가 조용히 실패하는 방식은 셋뿐인데(임베딩 행이 없다 / 모델 이름이 저장할
+        때와 검색할 때 다르다 / 다른 프로젝트에만 있다) 셋 다 에러도 경고도 없이 "결과 없음"과
+        구분되지 않는다(`search_by_embedding`의 docstring). 그래서 셋을 한 번에 보여준다:
+
+        - `rows_by_model_and_kind`: **모델 필터를 걸지 않은** 실제 적재 현황
+          `{embedding_model: {target_kind: n}}`. `embedding_model` 인자로 넘긴 이름이 여기
+          없으면 그게 바로 원인이다 - 이름이 한 글자만 달라도 검색은 0행이다
+          (`WHERE e.embedding_model = %s`).
+        - `chunks_total`/`chunks_embedded`, `knowledge_objects_total`/`knowledge_objects_embedded`:
+          그 모델 기준 grain별 커버리지(백필이 어디까지 갔는지).
+        - `dimensions`: 실제로 저장된 벡터 차원 집합. 스키마가 `vector(1536)` 고정이라 다른
+          차원은 애초에 INSERT가 실패하지만, 모델을 바꿨을 때 "왜 적재가 멈췄나"를 여기서 본다.
+
+        `project_id`가 None이면 전체. 순수 SELECT라 `execute_readonly_query`와 달리 트랜잭션을
+        열지 않는다(autocommit 그대로)."""
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT embedding_model, target_kind, count(*)
+                FROM knowledge_object_embeddings
+                WHERE (%s::text IS NULL OR project_id = %s)
+                GROUP BY embedding_model, target_kind
+                ORDER BY embedding_model, target_kind
+                """,
+                (project_id, project_id),
+            )
+            by_model: dict[str, dict[str, int]] = {}
+            for model, kind, n in await cur.fetchall():
+                by_model.setdefault(model, {})[kind] = n
+
+            await cur.execute(
+                """
+                SELECT count(*), count(e.embedding_id)
+                FROM chunks c
+                JOIN documents d ON d.document_id = c.document_id
+                LEFT JOIN knowledge_object_embeddings e
+                  ON e.chunk_id = c.chunk_id AND e.embedding_model = %s
+                WHERE (%s::text IS NULL OR d.project_id = %s)
+                """,
+                (embedding_model, project_id, project_id),
+            )
+            chunks_total, chunks_embedded = await cur.fetchone() or (0, 0)
+
+            await cur.execute(
+                """
+                SELECT count(*), count(e.embedding_id)
+                FROM knowledge_objects ko
+                JOIN documents d ON d.document_id = ko.document_id
+                LEFT JOIN knowledge_object_embeddings e
+                  ON e.knowledge_object_id = ko.knowledge_object_id AND e.embedding_model = %s
+                WHERE (%s::text IS NULL OR d.project_id = %s)
+                """,
+                (embedding_model, project_id, project_id),
+            )
+            ko_total, ko_embedded = await cur.fetchone() or (0, 0)
+
+            await cur.execute(
+                """
+                SELECT DISTINCT vector_dims(embedding)
+                FROM knowledge_object_embeddings
+                WHERE embedding_model = %s AND (%s::text IS NULL OR project_id = %s)
+                """,
+                (embedding_model, project_id, project_id),
+            )
+            dimensions = sorted(row[0] for row in await cur.fetchall())
+
+        return {
+            "embedding_model": embedding_model,
+            "project_id": project_id,
+            "rows_by_model_and_kind": by_model,
+            "chunks_total": chunks_total,
+            "chunks_embedded": chunks_embedded,
+            "knowledge_objects_total": ko_total,
+            "knowledge_objects_embedded": ko_embedded,
+            "dimensions": dimensions,
+        }
 
     async def search_by_embedding(
         self,
