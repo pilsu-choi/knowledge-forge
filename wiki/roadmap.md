@@ -126,7 +126,7 @@ Dashboard / Chat UI다. 이들을 지금 만들지 않는 이유는 스코프 �
 | Vector DB | **임베딩 생성 + 검색까지 구현 완료** — `KnowledgeObject.summary`/`content`/`topics`를 합친 텍스트를 OpenAI 임베딩 API로 벡터화해 pgvector(`knowledge_object_embeddings` 테이블, HNSW/cosine 인덱스)에 저장하고([`embeddings.md`](embeddings.md)), 그 인덱스를 `vector_search` agent 도구로 실제로 읽는다([`agent-runtime.md`](agent-runtime.md)). `POST /search/vector` HTTP 엔드포인트, `knowledge-forge mcp-server`, Claude Code용 검색 skill은 여전히 설계만 있고 미착수다([`agent-search.md`](agent-search.md)). |
 | Graph DB | `KnowledgeObject`(노드)와 `Relation`(subject_id/object_id로 노드를 잇는 typed edge)이 이미 그래프 모델 그 자체다 — Phase 5에서 subject-predicate-object 텍스트 triple 대신 id 기반 edge로 바꿨다([`architecture.md`](architecture.md)). `relations` 테이블(PostgreSQL, [`storage.md`](storage.md)) 또는 OKF `relations/`([`okf.md`](okf.md))를 그대로 그래프 DB에 bulk-import하면 된다. |
 | Ontology/OWL | `Entity.type`/`document_type`이 자유 문자열이라, 추후 온톨로지 클래스 체계로 매핑하는 정규화 레이어를 얹기만 하면 된다. 지금 스키마를 바꿀 필요가 없다. |
-| Search/RAG | Knowledge Object 자체가 검색 인덱싱의 입력 단위로 설계되어 있다(청크 단위 + 요약 + 메타데이터). **Query Planning(멀티홉 질의 분해 + 병렬/의존 실행) + Query Routing(소스 선택)은 구현 완료**([`search-architecture.md`](search-architecture.md), `search/planner.py`/`search/router.py`) - `file_search`+`vector_search` 두 소스를 조합해 쓰는 `plan_search` 도구. Reranking/Context Engineering/Map-Reduce/Temporal Search/Evidence Grounding 파이프라인/Feedback Loop를 갖춘 "정식" RAG는 여전히 스코프 밖(같은 문서 참고). 다만 **DB 의존성 없이 OKF 파일 트리만으로 에이전트 컨텍스트를 구성하는 실험**([`okf.md`](okf.md))은 진행 중 스코프로 승격했다 - OKF가 이제 실제 [OKF v0.2 스펙](open-knowledge-format.md)을 따르는 markdown+frontmatter 트리라, grep + frontmatter 스캔 + `index.md`/`log.md`가 곧 검색 표면이다. |
+| Search/RAG | Knowledge Object 자체가 검색 인덱싱의 입력 단위로 설계되어 있다(청크 단위 + 요약 + 메타데이터). **Query Planning(멀티홉 질의 분해 + 병렬/의존 실행) + Query Routing(소스 선택) + Reranking(RRF 기반 다중 소스 병합/cross-source dedup)은 구현 완료**([`search-architecture.md`](search-architecture.md), `search/planner.py`/`search/router.py`/`search/rerank.py`) - `file_search`+`vector_search` 두 소스를 조합해 쓰는 `plan_search` 도구. Context Engineering(conflict 탐지 등)/Map-Reduce/Temporal Search/Evidence Grounding 파이프라인/Feedback Loop를 갖춘 "정식" RAG는 여전히 스코프 밖(같은 문서 참고). 다만 **DB 의존성 없이 OKF 파일 트리만으로 에이전트 컨텍스트를 구성하는 실험**([`okf.md`](okf.md))은 진행 중 스코프로 승격했다 - OKF가 이제 실제 [OKF v0.2 스펙](open-knowledge-format.md)을 따르는 markdown+frontmatter 트리라, grep + frontmatter 스캔 + `index.md`/`log.md`가 곧 검색 표면이다. |
 | Agent | Knowledge Extraction은 순수 함수형 파이프라인 단계(청크 → LLM 호출 → 구조화 출력)로, 에이전트형 도구 호출 루프가 필요 없다. 이 파이프라인 밖에서, Knowledge Base(OKF 파일 트리 + pgvector 임베딩)를 검색/편집하는 별도 스코프의 모델 벤더 중립 Agent Runtime은 **구현 완료** — `file_search`/`vector_search`/`plan_search`(Query Planning+Routing)/파일시스템(`read_file`/`write_file`/`edit_file`/`list_dir`)/`write_memory`/`delegate_task` 도구를 갖춘 `knowledge-forge agent` CLI([`agent-runtime.md`](agent-runtime.md)). |
 | Dashboard / Chat UI | 순수 데이터 처리 파이프라인이라 UI 레이어와 결합되어 있지 않다. CLI/JSONL 출력이 어떤 UI 위에도 얹힐 수 있는 형태다. |
 
@@ -340,8 +340,9 @@ Knowledge가 나온다.
 `agent/loop.py::run_agent()`(도구 호출 루프, untrusted-output wrapping, max_iterations 상한)에
 등록한다(`vector_search`는 `KF_DATABASE_URL`이 설정된 경우에만 등록). 그 위에 `search/router.py`
 (소스 선택 휴리스틱)와 `search/planner.py`(멀티홉 질의 분해 + 병렬/의존 실행)로 Query Planning +
-Query Routing을 구현하고 `plan_search` 도구로 등록했다 — 더 넓은 엔터프라이즈 RAG 아키텍처(Query
-Understanding, Hybrid rerank, Context Engineering, Map-Reduce, Temporal Search, Evidence
+Query Routing을 구현하고, `search/rerank.py`(Reciprocal Rank Fusion + cross-source dedup)로
+두 소스 결과를 병합/재정렬해 `plan_search` 도구로 등록했다 — 더 넓은 엔터프라이즈 RAG
+아키텍처(Query Understanding, Context Engineering, Map-Reduce, Temporal Search, Evidence
 Grounding, Feedback Loop) 중 이 두 레이어를 먼저 고른 이유와 나머지 레이어의 상태는
 [`search-architecture.md`](search-architecture.md) 참고. `graph_search`와 `POST /search/vector`/
 `GET /relations/expand` HTTP 엔드포인트는 여전히 후속 작업.

@@ -34,7 +34,7 @@
 | [`embeddings.md`](embeddings.md) | `KnowledgeObject`를 pgvector에 임베딩하는 파이프라인 — `EmbeddingProvider` 추상화, `knowledge_object_embeddings` 스키마, `--embed`/`knowledge-forge embed`, staleness 미자동화 |
 | [`agent-search.md`](agent-search.md) | 에이전트 검색 설계 — pgvector/임베딩과 `vector_search`/`plan_search`(Query Planning+Routing) agent 도구(구현됨), `POST /search/vector` HTTP 엔드포인트/그래프 확장/MCP 서버/검색 skill(설계만, 미구현) |
 | [`agent-runtime.md`](agent-runtime.md) | 모델 벤더 중립 Agent Runtime(harness) — `file_search`/`vector_search`/`plan_search`/FileSystem/Memory/SubAgents 도구를 실제로 쥐고 도는 `knowledge-forge agent` CLI(구현됨), 자체 `ChatProvider` 추상화(Anthropic 네이티브 + OpenAI-호환) |
-| [`search-architecture.md`](search-architecture.md) | 넓은 엔터프라이즈 RAG 아키텍처 레이어별 상태 — Query Planning/Routing(구현됨), Hybrid rerank/Context Engineering/Map-Reduce/Temporal Search/Evidence Grounding/Feedback Loop(설계만, 미구현), Iterative Retrieval(이미 tool-calling 루프로 충족) |
+| [`search-architecture.md`](search-architecture.md) | 넓은 엔터프라이즈 RAG 아키텍처 레이어별 상태 — Query Planning/Routing/Reranking(RRF+cross-source dedup)은 구현됨, Context Engineering/Map-Reduce/Temporal Search/Evidence Grounding/Feedback Loop는 설계만·미구현, Iterative Retrieval은 이미 tool-calling 루프로 충족 |
 | [`okf.md`](okf.md) | `OKFWriter` — manifest.yaml + resources/objects/relations 파일 트리로 된 Knowledge Base, Postgres와 독립적인 opt-in 출력 |
 | [`ui.md`](ui.md) | `/ui` — React+Vite 기반 OKF 뷰어(마크다운+그래프). Tailwind+shadcn/ui 기반 Obsidian풍 비주얼, 디렉터리 구조, 알려진 CSS/타입 함정 |
 | [`scheduling.md`](scheduling.md) | `knowledge-forge schedule`의 tick/interval 모델, 실패 격리 |

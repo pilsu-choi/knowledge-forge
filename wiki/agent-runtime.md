@@ -31,11 +31,14 @@
 ## 구현된 모듈
 
 ```
+src/knowledge_forge/
+    chat_provider.py       # Message/ToolCall/AssistantTurn/ToolSpec, ChatProvider(ABC) - agent/search 공용
 src/knowledge_forge/search/
     service.py            # file_search() - OKF 파일 트리 키워드/frontmatter 검색, Postgres 불필요
                             # vector_search() - pgvector HNSW 인덱스 의미 검색, PipelineStore 필요
     router.py              # route_query() - 질의당 file_search/vector_search 소스 선택 휴리스틱
     planner.py              # decompose_query()/plan_and_search() - 멀티홉 질의 분해 + 병렬/의존 실행
+    rerank.py                # merge_and_rerank() - RRF로 다중 소스 결과 병합/재정렬 + cross-source dedup
 src/knowledge_forge/okf/
     fs_service.py          # read_file/write_file/edit_file/list_dir() - OKF 루트 트리로 스코프된 FS 도구
 src/knowledge_forge/agent/
@@ -48,11 +51,23 @@ src/knowledge_forge/agent/
     prompts.py               # 시스템 프롬프트 템플릿
     runtime.py                # run_query()(1회성) / AgentSession(--interactive REPL) - 둘 다 loop.py 그대로 사용
     providers/
-        base.py             # Message/ToolCall/AssistantTurn/ToolSpec, ChatProvider(ABC)
+        base.py             # knowledge_forge.chat_provider 재수출(하위 호환 - 기존 agent/* import 유지)
         anthropic.py         # AnthropicChatProvider (Messages API)
         openai_compatible.py # OpenAICompatibleChatProvider (OpenRouter 기본, base_url로 전환 가능)
         factory.py            # get_chat_provider() - KF_AGENT_PROVIDER로 선택
 ```
+
+**`chat_provider.py`가 `agent/providers/` 밖, `knowledge_forge/` 바로 아래 있는 이유**:
+`search/planner.py`(하위 질의 분해에 LLM 호출이 필요)가 `ChatProvider`/`Message`를 실제로
+써야 하는데, 원래 위치(`agent/providers/base.py`)에서 가져오면 `agent` 패키지를 import하게
+되고, `agent/__init__.py`가 즉시 `agent.runtime` → `agent.tools` → `search.planner`를
+import하는 체인과 맞물려 순환 import가 된다(`search/planner.py`가 최초로 `agent`를 건드리는
+경우에만 터지는, pytest 실행 순서에 따라 숨겨지기 쉬운 버그였다 - `tests/search/test_layering.py`
+가 서브프로세스로 재현/방지한다). 근본 원인은 순환 import 자체보다 계층 위반 쪽이다 -
+`search/`는 `agent/`보다 아래 계층이어야 하는데(`agent/tools.py`가 `search/*` 함수를 감싸는
+방향), `search/planner.py`가 `agent/*`를 import하면 그 반대 방향 의존이 생긴다. 그래서 정의
+자체를 `agent/` 밖으로 옮기고, `agent/providers/base.py`는 기존 import 경로를 안 깨기 위한
+재수출 shim으로만 남겼다.
 
 (`delegate_task`(SubAgents)는 새 파일이 아니라 `agent/tools.py::default_tools`가 `agent/loop.py::run_agent`를
 재귀적으로 호출해 만드는 도구 - 아래 Phase 2 절 참고.)
@@ -218,11 +233,12 @@ JOIN하는 쿼리 특성상 결과에 그냥 나오지 않는다(에러/경고 �
 문자열/ID는 file_search로, 자연어 패러프레이즈/개념은 vector_search로 먼저 시도하고, 하나가
 결과 없음을 반환해도 다른 하나로 다시 시도해보라고 안내한다.
 
-## Phase 4 — `plan_search` (Query Planning + Query Routing)
+## Phase 4 — `plan_search` (Query Planning + Query Routing + Reranking)
 
 `wiki/search-architecture.md`가 다루는 넓은 RAG 아키텍처 중, 검색 소스가 여러 개로 늘어나는 걸
-대비한 두 레이어(멀티홉 질의 분해 + 소스 선택)를 `file_search`/`vector_search` 위에 얹었다 -
-전체 아키텍처 설계 근거/상태표는 그 문서, 여기서는 harness 통합 지점만 다룬다.
+대비한 세 레이어(멀티홉 질의 분해 + 소스 선택 + 다중 소스 결과 병합/재정렬)를 `file_search`/
+`vector_search` 위에 얹었다 - 전체 아키텍처 설계 근거/상태표는 그 문서, 여기서는 harness 통합
+지점만 다룬다.
 
 ### `search/router.py::route_query`
 
@@ -243,6 +259,17 @@ JOIN하는 쿼리 특성상 결과에 그냥 나오지 않는다(에러/경고 �
 덧붙여 검색한다(별도 쿼리 치환 언어 없음). 분해 LLM 호출이 실패하거나 JSON이 아니면 원 질문
 하나짜리 계획으로 조용히 fallback한다 - `compact_messages`의 "압축 실패해도 원본 그대로 반환"과
 같은 원칙.
+
+### `search/rerank.py::merge_and_rerank`
+
+하위 질의 하나가 두 소스 모두로 라우팅되면(`route_query`가 둘 다 반환한 경우), `_execute_subquery`
+가 각 소스 결과 리스트를 그대로 이어붙이는 대신 이 함수로 병합한다 - Reciprocal Rank Fusion(순위
+기반 점수 `1/(k+rank)`를 소스별로 합산, `k=60` 기본값)으로 재정렬하고, `knowledge_object_id`가
+겹치는 hit은 하나로 합쳐 `retrieval_sources`(어느 소스들이 찾았는지 목록)를 붙인다. `file_search`
+가 `objects/` hit에 대해 frontmatter의 `knowledge_object_id`를 응답에 노출하도록 함께 바꿔서,
+`vector_search`의 `knowledge_object_id`와 실제로 매칭될 수 있게 했다(`resources/` hit은
+KnowledgeObject가 아니라 여전히 `None` - 매칭 대상이 될 수 없으므로 자기 소스 순위만으로 점수를
+받는다).
 
 ### `agent/tools.py::_make_plan_search_tool`
 
@@ -272,6 +299,7 @@ JOIN하는 쿼리 특성상 결과에 그냥 나오지 않는다(에러/경고 �
    vector_search()`를 그대로 감싸는 얇은 FastAPI 라우터만 추가하면 됨.
 3. `knowledge-forge mcp-server`(stdio) - 외부 host(Claude Code/Claude Desktop 등) 노출.
 4. permission mode(쓰기 도구 승인 흐름) / Skills 연동 - 별도 설계 문서.
-5. `wiki/search-architecture.md`가 정리한 더 넓은 RAG 레이어(Hybrid rerank, Context Engineering,
-   Map-Reduce, Temporal Search, Evidence Grounding 파이프라인, Feedback Loop) - 전부 설계만
-   있고 미착수, 그 문서의 "왜 지금 여기서 멈추는가" 참고.
+5. `wiki/search-architecture.md`가 정리한 더 넓은 RAG 레이어 중 남은 것(Context Engineering의
+   conflict 탐지/reliability/clustering, Temporal Search, Map-Reduce, Evidence Grounding
+   파이프라인, Feedback Loop) - Hybrid rerank(RRF)/cross-source dedup은 `search/rerank.py`로
+   구현됐지만 나머지는 설계만 있고 미착수, 그 문서의 "왜 지금 여기서 멈추는가" 참고.

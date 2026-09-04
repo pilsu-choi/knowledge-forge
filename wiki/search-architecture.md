@@ -14,9 +14,9 @@ Grounding까지)을 레이어별로 정리한다. 실제 프로덕션 엔터프�
 | ① Query Understanding (intent/entity/temporal) | 설계만, 미구현 — 아래 절 참고 |
 | ② Query Planning (multi-hop 분해) | **구현됨** — `search/planner.py`, 아래 절 참고 |
 | Query Routing (소스 선택) | **구현됨** — `search/router.py`, 아래 절 참고 |
-| ③ Hybrid Retrieval (BM25+Vector+Metadata+Graph) | **부분 구현** — keyword(`file_search`)+semantic(`vector_search`)+metadata(`project_id`/`type`) 병행 실행까지는 있음, graph는 미구현, reranking 없음 |
-| Multi-stage Retrieval / Reranking | 설계만, 미구현 |
-| ④ Context Engineering (dedup/conflict/compression) | **부분 구현** — 토큰 예산 압축(`agent/compaction.py`)만 있음, evidence 단위 dedup/conflict 탐지는 없음 |
+| ③ Hybrid Retrieval (BM25+Vector+Metadata+Graph) | **부분 구현** — keyword(`file_search`)+semantic(`vector_search`)+metadata(`project_id`/`type`) 병행 실행 + RRF reranking까지 있음, graph는 미구현 |
+| Multi-stage Retrieval / Reranking | **부분 구현** — `search/rerank.py`의 Reciprocal Rank Fusion, 아래 절 참고. Cross-Encoder/LLM reranker는 미구현 |
+| ④ Context Engineering (dedup/conflict/compression) | **부분 구현** — 토큰 예산 압축(`agent/compaction.py`), cross-source dedup(`search/rerank.py`, knowledge_object_id 기준)은 있음. conflict 탐지/source reliability/temporal consistency/evidence clustering은 없음 |
 | ⑤ Map-Reduce / Hierarchical Retrieval | 설계만, 미구현 |
 | ⑥ Temporal Search (Text-to-SQL/Temporal Join) | 설계만, 미구현 |
 | Query Routing 확장 (SQL/Web 소스) | 설계만, 미구현 (현재 소스는 file_search/vector_search 둘뿐) |
@@ -113,13 +113,9 @@ router가 필요한 곳은 **프로그램적으로 생성된**(모델 턴이 없
 - `vector_search`가 애초에 구성되어 있지 않으면(`KF_DATABASE_URL` 없음) 항상 `file_search`만.
 
 **결정된 스코프**: 라우터는 "이 소스들을 실행하라"는 목록만 돌려준다 - 실행 순서에 따른
-폴백(먼저 것이 0건이면 다음 것)이 아니라, 목록에 있는 소스를 **전부** 병행 실행해서 합친다(간이
-hybrid). 두 소스가 같은 KnowledgeObject를 각자 다르게 찾아도 **cross-source dedup은 하지 않는다**
-- `file_search`는 OKF 파일 `path`로, `vector_search`는 `knowledge_object_id`로 결과를 식별해서
-서로 다른 식별자 공간이라 안전한 매칭 키가 없다(`file_search`가 frontmatter의
-`knowledge_object_id`를 응답에 아직 노출하지 않음). 두 소스가 같은 대상을 각각 찾으면 evidence
-목록에 중복으로 나타날 수 있다는 뜻 - 상위 에이전트가 종합할 때 알아서 걸러내는 것에 기대고
-있다. 진짜 dedup/rerank는 ③/④ 레이어(아래) 스코프.
+폴백(먼저 것이 0건이면 다음 것)이 아니라, 목록에 있는 소스를 **전부** 병행 실행해서
+`search/rerank.py`로 병합한다(아래 ③ 참고) - 소스 선택은 라우터, 병합/재정렬은 rerank 모듈로
+역할이 나뉜다.
 
 ## Iterative / Agentic Retrieval — **이미 구현됨**, 새로 만들 필요 없음
 
@@ -141,19 +137,30 @@ hybrid). 두 소스가 같은 KnowledgeObject를 각자 다르게 찾아도 **cr
   **entity 필터**는 KnowledgeObject 스키마에 참여자 필드가 정규화되어 있지 않아 아직
   구조화된 필터로 걸 수 없다 - `content`/`topics`의 자유 텍스트 매칭에 의존).
 - Graph 축(`GET /relations/expand`, `agent-search.md`)은 여전히 미구현.
-- **Reranking은 없다** - 두 소스의 결과를 점수 기준으로 통합 재정렬하는 Cross-Encoder/LLM
-  reranker, Multi-stage retrieval(candidate → rerank → evidence selection)은 설계만 있고
-  미착수. 지금은 각 소스가 이미 자기 기준(BM25 스타일 가중치 매칭/cosine 유사도)으로 정렬해
-  반환한 것을 그대로 합쳐 넘긴다.
+- **Reranking(RRF) — 구현됨**, `search/rerank.py::merge_and_rerank`. `plan_search`가 하위
+  질의 하나에 대해 두 소스를 모두 호출하면, 두 결과 리스트를 Reciprocal Rank Fusion(RRF)으로
+  병합한다 - `file_search`의 정수 가중치와 `vector_search`의 cosine 유사도는 스케일이 달라
+  직접 합산/평균이 무의미하므로, 각 소스가 이미 매긴 **순위**만 보고 `1/(k+rank)`를 소스별로
+  합산하는 방식을 썼다(프로덕션 hybrid search가 흔히 쓰는 표준 기법, Elasticsearch/Weaviate
+  등). 동시에 `knowledge_object_id`가 겹치는 hit을 하나로 합치는 **cross-source dedup**도
+  이 단계에서 해결된다(`file_search`가 이제 frontmatter의 `knowledge_object_id`를 응답에
+  노출한다 - 이전에는 이게 없어 매칭 키가 아예 없었다). `path`도 `knowledge_object_id`도 없는
+  hit(다른 소스에서 온, 식별자가 겹칠 수 없는 hit)은 병합하지 않고 그대로 자기 소스의
+  순위만으로 점수를 받는다.
+  - **아직 없는 것**: Cross-Encoder/LLM 기반 reranker(질의-문서 쌍을 실제로 이해해 재정렬) -
+    RRF는 각 소스의 기존 순위를 신뢰하는 저비용 융합일 뿐, 두 소스 모두 낮게 평가한 문서를
+    끌어올리거나 실제 관련성을 재판단하지는 못한다. 필요해지는 시점은 RRF로 병합한 상위
+    결과의 정밀도가 실사용에서 부족하다고 판명될 때.
 
 ## ④ Context Engineering — 부분 구현
 
 `agent/compaction.py`가 **토큰 예산** 관점의 압축(오래된 turn을 요약으로 치환)은 이미 하고
-있지만, RAG 맥락에서 말하는 evidence 단위의 context engineering(중복 evidence 제거, conflicting
-information 탐지, source reliability 평가, temporal consistency, relevance filtering, evidence
-clustering)은 없다. 지금 규모(`plan_search` 하위 질의당 최대 5건, 소스 최대 2개)에서는 모델
-컨텍스트 윈도우에 그대로 넣어도 감당 가능하다고 보고 미룬 것 - evidence 개수/소스 수가 늘어나면
-가장 먼저 필요해질 레이어.
+있고, evidence 단위에서는 `search/rerank.py`의 **cross-source dedup**(같은 `knowledge_object_id`
+를 가진 hit을 하나로 합침, 위 ③ 참고)까지는 구현되어 있다. 하지만 RAG 맥락에서 말하는 나머지
+context engineering(conflicting information 탐지, source reliability 평가, temporal
+consistency, relevance filtering, evidence clustering)은 없다. 지금 규모(`plan_search` 하위
+질의당 최대 5건, 소스 최대 2개)에서는 모델 컨텍스트 윈도우에 그대로 넣어도 감당 가능하다고 보고
+미룬 것 - evidence 개수/소스 수가 늘어나면 가장 먼저 필요해질 레이어.
 
 ## ⑤ Map-Reduce / Hierarchical Retrieval — 설계만, 미구현
 
@@ -200,3 +207,10 @@ Temporal Search, Evidence Grounding 파이프라인, Feedback Loop)는 각자 �
 순서는 대략 위에 정리한 순서(③ hybrid rerank → ④ context engineering → ⑥ temporal → ⑤
 map-reduce → citation → feedback loop)가 될 것 같지만, 실제 우선순위는 어떤 게 먼저 병목이
 되는지 보고 정할 문제다.
+
+바로 이어서, 그 순서의 첫 항목인 **③ Multi-stage Retrieval/Reranking**(RRF, `search/rerank.py`)
+과 거기서 자연스럽게 같이 풀리는 **④ cross-source dedup**을 구현했다 - `plan_search`가 하위
+질의당 두 소스를 병행 실행하기 시작한 순간부터 "결과를 그냥 이어붙이기만 한다"는 게 가장 먼저
+체감되는 품질 문제였기 때문(같은 KnowledgeObject가 두 번 나오거나, 두 소스 다 낮게 평가한
+결과와 둘 다 동의한 결과가 구분 없이 뒤섞임). 남은 순서(⑥ temporal → ⑤ map-reduce → citation
+→ feedback loop, 그리고 ④의 나머지인 conflict 탐지/reliability/clustering)는 여전히 설계만.

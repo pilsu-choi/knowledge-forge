@@ -301,7 +301,7 @@ KF_OKF_DIR=./okf uv run knowledge-forge agent --interactive   # REPL, Ctrl-D로 
 |---|---|---|
 | `file_search` | `KF_OKF_DIR` | OKF 파일 트리를 키워드/frontmatter로 검색 — 정확한 문자열/ID에 강함 |
 | `vector_search` | `KF_DATABASE_URL` (pgvector 임베딩 필요, 아래 `embed` 참고) | KnowledgeObject 임베딩을 의미 기반으로 검색 — 자연어 패러프레이즈에 강함 |
-| `plan_search` | 항상 | 여러 단계 추론이 필요한 복합 질문을 하위 질의로 분해해, 독립적인 것은 병렬로 검색하고 근거를 모아 반환 (Query Planning + Routing) |
+| `plan_search` | 항상 | 여러 단계 추론이 필요한 복합 질문을 하위 질의로 분해해, 독립적인 것은 병렬로 검색하고, 두 소스 결과는 RRF로 병합/재정렬(cross-source dedup 포함)해 근거를 반환 (Query Planning + Routing + Reranking) |
 | `read_file` / `write_file` / `edit_file` / `list_dir` | `KF_OKF_DIR` | OKF 루트 트리 범위로 제한된 파일 읽기/쓰기 |
 | `write_memory` | 항상 | 세션이 끝나도 남을 사실/결정을 프로젝트별 기억 파일에 기록 |
 | `delegate_task` | 항상 | 독립적인 하위 조사를 새 대화의 서브에이전트에게 위임 |
