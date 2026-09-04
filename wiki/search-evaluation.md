@@ -631,6 +631,48 @@ for v in 0.0 0.40 0.42 0.45 0.50; do KF_VECTOR_MIN_SCORE=$v uv run knowledge-for
   --golden tests/eval/golden/v0.json --no-llm --label "vfloor-$v"; done
 ```
 
+### 어휘 arm에도 anchor 판정 — 여섯 번째 실측 (2026-09-04)
+
+다섯 번째 실측에서 유일하게 내려간 유형이 `navigational`(−0.096, 2승 4패)이었다. `steps`를
+열어 보니 회귀한 6개 질의가 전부 **baseline에서 1위였던 정답이 2~3위로 밀린** 형태였고
+(ndcg 1.000 → 0.631/0.500), 그 6개 모두 `anchor`가 미형성이었다.
+
+원인은 이전부터 알려져 있던 구멍이다: **anchor 판정이 `document_lookup`에만 있고
+`_keyword_arm`(옛 fallback)이 물어온 제목에는 안 걸렸다.** 그래서 제목 1.0 완전 일치가
+anchor로 승격되지 못하고 RRF 한 표로 전락했다. arm이 fallback이던 시절에는 벡터가 죽어
+있어서 경쟁자가 없었기 때문에 티가 안 났고, arm을 상시화하자 벡터 후보와 경쟁하면서 드러났다.
+
+→ 판정 로직을 `_Run._claim_anchor()`로 뽑아 `document_lookup`과 `_keyword_arm`이 공유한다.
+arm은 **anchor가 아직 없을 때만** 판정한다 — 이미 잡혀 있다면 그건 `document_reference`/
+`identifiers` 같은 명시적 신호에서 나온 더 강한 anchor라 semantic_query가 덮어쓰면 안 된다.
+
+| | 임베딩 0행 baseline | 하한 0.45 | **+arm anchor (채택)** |
+|---|---|---|---|
+| run_id | `8c12c099e3c7…` | `bade74dc839b…` | **`a8d8e118cc23…`** |
+| hit@1 | 0.857 | 0.829 | **0.843** |
+| recall@5 | 0.848 | 0.897 | **0.897** |
+| mrr | 0.890 | 0.884 | **0.893** |
+| ndcg@10 | 0.865 | 0.886 | **0.893** |
+| exhaustive_recall | 0.846 | 0.908 | **0.908** |
+| count_match | 0.333 | 0.333 | **0.333** |
+| none_correct | 1.000 | 1.000 | **1.000** |
+
+paired: delta **+0.0287, 95% CI [-0.0170, +0.0749]** — 여전히 유의하지 않다.
+win/loss/tie 9/5/56. `navigational`은 −0.096 → **−0.055**(2승 3패)로 줄었다.
+
+**남은 회귀 3건은 일부러 안 쫓았다** — v0가 사람 검수 안 된 76개 스모크셋이라 개별 질의를
+맞추면 과적합이다. 다만 원인은 서로 다르고, 그중 둘은 진짜 능력 격차다:
+
+| 질의 | 표면 원인 | 판단 |
+|---|---|---|
+| `v0-ambiguous-002` "README" | 제목 1.0 일치가 2건 → `ambiguous`로 anchor 포기 | **정상 동작.** 실제로 모호한 질의다 |
+| `v0-navigational-004` "Dev Handover README 파일" | 실제 제목이 `README_ProjectIntel_Dev_Handover.md` — 토큰이 다 있지만 **순서가 다르고 `_` 구분자**라 substring 1.0이 안 나온다 | **능력 격차.** 제목 매칭이 순서 의존 substring이다 |
+| `v0-navigational-003` "인수인계 pptx" | 실제 제목이 `projectintel-development-handover.pptx` — **한글 질의에 영문 제목**이라 "pptx"만 겹친다 | **능력 격차.** 교차 언어 제목 매칭 |
+
+즉 `navigational` 잔여 회귀의 진짜 처방은 anchor 임계값을 낮추는 게 아니라 **제목 매칭을
+토큰 집합 기반(순서 무관, 구분자 정규화)으로 바꾸는 것**이다. 임계값을 낮추면
+`v0-ambiguous-002`처럼 진짜 모호한 질의에 엉뚱한 anchor가 박힌다.
+
 ### 남은 것 (우선순위 순)
 
 진단은 `eval_run_query.steps` 실측 기준이다.

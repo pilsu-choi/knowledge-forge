@@ -368,6 +368,38 @@ class _Run:
 
     # -- 후보 생성 ------------------------------------------------------------
 
+    def _claim_anchor(self, title_hits: list[dict[str, Any]]) -> tuple[str, list[tuple[str, float]]]:
+        """`document_search` 결과에서 anchor를 판정해 `self.anchor`에 싣고
+        (판정 사유, 문서별 최고 점수 랭킹)을 돌려준다.
+
+        anchor는 "제목이 이 질의와 사실상 같은 문서 하나"라는 뜻이라, `merge()`가 그 문서를
+        최상위로 고정하고 다른 전략들도 그 안으로 좁힌다(`_narrow_to_anchor`). 판정 기준이
+        `>= 1.0`(제목 substring 완전 일치) + 2위와 `0.2` 이상 격차로 빡빡한 이유가 그것이다 -
+        "AGENTS.md" vs "agents-skills-AGENTS.md"처럼 둘 다 1.0이면 ambiguous로 두고 포기한다.
+
+        `document_lookup`과 `_keyword_arm`이 공유한다. 원래는 `document_lookup`에만 있어서
+        **fallback(지금의 arm)이 물어온 제목 1.0 일치는 anchor가 되지 못하고 RRF 한 표로
+        전락했다.** arm을 상시화하자 그 구멍이 v0에서 그대로 드러났다 -
+        `v0-navigational-002`("codex README")/`-004`/`v0-version-001`이 baseline에서 1위였다가
+        2~3위로 밀렸다(ndcg 1.000 → 0.631/0.500). 제목이 정확히 맞은 문서는 벡터 유사도가
+        무엇을 말하든 그 질의의 답이다.
+
+        점수는 **문서 단위 최고값**으로 접는다 - 같은 문서가 여러 질의에서 나와도 한 후보다."""
+        best: dict[str, float] = {}
+        for hit in title_hits:
+            document_id, score = hit["document_id"], _hit_score(hit)
+            if document_id not in best or score > best[document_id]:
+                best[document_id] = score
+        ranked = sorted(best.items(), key=lambda item: -item[1])
+        if not ranked:
+            return "no_candidates", ranked
+        top_id, top_score = ranked[0]
+        second = ranked[1][1] if len(ranked) > 1 else None
+        if top_score >= _ANCHOR_MIN_SCORE and (second is None or top_score - second >= _ANCHOR_MIN_GAP):
+            self.anchor = top_id
+            return "single_substring_match", ranked
+        return ("ambiguous" if top_score >= _ANCHOR_MIN_SCORE else "weak_match"), ranked
+
     async def document_lookup(self) -> None:
         queries = _unique([self.c.document_reference, *self.c.identifiers, *self.c.quoted_phrases])
         collected: list[dict[str, Any]] = []
@@ -376,22 +408,7 @@ class _Run:
                 q, self.store, project_id=self.project_id, limit=self.fetch_limit, since=self.since, until=self.until
             )
             collected.extend(hits)
-        # anchor 판정은 문서 단위 최고 점수로 - 같은 문서가 두 질의에서 나와도 한 후보다.
-        best: dict[str, float] = {}
-        for hit in collected:
-            document_id, score = hit["document_id"], _hit_score(hit)
-            if document_id not in best or score > best[document_id]:
-                best[document_id] = score
-        ranked = sorted(best.items(), key=lambda item: -item[1])
-        anchor_reason = "no_candidates"
-        if ranked:
-            top_id, top_score = ranked[0]
-            second = ranked[1][1] if len(ranked) > 1 else None
-            if top_score >= _ANCHOR_MIN_SCORE and (second is None or top_score - second >= _ANCHOR_MIN_GAP):
-                self.anchor = top_id
-                anchor_reason = "single_substring_match"
-            else:
-                anchor_reason = "ambiguous" if top_score >= _ANCHOR_MIN_SCORE else "weak_match"
+        anchor_reason, ranked = self._claim_anchor(collected)
         self.add_hits(SOURCE_DOCUMENT_SEARCH, collected)
         self.step(
             STRATEGY_DOCUMENT_LOOKUP,
@@ -497,10 +514,22 @@ class _Run:
         title_hits = await document_search(
             query, self.store, project_id=self.project_id, limit=self.fetch_limit, since=self.since, until=self.until
         )
+        # anchor 판정을 `document_lookup`과 공유한다(`_claim_anchor` docstring 참고). 이미
+        # anchor가 잡혀 있으면 다시 판정하지 않는다 - 그건 `document_reference`/`identifiers`
+        # 같은 명시적 신호에서 나온 더 강한 anchor라 semantic_query가 덮어쓰면 안 된다.
+        anchor_reason = "already_anchored"
+        if self.anchor is None:
+            anchor_reason, _ranked = self._claim_anchor(title_hits)
         title_hits, _ = _narrow_to_anchor(title_hits, self.anchor)
         self.add_hits(SOURCE_DOCUMENT_SEARCH_SEMANTIC, title_hits)
         self.step(
-            STRATEGY_DOCUMENT_LOOKUP, SOURCE_DOCUMENT_SEARCH_SEMANTIC, len(title_hits), query=query, arm="semantic_query"
+            STRATEGY_DOCUMENT_LOOKUP,
+            SOURCE_DOCUMENT_SEARCH_SEMANTIC,
+            len(title_hits),
+            query=query,
+            arm="semantic_query",
+            anchor=self.anchor,
+            anchor_reason=anchor_reason,
         )
         body_hits = await lexical_search(
             query, self.store, project_id=self.project_id, limit=self.fetch_limit, since=self.since, until=self.until

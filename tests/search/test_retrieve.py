@@ -632,7 +632,9 @@ async def test_strategies_override_runs_only_the_given_strategies(monkeypatch):
     assert [q for q, _limit in store.title_calls] == [result.constraints["semantic_query"]]
     assert result.documents_read == []
     # 'title-only'는 어휘 arm의 제목 조회가 물어온 것 - vector 히트 'd1'과 함께 RRF에 들어간다.
-    assert result.document_ids == ["d1", "title-only"]
+    # 점수 1.0(제목 substring 완전 일치)에 경쟁자가 없어 arm이 anchor로 삼으므로 최상위 고정
+    # (retrieve.py::_claim_anchor - 제목이 정확히 맞은 문서는 벡터 유사도와 무관하게 답이다).
+    assert result.document_ids == ["title-only", "d1"]
     assert calls[0][0] == result.constraints["semantic_query"]
 
 
