@@ -692,6 +692,31 @@ def db_backfill_titles(
     typer.echo(f"문서 제목 백필 완료: {updated}건", err=True)
 
 
+@db_app.command("normalize-unicode")
+def db_normalize_unicode(
+    project_id: str | None = typer.Option(
+        None, "--project-id", help="이 프로젝트의 문서/청크만 처리한다 (기본: 전체 프로젝트)."
+    ),
+) -> None:
+    """이미 저장된 `documents.title` / `chunks.text`를 NFC로 정규화한다.
+
+    macOS·Google Drive를 거친 파일명은 한글 자모가 분해된 NFD로 들어와, NFC로 친 질의가
+    `document_search`/`lexical_search`의 substring 단계에 구조적으로 못 맞는다(자세한 이유는
+    `text_normalize.py`). 적재 경로는 이제 NFC로 저장하므로 이 명령은 그 이전에 쌓인 행을 한 번
+    고치기 위한 것이고, 재실행하면 0건이 나오는 멱등 연산이다."""
+    database_url = settings.database_url
+    if not database_url:
+        typer.echo("KF_DATABASE_URL이 설정되지 않았습니다.", err=True)
+        raise typer.Exit(1)
+
+    async def _run() -> tuple[int, int]:
+        async with PipelineStore(database_url, settings.data_dir) as store:
+            return await store.normalize_unicode_text(project_id)
+
+    documents, chunks = asyncio.run(_run())
+    typer.echo(f"유니코드 NFC 정규화 완료: 문서 제목 {documents}건, 청크 본문 {chunks}건", err=True)
+
+
 @db_app.command("backfill-links")
 def db_backfill_links(
     project_id: str | None = typer.Option(
