@@ -144,13 +144,13 @@ def compare_runs(
         )
     warnings: list[str] = []
     counts_a, counts_b = snapshot_counts(run_a.index_snapshot), snapshot_counts(run_b.index_snapshot)
-    snapshot_mismatch = counts_a != counts_b
+    # **양쪽에 다 있는 키만** 비교한다. 한쪽에만 있는 키는 스냅샷 포맷이 늘어난
+    # 것이지 코퍼스가 달랐다는 증거가 아니다 - 옛 행에는 `embeddings_by_model_and_kind`가
+    # 없고, 그걸 차이로 세면 옛 run과의 모든 비교에 늑대소년 경고가 붙는다.
+    differing = sorted(key for key in set(counts_a) & set(counts_b) if counts_a[key] != counts_b[key])
+    snapshot_mismatch = bool(differing)
     if snapshot_mismatch:
-        detail = ", ".join(
-            f"{key}: {counts_a.get(key)!r} vs {counts_b.get(key)!r}"
-            for key in sorted(set(counts_a) | set(counts_b))
-            if counts_a.get(key) != counts_b.get(key)
-        )
+        detail = ", ".join(f"{key}: {counts_a[key]!r} vs {counts_b[key]!r}" for key in differing)
         warnings.append(
             f"두 run이 서로 다른 코퍼스에서 측정됐다 (index_snapshot: {detail}) - 델타가 코드/설정이 아니라 "
             "인덱스 변화일 수 있다"

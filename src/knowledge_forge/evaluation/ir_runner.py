@@ -156,10 +156,17 @@ def ranking_settings(source: Any | None = None) -> dict[str, Any]:
     return {name: getattr(source, name, None) for name in RANKING_SETTING_FIELDS}
 
 
+# `config`에 그 키가 아예 없었다는 뜻. `None`(= 그 값이 실제로 None이었다)과 구분해야
+# 한다 - 노브를 기록하기 전에 돈 옛 run은 전자이고, "vector_min_score가 None이었다"로
+# 읽으면 없는 사실을 지어내는 셈이다.
+NOT_RECORDED = "<미기록>"
+
+
 def settings_diff(config_a: Mapping[str, Any], config_b: Mapping[str, Any]) -> dict[str, list[Any]]:
     """두 run의 `config` 사이에서 **값이 다른 키**만 `{key: [a, b]}`로. `settings`
     하위 dict는 평평하게 펴서 `settings.vector_min_score`처럼 보여준다 - 비교
-    경고가 "설정이 다르다"에서 끝나지 않고 *무엇이* 다른지 말하게 하는 부분이다."""
+    경고가 "설정이 다르다"에서 끝나지 않고 *무엇이* 다른지 말하게 하는 부분이다.
+    한쪽에 없는 키는 `NOT_RECORDED`로 표시한다."""
 
     def flat(config: Mapping[str, Any]) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -171,7 +178,11 @@ def settings_diff(config_a: Mapping[str, Any], config_b: Mapping[str, Any]) -> d
         return out
 
     a, b = flat(config_a), flat(config_b)
-    return {key: [a.get(key), b.get(key)] for key in sorted(set(a) | set(b)) if a.get(key) != b.get(key)}
+    return {
+        key: [a.get(key, NOT_RECORDED), b.get(key, NOT_RECORDED)]
+        for key in sorted(set(a) | set(b))
+        if a.get(key, NOT_RECORDED) != b.get(key, NOT_RECORDED)
+    }
 
 
 # --- 코퍼스 신원 (index_snapshot) --------------------------------------

@@ -23,6 +23,7 @@ from knowledge_forge.evaluation.golden import GoldenExpected, GoldenQuery, Golde
 from knowledge_forge.evaluation.ir_compare import compare_runs
 from knowledge_forge.evaluation.ir_runner import (
     NON_RANKING_SETTING_FIELDS,
+    NOT_RECORDED,
     RANKING_SETTING_FIELDS,
     config_hash,
     embedding_consistency,
@@ -317,6 +318,25 @@ def test_compare_warns_on_different_corpora():
     report = compare_runs(a, _rows("a", {"ndcg@10": 0.5}), b, _rows("b", {"ndcg@10": 0.6}))
     assert report["snapshot_mismatch"] is True
     assert any("서로 다른 코퍼스" in w and "263" in w for w in report["warnings"])
+
+
+def test_compare_does_not_cry_wolf_over_a_new_snapshot_key():
+    """옛 행에는 `embeddings_by_model_and_kind`가 없다 - 그게 "다른 코퍼스"로 세지면
+    옛 run과의 모든 비교에 가짜 경고가 붙는다(양쪽에 있는 키만 본다)."""
+    old_shape = {k: v for k, v in _snapshot().items() if k != "embeddings_by_model_and_kind"}
+    a, b = _eval_run("a", snapshot=old_shape), _eval_run("b", snapshot=_snapshot())
+    report = compare_runs(a, _rows("a", {"ndcg@10": 0.5}), b, _rows("b", {"ndcg@10": 0.6}))
+    assert report["snapshot_mismatch"] is False
+    assert not any("코퍼스" in w for w in report["warnings"])
+
+
+def test_compare_says_not_recorded_instead_of_inventing_none():
+    """노브를 기록하기 전에 돈 run은 "vector_min_score가 None이었다"가 아니라
+    "기록이 없다"이다."""
+    a = _eval_run("a", config={"limit": 10})  # 옛 포맷
+    b = _eval_run("b", cfg_hash="cfg2")
+    report = compare_runs(a, _rows("a", {"ndcg@10": 0.5}), b, _rows("b", {"ndcg@10": 0.6}))
+    assert report["config_diff"]["settings.vector_min_score"] == [NOT_RECORDED, 0.45]
 
 
 def test_compare_names_the_setting_that_differs():
