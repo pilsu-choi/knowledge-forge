@@ -11,7 +11,7 @@ Grounding까지)을 레이어별로 정리한다. 실제 프로덕션 엔터프�
 
 | 레이어 | 상태 |
 |---|---|
-| ① Query Understanding (intent/entity/temporal) | **부분 구현** — temporal expression parsing(`search/temporal.py`)은 있음. entity/속성 필터는 `sql_search`(Text-to-SQL, 아래 참고)로 우회 지원됨 - 별도 entity extraction 전처리 단계는 여전히 없고, 그 판단을 모델이 SQL을 짤 때 직접 함 |
+| ① Query Understanding (intent/entity/temporal) | **부분 구현** — `search/constraints.py`가 질의를 구조화된 제약(`QueryConstraints`: 시간 범위/작성자/식별자/문서 참조/소스·문서 타입)과 의도 플래그(latest/exhaustive/count/summary/whole_document/negative/comparison/multihop)로 분해하고 `suggest_strategies()`로 검색 전략 이름을 내놓는다(규칙 1단계 + 선택적 LLM 보강 2단계). temporal parsing(`search/temporal.py`)을 재사용. 아직 없는 것: conversation-aware 질의 복원, 동의어/약어 확장, 이 제약을 실제로 소비하는 통합 실행기(`search/retrieve.py`, 다음 단계) |
 | ② Query Planning (multi-hop 분해) | **구현됨** — `search/planner.py`, 아래 절 참고 |
 | Query Routing (소스 선택) | **구현됨** — `search/router.py`, 아래 절 참고 |
 | ③ Hybrid Retrieval (BM25+Vector+Metadata+Graph) | **부분 구현** — keyword(`file_search`)+semantic(`vector_search`)+metadata(`project_id`/`type`/시간 범위) 병행 실행 + RRF reranking까지 있음. Graph 전용 API(`graph_search`)는 미구현이지만 `sql_search`로 `relations` 테이블을 직접 JOIN하는 것으로 상당 부분 대체 가능 |
@@ -26,20 +26,71 @@ Grounding까지)을 레이어별로 정리한다. 실제 프로덕션 엔터프�
 
 ---
 
-## ① Query Understanding — 설계만, 미구현
+## ① Query Understanding — **부분 구현**, `search/constraints.py`
 
 Intent classification(사실 조회/비교/요약/탐색/분석), entity extraction(사람/프로젝트/문서),
 query rewriting/expansion(모호한 질문 → 검색 친화적 질의, 동의어/약어 확장), conversation-aware
-query("그 프로젝트는?" → 이전 대화의 entity 복원)까지 포함하는 넓은 레이어. 지금은 이 전체를
-LLM(에이전트 자신)에게 맡기고 있다 — `knowledge-forge agent`는 매 턴 전체 대화 히스토리를 보고
-스스로 file_search/vector_search/plan_search 중 무엇을, 어떤 질의로 호출할지 판단한다
-(`agent/prompts.py`). 별도 전처리 단계로 뽑아내지 않은 이유는, 지금 규모(도구 2~3개, 명시적
-멀티턴 세션)에서는 에이전트 자신의 판단이 이미 이 레이어의 상당 부분(특히 conversation-aware
-query, temporal understanding)을 공짜로 해주기 때문 — 별도 파이프라인을 만들면 에이전트가 이미
-하는 일을 중복으로 다시 하게 된다. Query Understanding을 명시적 레이어로 뽑아낼 필요가 생기는
-시점은, (a) 에이전트 turn 없이 검색 API를 직접 호출하는 소비자(HTTP `/search/*`, MCP 서버)가
-생기거나, (b) temporal join처럼 LLM 판단만으로는 부정확한 구조화된 파싱이 필요해질 때
-(아래 ⑥ 참고).
+query("그 프로젝트는?" → 이전 대화의 entity 복원)까지 포함하는 넓은 레이어. 이 중 **intent
+플래그 + 구조화된 제약 추출 + 벡터용 질의 재작성**을 `search/constraints.py`가 명시적 레이어로
+담당한다. conversation-aware 복원과 동의어/약어 확장은 여전히 에이전트(`agent/prompts.py`)가
+맡는다.
+
+### 왜 지금 명시적 레이어로 뽑았나
+
+원래 이 문서는 "에이전트 자신의 판단이 이 레이어의 상당 부분을 공짜로 해주므로 별도 전처리를
+만들면 중복"이라고 적고, 뽑아낼 시점을 (a) 에이전트 turn 없이 검색을 호출하는 소비자가 생길 때,
+(b) LLM 판단만으로는 부정확한 구조화된 파싱이 필요할 때로 못 박아 두었다. 둘 다 왔다.
+
+- (a) **평가 하네스 = 에이전트 없는 소비자.** `search-evaluation.md`의 골든셋 기반 IR 지표
+  (Recall/MRR/NDCG)는 "질의 → 검색 결과"를 LLM 판단 없이 같은 입력에 같은 출력으로 재현해야
+  지표가 의미를 가진다. 에이전트가 매 턴 암묵적으로 하던 "이건 특정 문서 요약이다 / 작성자
+  필터다 / 개수 질문이다" 판단을 결정론적 함수로 꺼내지 않으면 평가할 대상 자체가 없다.
+- (b) **검색 유형 표의 절반은 유사도 검색으로 원리적으로 못 잡는다.** `query-types.md`의
+  20개 유형 중 Navigational/Aggregation/Set Query/Negative/Latest/Version/Whole-document Summary는
+  임베딩 유사도가 아니라 제목 조회, COUNT, exhaustive 수집, 정렬, 문서 전체 읽기가 필요하다.
+  전략을 고르려면 질의를 먼저 제약+플래그로 분해해야 하고, 그 분해는 `temporal.py`가 이미
+  증명했듯 대부분 기계적이다.
+
+### 규칙 1단계 / LLM 2단계로 나눈 이유
+
+- `extract_constraints_rules(query, now=)` — LLM 없이 regex/마커 사전만으로. 시간 범위는
+  `search/temporal.py`를 그대로 재사용(올해/작년만 이 모듈이 보충), 따옴표/에러코드/파일명/
+  `2025_SH_업무_보고서`형 연결 토큰, 한국어·영어 의도 마커(최신/전부/개수/요약/전체/부정/비교/
+  multi-hop 추정), 작성자 조사 패턴("X가 작성한", "from X"), 소스·문서 타입 힌트. 결정론적이라
+  평가 기준선이 되고 단위 테스트(`tests/search/test_constraints.py`, 유형별 30여 질의)로 못
+  박힌다. `router.py`/`temporal.py`와 같은 recall 우선 원칙 - 플래그 오탐의 비용은 전략 하나를
+  더 도는 정도다.
+- `extract_constraints(query, provider=)` — `ChatProvider`가 주어지면 규칙 결과를 프롬프트에
+  실어 보내 **entities/authors/document_reference/document_types/semantic_query/is_multihop/
+  comparison_targets만** 보강한다. 시간 범위·식별자·의도 플래그는 규칙이 확정한 것이라 LLM이
+  덮어쓸 수 없다(병합 정책은 `merge_llm_enrichment` docstring) - LLM이 "2025년 3월"을 다른 달로
+  옮기거나 에러코드를 "정정"하는 사고를 구조적으로 막기 위해서다. JSON 파싱 실패/예외 시 규칙
+  결과로 degrade(`planner.py::decompose_query`와 같은 태도). 각 필드의 `origins`(rule|llm)를
+  남겨 평가 시 "LLM 보강이 실제로 무엇을 바꿨나"를 집계할 수 있다.
+- `ChatProvider.send()`는 temperature를 노출하지 않으므로 결정성은 "JSON 하나만" 프롬프트와
+  병합 정책으로 확보하고, temperature=0은 provider 구성 쪽 책임으로 둔다.
+
+### 전략 이름 계약 (`suggest_strategies()` → `search/retrieve.py`)
+
+다음 단계의 통합 실행기 `search/retrieve.py`는 이 이름 목록을 받아 실제 검색을 조합한다.
+앞쪽은 후보 생성, 뒤쪽은 후처리/집계이며 각 그룹 안은 우선순위 순이다.
+
+| 전략 | 켜지는 조건 | 의미 |
+|---|---|---|
+| `document_lookup` | `document_reference` 또는 `identifiers` | 문서 제목/파일명 조회(Navigational) - 다른 에이전트가 만드는 `document_search`가 이걸 실행 |
+| `lexical` | `identifiers` 또는 `quoted_phrases` | 본문 정확 일치(Exact Match) - 임베딩은 에러코드에 의미가 없어 못 잡음 |
+| `metadata_filter` | authors/participants/source_types/document_types/time_range 중 하나 | `sources.metadata`/타임스탬프 WHERE 필터. 단독 랭킹이 아니라 다른 전략과 결합 |
+| `vector` | `semantic_query` 비어 있지 않음 | 제약 표현을 걷어낸 재작성 질의로 임베딩 검색 |
+| `latest` | `wants_latest` | 소스 타임스탬프 내림차순 상위 N |
+| `exhaustive` | `wants_exhaustive` 또는 `is_negative` | top-k 절단 없이 조건 만족 전부 수집 |
+| `count` | `wants_count` | 후보 개수가 답 - 필터 조건에서 SQL COUNT 직행 가능 |
+| `whole_document` | `wants_whole_document` (전문/원문 마커, 또는 문서 참조+요약) | 청크가 아니라 `read_document`로 본문 전체 |
+| `comparison` | `is_comparison` | `comparison_targets`별 독립 검색 후 나란히 |
+| `negative` | `is_negative` | 대상 집합을 exhaustive로 모은 뒤 부재 판정 - 유사도는 "없음"을 증명 못 함 |
+| `multihop` | `is_multihop` | `search/planner.py`로 분해 실행 |
+
+아직 없는 것: 이 제약을 실제로 소비하는 `retrieve.py`(다음 단계), conversation-aware 질의 복원,
+동의어/약어 확장, `route_query()`와의 통합(router는 sub-query용 2-소스 선택기로 그대로 둔다).
 
 ## ② Query Planning — **구현됨**, `search/planner.py`
 
