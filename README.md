@@ -25,6 +25,7 @@ Collector → Context Reconstruction → Parser → Adaptive Chunker → Knowled
 - [Docker로 실행하기](#docker로-실행하기)
 - [프로젝트 구조](#프로젝트-구조)
 - [테스트](#테스트)
+  - [DB 테스트](#db-테스트)
 - [로드맵과 스코프](#로드맵과-스코프)
 - [문서](#문서)
 
@@ -393,6 +394,21 @@ uv run pytest
 ```
 
 `tests/test_pipeline_e2e.py`가 LLM을 모킹한 상태로 Collector→Parser→Chunker→Extraction 전체를 실행해 provenance 체인까지 검증하는 스모크 테스트다. 자세한 내용은 [`wiki/dev-guide.md`](wiki/dev-guide.md#테스트) 참고.
+
+### DB 테스트
+
+위 명령은 `789 passed, 89 skipped`로 끝난다. 건너뛴 89개는 실제 Postgres가 있어야 도는 테스트(`tests/storage/`, `tests/search/test_retrieve.py`, `tests/test_worker.py` 등)이고, `storage/postgres_store.py`의 pgvector/pg_trgm 검색 SQL을 검증하는 것도 여기 있다. `docker compose up -d postgres redis`로 인프라를 띄운 뒤 DSN을 주면 전부 돈다(redis는 DB 테스트가 아니라 `tests/api/test_api.py`가 Celery `apply_async`를 타면서 필요로 한다):
+
+```bash
+KF_TEST_DATABASE_URL=postgresql://kf:kf@localhost:15432/knowledge_forge uv run pytest -q
+# 878 passed
+```
+
+공용 코퍼스가 담긴 `knowledge_forge` 대신 빈 DB를 쓰고 싶으면 아무 데이터베이스나 새로 만들어 가리키면 된다 — 스키마와 확장은 `init_schema()`가 알아서 만든다(단 `pgvector/pgvector:pg16`처럼 pgvector가 실린 이미지여야 한다).
+
+`KF_REQUIRE_DB_TESTS=1`을 함께 주면 이 89개가 skip되는 순간 run이 실패한다. DSN을 빠뜨린 채 초록불을 보는 사고를 막는 스위치이고, CI가 항상 켜 둔다.
+
+CI(`.github/workflows/ci.yml`)는 push/PR마다 `docker-compose.yml`과 같은 pgvector Postgres·Redis 서비스를 띄워 Python 3.10과 3.13에서 `ruff check` → `mypy` → `pytest`를 돌린다. 즉 DB 테스트는 로컬에서 깜빡해도 CI에서는 반드시 실행된다.
 
 ## 로드맵과 스코프
 
