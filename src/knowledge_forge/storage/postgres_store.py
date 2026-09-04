@@ -111,15 +111,18 @@ class PostgresStore:
         )
 
     async def save_document(self, document: Document) -> None:
+        now = datetime.now(timezone.utc)
         await self.conn.execute(
             """
-            INSERT INTO documents (document_id, source_id, elements, metadata, project_id)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO documents (document_id, source_id, elements, metadata, project_id,
+                                    created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (document_id) DO UPDATE SET
                 source_id = EXCLUDED.source_id,
                 elements = EXCLUDED.elements,
                 metadata = EXCLUDED.metadata,
-                project_id = EXCLUDED.project_id
+                project_id = EXCLUDED.project_id,
+                updated_at = EXCLUDED.updated_at
             """,
             (
                 document.document_id,
@@ -127,6 +130,8 @@ class PostgresStore:
                 Jsonb([e.model_dump(mode="json") for e in document.elements]),
                 Jsonb(document.metadata.model_dump(mode="json")),
                 document.source.project_id,
+                now,
+                now,
             ),
         )
 
@@ -195,7 +200,7 @@ class PostgresStore:
         async with self.conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT d.document_id, d.elements, d.metadata,
+                SELECT d.document_id, d.elements, d.metadata, d.created_at, d.updated_at,
                        s.source_id, s.source_type, s.uri, s.project_id
                 FROM documents d
                 JOIN sources s ON s.source_id = d.source_id
@@ -212,7 +217,9 @@ class PostgresStore:
                 document_id=row[0],
                 elements=row[1],
                 metadata=row[2],
-                source=SourceRef(source_id=row[3], source_type=row[4], uri=row[5], project_id=row[6]),
+                created_at=row[3],
+                updated_at=row[4],
+                source=SourceRef(source_id=row[5], source_type=row[6], uri=row[7], project_id=row[8]),
             )
             for row in rows
         ]
@@ -221,7 +228,7 @@ class PostgresStore:
         async with self.conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT d.document_id, d.elements, d.metadata,
+                SELECT d.document_id, d.elements, d.metadata, d.created_at, d.updated_at,
                        s.source_id, s.source_type, s.uri, s.project_id
                 FROM documents d
                 JOIN sources s ON s.source_id = d.source_id
@@ -236,10 +243,13 @@ class PostgresStore:
             document_id=row[0],
             elements=row[1],
             metadata=row[2],
-            source=SourceRef(source_id=row[3], source_type=row[4], uri=row[5], project_id=row[6]),
+            created_at=row[3],
+            updated_at=row[4],
+            source=SourceRef(source_id=row[5], source_type=row[6], uri=row[7], project_id=row[8]),
         )
 
     async def save_chunks(self, chunks: list[Chunk]) -> None:
+        now = datetime.now(timezone.utc)
         rows: list[tuple[Any, ...]] = [
             (
                 chunk.chunk_id,
@@ -253,6 +263,8 @@ class PostgresStore:
                 Jsonb(chunk.element_ids),
                 chunk.page_range[0] if chunk.page_range else None,
                 chunk.page_range[1] if chunk.page_range else None,
+                now,
+                now,
             )
             for chunk in chunks
         ]
@@ -263,8 +275,8 @@ class PostgresStore:
                 """
                 INSERT INTO chunks (chunk_id, document_id, source_id, hierarchy_level,
                                      sequence_index, parent_chunk_id, text, token_count,
-                                     element_ids, page_start, page_end)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                     element_ids, page_start, page_end, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (chunk_id) DO UPDATE SET
                     document_id = EXCLUDED.document_id,
                     source_id = EXCLUDED.source_id,
@@ -275,7 +287,8 @@ class PostgresStore:
                     token_count = EXCLUDED.token_count,
                     element_ids = EXCLUDED.element_ids,
                     page_start = EXCLUDED.page_start,
-                    page_end = EXCLUDED.page_end
+                    page_end = EXCLUDED.page_end,
+                    updated_at = EXCLUDED.updated_at
                 """,
                 rows,
             )

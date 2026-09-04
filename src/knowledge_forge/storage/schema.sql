@@ -33,9 +33,13 @@ CREATE TABLE IF NOT EXISTS documents (
     source_id     TEXT NOT NULL REFERENCES sources(source_id),
     elements      JSONB NOT NULL,
     metadata      JSONB NOT NULL DEFAULT '{}'::jsonb,
-    project_id    TEXT NOT NULL DEFAULT 'default'
+    project_id    TEXT NOT NULL DEFAULT 'default',
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS project_id TEXT NOT NULL DEFAULT 'default';
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 CREATE INDEX IF NOT EXISTS idx_documents_source_id ON documents(source_id);
 CREATE INDEX IF NOT EXISTS idx_documents_project_id ON documents(project_id);
 
@@ -50,8 +54,12 @@ CREATE TABLE IF NOT EXISTS chunks (
     token_count     INT NOT NULL,
     element_ids     JSONB NOT NULL DEFAULT '[]'::jsonb,
     page_start      INT,
-    page_end        INT
+    page_end        INT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_source_id ON chunks(source_id);
 

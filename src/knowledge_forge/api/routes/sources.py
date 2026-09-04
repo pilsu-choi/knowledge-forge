@@ -39,6 +39,8 @@ def _document_to_response(document: Document) -> DocumentResponse:
         project_id=document.source.project_id,
         metadata=document.metadata.model_dump(mode="json"),
         elements=[e.model_dump(mode="json") for e in document.elements],
+        created_at=document.created_at,
+        updated_at=document.updated_at,
     )
 
 

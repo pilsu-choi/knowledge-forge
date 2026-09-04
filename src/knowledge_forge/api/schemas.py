@@ -85,6 +85,8 @@ class DocumentResponse(BaseModel):
     project_id: str
     metadata: dict[str, Any]
     elements: list[dict[str, Any]]
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class KnowledgeObjectResponse(BaseModel):

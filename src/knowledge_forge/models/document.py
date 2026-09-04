@@ -95,3 +95,10 @@ class Document(BaseModel):
     source: SourceRef
     elements: list[DocumentElement]
     metadata: DocumentMetadata = Field(default_factory=DocumentMetadata)
+    # Row lifecycle timestamps (storage/schema.sql's `documents.created_at`/
+    # `updated_at`) - None until the store round-trips a row back
+    # (get_document/list_documents); a freshly-parsed Document has no row
+    # yet. Distinct from metadata.created_at, which is the source file's own
+    # authored-at time, not when this row was written.
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
