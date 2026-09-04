@@ -119,3 +119,30 @@ async def test_row_carries_what_rebuilding_the_raw_item_needs(store):
     # Drive uri that carries none.
     assert row.metadata["name"] == s1.metadata["name"]
     assert row.extension == ".md"
+
+
+async def test_exclude_uris_holds_a_source_out_of_the_batch(store):
+    """2단계-A의 선택 방법: 한 포맷을 통째로 고르되 따로 적재할 한 건만 뺀다."""
+    s1, s2, _ = await _seed(store)
+
+    rows = await load_replay_rows(
+        DSN, SourceType.GOOGLE_DRIVE, project_id=_PROJECT, only_missing_documents=False, exclude_uris=[s2.uri]
+    )
+
+    assert [row.uri for row in rows] == [s1.uri]
+
+
+async def test_exclude_uris_wins_over_uris_when_both_name_the_same_source(store):
+    """Both filters apply; nothing is quietly re-included."""
+    _, s2, _ = await _seed(store)
+
+    rows = await load_replay_rows(
+        DSN,
+        SourceType.GOOGLE_DRIVE,
+        project_id=_PROJECT,
+        only_missing_documents=False,
+        uris=[s2.uri],
+        exclude_uris=[s2.uri],
+    )
+
+    assert rows == []

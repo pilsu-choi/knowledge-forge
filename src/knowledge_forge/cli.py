@@ -269,6 +269,12 @@ def reparse(
         help="Replay exactly these sources.uri values (repeatable). Pair it with --all to re-parse a single file "
         "that already has a document, instead of re-parsing every sibling of its format to reach it.",
     ),
+    exclude_uri: list[str] = typer.Option(
+        [],
+        "--exclude-uri",
+        help="Hold these sources.uri values out of the batch (repeatable) - for landing one oversized or risky "
+        "file separately from the rest of its format, so its effect on the corpus can be measured on its own.",
+    ),
     limit: int | None = typer.Option(None, "--limit", help="Replay at most this many sources."),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Print the selection (count per extension) and exit without parsing anything."
@@ -329,6 +335,7 @@ def reparse(
             project_id=project_id,
             only_missing_documents=only_missing,
             uris=list(uri) or None,
+            exclude_uris=list(exclude_uri) or None,
         )
         if allowed_extensions is not None:
             rows = filter_rows_by_extension(rows, allowed_extensions)
