@@ -67,6 +67,26 @@ async def test_default_tools_handler_uses_defaults_for_optional_arguments(monkey
     assert captured == {"query": "auth", "project_id": None, "type": None, "limit": 20, "since": None, "until": None}
 
 
+async def test_default_tools_file_search_clamps_an_oversized_limit(monkeypatch):
+    """A model (or a prompt injection embedded in indexed content) asking for
+    an enormous `limit` must not reach `search.service.file_search` as-is -
+    `agent/tools.py::_MAX_SEARCH_LIMIT` caps it server-side."""
+    captured = {}
+
+    async def _fake_file_search(query, project_id=None, type=None, limit=20, since=None, until=None):
+        captured["limit"] = limit
+        return []
+
+    monkeypatch.setattr("knowledge_forge.agent.tools.file_search", _fake_file_search)
+
+    file_search_tool = next(t for t in default_tools() if t.name == "file_search")
+    await file_search_tool.handler({"query": "auth", "limit": 999_999})
+
+    from knowledge_forge.agent.tools import _MAX_SEARCH_LIMIT
+
+    assert captured["limit"] == _MAX_SEARCH_LIMIT
+
+
 async def test_default_tools_write_plan_uses_a_fresh_state_when_none_is_given():
     tools = default_tools()
     write_plan = next(t for t in tools if t.name == "write_plan")
@@ -285,6 +305,28 @@ async def test_default_tools_vector_search_opens_a_store_and_forwards_arguments(
     assert captured["until"] is None
 
 
+async def test_default_tools_vector_search_clamps_an_oversized_limit(monkeypatch):
+    captured = {}
+
+    def _fake_pipeline_store(database_url, data_dir):
+        return _FakeConnectedStore(object())
+
+    async def _fake_vector_search(query, store, project_id=None, type=None, limit=10, since=None, until=None):
+        captured["limit"] = limit
+        return []
+
+    monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
+    monkeypatch.setattr("knowledge_forge.storage.store.PipelineStore", _fake_pipeline_store)
+    monkeypatch.setattr("knowledge_forge.agent.tools.vector_search", _fake_vector_search)
+
+    tool = next(t for t in default_tools() if t.name == "vector_search")
+    await tool.handler({"query": "배포 일정", "limit": 999_999})
+
+    from knowledge_forge.agent.tools import _MAX_SEARCH_LIMIT
+
+    assert captured["limit"] == _MAX_SEARCH_LIMIT
+
+
 async def test_default_tools_vector_search_handler_uses_defaults_for_optional_arguments(monkeypatch):
     captured = {}
 
@@ -327,6 +369,23 @@ async def test_default_tools_orders_vector_search_and_sql_search_before_plan_sea
         "sql_search",
         "plan_search",
     ] + _EXPECTED_BASE_TOOL_NAMES[1:]
+
+
+async def test_default_tools_plan_search_clamps_an_oversized_limit_per_subquery(monkeypatch):
+    captured = {}
+
+    async def _fake_plan_and_search(query, given_provider, *, store=None, project_id=None, limit_per_subquery=5):
+        captured["limit_per_subquery"] = limit_per_subquery
+        return {"subqueries": [], "evidence": []}
+
+    monkeypatch.setattr("knowledge_forge.agent.tools.plan_and_search", _fake_plan_and_search)
+
+    tool = next(t for t in default_tools(provider=_FakeProvider()) if t.name == "plan_search")
+    await tool.handler({"query": "복합 질문", "limit_per_subquery": 999_999})
+
+    from knowledge_forge.agent.tools import _MAX_PLAN_SEARCH_LIMIT_PER_SUBQUERY
+
+    assert captured["limit_per_subquery"] == _MAX_PLAN_SEARCH_LIMIT_PER_SUBQUERY
 
 
 async def test_default_tools_plan_search_forwards_arguments_without_database_url(monkeypatch):

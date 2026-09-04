@@ -21,6 +21,7 @@ Collector → Context Reconstruction → Parser → Adaptive Chunker → Knowled
 - [환경 변수](#환경-변수)
 - [CLI 명령어](#cli-명령어)
 - [에이전트로 지식 베이스 검색하기](#에이전트로-지식-베이스-검색하기)
+  - [Search Evaluation / Feedback Loop](#search-evaluation--feedback-loop)
 - [Docker로 실행하기](#docker로-실행하기)
 - [프로젝트 구조](#프로젝트-구조)
 - [테스트](#테스트)
@@ -320,6 +321,24 @@ Map-Reduce, Temporal Search, Evidence Grounding, Feedback Loop) 관점에서 지
 
 전체 도구 계약, 시스템 프롬프트, 컨텍스트 압축 등 harness 설계는 [`wiki/agent-runtime.md`](wiki/agent-runtime.md), 임베딩 파이프라인은 [`wiki/embeddings.md`](wiki/embeddings.md) 참고.
 
+### Search Evaluation / Feedback Loop
+
+`agent`가 답변할 때마다 실제 사용한 도구 호출과 근거를 `search_log`에 기록하고(`KF_DATABASE_URL` 필요), 사람 피드백과 LLM-judge 자동 평가를 사후에 그 로그에 붙일 수 있다 — 설계 근거는 [`wiki/search-evaluation.md`](wiki/search-evaluation.md).
+
+```bash
+uv run knowledge-forge agent "인증 방식을 OAuth로 바꾸기로 한 결정이 있었나?"
+# [log_id=... - `knowledge-forge feedback <log_id> up|down`로 평가 가능]
+uv run knowledge-forge feedback <log_id> up --comment "정확했음"
+
+uv run knowledge-forge agent --interactive   # REPL에서는 /feedback up|down [코멘트]로 바로 평가
+
+uv run knowledge-forge eval [--project-id <id>] [--batch-size 20] [--max-batches N] [--provider ...] [--model ...]
+```
+
+- `feedback`/`/feedback`: 사람이 답변에 👍/👎와 코멘트를 남긴다 — `search_feedback` 테이블.
+- `eval`: 아직 채점되지 않은 `search_log` 행을 LLM-judge로 채점해 `eval_score`에 저장하는 오프라인 배치(답변 생성 경로와 분리, 골드셋 불필요) — Answer Groundedness/Citation Accuracy를 평가한다. Recall/Precision/MRR/NDCG(골드셋 필요)와 온라인 groundedness gate는 아직 설계만 있다.
+- `db init`이 만드는 스키마에 `search_log`/`search_feedback`/`eval_score` 테이블이 포함된다.
+
 ## Docker로 실행하기
 
 ```bash
@@ -352,10 +371,11 @@ src/knowledge_forge/
 ├── extraction/            # Extractor ABC + ClaudeExtractor/OpenRouterExtractor + outcome.py
 ├── vision/                # VisionExtractor — 표/이미지 VLM 추출 (Anthropic/OpenRouter)
 ├── models/                # Pydantic 모델: Source/Document/Chunk/KnowledgeObject/Relation
-├── storage/               # PipelineStore (Postgres + 디스크, opt-in) + JobStore (jobs 큐)
+├── storage/               # PipelineStore (Postgres + 디스크, opt-in) + JobStore (jobs 큐) + EvalStore (search_log/search_feedback/eval_score)
 ├── okf/                   # OKFWriter — 파일 기반 Knowledge Base (opt-in)
 ├── embedding/             # EmbeddingProvider ABC + OpenAIEmbeddingProvider (pgvector 임베딩, opt-in)
 ├── search/                # file_search/vector_search/sql_search + planner/router/rerank/temporal — agent 도구가 감싸는 검색 서비스 함수
+├── evaluation/            # search_log 파싱/기록 + LLM-judge 채점(judge.py) — knowledge-forge eval/feedback (wiki/search-evaluation.md)
 ├── agent/                 # 모델 벤더 중립 Agent Runtime — knowledge-forge agent (wiki/agent-runtime.md)
 └── scheduling/             # APScheduler 기반 주기 실행
 

@@ -91,6 +91,15 @@ Wave 3: {Q4}       ── Q3 근거 스니펫을 질의에 덧붙여 실행
   스타일의 계층적 요약(⑤)이 필요해지는 게 바로 이 지점이지만, 지금은 evidence 개수가 하위
   질의당 `limit_per_subquery`(기본 5)로 작아 굳이 별도 reduce 단계 없이도 모델 컨텍스트에
   들어간다.
+- **`limit`/`limit_per_subquery`는 모델이 호출 인자로 직접 지정**하므로(`file_search`/
+  `vector_search`도 마찬가지), 정상적인 모델 판단이 아니라 색인된 문서에 심긴 프롬프트
+  인젝션이 비정상적으로 큰 값을 요구할 가능성까지 감안해야 한다 — 이 문서 위쪽 "evidence 개수가
+  작아 괜찮다"는 전제가 값 자체를 신뢰할 때만 성립한다. 그래서 `agent/tools.py::
+  _MAX_SEARCH_LIMIT`(file_search/vector_search, 50)과 `_MAX_PLAN_SEARCH_LIMIT_PER_SUBQUERY`
+  (plan_search, 20 — 최대 5개 하위 질의 × 최대 2개 소스에 곱해지므로 더 낮게 잡음)로 서버가
+  강제 clamp한다. JSON Schema의 `maximum`은 협조적인 모델에게 주는 힌트일 뿐이라, 핸들러
+  (`_clamp_limit()`)에서도 반드시 다시 잘라낸다 — `search/sql.py::DEFAULT_MAX_ROWS`가 이미 쓰던
+  "모델이 부른 값을 그대로 믿지 않는다" 패턴과 동일.
 
 ## Query Routing — **구현됨**, `search/router.py`
 

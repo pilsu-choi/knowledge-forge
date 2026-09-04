@@ -26,6 +26,23 @@ from knowledge_forge.search.service import file_search, vector_search
 from knowledge_forge.search.sql import describe_schema, sql_search
 from knowledge_forge.search.temporal import parse_temporal_expression
 
+# 모델(혹은 색인된 문서에 심긴 프롬프트 인젝션 - agent/loop.py의 `_wrap_untrusted`
+# 참고)이 limit을 비정상적으로 크게 불러 tool_result 하나가 컨텍스트 예산을
+# 통째로 날려버리는 걸 막는 서버 사이드 상한 - search/sql.py::DEFAULT_MAX_ROWS와
+# 같은 "모델이 부른 값을 그대로 믿지 않는다" 패턴. JSON Schema의 `maximum`은
+# 잘 동작하는 모델에겐 힌트일 뿐이라, 핸들러에서도 반드시 clamp한다.
+_MAX_SEARCH_LIMIT = 50
+_MAX_PLAN_SEARCH_LIMIT_PER_SUBQUERY = 20
+
+
+def _clamp_limit(value: Any, default: int, maximum: int) -> int:
+    try:
+        limit = int(value) if value is not None else default
+    except (TypeError, ValueError):
+        limit = default
+    return max(1, min(limit, maximum))
+
+
 FILE_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -38,7 +55,12 @@ FILE_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": "KnowledgeObject 타입(예: entity, decision)으로 결과를 좁힌다. 생략하면 모든 타입 + 리소스를 포함한다.",
         },
-        "limit": {"type": "integer", "description": "반환할 최대 결과 수.", "default": 20},
+        "limit": {
+            "type": "integer",
+            "description": f"반환할 최대 결과 수 (서버가 {_MAX_SEARCH_LIMIT}로 상한을 둔다).",
+            "default": 20,
+            "maximum": _MAX_SEARCH_LIMIT,
+        },
         "time_range": {
             "type": "string",
             "description": (
@@ -65,7 +87,12 @@ VECTOR_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
             "type": "string",
             "description": "KnowledgeObject 타입(예: entity, decision)으로 결과를 좁힌다. 생략하면 모든 타입을 포함한다.",
         },
-        "limit": {"type": "integer", "description": "반환할 최대 결과 수.", "default": 10},
+        "limit": {
+            "type": "integer",
+            "description": f"반환할 최대 결과 수 (서버가 {_MAX_SEARCH_LIMIT}로 상한을 둔다).",
+            "default": 10,
+            "maximum": _MAX_SEARCH_LIMIT,
+        },
         "time_range": {
             "type": "string",
             "description": (
@@ -90,8 +117,13 @@ PLAN_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
         },
         "limit_per_subquery": {
             "type": "integer",
-            "description": "하위 질의 하나당 반환할 최대 결과 수.",
+            "description": (
+                f"하위 질의 하나당 반환할 최대 결과 수 (서버가 {_MAX_PLAN_SEARCH_LIMIT_PER_SUBQUERY}로 "
+                "상한을 둔다 - 최대 5개 하위 질의 x 최대 2개 소스에 곱해지므로 file_search/vector_search "
+                "보다 낮게 잡혀 있다)."
+            ),
             "default": DEFAULT_LIMIT_PER_SUBQUERY,
+            "maximum": _MAX_PLAN_SEARCH_LIMIT_PER_SUBQUERY,
         },
     },
     "required": ["query"],
@@ -190,7 +222,7 @@ async def _file_search_handler(args: dict[str, Any]) -> list[dict[str, Any]]:
         query=args["query"],
         project_id=args.get("project_id"),
         type=args.get("type"),
-        limit=int(args.get("limit", 20)),
+        limit=_clamp_limit(args.get("limit"), default=20, maximum=_MAX_SEARCH_LIMIT),
         since=since,
         until=until,
     )
@@ -231,7 +263,7 @@ def _make_vector_search_tool(database_url: str) -> ToolSpec:
                 store=store,
                 project_id=args.get("project_id"),
                 type=args.get("type"),
-                limit=int(args.get("limit", 10)),
+                limit=_clamp_limit(args.get("limit"), default=10, maximum=_MAX_SEARCH_LIMIT),
                 since=since,
                 until=until,
             )
@@ -288,7 +320,11 @@ def _make_plan_search_tool(*, provider: ChatProvider, database_url: str | None, 
 
     async def _handler(args: dict[str, Any]) -> dict[str, Any]:
         scoped_project_id = args.get("project_id") or project_id
-        limit = int(args.get("limit_per_subquery", DEFAULT_LIMIT_PER_SUBQUERY))
+        limit = _clamp_limit(
+            args.get("limit_per_subquery"),
+            default=DEFAULT_LIMIT_PER_SUBQUERY,
+            maximum=_MAX_PLAN_SEARCH_LIMIT_PER_SUBQUERY,
+        )
         if database_url:
             async with PipelineStore(database_url, settings.data_dir) as store:
                 return await plan_and_search(
