@@ -8,6 +8,11 @@
 파이프라인을 읽는 agent 도구로 구현됐고(HTTP 경로 `POST /search/vector` 자체는 여전히 미구현,
 `agent-search.md` 참고), `graph_search`는 아직 설계만 있다.
 
+그 뒤 `search/retrieve.py`(통합 검색 실행기)가 생기면서 **기본으로 노출하는 검색 도구는 그
+실행기를 감싼 `search` 하나로 좁혔다** — 개별 도구는 `KF_AGENT_TOOL_SURFACE=full`로 되살린다.
+아래 "도구 표면" 절이 그 이유와 표를 담고 있고, Phase 1~6은 각 도구가 어떻게 생겼는지의 기록
+이다(= 지금 기본으로 다 보인다는 뜻이 아니다).
+
 **핵심 요구사항: 모델 벤더에 종속되지 않는 범용 harness.** 대화형(`--interactive`)이든 1회성
 쿼리든 예외 없이 자체 `ChatProvider` 추상화 위에서 돈다 — 특정 벤더 SDK가 도구 호출 루프 자체를
 대신 돌려주는 방식(`claude_agent_sdk.ClaudeSDKClient`)에는 어떤 모드도 얹지 않는다(아래 참고).
@@ -34,8 +39,12 @@
 src/knowledge_forge/
     chat_provider.py       # Message/ToolCall/AssistantTurn/ToolSpec, ChatProvider(ABC) - agent/search 공용
 src/knowledge_forge/search/
+    retrieve.py            # retrieve() - 제약/전략을 결정론적으로 조합하는 통합 실행기 (agent `search` 도구 + eval-ir 공용)
+    constraints.py          # QueryConstraints/suggest_strategies() - 질의 -> 제약 + 전략 이름 목록
+    document.py            # read_document() - 문서 하나의 청크 전체를 순서대로 (document expansion)
     service.py            # file_search() - OKF 파일 트리 키워드/frontmatter 검색, Postgres 불필요
                             # vector_search() - pgvector HNSW 인덱스 의미 검색, PipelineStore 필요
+                            # document_search()/lexical_search() - 제목 조회 / 원문 리터럴 조회
     router.py              # route_query() - 질의당 file_search/vector_search 소스 선택 휴리스틱
     planner.py              # decompose_query()/plan_and_search() - 멀티홉 질의 분해 + 병렬/의존 실행
     rerank.py                # merge_and_rerank() - RRF로 다중 소스 결과 병합/재정렬 + cross-source dedup
@@ -46,6 +55,7 @@ src/knowledge_forge/okf/
 src/knowledge_forge/agent/
     auth.py                # 프로바이더별 자격 증명 preflight 체크 (extraction/auth.py와 같은 역할, 별도 키)
     tools.py                # search/fs_service/memory를 ToolSpec으로 감싸는 얇은 어댑터 + write_plan/delegate_task 조립
+                            # 어떤 검색 도구를 노출할지는 KF_AGENT_TOOL_SURFACE가 정한다 (아래 "도구 표면" 절)
     plan.py                 # PlanState/write_plan 도구 - 에이전트가 스스로 세우는 다단계 작업 계획
     memory.py                # read_memory/write_memory() - OKF 트리 바깥의 세션 간 기억 (write_memory 도구)
     loop.py                 # run_agent() - 벤더 중립 도구 호출 루프 (모든 모드가 공유)
@@ -76,6 +86,61 @@ import하는 체인과 맞물려 순환 import가 된다(`search/planner.py`가 
 
 CLI: `knowledge-forge agent "질문" [--project-id ID] [--provider anthropic|openai_compatible]
 [--model ...] [--interactive]` (`cli.py`).
+
+## 도구 표면 — 모델에게 무엇을 보여줄 것인가 (`KF_AGENT_TOOL_SURFACE`)
+
+아래 Phase 1~6은 검색 도구를 하나씩 **더한** 기록이다. 그 결과 한때 `default_tools()`가 검색
+도구만 여덟 개(`file_search`/`vector_search`/`sql_search`/`document_search`/`lexical_search`/
+`read_document`/`search`/`plan_search`)를 늘어놓게 됐는데, 이건 그 사이에 생긴 `search/retrieve.py`
+와 정면으로 어긋난다: 그 모듈은 **"어떤 검색을 어떤 순서로 돌릴지"라는 판단을 LLM에게서 빼앗아
+결정론적 함수로 만들려고** 존재하고(그 docstring), 골든셋 IR 평가(`eval-ir`,
+[`search-evaluation.md`](search-evaluation.md))가 재는 유일한 경로다. 도구 목록이 개별 도구를
+여덟 갈래로 펼치면 그 판단이 그대로 모델에게 되돌아간다 — 모델이 고른 조합은 측정된 적이 없고
+같은 질의에 같은 답을 준다는 보장도 없다.
+
+그래서 도구 목록을 `settings.agent_tool_surface`(`KF_AGENT_TOOL_SURFACE`) 뒤에 뒀다. 지운 게
+아니라 **기본값에서 감췄다**.
+
+| `KF_AGENT_TOOL_SURFACE` | `KF_DATABASE_URL` | 검색 도구 |
+| --- | --- | --- |
+| `minimal` (기본) | 설정됨 | `search`, `read_document`, `sql_search` |
+| `minimal` (기본) | 없음 | `file_search` |
+| `full` | 설정됨 | `search`, `file_search`, `read_document`, `sql_search`, `vector_search`, `document_search`, `lexical_search`, `plan_search`(provider 있을 때) |
+| `full` | 없음 | `file_search`, `plan_search`(provider 있을 때) |
+
+비검색 도구(`read_file`/`write_file`/`edit_file`/`list_dir`/`write_memory`/`write_plan`/
+`delegate_task`)는 표면과 무관하게 항상 같다.
+
+기본 표면에 남은 셋을 고른 기준:
+
+- **`search`** — 1순위. `search/retrieve.py::retrieve`를 얇게 감싼 어댑터로, 질의 제약
+  (`search/constraints.py`)에서 전략을 골라 제목 조회/렉시컬/벡터/메타데이터 필터/비교/멀티홉/
+  문서 전체 읽기를 결정론적으로 조합한다. 결과에 `steps`(무엇을 어떻게 돌렸는지)를 같이 실어
+  주므로, 모자랄 때 모델이 무엇을 보충해야 하는지 볼 수 있다. 설계 근거는
+  [`search-architecture.md`](search-architecture.md)의 "Retrieval Plan 실행기".
+- **`sql_search`** — 구조화 질의 비상구. 집계(COUNT/GROUP BY)와 임의 속성 조건은 `retrieve()`의
+  전략 목록에 없어서, 그게 필요한 질문은 다른 도구로는 아예 답이 안 나온다.
+- **`read_document`** — 검색 도구가 아니라 "검색으로 특정한 문서를 끝까지 읽는" 후속 동작.
+  top-k로 답이 안 되는 전체 요약/부재 확인/순서 비교에 필요하다.
+
+**`file_search`가 DB 없을 때만 들어오는 이유**는 그 뒷면이다: Postgres가 없으면 위 셋이 전부
+빠져(`vector_search`와 같은 "설정 안 되어 있으면 조용히 빠짐" 컨벤션) 검색 경로가 하나도 남지
+않는다. `file_search`는 Postgres를 전혀 요구하지 않는 유일한 검색 도구라
+(`search/service.py` docstring의 "OKF-only deployment") 그 구성에서는 반드시 남아야 한다.
+반대로 DB가 있으면 같은 OKF 코퍼스가 이미 색인돼 있어 `search`가 더 넓게 훑고, `KF_OKF_DIR`이
+안 잡힌 배포에서 `file_search`는 조용히 `[]`만 돌려주기까지 한다 — 예전 시스템 프롬프트의
+1원칙이 하필 그 도구를 먼저 부르라고 시키고 있었다(측정된 적 없고, 설정에 따라 빈손인 경로).
+지금 1원칙은 `search`다.
+
+`plan_search`가 "full"에만 있어도 멀티홉 분해가 사라지지는 않는다 — `retrieve()`가 `multihop`
+전략에서 같은 `plan_and_search()`를 안에서 부른다(단, `provider`가 있을 때만).
+
+`prompts.py`도 같은 설정을 읽어 라우팅 지침을 맞춘다: "full"일 때만 개별 검색 도구 문단이
+프롬프트에 들어가고, 그때도 "`search`가 부족했을 때의 보충 수단"으로만 서술된다 — 목록에 없는
+도구를 안내하는 문단은 컨텍스트만 먹고 모델을 헛돌게 하고, 있는 도구를 동급 메뉴로 늘어놓으면
+모델이 다시 스스로 라우팅하기 때문. 회귀(도구 목록이 조용히 다시 자라는 것)는
+`tests/agent/test_tools.py`의 기본 표면 단언과 `tests/agent/test_runtime.py`의 프롬프트 1원칙
+단언이 막는다.
 
 ### `search/service.py::file_search`
 
@@ -231,9 +296,11 @@ JOIN하는 쿼리 특성상 결과에 그냥 나오지 않는다(에러/경고 �
 `OPENAI_API_KEY`(임베딩 프로바이더가 직접 읽음)가 없으면 첫 호출에서 `EmbeddingError`가 나고,
 이는 다른 도구 에러와 동일하게 `loop.py`가 잡아 tool_result로 돌려준다(런타임이 죽지 않음).
 
-`prompts.py`의 시스템 프롬프트는 vector_search가 도구 목록에 있을 때(=DB 구성됨) 정확한
-문자열/ID는 file_search로, 자연어 패러프레이즈/개념은 vector_search로 먼저 시도하고, 하나가
-결과 없음을 반환해도 다른 하나로 다시 시도해보라고 안내한다.
+`vector_search`는 이제 **기본 도구 표면에서 빠져 있다** - `KF_AGENT_TOOL_SURFACE=full`에서만
+도구 목록에 나온다(아래 "도구 표면" 절). 기본값에서 벡터 검색은 사라진 게 아니라 `search`의
+`vector` 전략으로 안에서 돈다 - 언제 그걸 돌릴지를 모델 대신 `search/constraints.py`가 정할 뿐이다.
+`prompts.py`의 라우팅 지침도 표면을 따라간다: "full"일 때만 개별 도구 문단이 프롬프트에 들어가고,
+그때도 "search가 부족했을 때의 보충 수단"으로만 서술된다.
 
 ## Phase 4 — `plan_search` (Query Planning + Query Routing + Reranking)
 

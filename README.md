@@ -191,6 +191,7 @@ uv sync --extra xlsx --extra pptx --extra hwpx --extra slack --extra google --ex
 | `OPENAI_API_KEY` | (없음) | 임베딩 API 키 (`KF_`-접두사 아님, 프로바이더가 직접 읽음) |
 | `KF_AGENT_PROVIDER` | `anthropic` | `anthropic` \| `openai_compatible` — `knowledge-forge agent`의 백엔드 (`llm_provider`와 별도 키) |
 | `KF_AGENT_MODEL` | `claude-sonnet-5` | `knowledge-forge agent`가 쓰는 모델 |
+| `KF_AGENT_TOOL_SURFACE` | `minimal` | `minimal` \| `full` — 에이전트에게 노출할 검색 도구 범위 (아래 `agent` 절 참고) |
 
 임베딩/에이전트 관련 전체 환경변수는 [`wiki/embeddings.md`](wiki/embeddings.md), [`wiki/agent-runtime.md`](wiki/agent-runtime.md) 참고.
 
@@ -298,15 +299,21 @@ KF_OKF_DIR=./okf uv run knowledge-forge agent "인증 방식을 OAuth로 바꾸�
 KF_OKF_DIR=./okf uv run knowledge-forge agent --interactive   # REPL, Ctrl-D로 종료
 ```
 
+기본으로 노출되는 도구(`KF_AGENT_TOOL_SURFACE=minimal`):
+
 | 도구 | 조건 | 역할 |
 |---|---|---|
-| `file_search` | `KF_OKF_DIR` | OKF 파일 트리를 키워드/frontmatter로 검색 — 정확한 문자열/ID에 강함. `time_range`로 "어제"/"지난주" 등 자연어 시간 필터링 가능 |
-| `vector_search` | `KF_DATABASE_URL` (pgvector 임베딩 필요, 아래 `embed` 참고) | KnowledgeObject 임베딩을 의미 기반으로 검색 — 자연어 패러프레이즈에 강함. `time_range` 지원은 file_search와 동일 |
-| `sql_search` | `KF_DATABASE_URL` | Knowledge Base를 PostgreSQL SQL로 직접 조회(Text-to-SQL) — 특정 사람/속성이 언급된 항목, 집계, 시간 범위+속성값을 함께 거는 조건처럼 file_search/vector_search로 안 되는 질문에 씀. 읽기 전용만 허용 |
-| `plan_search` | 항상 | 여러 단계 추론이 필요한 복합 질문을 하위 질의로 분해해, 독립적인 것은 병렬로 검색하고, 두 소스 결과는 RRF로 병합/재정렬(cross-source dedup 포함)해 근거를 반환 — 하위 질의 문장의 시간 표현도 자동 인식 (Query Planning + Routing + Reranking + Temporal Search) |
+| `search` | `KF_DATABASE_URL` | **통합 검색.** 질의 의도를 분석해 제목 조회/렉시컬/벡터/메타데이터 필터/멀티홉/문서 전체 읽기를 결정론적으로 조합한다 — 어떤 검색을 어떤 순서로 돌릴지는 모델이 아니라 `search/retrieve.py`가 정한다(골든셋 평가가 재는 경로도 이것). 질문을 자연어 그대로 넘기면 시간 표현·파일명·에러 코드까지 알아서 읽는다 |
+| `read_document` | `KF_DATABASE_URL` | 검색으로 특정한 문서 하나의 청크 전체를 순서대로 읽는다 — 전체 요약/부재 확인("언급되지 않은 것")/순서 비교처럼 top-k로는 답할 수 없는 질문용 |
+| `sql_search` | `KF_DATABASE_URL` | Knowledge Base를 PostgreSQL SQL로 직접 조회(Text-to-SQL) — 집계(COUNT/GROUP BY), 여러 조건의 AND/OR, 특정 사람/속성이 언급된 항목처럼 `search`가 다루지 못하는 구조화 질의용. 읽기 전용만 허용 |
+| `file_search` | `KF_DATABASE_URL`이 **없을 때** (+ `KF_OKF_DIR`) | OKF 파일 트리를 키워드/frontmatter로 검색 — Postgres 없이 동작하는 유일한 검색 도구라, 위 셋이 빠지는 OKF 전용 배포에서 그 자리를 대신한다 |
 | `read_file` / `write_file` / `edit_file` / `list_dir` | `KF_OKF_DIR` | OKF 루트 트리 범위로 제한된 파일 읽기/쓰기 |
 | `write_memory` | 항상 | 세션이 끝나도 남을 사실/결정을 프로젝트별 기억 파일에 기록 |
 | `delegate_task` | 항상 | 독립적인 하위 조사를 새 대화의 서브에이전트에게 위임 |
+
+`KF_AGENT_TOOL_SURFACE=full`로 두면 개별 검색 도구(`file_search`/`vector_search`/`document_search`/
+`lexical_search`/`plan_search`)까지 전부 노출된다 — `search`가 놓친 질의를 손으로 파고들 때용이다.
+표와 이유는 [`wiki/agent-runtime.md`](wiki/agent-runtime.md)의 "도구 표면" 절 참고.
 
 `vector_search`를 쓰려면 먼저 KnowledgeObject를 임베딩해 둬야 한다:
 
