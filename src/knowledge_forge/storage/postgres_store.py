@@ -658,27 +658,37 @@ class PostgresStore:
         same reason `save_embeddings` wraps it on the INSERT side).
 
         `since`/`until` (search/temporal.py, "⑥ Temporal Search") filter on
-        `ko.extracted_at` - `until` is exclusive, matching
-        `search/temporal.py::TimeRange`'s half-open interval contract.
+        `COALESCE(s.modified_at, s.collected_at)` - the source's own
+        real-world timestamp, not `ko.extracted_at` (when the pipeline
+        happened to process it). A batch extraction run stamps every
+        KnowledgeObject it touches with the same `extracted_at` regardless
+        of how old the underlying message actually is, so filtering on it
+        would make a real "지난달" query return nothing no matter what's
+        actually in scope (see search/service.py::_content_at's docstring
+        for the same issue on the `file_search` side). `until` is exclusive,
+        matching `search/temporal.py::TimeRange`'s half-open contract.
 
         Returns dict rows, not `KnowledgeObject` - a search hit only needs
         enough to decide relevance (type/summary/topics) plus a similarity
         `score`, not the full envelope (evidence/content/version/...) every
-        other `list_*`/`get_*` method here returns."""
+        other `list_*`/`get_*` method here returns. `content_at` (the same
+        COALESCE used for filtering) is included so a caller can see which
+        timestamp the filter actually matched against."""
         vector = Vector(embedding)
         async with self.conn.cursor() as cur:
             await cur.execute(
                 """
                 SELECT ko.knowledge_object_id, ko.type, ko.summary, ko.topics, ko.document_type,
-                       s.project_id, e.embedding <=> %s AS distance
+                       s.project_id, e.embedding <=> %s AS distance,
+                       COALESCE(s.modified_at, s.collected_at) AS content_at
                 FROM knowledge_object_embeddings e
                 JOIN knowledge_objects ko ON ko.knowledge_object_id = e.knowledge_object_id
                 JOIN sources s ON s.source_id = ko.source_id
                 WHERE e.embedding_model = %s
                   AND (%s::text IS NULL OR e.project_id = %s)
                   AND (%s::text IS NULL OR ko.type = %s)
-                  AND (%s::timestamptz IS NULL OR ko.extracted_at >= %s)
-                  AND (%s::timestamptz IS NULL OR ko.extracted_at < %s)
+                  AND (%s::timestamptz IS NULL OR COALESCE(s.modified_at, s.collected_at) >= %s)
+                  AND (%s::timestamptz IS NULL OR COALESCE(s.modified_at, s.collected_at) < %s)
                 ORDER BY e.embedding <=> %s
                 LIMIT %s
                 """,
@@ -711,6 +721,7 @@ class PostgresStore:
                 # cosine similarity (1.0 = identical direction), easier for a
                 # caller/model to read as "higher is more relevant".
                 "score": 1.0 - float(row[6]),
+                "content_at": row[7].isoformat(),
             }
             for row in rows
         ]

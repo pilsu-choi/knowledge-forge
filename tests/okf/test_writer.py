@@ -85,6 +85,67 @@ def test_writer_produces_conformant_markdown_concepts(tmp_path):
     assert "유형" in entity_body
 
 
+def test_write_objects_stamps_content_at_from_the_sources_modified_at_not_extracted_at(tmp_path):
+    """A batch extraction run stamps every object with the same
+    `extracted_at` (whenever the pipeline happened to process it) - a real
+    "지난달" question against that field would find nothing regardless of
+    when the underlying message actually happened. `content_at` must instead
+    track the source's own `modified_at` (search/service.py::_content_at)."""
+    writer = OKFWriter(tmp_path)
+    src = Source(
+        source_id="s1",
+        source_type=SourceType.SLACK,
+        uri="slack://C1/1",
+        content_hash="h1",
+        collected_at=datetime(2026, 9, 2, tzinfo=timezone.utc),  # when the pipeline ran
+        modified_at=datetime(2026, 8, 15, tzinfo=timezone.utc),  # when the message was actually sent
+    )
+    doc = Document(
+        document_id="d1",
+        source=SourceRef.from_source(src),
+        elements=[TextBlock(element_id="e1", text="hello")],
+        metadata=DocumentMetadata(title="T"),
+    )
+    writer.write_resource(src, doc)
+
+    fact = _sample_object("ko1", KnowledgeObjectType.FACT, title="fact statement")
+    fact.extracted_at = datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc)  # pipeline run time, not "real" time
+    writer.write_objects([fact])
+
+    root = tmp_path / "default"
+    fact_fm, _ = _parse_markdown(_find(root, "objects/fact").read_text(encoding="utf-8"))
+
+    assert fact_fm["content_at"] == "2026-08-15T00:00:00+00:00"
+    assert fact_fm["content_at"] != fact_fm["generated"]["at"]
+
+
+def test_write_objects_falls_back_to_collected_at_when_source_has_no_modified_at(tmp_path):
+    writer = OKFWriter(tmp_path)
+    src = Source(
+        source_id="s1",
+        source_type=SourceType.LOCAL_FILE,
+        uri="file:///a.md",
+        content_hash="h1",
+        collected_at=datetime(2026, 8, 20, tzinfo=timezone.utc),
+        modified_at=None,
+    )
+    doc = Document(
+        document_id="d1",
+        source=SourceRef.from_source(src),
+        elements=[TextBlock(element_id="e1", text="hello")],
+        metadata=DocumentMetadata(title="T"),
+    )
+    writer.write_resource(src, doc)
+
+    fact = _sample_object("ko1", KnowledgeObjectType.FACT, title="fact statement")
+    writer.write_objects([fact])
+
+    root = tmp_path / "default"
+    fact_fm, _ = _parse_markdown(_find(root, "objects/fact").read_text(encoding="utf-8"))
+
+    assert fact_fm["content_at"] == "2026-08-20T00:00:00+00:00"
+
+
 def test_write_relations_inlines_edge_on_both_endpoint_concepts(tmp_path):
     writer = OKFWriter(tmp_path)
     src, doc = _sample_source_and_document()

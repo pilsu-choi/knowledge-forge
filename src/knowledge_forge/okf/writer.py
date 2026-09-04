@@ -242,8 +242,21 @@ class OKFWriter:
     def _register_object(self, project_id: str, ko_id: str, rel_path: str, title: str, type_: str) -> None:
         self._object_index.setdefault(project_id, {})[ko_id] = {"path": rel_path, "title": title, "type": type_}
 
-    def _register_resource(self, project_id: str, source_id: str, rel_path: str, title: str) -> None:
-        self._resource_index.setdefault(project_id, {})[source_id] = {"path": rel_path, "title": title}
+    def _register_resource(
+        self, project_id: str, source_id: str, rel_path: str, title: str, content_at: str | None
+    ) -> None:
+        self._resource_index.setdefault(project_id, {})[source_id] = {
+            "path": rel_path,
+            "title": title,
+            # The Source's own real-world timestamp (modified_at, falling
+            # back to collected_at) - write_objects() below reads this back
+            # out to stamp the same value on every KnowledgeObject that came
+            # from this source, since a KO itself has no timestamp of its
+            # own except `extracted_at` (pipeline processing time, not
+            # "when this actually happened" - see search/service.py::
+            # _content_at's docstring for why that distinction matters).
+            "content_at": content_at,
+        }
 
     def _scan_objects(self, root: Path, project_id: str) -> None:
         idx = self._object_index.setdefault(project_id, {})
@@ -272,7 +285,12 @@ class OKFWriter:
             fm, _ = _parse_markdown(f.read_text(encoding="utf-8"))
             source_id = fm.get("source_id")
             if source_id and source_id not in idx:
-                idx[source_id] = {"path": self._relpath(root, f), "title": fm.get("title")}
+                generated = fm.get("generated") or {}
+                idx[source_id] = {
+                    "path": self._relpath(root, f),
+                    "title": fm.get("title"),
+                    "content_at": fm.get("modified_at") or generated.get("at"),
+                }
 
     def _lookup_object(self, root: Path, project_id: str, ko_id: str) -> dict[str, str] | None:
         idx = self._object_index.setdefault(project_id, {})
@@ -309,7 +327,8 @@ class OKFWriter:
             "document": {"document_id": document.document_id, "element_count": len(document.elements)},
         }
         self._write_markdown(root, rel_path, frontmatter, "## 추출된 개념\n\n(아직 없음)")
-        self._register_resource(project_id, source.source_id, rel_path, title)
+        content_at = _iso(source.modified_at) or _iso(source.collected_at)
+        self._register_resource(project_id, source.source_id, rel_path, title, content_at)
 
     def write_objects(self, objects: list[KnowledgeObject]) -> None:
         for ko in objects:
@@ -320,6 +339,12 @@ class OKFWriter:
 
             src = self._lookup_resource(root, project_id, ko.source.source_id)
             sources = [{"resource": _relative_link(rel_path, src["path"]) if src else ko.source.uri, "title": src["title"] if src else None}]
+            # The source's own real-world timestamp, not `ko.extracted_at`
+            # (pipeline processing time) - see search/service.py::_content_at.
+            # Falls back to extracted_at only if the source's resource file
+            # was never found (shouldn't normally happen - write_resource()
+            # runs before write_objects() in the pipeline).
+            content_at = (src or {}).get("content_at") or _iso(ko.extracted_at)
 
             frontmatter: dict[str, Any] = {
                 "type": ko.type.value.replace("_", " ").title(),
@@ -328,6 +353,7 @@ class OKFWriter:
                 "resource": ko.source.uri,
                 "tags": ko.topics,
                 "status": "stable",
+                "content_at": content_at,
                 "generated": {"by": f"knowledge_forge/{ko.pipeline_version}", "at": _iso(ko.extracted_at)},
                 "sources": sources,
                 "knowledge_object_id": ko.knowledge_object_id,

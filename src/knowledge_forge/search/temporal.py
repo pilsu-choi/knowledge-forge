@@ -14,13 +14,22 @@ temporal *join* across KnowledgeObject types) stays out of scope, see
 wiki/search-architecture.md's "① Query Understanding"/"⑥ Temporal Search".
 
 All boundaries are computed in UTC (`datetime.now(timezone.utc)` by
-default) because `KnowledgeObject.extracted_at` is always stored in UTC
-(`extraction/outcome.py`) - this keeps the filter's timezone assumption
-consistent with the data it filters, but does mean "오늘"/"어제" are UTC
-calendar days, not the caller's local calendar day (a real limitation for a
-caller far from UTC, e.g. KST is UTC+9 - "어제" near UTC midnight can be off
-by up to a day from that caller's intuition). Monday is the start of the
-week (ISO), matching common Korean convention.
+default) because every timestamp this system stores (`Source.collected_at`/
+`modified_at`, `KnowledgeObject.extracted_at`) is UTC - this keeps the
+filter's timezone assumption consistent with the data it filters, but does
+mean "오늘"/"어제" are UTC calendar days, not the caller's local calendar day
+(a real limitation for a caller far from UTC, e.g. KST is UTC+9 - "어제"
+near UTC midnight can be off by up to a day from that caller's intuition).
+Monday is the start of the week (ISO), matching common Korean convention.
+
+The range this module produces is compared against the *source's* real-world
+timestamp (`Source.modified_at`, falling back to `collected_at`) by
+`file_search`/`vector_search`, not `KnowledgeObject.extracted_at` (when the
+pipeline happened to process it) - a batch extraction run stamps every KO it
+touches with the same `extracted_at`, which made a real "지난달" query
+against it return nothing regardless of what was actually being asked. See
+wiki/search-architecture.md's ⑥ section for how this was found (a blind
+Text-to-SQL test) and fixed.
 """
 
 from __future__ import annotations

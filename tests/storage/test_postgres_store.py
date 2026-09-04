@@ -419,16 +419,82 @@ async def test_search_knowledge_objects_by_embedding_orders_by_similarity_and_fi
     assert other_model == []
 
 
-async def test_search_knowledge_objects_by_embedding_filters_by_extracted_at(store):
+async def test_search_knowledge_objects_by_embedding_filters_by_the_sources_content_timestamp(store):
+    """Filtering must follow the *source's* real-world timestamp
+    (modified_at, falling back to collected_at), not `extracted_at` - a
+    batch extraction run stamps every KnowledgeObject it touches with the
+    same `extracted_at` (whenever the pipeline happened to run) regardless
+    of how old the underlying message actually is, so both KOs here share a
+    late `extracted_at` but come from sources with very different
+    `modified_at` - only the latter should affect the filter."""
     from knowledge_forge.embedding.base import EmbeddingRecord
 
-    src, doc, chunk, objects, _relation = _sample_records()
-    await store.save_source(src, raw_path=None)
-    await store.save_document(doc)
-    await store.save_chunks([chunk])
+    same_run_time = datetime(2026, 9, 2, tzinfo=timezone.utc)  # both KOs "extracted" on the same batch run
 
-    old_ko = objects[0].model_copy(update={"extracted_at": datetime(2020, 1, 1, tzinfo=timezone.utc)})
-    new_ko = objects[1].model_copy(update={"extracted_at": datetime(2026, 9, 1, tzinfo=timezone.utc)})
+    old_src = Source(
+        source_id="test-s-old",
+        source_type=SourceType.SLACK,
+        uri="slack://C1/old",
+        content_hash="h-old",
+        collected_at=same_run_time,
+        modified_at=datetime(2020, 1, 1, tzinfo=timezone.utc),  # message actually sent long ago
+    )
+    new_src = Source(
+        source_id="test-s-new",
+        source_type=SourceType.SLACK,
+        uri="slack://C1/new",
+        content_hash="h-new",
+        collected_at=same_run_time,
+        modified_at=datetime(2026, 9, 1, tzinfo=timezone.utc),  # message actually sent recently
+    )
+    for src in (old_src, new_src):
+        await store.save_source(src, raw_path=None)
+        doc = Document(
+            document_id=f"test-d-{src.source_id}",
+            source=SourceRef.from_source(src),
+            elements=[TextBlock(element_id="e1", text="hello")],
+            metadata=DocumentMetadata(title="T"),
+        )
+        await store.save_document(doc)
+        chunk = Chunk(
+            chunk_id=f"test-c-{src.source_id}",
+            document_id=doc.document_id,
+            source_id=src.source_id,
+            hierarchy_level=HierarchyLevel.PARAGRAPH,
+            sequence_index=0,
+            text="hello",
+            token_count=1,
+            element_ids=["e1"],
+            page_range=(1, 2),
+        )
+        await store.save_chunks([chunk])
+
+    def _ko(ko_id: str, src: Source) -> KnowledgeObject:
+        return KnowledgeObject(
+            knowledge_object_id=ko_id,
+            type=KnowledgeObjectType.FACT,
+            source=SourceRef.from_source(src),
+            document=DocumentRef(document_id=f"test-d-{src.source_id}", title="T"),
+            evidence=[
+                Evidence(
+                    chunk_id=f"test-c-{src.source_id}",
+                    document_id=f"test-d-{src.source_id}",
+                    hierarchy_level=HierarchyLevel.PARAGRAPH,
+                    sequence_index=0,
+                )
+            ],
+            summary="s",
+            content={"statement": "s"},
+            topics=["t"],
+            document_type="report",
+            extracted_at=same_run_time,
+            model_used="claude-opus-5",
+            pipeline_version="0.1.0",
+            source_hash=src.content_hash,
+        )
+
+    old_ko = _ko("test-ko-old", old_src)
+    new_ko = _ko("test-ko-new", new_src)
     await store.save_knowledge_objects([old_ko, new_ko])
 
     vector = [1.0] + [0.0] * 1535
@@ -440,7 +506,7 @@ async def test_search_knowledge_objects_by_embedding_filters_by_extracted_at(sto
                 embedding=vector,
                 embedded_text="old",
                 embedded_text_hash="hash-old",
-                project_id=src.project_id,
+                project_id=old_src.project_id,
             ),
             EmbeddingRecord(
                 knowledge_object_id=new_ko.knowledge_object_id,
@@ -448,7 +514,7 @@ async def test_search_knowledge_objects_by_embedding_filters_by_extracted_at(sto
                 embedding=vector,
                 embedded_text="new",
                 embedded_text_hash="hash-new",
-                project_id=src.project_id,
+                project_id=new_src.project_id,
             ),
         ]
     )
@@ -457,6 +523,7 @@ async def test_search_knowledge_objects_by_embedding_filters_by_extracted_at(sto
         vector, "test-model", None, None, 10, since=datetime(2026, 1, 1, tzinfo=timezone.utc)
     )
     assert {r["knowledge_object_id"] for r in since_only} == {new_ko.knowledge_object_id}
+    assert since_only[0]["content_at"] == "2026-09-01T00:00:00+00:00"
 
     until_only = await store.search_knowledge_objects_by_embedding(
         vector, "test-model", None, None, 10, until=datetime(2026, 1, 1, tzinfo=timezone.utc)

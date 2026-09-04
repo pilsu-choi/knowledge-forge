@@ -182,3 +182,66 @@ async def test_since_excludes_hits_with_no_generated_at(tmp_path):
     results = await file_search("OAuth", okf_root=tmp_path, since=datetime(2020, 1, 1, tzinfo=timezone.utc))
 
     assert results == []
+
+
+def _seed_object_with_content_at(root: Path, name: str, content_at: str, generated_at: str, project_id: str = "default") -> None:
+    """A batch-extracted object: `generated.at` is when the pipeline ran
+    (e.g. today), `content_at` is when the underlying message/decision
+    actually happened (e.g. weeks earlier) - `file_search`'s temporal filter
+    must follow `content_at`, not `generated.at` (search/service.py::_content_at)."""
+    project_root = root / project_id
+    (project_root / "manifest.yaml").parent.mkdir(parents=True, exist_ok=True)
+    (project_root / "manifest.yaml").write_text(f"project_id: {project_id}\n", encoding="utf-8")
+    _write(
+        project_root / "objects" / "decision" / f"{name}.md",
+        textwrap.dedent(
+            f"""\
+            type: Decision
+            title: OAuth 결정 {name}
+            content_at: '{content_at}'
+            generated:
+              by: knowledge_forge/0.1.0
+              at: '{generated_at}'
+            """
+        ),
+        "OAuth 관련 결정 본문.",
+    )
+
+
+async def test_since_follows_content_at_not_generated_at_when_both_present(tmp_path):
+    # generated.at is "today" (batch pipeline run) for both - only content_at
+    # actually distinguishes an old message from a recent one.
+    _seed_object_with_content_at(
+        tmp_path, "old-content", content_at="2026-01-01T00:00:00+00:00", generated_at="2026-09-02T00:00:00+00:00"
+    )
+    _seed_object_with_content_at(
+        tmp_path, "new-content", content_at="2026-09-01T00:00:00+00:00", generated_at="2026-09-02T00:00:00+00:00"
+    )
+
+    results = await file_search("OAuth", okf_root=tmp_path, since=datetime(2026, 6, 1, tzinfo=timezone.utc))
+
+    assert [hit["title"] for hit in results] == ["OAuth 결정 new-content"]
+
+
+async def test_modified_at_is_preferred_over_generated_at_for_resource_hits(tmp_path):
+    project_root = tmp_path / "default"
+    (project_root / "manifest.yaml").parent.mkdir(parents=True, exist_ok=True)
+    (project_root / "manifest.yaml").write_text("project_id: default\n", encoding="utf-8")
+    _write(
+        project_root / "resources" / "doc.md",
+        textwrap.dedent(
+            """\
+            type: File
+            title: OAuth 관련 리소스
+            modified_at: '2026-01-01T00:00:00+00:00'
+            generated:
+              by: knowledge_forge/0.1.0
+              at: '2026-09-02T00:00:00+00:00'
+            """
+        ),
+        "OAuth 리소스 본문.",
+    )
+
+    results = await file_search("OAuth", okf_root=tmp_path, since=datetime(2026, 6, 1, tzinfo=timezone.utc))
+
+    assert results == []

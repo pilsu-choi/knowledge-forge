@@ -119,20 +119,38 @@ def _snippet(frontmatter: dict[str, Any], body: str, query_lower: str) -> str:
     return f"{prefix}{body[start:end].strip()}{suffix}"
 
 
-def _generated_at(frontmatter: dict[str, Any]) -> datetime | None:
-    """`okf/writer.py` stamps every resources/*.md and objects/{type}/*.md
-    file with `generated.at` (an ISO 8601 string - the source's
-    `collected_at` for a resource, the KnowledgeObject's `extracted_at` for
-    an object) - the one timestamp available on every file this module
-    scans, so it doubles as the temporal-filter anchor (search/temporal.py)."""
-    generated = frontmatter.get("generated")
-    at = generated.get("at") if isinstance(generated, dict) else None
-    if not at:
+def _parse_iso(value: Any) -> datetime | None:
+    if not value or not isinstance(value, str):
         return None
     try:
-        return datetime.fromisoformat(at)
-    except (TypeError, ValueError):
+        return datetime.fromisoformat(value)
+    except ValueError:
         return None
+
+
+def _content_at(frontmatter: dict[str, Any]) -> datetime | None:
+    """The real-world timestamp a file's *content* is anchored to, for
+    temporal filtering (search/temporal.py) - deliberately not
+    `generated.at`, which `okf/writer.py` stamps on every file as "when the
+    pipeline produced this file", not "when the underlying message/decision
+    actually happened". For a batch-ingested run those are wildly different
+    (a whole history's worth of Slack/email content can all get
+    `generated.at` == the one afternoon the extraction job ran), which made
+    a real "지난달" query against `generated.at` silently return nothing
+    regardless of the question - see wiki/search-architecture.md's ⑥ section.
+
+    Preference order: `content_at` (objects/*.md - the KnowledgeObject's
+    source's `modified_at`/`collected_at`, written by `write_objects()`) or
+    `modified_at` (resources/*.md, already the source's own field) first,
+    falling back to `generated.at` only for older files written before this
+    field existed (`--okf-dir` output isn't regenerated retroactively)."""
+    for key in ("content_at", "modified_at"):
+        parsed = _parse_iso(frontmatter.get(key))
+        if parsed is not None:
+            return parsed
+    generated = frontmatter.get("generated")
+    at = generated.get("at") if isinstance(generated, dict) else None
+    return _parse_iso(at)
 
 
 async def file_search(
@@ -150,11 +168,15 @@ async def file_search(
     존재하지 않으면 빈 리스트를 반환한다(에러가 아님 - 도구 호출 루프에서 "결과 없음"과 동일하게
     다뤄지면 되는 상황).
 
-    `since`/`until`(둘 다 tz-aware, `until`은 배타적)이 주어지면 frontmatter의 `generated.at`
-    (`_generated_at`)이 그 범위 밖인 파일은 제외한다 - `since`/`until`이 주어졌는데
-    `generated.at`이 없거나 파싱 실패하면(손상된 프론트매터 등) 안전하게 제외한다(있는지 없는지
-    모르는 걸 포함시키지 않음). `search/temporal.py::parse_temporal_expression`이 자연어
-    시간 표현을 이 두 값으로 바꿔주는 쪽이고, 이 함수 자체는 자연어를 이해하지 않는다.
+    `since`/`until`(둘 다 tz-aware, `until`은 배타적)이 주어지면 그 범위 밖인 파일은 제외한다 -
+    비교 기준은 `_content_at()`: 실제 콘텐츠 시각(`content_at`/`modified_at`, 없으면
+    `generated.at`로 폴백)이지 파이프라인이 그 파일을 만든 시각이 아니다 - 배치로 오래된
+    이력을 한꺼번에 넣으면 `generated.at`은 전부 그 배치를 돌린 하루로 뭉치기 때문에, 그걸
+    기준으로 "지난달"을 물으면 실제 내용이 뭐든 항상 결과가 없다(`_content_at()`의 docstring
+    참고). `since`/`until`이 주어졌는데 그 시각을 하나도 못 구하면(손상된 프론트매터 등)
+    안전하게 제외한다(있는지 없는지 모르는 걸 포함시키지 않음). `search/temporal.py::
+    parse_temporal_expression`이 자연어 시간 표현을 이 두 값으로 바꿔주는 쪽이고, 이 함수
+    자체는 자연어를 이해하지 않는다.
     """
     root = _resolve_okf_root(okf_root)
     query_lower = query.strip().lower()
@@ -172,12 +194,12 @@ async def file_search(
             if weight is None:
                 continue
             if since is not None or until is not None:
-                generated_at = _generated_at(frontmatter)
-                if generated_at is None:
+                content_at = _content_at(frontmatter)
+                if content_at is None:
                     continue
-                if since is not None and generated_at < since:
+                if since is not None and content_at < since:
                     continue
-                if until is not None and generated_at >= until:
+                if until is not None and content_at >= until:
                     continue
             tags = frontmatter.get("tags") or []
             hits.append(
@@ -231,9 +253,12 @@ async def vector_search(
     embedding_model)`이라 여러 모델의 벡터가 동시에 존재할 수 있으므로, 검색도
     어느 모델의 벡터 공간에서 비교할지 명시해야 한다(`embeddings.md` 참고).
 
-    `since`/`until`(둘 다 tz-aware, `until`은 배타적)이 주어지면 `knowledge_objects.extracted_at`
-    이 그 범위 안인 것만 반환한다 - `file_search`의 `since`/`until`과 같은 계약,
-    `search/temporal.py::parse_temporal_expression`이 자연어를 이 두 값으로 바꿔준다.
+    `since`/`until`(둘 다 tz-aware, `until`은 배타적)이 주어지면 소스의 실제 시각
+    (`COALESCE(sources.modified_at, sources.collected_at)` - `ko.extracted_at`이 아니다,
+    `postgres_store.py::search_knowledge_objects_by_embedding`의 docstring 참고)이 그 범위
+    안인 것만 반환한다 - `file_search`의 `since`/`until`과 같은 계약(그쪽도 `_content_at()`이
+    같은 이유로 `content_at`/`modified_at`을 우선 본다), `search/temporal.py::
+    parse_temporal_expression`이 자연어를 이 두 값으로 바꿔준다.
 
     임베딩이 없는 KnowledgeObject(백필 전, 또는 `--no-embed`로 저장된 것)는
     결과에 그냥 나오지 않는다 - `knowledge_object_embeddings`에 조인하는
