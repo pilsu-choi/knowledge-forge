@@ -1131,3 +1131,32 @@ async def test_link_cohesion_ignores_thread_sequence_which_is_a_mailbox_timeline
 
     assert next(s for s in result.steps if s.strategy == "link_cohesion").detail["reason"] == "no_cluster"
     assert result.document_ids == ["d1", "d2", "d3", "d4", "d5"]
+
+
+def test_extension_filter_builds_a_suffix_like_and_not_an_escaped_percent():
+    """`_like_literal`은 값 전체를 이스케이프한 뒤 양옆에 `%`를 붙인다. 확장자에 그걸 쓰면서
+    앞에 `%`를 직접 붙이면 그 `%`까지 literal이 돼 `'%\\%.xlsx%'`가 되고 필터가 **0행**이 된다
+    (실측: `v1-metadata_filter-001`이 정답 21건을 두고 n=0이었다)."""
+    from knowledge_forge.search.constraints import QueryConstraints
+    from knowledge_forge.search.retrieve import _metadata_filter_where, _suffix_like_literal
+
+    assert _suffix_like_literal(".xlsx") == "'%.xlsx'"
+    # `_`는 여전히 이스케이프한다 - 파일명에 흔하고, 안 하면 한 글자 와일드카드로 풀린다.
+    assert "\\_" in _suffix_like_literal("_v2.xlsx")
+
+    c = QueryConstraints(query="엑셀 파일 전부")
+    c.file_extensions = [".xlsx"]
+    where = " ".join(_metadata_filter_where(c, None))
+    assert "s.metadata->>'name' ILIKE '%.xlsx'" in where
+
+
+def test_a_file_type_predicate_is_not_a_source_hint_only_filter():
+    """확장자는 `source_type` 추측과 달리 질의가 명시한 구조적 술어라 필터를 믿어도 된다."""
+    from knowledge_forge.search.constraints import QueryConstraints
+    from knowledge_forge.search.retrieve import _is_source_hint_only_filter
+
+    c = QueryConstraints(query="Google Drive에서 수집된 엑셀 파일 전부")
+    c.source_types = ["google_drive"]
+    assert _is_source_hint_only_filter(c) is True
+    c.file_extensions = [".xlsx"]
+    assert _is_source_hint_only_filter(c) is False

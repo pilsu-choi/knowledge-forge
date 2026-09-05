@@ -236,6 +236,27 @@ SOURCE_TYPE_MARKERS: tuple[tuple[str, str], ...] = (
     (r"노션|\bnotion\b", "notion"),
     (r"로컬\s*파일|\blocal\s+file", "local_file"),
 )
+# 파일 종류 힌트 → `sources.metadata->>'name'`의 확장자.
+#
+# **왜 mimeType이 아니라 확장자인가.** 둘 다 코퍼스에 있지만 뜻이 다르다 - Google Sheets
+# 네이티브 문서도 mimeType이 spreadsheetml.sheet라, "xlsx 파일"을 mimeType으로 잡으면
+# 업로드된 .xlsx(21건)에 네이티브 시트까지 섞여 23건이 된다. 사용자가 "xlsx 파일"이라고
+# 할 때 가리키는 건 파일명이다. 반대로 mimeType을 **질의가 직접 말한 경우**
+# ("mimeType이 text/markdown으로...")는 그대로 mimeType으로 잡아야 한다 - 확장자가 .md여도
+# mimeType이 text/plain인 문서가 따로 있어서 확장자로는 못 가른다.
+FILE_EXTENSION_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (r"엑셀|\bxlsx?\b|스프레드시트\s*파일", (".xlsx", ".xls")),
+    (r"\bcsv\b", (".csv",)),
+    (r"파워포인트|프레젠테이션\s*파일|\bpptx?\b", (".pptx", ".ppt")),
+    (r"워드\s*파일|\bdocx?\b", (".docx", ".doc")),
+    (r"\bpdf\b", (".pdf",)),
+    (r"한글\s*파일|\bhwpx?\b", (".hwpx", ".hwp")),
+)
+# "mimeType이 text/markdown", "mime type: application/pdf" - 질의가 MIME 타입을 그대로 적은 경우.
+_MIME_TYPE_RE = re.compile(
+    r"mime\s*_?type\s*(?:이|가|는|은|:|=)?\s*([a-z]+/[a-z0-9.+\-]+)", re.IGNORECASE
+)
+
 # 문서 타입 힌트 → 정규화된 한국어 라벨(sources.metadata의 name/subject/title에 lexical로 대거나
 # LLM이 같은 라벨로 보강할 수 있게 고정 어휘로 둔다).
 DOCUMENT_TYPE_MARKERS: tuple[tuple[str, str], ...] = (
@@ -388,6 +409,10 @@ class QueryConstraints:
     participants: list[str] = field(default_factory=list)
     entities: list[str] = field(default_factory=list)
     source_types: list[str] = field(default_factory=list)
+    # 파일명 확장자(".xlsx") / MIME 타입("text/markdown"). 둘 다 구조적 술어다 -
+    # `source_types`처럼 표면 어휘로 찍은 추측이 아니라 질의가 명시한 조건이다.
+    file_extensions: list[str] = field(default_factory=list)
+    mime_types: list[str] = field(default_factory=list)
     document_types: list[str] = field(default_factory=list)
     project_hints: list[str] = field(default_factory=list)
     identifiers: list[str] = field(default_factory=list)
@@ -600,6 +625,15 @@ def extract_constraints_rules(query: str, *, now: datetime | None = None) -> Que
     c.document_types = _dedupe(
         [label for pattern, label in DOCUMENT_TYPE_MARKERS if re.search(_latin_aware(pattern), working, re.IGNORECASE)]
     )
+    c.file_extensions = _dedupe(
+        [
+            ext
+            for pattern, exts in FILE_EXTENSION_MARKERS
+            if re.search(_latin_aware(pattern), working, re.IGNORECASE)
+            for ext in exts
+        ]
+    )
+    c.mime_types = _dedupe([m.group(1).lower() for m in _MIME_TYPE_RE.finditer(query)])
 
     # 7) 의도 플래그
     c.wants_latest = _any_marker(LATEST_MARKERS, marker_text)
@@ -878,6 +912,8 @@ def suggest_strategies(constraints: QueryConstraints) -> list[str]:
         or constraints.participants
         or constraints.source_types
         or constraints.document_types
+        or constraints.file_extensions
+        or constraints.mime_types
         or constraints.time_range is not None
     ):
         strategies.append(STRATEGY_METADATA_FILTER)

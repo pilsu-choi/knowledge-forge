@@ -676,3 +676,33 @@ def test_google_drive_is_kept_in_the_semantic_query_even_with_a_particle():
     (실측: `v0-factoid-009` 1.000 -> 0.631)."""
     c = extract_constraints_rules("ProjectIntel 개발 인수인계 패키지가 Google Drive에 업로드된 일자는?")
     assert "Google Drive" in c.semantic_query, c.semantic_query
+
+
+# --- 파일 종류(확장자 / MIME 타입) ----------------------------------------------
+
+
+def test_file_type_words_become_extension_constraints():
+    for query, expected in [
+        ("Google Drive에서 수집된 엑셀(xlsx) 파일 전부", ".xlsx"),
+        ("Google Drive에서 수집된 CSV 파일", ".csv"),
+        ("파워포인트(pptx) 파일", ".pptx"),
+        ("워드 파일 목록", ".docx"),
+        ("PDF 문서 전부", ".pdf"),
+        ("한글 파일 정리", ".hwpx"),
+    ]:
+        c = extract_constraints_rules(query)
+        assert expected in c.file_extensions, (query, c.file_extensions)
+
+
+def test_an_explicit_mime_type_is_taken_literally():
+    """확장자로는 못 가르는 경우가 있다 - `.md`인데 mimeType이 text/plain인 문서가 따로
+    있어서, "mimeType이 text/markdown"은 mimeType으로 잡아야 정답 6건이 나온다."""
+    c = extract_constraints_rules("mimeType이 text/markdown으로 수집된 Drive 문서")
+    assert c.mime_types == ["text/markdown"]
+    assert c.file_extensions == []
+
+
+def test_file_type_constraints_select_the_metadata_filter_strategy():
+    from knowledge_forge.search.constraints import STRATEGY_METADATA_FILTER, suggest_strategies
+
+    assert STRATEGY_METADATA_FILTER in suggest_strategies(extract_constraints_rules("CSV 파일 전부"))

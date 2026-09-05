@@ -215,6 +215,15 @@ def _like_literal(value: str) -> str:
     return _sql_literal(f"%{escaped}%")
 
 
+def _suffix_like_literal(suffix: str) -> str:
+    r"""`'%<suffix>'` - 접미사(파일 확장자) 전용. `_like_literal`을 쓰면 안 된다 - 그쪽은
+    값 전체를 이스케이프한 뒤 양옆에 `%`를 붙이므로, 앞에 `%`를 직접 붙여 넘기면 그 `%`까지
+    literal로 이스케이프돼 `'%\%.xlsx%'`가 된다(실측: 필터가 0행). 여기서는 값만
+    이스케이프하고 와일드카드는 **우리가** 붙인다."""
+    escaped = suffix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return _sql_literal(f"%{escaped}")
+
+
 def _timestamp_literal(value: datetime) -> str:
     return f"{_sql_literal(value.isoformat())}::timestamptz"
 
@@ -328,6 +337,21 @@ def _metadata_filter_where(constraints: QueryConstraints, project_id: str | None
     if source_types:
         where.append("s.source_type IN (" + ", ".join(_sql_literal(t) for t in source_types) + ")")
 
+    # 파일 종류. Drive 소스만 `name`을 들고 있으므로 다른 소스 타입은 이 술어에 절대 안 걸린다 -
+    # 그건 의도다("xlsx 파일"을 물으면 슬랙 스레드는 답이 아니다).
+    if constraints.file_extensions:
+        where.append(
+            "("
+            + " OR ".join(
+                f"s.metadata->>'name' ILIKE {_suffix_like_literal(ext)}" for ext in constraints.file_extensions
+            )
+            + ")"
+        )
+    if constraints.mime_types:
+        where.append(
+            "s.metadata->>'mimeType' IN (" + ", ".join(_sql_literal(m) for m in constraints.mime_types) + ")"
+        )
+
     if constraints.time_range is not None:
         if constraints.time_range.start is not None:
             where.append(f"COALESCE(s.modified_at, s.collected_at) >= {_timestamp_literal(constraints.time_range.start)}")
@@ -400,7 +424,15 @@ def _is_source_hint_only_filter(constraints: QueryConstraints) -> bool:
     """
     if not constraints.source_types and not any(t in _DOCUMENT_TYPE_AS_SOURCE for t in constraints.document_types):
         return False
-    return not (constraints.authors or constraints.participants or constraints.time_range)
+    # 확장자/MIME 타입은 `source_type` 추측과 달리 **질의가 명시한 구조적 술어**다
+    # ("xlsx 파일 전부"에서 .xlsx는 틀릴 수 없다). 그래서 이게 있으면 "출처 힌트뿐"이 아니다.
+    return not (
+        constraints.authors
+        or constraints.participants
+        or constraints.time_range
+        or constraints.file_extensions
+        or constraints.mime_types
+    )
 
 
 def _has_metadata_predicate(constraints: QueryConstraints) -> bool:
@@ -416,6 +448,8 @@ def _has_metadata_predicate(constraints: QueryConstraints) -> bool:
         or constraints.authors
         or constraints.participants
         or constraints.time_range is not None
+        or constraints.file_extensions
+        or constraints.mime_types
     )
 
 
