@@ -114,6 +114,17 @@ _RECENT_RE = re.compile(
     rf"|(?P<word>{_COUNT_WORD_ALT})\s*(?P<word_unit>개?월|달|주일?|년)"
     rf")"
 )
+# 연-월-일. **`_YEAR_MONTH_RE`보다 먼저** 봐야 한다 - 안 그러면 "2026년 8월 13일"이
+# 8월 한 달(08-01~09-01)로 뭉개진다. 실측(v1 골든셋): `v1-temporal-004`
+# "2026년 8월 13일에 Google Drive에 올라온 문서"와 `v1-temporal-006`이 각각 ndcg 0.000이었고,
+# `v1-temporal-002`("2026년 8월 12일에 받은 메일 전부")는 한 달치를 다 끌어와
+# exhaustive_recall 1.000 / ndcg 0.000 - **정답을 다 담고도 10위 밖으로 밀렸다.**
+#
+# 일(日) 자리에 숫자를 **반드시** 요구한다. "2025년 3월에 있었던 일"의 "일"은 날짜가 아니라
+# 의존명사다(기존 테스트가 이 문장을 쓴다).
+_YEAR_MONTH_DAY_RE = re.compile(r"(\d{4})\s?년\s?(\d{1,2})\s?월\s?(\d{1,2})\s?일")
+# ISO 날짜. 앞뒤에 숫자가 더 붙으면(전화번호/버전 문자열) 날짜가 아니다.
+_ISO_DATE_RE = re.compile(r"(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)")
 _YEAR_MONTH_RE = re.compile(r"(\d{4})\s?년\s?(\d{1,2})\s?월")
 # Year-qualified quarter, tried before the bare form below so "2025 Q3"/
 # "2025년 3분기" keep their explicit year instead of defaulting to `now.year`.
@@ -169,6 +180,21 @@ def parse_temporal_expression(text: str, now: datetime | None = None) -> TimeRan
     4-digit year) so a fully-qualified expression never gets swallowed by a
     looser pattern."""
     now = now or datetime.now(timezone.utc)
+
+    # 하루짜리 범위가 가장 좁은 형태라 맨 앞이다. 연-월보다 뒤에 두면 절대 안 걸린다.
+    for regex, label in ((_YEAR_MONTH_DAY_RE, "ko"), (_ISO_DATE_RE, "iso")):
+        m = regex.search(text)
+        if not m:
+            continue
+        year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        try:
+            start = now.replace(year=year, month=month, day=day, hour=0, minute=0, second=0, microsecond=0)
+        except ValueError:
+            # 2월 30일 같은 없는 날짜. 범위를 만들지 않고 더 느슨한 패턴에 넘긴다 -
+            # 틀린 하루로 좁히는 것보다 한 달로 넓게 잡는 편이 낫다.
+            continue
+        text_label = f"{year}년 {month}월 {day}일" if label == "ko" else f"{year}-{month:02d}-{day:02d}"
+        return TimeRange(start, start + timedelta(days=1), text_label)
 
     m = _YEAR_MONTH_RE.search(text)
     if m:

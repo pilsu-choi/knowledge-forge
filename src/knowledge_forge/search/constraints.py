@@ -44,6 +44,7 @@ import logging
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any
 
 from knowledge_forge.chat_provider import ChatProvider, Message
@@ -81,9 +82,42 @@ STRATEGY_COMPARISON = "comparison"
 STRATEGY_NEGATIVE = "negative"
 STRATEGY_MULTIHOP = "multihop"
 
+@lru_cache(maxsize=512)
+def _latin_aware(pattern: str) -> str:
+    r"""패턴 안의 `\b`를 **라틴 낱말 경계**로 바꾼다 - 뒤/앞에 한글이 바로 붙어도 통과한다.
+
+    파이썬 `re`의 `\b`는 유니코드 인식이라 **한글도 `\w`다.** 그래서 "Google Drive에서"의
+    `e`와 `에` 사이에는 경계가 없고, `\bg?drive\b`가 통째로 실패한다. 한국어 질의에서 영어
+    고유명사 뒤에는 조사가 거의 항상 붙으므로("Drive에서" / "Slack에" / "Notion의")
+    이건 예외가 아니라 **기본형**이다.
+
+    실측(v1 골든셋): "Google Drive에서 수집된 엑셀(xlsx) 파일 전부"는 `source_types`가
+    비어 metadata_filter가 아예 안 걸렸고(ndcg 0.000), 조사가 없는 "Google Drive 엑셀
+    파일 전부"는 같은 코드에서 `['google_drive']`가 나왔다. 차이는 조사 하나뿐이었다.
+
+    바꾸는 방향은 **한쪽뿐**이다 - 라틴 문자/숫자가 붙는 경우는 `\b`와 똑같이 막고
+    (`install`이 `\ball\b`에 안 걸리는 성질은 그대로다), 한글·기호가 붙는 경우만 새로
+    통과시킨다. 그래서 이 변환은 매치를 **늘리기만** 하고 줄이지 않는다.
+
+    여는 쪽/닫는 쪽 판정은 `\b` 바로 뒤 문자로 한다 - 영숫자면 낱말이 시작되는 자리다.
+    이 모듈의 마커는 전부 `\b<라틴 낱말>\b` 꼴이라 이 규칙으로 갈린다."""
+    out: list[str] = []
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith("\\b", i):
+            nxt = pattern[i + 2] if i + 2 < len(pattern) else ""
+            out.append("(?<![A-Za-z0-9])" if nxt.isalnum() else "(?![A-Za-z0-9])")
+            i += 2
+        else:
+            out.append(pattern[i])
+            i += 1
+    return "".join(out)
+
+
 # --- 마커 사전 (모듈 상수 - 표면형 추가는 여기만 고치면 된다) -------------------
 # 각 항목은 regex 문자열. 한국어는 어절 경계가 불규칙해서 \b를 쓰지 않고, 조사/어미가 붙어도
-# 잡히도록 어간만 적는다. 영어는 \b로 단어 경계를 건다.
+# 잡히도록 어간만 적는다. 영어는 \b로 단어 경계를 건다 - 단, 그 \b는 `_latin_aware`를 거쳐야
+# 한다(바로 아래 주석 참고). 마커에 \b를 새로 적을 때 그 함수를 안 거치면 조용히 안 잡힌다.
 
 LATEST_MARKERS: tuple[str, ...] = (
     r"가장\s*최근",
@@ -240,6 +274,9 @@ _TEMPORAL_SPAN_RE = re.compile(
 # 지울 때 hit@1 0.814 / ndcg@10 0.890, 남길 때 hit@1 0.857 / ndcg@10 0.897.
 # "드라이브"/"메일"/"슬랙" 같은 맨 종류어에는 이 예외를 주지 않는다 - 검색어로서 정보량이 거의
 # 없다. 슬랙/노션 고유명까지 넓히는 건 아직 측정하지 않았다.
+# 이 패턴도 반드시 `_latin_aware`를 거쳐 쓴다. 끝의 `\b`를 그대로 두면 "Google Drive에서"의
+# `e`와 `에` 사이에 경계가 없어 keep이 실패하고, 마커 쪽만 지워져 **"Google"만 남는 파편**이
+# 된다(실측: `v0-factoid-009` 1.000 -> 0.631). 지우기와 남기기가 같은 경계 규칙을 써야 한다.
 _MARKER_KEEP_PATTERN = r"(?:구글|google)\s*(?:드라이브|g?drive)\b"
 
 _THIS_YEAR_RE = re.compile(r"올해|금년|\bthis\s+year\b")
@@ -325,7 +362,7 @@ _COMPARISON_SPLIT_RE = re.compile(r"(?<=[가-힣A-Za-z0-9\)])(?:와|과|이랑|�
 _COMPARISON_CONNECTIVE_MARKERS = frozenset({r"\bvs\.?\b", r"\bversus\b"})
 _COMPARISON_TAIL_RE = re.compile(
     r"(?:\s*(?:의|은|는|이|가|을|를|에서|에|간|사이))?\s*(?:"
-    + "|".join(m for m in COMPARISON_MARKERS if m not in _COMPARISON_CONNECTIVE_MARKERS)
+    + "|".join(_latin_aware(m) for m in COMPARISON_MARKERS if m not in _COMPARISON_CONNECTIVE_MARKERS)
     + r")"
 )
 # semantic_query 정리용 - 검색어로서 정보량이 없는 지시/보조 표현.
@@ -388,7 +425,7 @@ class QueryConstraints:
 
 
 def _any_marker(markers: tuple[str, ...], text: str) -> bool:
-    return any(re.search(pattern, text, re.IGNORECASE) for pattern in markers)
+    return any(re.search(_latin_aware(pattern), text, re.IGNORECASE) for pattern in markers)
 
 
 def _strip_source_type_markers(text: str) -> str:
@@ -404,13 +441,18 @@ def _strip_source_type_markers(text: str) -> str:
         return m.group("keep") or " "
 
     for pattern, _label in SOURCE_TYPE_MARKERS:
-        text = re.sub(rf"(?P<keep>{_MARKER_KEEP_PATTERN})|(?:{pattern})", _keep_or_blank, text, flags=re.IGNORECASE)
+        text = re.sub(
+            rf"(?P<keep>{_latin_aware(_MARKER_KEEP_PATTERN)})|(?:{_latin_aware(pattern)})",
+            _keep_or_blank,
+            text,
+            flags=re.IGNORECASE,
+        )
     return text
 
 
 def _strip_markers(markers: tuple[str, ...], text: str) -> str:
     for pattern in markers:
-        text = re.sub(pattern, " ", text, flags=re.IGNORECASE)
+        text = re.sub(_latin_aware(pattern), " ", text, flags=re.IGNORECASE)
     return text
 
 
@@ -552,9 +594,11 @@ def extract_constraints_rules(query: str, *, now: datetime | None = None) -> Que
     c.entities = _dedupe(c.authors + c.participants + c.project_hints)
 
     # 6) 소스 / 문서 타입 힌트
-    c.source_types = _dedupe([label for pattern, label in SOURCE_TYPE_MARKERS if re.search(pattern, working, re.IGNORECASE)])
+    c.source_types = _dedupe(
+        [label for pattern, label in SOURCE_TYPE_MARKERS if re.search(_latin_aware(pattern), working, re.IGNORECASE)]
+    )
     c.document_types = _dedupe(
-        [label for pattern, label in DOCUMENT_TYPE_MARKERS if re.search(pattern, working, re.IGNORECASE)]
+        [label for pattern, label in DOCUMENT_TYPE_MARKERS if re.search(_latin_aware(pattern), working, re.IGNORECASE)]
     )
 
     # 7) 의도 플래그
