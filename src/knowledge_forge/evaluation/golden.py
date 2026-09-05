@@ -34,6 +34,7 @@ import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from fractions import Fraction
 from pathlib import Path
 
 from pydantic import BaseModel, Field, model_validator
@@ -71,6 +72,15 @@ QUERY_TYPES: frozenset[str] = frozenset(
 # Types whose correct answer is "nothing relevant exists" - scored with
 # `none_correct`, never with recall/precision.
 NONE_TYPES: frozenset[str] = frozenset({"negative", "null"})
+
+# dev/test 분할 라벨. **질의 자체에 박아 두고**(별도 manifest도, 실행 시
+# 무작위 추출도 아니다) 파일이 곧 분할의 정본이 되게 한다 - 실행할 때마다
+# 뽑는 분할은 "dev에서 튜닝하고 test에서 보고한다"는 규율을 아예 성립시키지
+# 못하고(어제의 dev가 오늘의 test가 된다), 별도 manifest는 질의를 추가하면서
+# manifest 갱신을 잊는 순간 조용히 어긋난다. 분할이 없는 골든셋(v0)도 그대로
+# 읽혀야 하므로 기본값은 None이고, 대신 "일부만 라벨된" 상태는 GoldenSet에서
+# 거부한다 - 그게 유일하게 위험한 상태다.
+SPLITS: frozenset[str] = frozenset({"dev", "test"})
 
 
 class GoldenExpected(BaseModel):
@@ -128,6 +138,9 @@ class GoldenQuery(BaseModel):
     # Reference "now" for relative_temporal/latest queries ("지난주", "가장
     # 최근") - without it the label is meaningless once the index grows.
     as_of: datetime | None = None
+    # "dev" (knob tuning) / "test" (headline reporting) / None (unsplit set,
+    # e.g. v0). See `SPLITS` and `stratified_split`.
+    split: str | None = None
 
     @model_validator(mode="after")
     def _check_types(self) -> GoldenQuery:
@@ -140,6 +153,8 @@ class GoldenQuery(BaseModel):
             raise ValueError("types contains duplicates")
         if self.origin not in {"manual", "synthetic", "feedback"}:
             raise ValueError(f"origin must be manual|synthetic|feedback, got {self.origin!r}")
+        if self.split is not None and self.split not in SPLITS:
+            raise ValueError(f"split must be dev|test or absent, got {self.split!r}")
         # Type-specific shape rules. Kept here (not in GoldenExpected) because
         # the expected block alone doesn't know what kind of query it serves.
         is_none_type = self.primary_type in NONE_TYPES
@@ -187,6 +202,20 @@ class GoldenSet(BaseModel):
             seen.add(q.id)
         return self
 
+    @model_validator(mode="after")
+    def _check_split_coverage(self) -> GoldenSet:
+        """분할은 전부 있거나 전부 없거나 - 반쪽만 라벨된 세트를 거부한다.
+        `--split test`로 돌렸는데 라벨이 안 붙은 질의가 조용히 빠지면
+        헤드라인 숫자가 다른 모집단 위에서 나오고, 그건 눈에 띄지 않는다."""
+        labelled = [q for q in self.queries if q.split is not None]
+        if labelled and len(labelled) != len(self.queries):
+            missing = [q.id for q in self.queries if q.split is None]
+            raise ValueError(
+                f"split is set on {len(labelled)}/{len(self.queries)} queries; "
+                f"it must be set on all or none (missing: {missing[:5]}...)"
+            )
+        return self
+
     def types_by_id(self) -> dict[str, list[str]]:
         return {q.id: list(q.types) for q in self.queries}
 
@@ -196,11 +225,23 @@ class GoldenSet(BaseModel):
                 return q
         raise KeyError(query_id)
 
-    def count_by_type(self, primary_only: bool = False) -> dict[str, int]:
+    def count_by_type(self, primary_only: bool = False, split: str | None = None) -> dict[str, int]:
         counts: dict[str, int] = {}
         for q in self.queries:
+            if split is not None and q.split != split:
+                continue
             for t in [q.primary_type] if primary_only else q.types:
                 counts[t] = counts.get(t, 0) + 1
+        return dict(sorted(counts.items()))
+
+    def has_split(self) -> bool:
+        return any(q.split is not None for q in self.queries)
+
+    def count_by_split(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for q in self.queries:
+            key = q.split or "unsplit"
+            counts[key] = counts.get(key, 0) + 1
         return dict(sorted(counts.items()))
 
 
@@ -262,3 +303,46 @@ def check_staleness(golden: GoldenSet, content_hash_by_document_id: Mapping[str,
         if current != q.source_hash:
             issues.append(StalenessIssue(q.id, "changed", tuple(q.expected.document_ids)))
     return issues
+
+
+# 기본 test 비율 - 절반. 두 쪽 다 "비교 가능한 반쪽"이어야 한다는 요구가
+# 먼저이고, dev를 키워 튜닝 검정력을 사는 쪽(예: 6:4)은 정작 발표되는
+# 쪽(test)의 신뢰구간을 넓힌다. 어느 쪽이든 반쪽 하나로는 +0.03을 가르지
+# 못하므로(계산은 wiki/search-evaluation.md), 분할의 역할은 작은 효과를
+# 재는 게 아니라 dev 과적합(부호 뒤집힘·큰 축소)을 잡는 것이다.
+DEFAULT_TEST_FRACTION = Fraction(1, 2)
+
+
+def stratified_split(
+    queries: Iterable[GoldenQuery],
+    test_fraction: Fraction = DEFAULT_TEST_FRACTION,
+) -> dict[str, str]:
+    """`primary_type`으로 층화한 결정적 dev/test 분할 - `{query_id: "dev"|"test"}`.
+
+    난수도, 해시 기반 버킷도 쓰지 않는다. 층(=primary_type) 이름 순, 층 안에서
+    질의 id 순으로 훑으면서 누적기(`acc`)에 `test_fraction`을 더해 1을 넘는
+    순간만 test로 보낸다. 이렇게 하면
+
+    - 같은 입력에 항상 같은 답이 나오고(파이썬 해시 시드·플랫폼 무관, 정수
+      연산이라 부동소수 오차도 없다),
+    - 층마다 test가 고르게 흩어지며,
+    - 누적기가 층 경계를 넘어 이어지므로 홀수 크기 층의 나머지 한 개가 한쪽에
+      몰리지 않는다(전체 test 개수가 `round(n * fraction)`에서 1 이상 벗어나지
+      않는다).
+
+    결과는 파일에 박아 넣기 위한 것이지 실행 시마다 부르라고 있는 게 아니다.
+    질의를 추가하면 기존 질의의 배정도 바뀔 수 있으므로(누적기가 밀린다),
+    확정된 분할은 항상 `GoldenQuery.split`에서 읽는다."""
+    if not (0 < test_fraction < 1):
+        raise ValueError(f"test_fraction must be strictly between 0 and 1, got {test_fraction}")
+    ordered = sorted(queries, key=lambda q: (q.primary_type, q.id))
+    assignment: dict[str, str] = {}
+    acc = Fraction(0)
+    for q in ordered:
+        acc += test_fraction
+        if acc >= 1:
+            assignment[q.id] = "test"
+            acc -= 1
+        else:
+            assignment[q.id] = "dev"
+    return assignment

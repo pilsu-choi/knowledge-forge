@@ -218,6 +218,28 @@ def test_select_queries_by_id_and_by_any_type_label():
     assert select_queries(golden, type_filter={"multihop"}) == []
 
 
+def test_select_queries_by_split_and_refuses_an_unsplit_set():
+    """분할 없는 세트에 `--split test`를 걸면 조용히 0개를 채점하는 대신
+    에러여야 한다 - 헤드라인 숫자가 엉뚱한 모집단 위에서 나오는 걸 막는다."""
+    unsplit = _golden([Q_FACTOID, Q_SET, Q_NULL])
+    with pytest.raises(ValueError, match="no dev/test split"):
+        select_queries(unsplit, split_filter="test")
+
+    split = _golden(
+        [
+            Q_FACTOID.model_copy(update={"split": "dev"}),
+            Q_SET.model_copy(update={"split": "test"}),
+            Q_NULL.model_copy(update={"split": "test"}),
+        ]
+    )
+    assert [q.id for q in select_queries(split, split_filter="dev")] == ["q-factoid"]
+    assert [q.id for q in select_queries(split, split_filter="test")] == ["q-set", "q-null"]
+    # 다른 필터와 함께 걸면 교집합이다.
+    assert [q.id for q in select_queries(split, type_filter={"null"}, split_filter="test")] == ["q-null"]
+    with pytest.raises(ValueError, match="split_filter must be"):
+        select_queries(split, split_filter="holdout")
+
+
 async def test_filters_restrict_what_runs_but_types_by_id_still_covers_them():
     retriever = RecordingRetriever({"nothing here": FakeResult([], [])})
     run = await run_ir_eval(
@@ -268,6 +290,7 @@ async def test_config_hash_is_stable_and_records_names():
         # 여기서는 "키가 있고 이름이 화이트리스트와 같다"까지만 고정한다(값 고정은
         # test_eval_provenance.py가 주입으로 한다).
         "settings": run1.config["settings"],
+        "split": None,
     }
     assert set(run1.config["settings"]) == set(RANKING_SETTING_FIELDS)
     assert run1.config_hash == run2.config_hash == config_hash(run1.config)

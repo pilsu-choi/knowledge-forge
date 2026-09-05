@@ -40,7 +40,7 @@ from collections.abc import Awaitable, Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Protocol
 
-from knowledge_forge.evaluation.golden import GoldenQuery, GoldenSet, check_staleness
+from knowledge_forge.evaluation.golden import SPLITS, GoldenQuery, GoldenSet, check_staleness
 from knowledge_forge.evaluation.ir_metrics import DEFAULT_K_VALUES, QueryScore, aggregate, score_query
 from knowledge_forge.storage.eval_store import EvalRun, EvalRunQuery, EvalStore
 
@@ -485,15 +485,28 @@ def select_queries(
     golden: GoldenSet,
     query_filter: set[str] | None = None,
     type_filter: set[str] | None = None,
+    split_filter: str | None = None,
 ) -> list[GoldenQuery]:
     """`type_filter` matches any of a query's (multi-label) `types`, not
     only `primary_type` - asking for `entity_centric` should include the
-    relative_temporal query that is *also* entity-centric."""
+    relative_temporal query that is *also* entity-centric.
+
+    `split_filter` ("dev"/"test") narrows to one half of a split gold set.
+    Asking for a split the file doesn't carry is an error rather than an
+    empty run: silently scoring zero queries (or, worse, all of them) is how
+    a headline number ends up measured on the wrong population."""
+    if split_filter is not None:
+        if split_filter not in SPLITS:
+            raise ValueError(f"split_filter must be one of {sorted(SPLITS)}, got {split_filter!r}")
+        if not golden.has_split():
+            raise ValueError(f"golden set {golden.golden_version!r} carries no dev/test split")
     out = []
     for q in golden.queries:
         if query_filter is not None and q.id not in query_filter:
             continue
         if type_filter is not None and not (type_filter & set(q.types)):
+            continue
+        if split_filter is not None and q.split != split_filter:
             continue
         out.append(q)
     return out
@@ -578,6 +591,7 @@ async def run_ir_eval(
     retrieve_fn: RetrieveFn | None = None,
     query_filter: set[str] | None = None,
     type_filter: set[str] | None = None,
+    split_filter: str | None = None,
     concurrency: int = 4,
     content_hashes: Mapping[str, str] | None = None,
     settings_snapshot: Mapping[str, Any] | None = None,
@@ -593,7 +607,7 @@ async def run_ir_eval(
     fn = retrieve_fn if retrieve_fn is not None else default_retrieve_fn()
     provenance = current_code_provenance()
     effective_project = golden.project_id or project_id
-    queries = select_queries(golden, query_filter, type_filter)
+    queries = select_queries(golden, query_filter, type_filter, split_filter)
     knobs = ranking_settings() if settings_snapshot is None else dict(settings_snapshot)
     config = {
         "provider": provider_name,
@@ -605,6 +619,10 @@ async def run_ir_eval(
         # 랭킹을 바꾸는 KF_ 노브들. 해시에 들어가는 동시에 원본 값 그대로 남는다
         # (위 RANKING_SETTING_FIELDS의 긴 주석 참고).
         "settings": knobs,
+        # 분할이 config에 들어가야 dev run과 test run의 config_hash가 갈린다 -
+        # 같아 버리면 `compare_runs`가 "같은 설정끼리 비교 = run-to-run 노이즈"
+        # 경고를 내며 서로 다른 모집단을 짝지으려 든다.
+        "split": split_filter,
     }
     run = EvalRun(
         run_id=uuid.uuid4().hex,

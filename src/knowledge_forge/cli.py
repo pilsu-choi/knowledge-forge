@@ -17,7 +17,7 @@ from knowledge_forge.collectors.saas.factory import SAAS_COLLECTOR_BUILDERS
 from knowledge_forge.config import settings
 from knowledge_forge.embedding.factory import get_embedding_provider
 from knowledge_forge.evaluation.gen import GenStats, generate_golden
-from knowledge_forge.evaluation.golden import GoldenSet, IndexSnapshot, load_golden, save_golden
+from knowledge_forge.evaluation.golden import SPLITS, GoldenSet, IndexSnapshot, load_golden, save_golden
 from knowledge_forge.evaluation.ir_compare import compare_runs
 from knowledge_forge.evaluation.ir_runner import format_code_identity, is_dirty_commit, run_ir_eval, run_to_dict
 from knowledge_forge.evaluation.judge import judge_search_log
@@ -1259,6 +1259,9 @@ def eval_ir(
         None, "--type", help="이 유형(들)만 실행(쉼표 구분). multi-label `types` 중 하나라도 맞으면 포함."
     ),
     query_id: list[str] | None = typer.Option(None, "--query-id", help="이 질의 id만 실행(반복 지정 가능)."),
+    split: str | None = typer.Option(
+        None, "--split", help="분할된 골든셋의 한쪽만 실행: dev(노브 튜닝) 또는 test(헤드라인 보고)."
+    ),
     concurrency: int = typer.Option(4, "--concurrency", help="동시에 실행할 질의 수."),
     no_store: bool = typer.Option(False, "--no-store", help="eval_run에 기록하지 않음(스냅샷/staleness 검사도 생략)."),
     json_path: Path | None = typer.Option(None, "--json", help="결과(run + 질의별 행)를 이 JSON 파일에도 저장."),
@@ -1361,6 +1364,13 @@ def eval_ir(
 
     type_set = set(_parse_csv_option(type_filter) or []) or None
     query_set = set(query_id) if query_id else None
+    if split is not None and (split not in SPLITS or not golden_set.has_split()):
+        typer.echo(
+            f"--split은 dev|test 중 하나여야 하고 골든셋에 분할 라벨이 있어야 합니다 "
+            f"({golden.name}: split={'있음' if golden_set.has_split() else '없음'}).",
+            err=True,
+        )
+        raise typer.Exit(1)
 
     async def _run() -> EvalRun:
         async with PipelineStore(database_url, settings.data_dir) as store:
@@ -1381,6 +1391,7 @@ def eval_ir(
                     label=label,
                     query_filter=query_set,
                     type_filter=type_set,
+                    split_filter=split,
                     concurrency=concurrency,
                 )
             async with EvalStore(database_url) as eval_store:
@@ -1400,6 +1411,7 @@ def eval_ir(
                     label=label,
                     query_filter=query_set,
                     type_filter=type_set,
+                    split_filter=split,
                     concurrency=concurrency,
                 )
 
