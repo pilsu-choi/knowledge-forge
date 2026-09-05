@@ -31,6 +31,7 @@ from knowledge_forge.collectors.base import RawItem
 from knowledge_forge.context.base import ContextReconstructor
 from knowledge_forge.ids import content_hash as compute_content_hash
 from knowledge_forge.models.link import LinkType
+from knowledge_forge.storage.document_title import first_substantive_message
 
 _DEFAULT_GAP_SECONDS = 1800.0
 
@@ -144,9 +145,13 @@ class SlackConversationReconstructor(ContextReconstructor):
         # 에피소드 첫 메시지 원문 - `documents.title`의 재료다. 이게 없으면 슬랙 제목은
         # "#채널 날짜"에 머물고, v0 골든셋 실측상 그 형태는 슬랙 정답 66건 중 0건에
         # 닿는다(wiki/search-evaluation.md).
-        first = episode[0]
-        first_text = first.metadata.get("text_resolved") or first.content.decode("utf-8", errors="replace")
-        first_text = " ".join(first_text.split())
+        # `episode[0]`이 아니라 "내용 있는 첫 메시지"다 - 채널 개설 직후 에피소드는
+        # "…님이 채널에 참여함" 가입 알림으로 시작하는 일이 흔하고, 그걸 제목에 실으면
+        # 검색 이득 0에 pg_trgm 표면적만 는다(`document_title.first_substantive_message`).
+        first_text = first_substantive_message(
+            m.metadata.get("text_resolved") or m.content.decode("utf-8", errors="replace") for m in episode
+        )
+        first_text = " ".join((first_text or "").split())
         if first_text:
             metadata["first_message"] = first_text[:_FIRST_MESSAGE_CHARS]
         if thread_ts is not None:

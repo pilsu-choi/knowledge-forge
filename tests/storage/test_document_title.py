@@ -179,3 +179,36 @@ def test_slack_title_survives_a_missing_channel_when_the_excerpt_is_on(monkeypat
     monkeypatch.setattr(document_title, "_SLACK_EXCERPT_CHARS", 40)
 
     assert _derive(source_type="slack", source_metadata={"first_message": "회의록 공유"}) == "2026-08-11 회의록 공유"
+
+
+def test_membership_events_are_recognised_in_both_pipeline_shapes():
+    """백필 경로는 `<@U…>` 원시 멘션을, 수집기 경로는 이미 풀린 사람 이름을 준다.
+    술어만 보므로 둘 다 잡혀야 한다."""
+    assert document_title.is_membership_event("U0BBCPVEHF0: <@U0BBCPVEHF0> 님이 채널에 참여함")
+    assert document_title.is_membership_event("안민균(베르) 님이 채널에 참여함")
+    assert document_title.is_membership_event("someone has joined the channel")
+    assert document_title.is_membership_event("someone has left the channel")
+    # 진짜 내용은 건드리지 않는다 - "참여"라는 낱말이 들어 있어도 문장 끝의
+    # 고정 문구가 아니면 통과한다.
+    assert not document_title.is_membership_event("내일 인터뷰에 채널에 참여함으로 갈음할지 논의합시다")
+    assert not document_title.is_membership_event("환영합니다! 농협은행 프로젝트 채널입니다.")
+    assert not document_title.is_membership_event("[AI] ProjectIntel shortcut 실행 알림 - 작업: 상태 변경")
+
+
+def test_first_substantive_message_skips_the_join_notices():
+    """실제 코퍼스의 모양 - 가입 알림 4줄 뒤에 프로젝트 이름이 통째로 들어 있는
+    환영 메시지가 온다. 첫 줄만 보면 그 이름을 놓친다."""
+    episode = [
+        "U0BBCPVEHF0: <@U0BBCPVEHF0> 님이 채널에 참여함",
+        "U0BCK9BGURF: <@U0BCK9BGURF> 님이 채널에 참여함",
+        "U0BDNDBHWLV: :wave: 환영합니다! *농협은행 / 요주의인물 필터링 자동화* 프로젝트 채널입니다.",
+    ]
+    assert document_title.first_substantive_message(episode) == episode[2]
+
+
+def test_first_substantive_message_is_none_when_nothing_is_substantive():
+    """전부 가입 알림이면 발췌를 붙이지 않는다 - 내용 없는 발췌를 다는 것보다
+    "#채널 날짜"에 머무는 편이 낫다(pg_trgm 표면적만 늘리고 이득이 0이라서)."""
+    assert document_title.first_substantive_message(["U1: <@U1> 님이 채널에 참여함"]) is None
+    assert document_title.first_substantive_message([]) is None
+    assert document_title.first_substantive_message(["", "   ", None]) is None

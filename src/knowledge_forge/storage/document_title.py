@@ -83,6 +83,50 @@ _SLACK_SPEAKER_RE = re.compile(r"^U[A-Z0-9]{6,}:\s*")
 
 _MAX_TITLE_CHARS = 300
 
+# 채널 가입/탈퇴 같은 멤버십 이벤트. 슬랙이 자동으로 남기는 문장이라 **정의상 내용이 0**인데,
+# 에피소드의 첫 텍스트 블록으로는 아주 흔하다(현재 코퍼스에서 슬랙 문서 197건 중 52건,
+# 26%의 발췌가 이것뿐이었다). 제목에 실으면 검색 이득은 0이고 pg_trgm 표면적만 늘어나
+# 정밀도를 깎는다 - 그래서 발췌를 고를 때 건너뛴다.
+#
+# 사람 이름을 안 쓰고 "채널에 참여함" 같은 고정 문구만 보는 이유: 이 문장의 주어는
+# 백필 경로에서 `<@U0BBCPVEHF0>`(원시 멘션)이고 수집기 경로에서는 이미 사람 이름으로
+# 풀려 있어(`resolve_mentions`) 두 경로의 문자열이 다르다. 변하지 않는 건 술어뿐이다.
+#
+# 봇 알림("[AI] ProjectIntel shortcut 실행 알림 ...")은 **일부러 남긴다.** 그건 그 문서의
+# 실제 내용이고, 지우면 그 문서엔 발췌가 아예 없다. 봇 제목이 v0-factoid-007을 끌어내린
+# 것은 사실이지만, 경쟁하는 내용을 이유로 진짜 내용을 지우는 건 질의 하나에 맞춘 과적합이다.
+_SLACK_MEMBERSHIP_EVENT_RE = re.compile(
+    r"(?:채널에 참여함|채널에서 나감|채널을 나감|채널에 추가됨"
+    r"|has joined the (?:channel|group)|has left the (?:channel|group)"
+    r"|was added to the (?:channel|group)|was removed from the (?:channel|group))\s*$"
+)
+
+
+def is_membership_event(text: Any) -> bool:
+    """"<@U…> 님이 채널에 참여함" 류의 슬랙 자동 문구인지. 발췌 후보에서 걸러낸다."""
+    if not isinstance(text, str):
+        return False
+    stripped = _SLACK_SPEAKER_RE.sub("", " ".join(text.split()))
+    return bool(_SLACK_MEMBERSHIP_EVENT_RE.search(stripped))
+
+
+def first_substantive_message(candidates: Iterable[Any]) -> str | None:
+    """발췌의 재료로 쓸 첫 "내용 있는" 메시지. 멤버십 이벤트를 건너뛴다.
+
+    에피소드가 가입 알림으로 시작하는 건 흔한 일이고(채널 개설 직후), 그 다음 줄이
+    보통 사람이 검색할 문장이다 - 실제로 "…님이 채널에 참여함" 4줄 뒤에
+    "환영합니다! *농협은행 / AI Agent 기반, 요주의인물 필터링 자동화* 프로젝트
+    채널입니다"가 온다. 첫 줄만 보면 프로젝트 이름을 통째로 놓친다.
+
+    전부 멤버십 이벤트면 `None`이다 - 그 경우 제목은 "#채널 날짜"에 머문다.
+    내용 없는 발췌를 붙이느니 붙이지 않는 쪽이 낫다."""
+    for candidate in candidates:
+        if not isinstance(candidate, str) or not candidate.strip():
+            continue
+        if not is_membership_event(candidate):
+            return candidate
+    return None
+
 
 def slack_excerpt(first_message: Any, limit: int = _SLACK_EXCERPT_CHARS) -> str | None:
     """슬랙 에피소드 첫 메시지에서 제목에 실을 발췌를 만든다.

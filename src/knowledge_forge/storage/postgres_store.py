@@ -28,7 +28,11 @@ from knowledge_forge.models.knowledge_object import (
 from knowledge_forge.models.link import DocumentLink
 from knowledge_forge.models.relation import Relation
 from knowledge_forge.models.source import Source, SourceRef
-from knowledge_forge.storage.document_title import derive_document_title, first_heading_text
+from knowledge_forge.storage.document_title import (
+    derive_document_title,
+    first_heading_text,
+    first_substantive_message,
+)
 from knowledge_forge.storage.title_match import match_titles
 from knowledge_forge.text_normalize import to_nfc
 
@@ -1239,6 +1243,7 @@ class PostgresStore:
         self,
         directory: Any,
         project_id: str | None = None,
+        refresh_first_message: bool = False,
     ) -> dict[str, int]:
         """이미 적재된 슬랙 `sources.metadata`에 사람이 읽는 이름을 채우고, 그 결과로
         `documents.title`을 다시 유도한다(`knowledge-forge db backfill-slack-names`).
@@ -1285,11 +1290,17 @@ class PostgresStore:
                 """
                 SELECT s.source_id, s.metadata, d.document_id, d.title, d.metadata->>'title',
                        COALESCE(s.modified_at, s.collected_at),
-                       (SELECT e.value->>'text'
-                          FROM jsonb_array_elements(d.elements) WITH ORDINALITY AS e(value, ord)
-                         WHERE e.value->>'type' = 'text'
-                         ORDER BY e.ord
-                         LIMIT 1),
+                       -- 첫 텍스트 블록 하나가 아니라 앞쪽 몇 개를 들고 온다.
+                       -- 슬랙 에피소드는 "…님이 채널에 참여함" 가입 알림으로 시작하는
+                       -- 일이 흔한데(197건 중 52건), 발췌로는 쓸모가 없어 Python 쪽
+                       -- `first_substantive_message`가 건너뛰어야 한다. 술어를 SQL에
+                       -- 두지 않는 이유는 수집기 경로와 판정이 갈리면 안 되기 때문이다.
+                       (SELECT array_agg(e.value->>'text' ORDER BY e.ord)
+                          FROM (SELECT value, ord
+                                  FROM jsonb_array_elements(d.elements) WITH ORDINALITY AS x(value, ord)
+                                 WHERE x.value->>'type' = 'text'
+                                 ORDER BY x.ord
+                                 LIMIT %s) AS e(value, ord)),
                        (SELECT e.value->>'text'
                           FROM jsonb_array_elements(d.elements) WITH ORDINALITY AS e(value, ord)
                          WHERE e.value->>'type' = 'heading'
@@ -1301,14 +1312,15 @@ class PostgresStore:
                   AND (%s::text IS NULL OR d.project_id = %s)
                 ORDER BY s.source_id
                 """,
-                (project_id, project_id),
+                (_SLACK_EXCERPT_CANDIDATES, project_id, project_id),
             )
             rows = await cur.fetchall()
 
         source_updates: dict[str, dict[str, Any]] = {}
         title_updates: list[tuple[str, str]] = []
         unresolved_channels: set[str] = set()
-        for source_id, metadata, document_id, current_title, metadata_title, content_at, first_text, first_heading in rows:
+        for source_id, metadata, document_id, current_title, metadata_title, content_at, first_texts, first_heading in rows:
+            first_text = first_substantive_message(first_texts or ())
             stats["sources_scanned"] += 1
             metadata = dict(metadata or {})
             enriched = source_updates.get(source_id, metadata)
@@ -1336,13 +1348,27 @@ class PostgresStore:
                     stats["participants_resolved"] += 1
                     changed = True
 
-            if not enriched.get("first_message") and first_text:
+            # 기본은 "비어 있을 때만 채운다"(멱등). `refresh_first_message`는 그걸 깨고
+            # 다시 유도한다 - 발췌 선정 규칙이 바뀌면(예: 멤버십 이벤트 건너뛰기가 생기면)
+            # 이미 쓰인 `first_message`는 낡은 규칙의 산물인데, 멱등성만 지키면 그 값이
+            # 영원히 고쳐지지 않아 수정이 기존 설치에 닿지 못한다.
+            # 재계산인데 쓸 만한 메시지가 하나도 없으면(문서 전체가 가입 알림인 경우 -
+            # 현재 코퍼스 197건 중 34건이 그렇다) 낡은 값을 **지운다**. 남겨 두면 제목이
+            # 옛 규칙이 고른 잡음을 계속 달고 있고, 그건 이 수정이 고치려던 바로 그 상태다.
+            # 발췌가 없으면 제목은 "#채널 날짜"로 돌아간다 - 내용 0인 발췌보다 낫다.
+            if refresh_first_message and not first_text and enriched.get("first_message"):
+                del enriched["first_message"]
+                stats["first_messages_filled"] += 1
+                changed = True
+            elif first_text and (refresh_first_message or not enriched.get("first_message")):
                 excerpt_source = directory.resolve_mentions(first_text)
                 excerpt_source = " ".join(str(excerpt_source).split())
                 if excerpt_source:
-                    enriched["first_message"] = excerpt_source[:_SLACK_FIRST_MESSAGE_CHARS]
-                    stats["first_messages_filled"] += 1
-                    changed = True
+                    fresh = excerpt_source[:_SLACK_FIRST_MESSAGE_CHARS]
+                    if fresh != enriched.get("first_message"):
+                        enriched["first_message"] = fresh
+                        stats["first_messages_filled"] += 1
+                        changed = True
 
             if changed:
                 source_updates[source_id] = enriched
@@ -1882,6 +1908,9 @@ _TITLE_SIMILARITY_THRESHOLD = 0.3
 # 같은 모양의 메타데이터를 남겨야 `db backfill-titles --overwrite`가 두 경로에서 같은 제목을
 # 낸다. (상수를 import하지 않는 이유: 스토리지 계층이 context 계층을 참조하면 의존이 뒤집힌다.)
 _SLACK_FIRST_MESSAGE_CHARS = 400
+# 발췌 후보로 훑어볼 앞쪽 텍스트 블록 수. 가입 알림이 연달아 오는 최대 길이를 덮으면
+# 되고(관측 최대 5줄), 그 뒤까지 뒤지면 "첫 메시지"라고 부를 수 없는 것을 싣게 된다.
+_SLACK_EXCERPT_CANDIDATES = 8
 _CHUNK_SIMILARITY_THRESHOLD = 0.5
 # Cap on how many whitespace tokens the all-tokens tier ANDs together - past
 # this a query is a sentence, not a name, and belongs to vector_search.

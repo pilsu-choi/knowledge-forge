@@ -868,6 +868,12 @@ def db_backfill_slack_names(
         None, "--project-id", help="이 프로젝트의 슬랙 문서만 처리한다 (기본: 전체 프로젝트)."
     ),
     dry_run: bool = typer.Option(False, "--dry-run", help="바꿀 제목 예시만 보여주고 아무것도 쓰지 않는다."),
+    refresh_first_message: bool = typer.Option(
+        False,
+        "--refresh-first-message",
+        help="이미 채워진 sources.metadata.first_message도 원문에서 다시 유도한다. "
+        "발췌 선정 규칙이 바뀌었을 때만 필요하다(평소엔 멱등이 맞다).",
+    ),
 ) -> None:
     """이미 적재된 슬랙 문서의 채널 ID/유저 ID를 사람이 읽는 이름으로 풀어
     `sources.metadata`(`channel_name`/`participant_names`/`first_message`)에 채우고,
@@ -894,8 +900,8 @@ def db_backfill_slack_names(
     async def _run() -> dict:
         async with PipelineStore(database_url, settings.data_dir) as store:
             if dry_run:
-                return await _preview_slack_titles(store, directory, project_id)
-            return await store.backfill_slack_display_names(directory, project_id)
+                return await _preview_slack_titles(store, directory, project_id, refresh_first_message)
+            return await store.backfill_slack_display_names(directory, project_id, refresh_first_message)
 
     stats = asyncio.run(_run())
     if dry_run:
@@ -912,7 +918,9 @@ def db_backfill_slack_names(
     )
 
 
-async def _preview_slack_titles(store, directory, project_id: str | None) -> dict:
+async def _preview_slack_titles(
+    store, directory, project_id: str | None, refresh_first_message: bool = False
+) -> dict:
     """`--dry-run`용. 트랜잭션을 열어 실제 백필을 돌린 뒤 **롤백**한다 - 미리보기 전용으로
     제목 유도 로직을 한 벌 더 쓰면 두 벌이 서로 어긋나는 게 시간 문제라서, 진짜 경로를
     그대로 돌리고 되돌린다."""
@@ -925,7 +933,7 @@ async def _preview_slack_titles(store, directory, project_id: str | None) -> dic
         )
         before = {row[0]: row[1] for row in await cur.fetchall()}
     async with store.conn.transaction(force_rollback=True):
-        stats = await store.backfill_slack_display_names(directory, project_id)
+        stats = await store.backfill_slack_display_names(directory, project_id, refresh_first_message)
         async with store.conn.cursor() as cur:
             await cur.execute(
                 "SELECT d.document_id, d.title FROM documents d JOIN sources s ON s.source_id = d.source_id "

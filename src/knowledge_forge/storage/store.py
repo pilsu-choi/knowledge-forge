@@ -215,9 +215,11 @@ class PipelineStore:
         """`knowledge-forge db backfill-titles` - see `PostgresStore.backfill_document_titles`."""
         return await self._db.backfill_document_titles(project_id, overwrite=overwrite)
 
-    async def backfill_slack_display_names(self, directory, project_id: str | None = None) -> dict:
+    async def backfill_slack_display_names(
+        self, directory, project_id: str | None = None, refresh_first_message: bool = False
+    ) -> dict:
         """`knowledge-forge db backfill-slack-names` - see `PostgresStore.backfill_slack_display_names`."""
-        return await self._db.backfill_slack_display_names(directory, project_id)
+        return await self._db.backfill_slack_display_names(directory, project_id, refresh_first_message)
 
     @property
     def conn(self):
