@@ -188,3 +188,36 @@ def test_recent_without_quantity_is_not_a_time_range():
     첫 음절과 겹쳐 오탐 나는 경우('최근 이슈'의 '이', '최근 오해'의 '오')도 여기서 막는다."""
     for text in ("최근 이슈 정리", "최근 오해가 있었던 건", "최근 사고 보고서", "최근 자료"):
         assert parse_temporal_expression(text, now=NOW) is None, text
+
+
+def test_a_day_level_date_is_one_day_not_the_whole_month():
+    """연-월-일이 `_YEAR_MONTH_RE`보다 먼저 잡혀야 한다. 뭉개지면 한 달치를 다 끌어와
+    "정답을 전부 담고도 10위 밖"이 된다(실측: `v1-temporal-002`가
+    exhaustive_recall 1.000 / ndcg@10 0.000이었다)."""
+    result = parse_temporal_expression("2026년 8월 13일에 받은 메일", now=NOW)
+    assert result is not None
+    assert (result.start.year, result.start.month, result.start.day) == (2026, 8, 13)
+    assert result.end is not None
+    assert (result.end - result.start).days == 1
+
+
+def test_iso_dates_are_parsed_and_bare_numbers_are_not():
+    result = parse_temporal_expression("2026-08-13에 받은 메일", now=NOW)
+    assert result is not None
+    assert (result.start.month, result.start.day) == (8, 13)
+    # 앞뒤로 숫자가 더 붙으면 날짜가 아니다(버전 문자열/전화번호).
+    assert parse_temporal_expression("빌드 12026-08-139 로그", now=NOW) is None
+
+
+def test_the_dependent_noun_il_is_not_a_day_number():
+    """"2025년 3월에 있었던 일"의 "일"은 날짜가 아니다 - 일 자리에 숫자를 반드시 요구한다."""
+    result = parse_temporal_expression("2025년 3월에 있었던 일", now=NOW)
+    assert result is not None
+    assert (result.start.month, result.start.day) == (3, 1)
+
+
+def test_an_impossible_day_falls_through_to_the_month():
+    """2월 30일 같은 없는 날짜는 틀린 하루로 좁히는 대신 한 달로 넓게 잡는다."""
+    result = parse_temporal_expression("2026년 2월 30일 회의록", now=NOW)
+    assert result is not None
+    assert (result.start.month, result.start.day) == (2, 1)

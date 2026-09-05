@@ -643,3 +643,36 @@ def test_constraints_module_imports_standalone_without_agent_or_storage():
     )
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+# --- 한국어 조사가 붙은 영어 마커 ------------------------------------------------
+
+
+def test_latin_markers_survive_an_attached_korean_particle():
+    """파이썬 `\\b`는 유니코드 인식이라 한글도 `\\w`다 - "Drive에서"의 `e`와 `에` 사이에는
+    경계가 없어 `\\bg?drive\\b`가 통째로 실패했다. 한국어 질의에서 영어 고유명사 뒤에
+    조사가 붙는 건 예외가 아니라 기본형이라, 이게 안 되면 `metadata_filter` 전략이
+    아예 안 켜진다(실측: `v1-metadata_filter-001` ndcg 0.000)."""
+    for query, expected in [
+        ("Google Drive에서 수집된 엑셀 파일 전부", "google_drive"),
+        ("Drive에 올라온 문서", "google_drive"),
+        ("Slack에서 오간 대화", "slack"),
+        ("Notion의 페이지", "notion"),
+    ]:
+        c = extract_constraints_rules(query)
+        assert expected in c.source_types, (query, c.source_types)
+
+
+def test_latin_boundary_still_refuses_a_latin_neighbour():
+    """조사를 견디게 만든 변환이 낱말 안쪽까지 열어 주면 안 된다 - 매치를 늘리기만
+    해야지 `install`이 `\\ball\\b`에 걸리기 시작하면 그건 다른 버그다."""
+    assert extract_constraints_rules("driveway 관련 문서").source_types == []
+    assert extract_constraints_rules("slackline 장비").source_types == []
+
+
+def test_google_drive_is_kept_in_the_semantic_query_even_with_a_particle():
+    """마커를 지우는 쪽과 남기는 쪽이 같은 경계 규칙을 써야 한다. 한쪽만 조사를
+    견디면 "Google Drive에"에서 `Drive`만 지워지고 **"Google" 파편**이 남는다
+    (실측: `v0-factoid-009` 1.000 -> 0.631)."""
+    c = extract_constraints_rules("ProjectIntel 개발 인수인계 패키지가 Google Drive에 업로드된 일자는?")
+    assert "Google Drive" in c.semantic_query, c.semantic_query
