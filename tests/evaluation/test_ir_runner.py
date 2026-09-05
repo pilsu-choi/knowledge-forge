@@ -291,6 +291,12 @@ async def test_config_hash_is_stable_and_records_names():
         # test_eval_provenance.py가 주입으로 한다).
         "settings": run1.config["settings"],
         "split": None,
+        # 채점한 경로와 회차도 해시에 들어간다 - pipeline run과 agent run이 같은
+        # config_hash를 달면 `--compare`가 서로 다른 것을 잰 run을 짝지어 버린다
+        # (tests/evaluation/test_agent_eval.py가 갈리는 것을 따로 못 박는다).
+        "mode": "pipeline",
+        "repeats": 1,
+        "judge": False,
     }
     assert set(run1.config["settings"]) == set(RANKING_SETTING_FIELDS)
     assert run1.config_hash == run2.config_hash == config_hash(run1.config)

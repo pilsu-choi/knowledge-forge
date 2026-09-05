@@ -16,6 +16,7 @@ from knowledge_forge.collectors.replay import RawBlobReplayCollector, filter_row
 from knowledge_forge.collectors.saas.factory import SAAS_COLLECTOR_BUILDERS
 from knowledge_forge.config import settings
 from knowledge_forge.embedding.factory import get_embedding_provider
+from knowledge_forge.evaluation.agent_runner import make_agent_retrieve_fn
 from knowledge_forge.evaluation.gen import GenStats, generate_golden
 from knowledge_forge.evaluation.golden import SPLITS, GoldenSet, IndexSnapshot, load_golden, save_golden
 from knowledge_forge.evaluation.ir_compare import compare_runs
@@ -1194,6 +1195,25 @@ def _format_ir_summary(summary: dict, run: EvalRun | None = None) -> str:
             shown = ", ".join(f.strip() for f in files[:5]) + (f" 외 {len(files) - 5}개" if len(files) > 5 else "")
             code += f" — 수정된 작업 트리에서 측정됨({run.git_commit}); 변경 {len(files)}개: {shown}"
         lines.insert(0, code)
+    mode = summary.get("mode")
+    if mode is not None:
+        head = f"mode={mode}"
+        if summary.get("repeats", 1) > 1:
+            head += f" repeats={summary['repeats']}"
+        lines.insert(1 if run is not None else 0, head)
+    latency = summary.get("latency") or {}
+    if latency:
+        # p95를 같이 찍는 이유: 에이전트 경로는 도구 호출 수에 따라 꼬리가 길다.
+        # 평균만 보면 "대체로 빠른데 몇 건이 아주 느리다"를 놓친다.
+        lines.append(
+            "지연(ms): "
+            + "  ".join(
+                f"{name.removesuffix('_ms')} mean={v['mean']:.0f} p50={v['p50']:.0f} p95={v['p95']:.0f}"
+                for name, v in latency.items()
+            )
+        )
+    for warning in summary.get("mode_warnings", []):
+        lines.append(f"경고: {warning}")
     errors = summary.get("errors", [])
     if errors:
         lines.append(f"실패한 질의 {len(errors)}개:")
@@ -1279,6 +1299,20 @@ def eval_ir(
     metric: str = typer.Option("ndcg@10", "--metric", help="--compare의 헤드라인 지표."),
     list_runs: bool = typer.Option(False, "--list", help="최근 eval_run 목록."),
     golden_version: str | None = typer.Option(None, "--golden-version", help="--list를 이 골든셋 버전으로 제한."),
+    mode: str = typer.Option(
+        "pipeline",
+        "--mode",
+        help="채점할 경로: pipeline(결정론적 retrieve, 기본) 또는 agent(도구를 모델이 고르는 실제 에이전트 루프).",
+    ),
+    repeats: int = typer.Option(
+        1, "--repeats", help="질의당 반복 횟수. agent 경로는 비결정적이라 >1로 두고 평균/표준편차를 본다."
+    ),
+    judge: bool = typer.Option(
+        False, "--judge", help="최종 답변을 LLM-judge로 채점(groundedness/citation). --mode agent에서만 의미가 있다."
+    ),
+    max_iterations: int | None = typer.Option(
+        None, "--max-iterations", help="--mode agent의 도구 호출 예산. 생략하면 KF_AGENT_MAX_ITERATIONS."
+    ),
 ) -> None:
     """골든셋(wiki/search-evaluation.md (C))으로 `search/retrieve.py`의 문서 랭킹을 채점해
     Recall/Precision/MRR/NDCG를 내고 `eval_run`/`eval_run_query`에 기록한다. `eval`(LLM-judge)과
@@ -1370,6 +1404,28 @@ def eval_ir(
         )
         model_name = model or default_model
 
+    if mode not in ("pipeline", "agent"):
+        typer.echo("--mode는 pipeline|agent 중 하나여야 합니다.", err=True)
+        raise typer.Exit(1)
+    if repeats < 1:
+        typer.echo("--repeats는 1 이상이어야 합니다.", err=True)
+        raise typer.Exit(1)
+
+    retrieve_fn = None
+    if mode == "agent":
+        if chat_provider is None:
+            typer.echo("--mode agent는 LLM이 필요합니다 - --no-llm과 함께 쓸 수 없습니다.", err=True)
+            raise typer.Exit(1)
+        retrieve_fn = make_agent_retrieve_fn(
+            provider=chat_provider,
+            max_iterations=max_iterations or settings.agent_max_iterations,
+        )
+    elif judge:
+        # 파이프라인 경로에는 답변이 없다. 조용히 무시하면 "judge를 켰는데 왜
+        # groundedness가 안 나오지"로 시간을 버린다.
+        typer.echo("--judge는 --mode agent에서만 쓸 수 있습니다 (pipeline 경로에는 답변 생성 단계가 없습니다).", err=True)
+        raise typer.Exit(1)
+
     type_set = set(_parse_csv_option(type_filter) or []) or None
     query_set = set(query_id) if query_id else None
     if split is not None and (split not in SPLITS or not golden_set.has_split()):
@@ -1401,6 +1457,10 @@ def eval_ir(
                     type_filter=type_set,
                     split_filter=split,
                     concurrency=concurrency,
+                    retrieve_fn=retrieve_fn,
+                    mode=mode,
+                    repeats=repeats,
+                    judge_provider=chat_provider if judge else None,
                 )
             async with EvalStore(database_url) as eval_store:
                 return await run_ir_eval(
@@ -1421,6 +1481,10 @@ def eval_ir(
                     type_filter=type_set,
                     split_filter=split,
                     concurrency=concurrency,
+                    retrieve_fn=retrieve_fn,
+                    mode=mode,
+                    repeats=repeats,
+                    judge_provider=chat_provider if judge else None,
                 )
 
     run = asyncio.run(_run())

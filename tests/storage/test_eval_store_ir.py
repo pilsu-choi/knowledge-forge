@@ -147,6 +147,71 @@ async def test_run_queries_roundtrip_and_cascade():
         assert await store.list_eval_run_queries(run_id) == []
 
 
+async def test_agent_columns_roundtrip_and_stay_null_for_the_pipeline_path():
+    """에이전트 경로가 쓰는 열들의 왕복. NULL이 살아남는 것까지 확인하는 이유는
+    `0`으로 접히면 "생성이 0ms였다"/"도구를 0번 불렀다"로 읽히기 때문이다 -
+    파이프라인 run에는 그 단계 자체가 없다."""
+    run_id = _rid()
+    agent_row = EvalRunQuery(
+        run_id=run_id,
+        query_id="q-agent",
+        query_text="에이전트가 답한 질의",
+        primary_type="factoid",
+        types=["factoid"],
+        ranked_document_ids=["d1"],
+        metrics={"ndcg@10": 0.75, "groundedness": 1.0},
+        elapsed_ms=12.0,
+        retrieval_ms=12.0,
+        generation_ms=880.5,
+        total_ms=900.25,
+        llm_calls=3,
+        tool_calls=2,
+        answer="정리하면 d1 문서에 있습니다.",
+        repeats=[{"repeat": 0, "metrics": {"ndcg@10": 1.0}}, {"repeat": 1, "metrics": {"ndcg@10": 0.5}}],
+        metrics_std={"ndcg@10": 0.25},
+    )
+    pipeline_row = EvalRunQuery(
+        run_id=run_id,
+        query_id="q-pipeline",
+        query_text="결정론적 경로",
+        primary_type="factoid",
+        types=["factoid"],
+        elapsed_ms=8.0,
+        retrieval_ms=8.0,
+        total_ms=9.0,
+    )
+    async with EvalStore(DSN) as store:
+        await store.save_eval_run(_run(run_id))
+        await store.save_eval_run_queries(run_id, [agent_row, pipeline_row])
+        fetched = {q.query_id: q for q in await store.list_eval_run_queries(run_id)}
+
+        agent = fetched["q-agent"]
+        assert agent.retrieval_ms == 12.0
+        assert agent.generation_ms == 880.5
+        assert agent.total_ms == 900.25
+        assert agent.llm_calls == 3 and agent.tool_calls == 2
+        assert agent.answer == "정리하면 d1 문서에 있습니다."
+        assert agent.repeats is not None and len(agent.repeats) == 2
+        assert agent.metrics_std == {"ndcg@10": 0.25}
+
+        pipeline = fetched["q-pipeline"]
+        assert pipeline.retrieval_ms == 8.0
+        assert pipeline.generation_ms is None
+        assert pipeline.llm_calls is None
+        assert pipeline.answer is None
+        assert pipeline.repeats is None
+        assert pipeline.metrics_std is None
+
+        # 재-upsert가 새 열도 갱신한다(placeholder 개수가 어긋나면 여기서 터진다).
+        agent_row.generation_ms = 1.5
+        agent_row.tool_calls = 9
+        await store.save_eval_run_queries(run_id, [agent_row])
+        again = {q.query_id: q for q in await store.list_eval_run_queries(run_id)}["q-agent"]
+        assert again.generation_ms == 1.5 and again.tool_calls == 9
+
+        await store.conn.execute("DELETE FROM eval_run WHERE run_id = %s", (run_id,))
+
+
 async def test_query_timestamps_are_db_filled_and_updated_at_bumps_on_reupsert():
     """created_at/updated_at은 러너가 아니라 DB가 채운다. 재저장(같은 run 안의
     재시도/부분 저장)은 created_at을 보존하고 updated_at만 민다."""

@@ -14,6 +14,7 @@ delegating IS running a nested agent turn to completion. See
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from knowledge_forge.agent.memory import write_memory
@@ -463,7 +464,9 @@ def _make_read_document_tool(database_url: str) -> ToolSpec:
     )
 
 
-def _make_search_tool(database_url: str, *, provider: ChatProvider | None, project_id: str | None) -> ToolSpec:
+def _make_search_tool(
+    database_url: str, *, provider: ChatProvider | None, project_id: str | None, now: datetime | None = None
+) -> ToolSpec:
     """`search`(통합 검색, `search/retrieve.py`) - `vector_search`와 같은 "database_url이 있을
     때만, 호출마다 `PipelineStore`를 열고 닫는" 패턴. 개별 도구(document/lexical/vector/sql/
     read_document)를 모델이 고르는 대신 질의 제약(`search/constraints.py`)으로 전략을 결정론적으로
@@ -484,6 +487,10 @@ def _make_search_tool(database_url: str, *, provider: ChatProvider | None, proje
                 provider=provider,
                 project_id=args.get("project_id") or project_id,
                 limit=limit,
+                # 평가 하네스가 골든셋의 as_of를 내려보낼 때만 값이 있다. 실사용에서는
+                # None이라 `retrieve()`가 지금 시각을 쓴다 - "어제"의 기준을 호출자가
+                # 정할 수 있어야 상대 시간 질의를 재현 가능하게 채점할 수 있다.
+                now=now,
             )
         payload = result.to_dict()
         hits = []
@@ -714,6 +721,7 @@ def default_tools(
     system: str | None = None,
     *,
     include_delegate: bool = True,
+    now: datetime | None = None,
 ) -> list[ToolSpec]:
     """도구 집합 조립. **검색 도구 표면은 `settings.agent_tool_surface`
     (`KF_AGENT_TOOL_SURFACE`, 기본 "minimal")가 정한다** - 나머지(파일시스템/
@@ -777,7 +785,7 @@ def default_tools(
     tools: list[ToolSpec] = []
     if database_url:
         # 1순위 검색 도구를 목록 맨 앞에 둔다 - 도구 순서는 모델이 읽는 순서이기도 하다.
-        tools.append(_make_search_tool(database_url, provider=provider, project_id=project_id))
+        tools.append(_make_search_tool(database_url, provider=provider, project_id=project_id, now=now))
     if not database_url or not minimal:
         tools.append(_make_file_search_tool())
     if database_url:

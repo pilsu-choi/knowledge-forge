@@ -2508,3 +2508,105 @@ mrr 0.767 / exhaustive_recall 0.799 / count_match 0.222 / none_correct 0.833.
 스레드") 하나다 - `sources.metadata->>'message_count'`에 대한 **수치 비교 술어**가
 없어서인데, 이건 파일 종류와 달리 표면형이 다양해 마커 사전으로 닫히지 않는다.
 그다음 덩어리는 `entity_centric`(n=44, 0.674)이다.
+
+## 2026-09-05 (3) — 에이전트 경로 평가 `--mode agent` + 시간 분해
+
+지금까지 골든셋이 잰 경로는 `search/retrieve.py::retrieve` 하나였다. 그런데 사용자가
+실제로 쓰는 것은 `agent/loop.py`이고, 거기서는 **모델이** 어떤 도구를 몇 번 부를지
+정한다. `agent/tools.py::default_tools`의 "모델이 고른 조합은 측정된 적이 없고
+재현되지도 않는다"가 가리키던 공백을 닫는다.
+
+```bash
+# 결정론적 경로(기존, 기본값) - 아무것도 안 바뀐다
+knowledge-forge eval-ir --golden tests/eval/golden/v1.json --no-llm
+
+# 에이전트 경로 + 답변 채점 + 3회 반복
+export OPENROUTER_API_KEY=...            # .env에 있어도 export가 필요하다(config.py 주석)
+knowledge-forge eval-ir --golden tests/eval/golden/v1.json \
+  --mode agent --provider openai_compatible --judge --repeats 3
+```
+
+### 설계 - `ir_runner`를 고치지 않는다
+
+`run_ir_eval`은 이미 retriever를 주입받는다(`RetrieveFn` 프로토콜). 새 모듈
+`evaluation/agent_runner.py`는 그 프로토콜을 만족하는 함수를 하나 돌려줄 뿐이다.
+그래서 ndcg/recall/mrr/exhaustive_recall이 그대로 돌고, `--compare`가 파이프라인 run과
+에이전트 run을 같은 축에서 짝지어 준다.
+
+랭킹은 **도구 핸들러를 감싸서** 얻는다 - 반환 payload에서 `document_id`를 호출
+순서대로 긁어모으고, 그 순서를 랭킹으로 본다. `ToolSpec.handler`가 그냥 async
+callable이라 감싸면 끝이고 `loop.py`는 자기가 감싸인 줄 모른다. 계측 코드가
+프로덕션 루프에 스며들지 않는다.
+
+`RETRIEVAL_TOOL_NAMES`에 있는 도구만 랭킹에 기여한다. **새 검색 도구를 추가하면서
+이 목록을 빠뜨리면 그 도구로만 찾은 문서가 조용히 사라진다.**
+
+### 시간 분해
+
+`elapsed_ms`는 의미를 바꾸지 않고 그대로 뒀다 - 옛 run 150개가 이미 "retrieve() 내부
+측정치"로 쓰고 있다. 새 개념만 열을 늘렸다:
+
+| 열 | pipeline | agent |
+|---|---|---|
+| `retrieval_ms` | `retrieve()` 내부 | 검색 도구 핸들러 시간의 합 |
+| `generation_ms` | NULL(단계 없음) | `provider.send()` 시간의 합 |
+| `total_ms` | 하네스 벽시계 | `run_agent()` 벽시계 |
+| `llm_calls` / `tool_calls` | NULL | 실제 호출 수 |
+
+**NULL은 "0이었다"가 아니라 "이 경로에서는 측정되지 않았다"다.** 집계에서 0으로
+채우지 말 것 - 리포트에 `generation_ms: 0`이 찍히면 "생성이 공짜였다"로 읽힌다.
+
+생성 시간을 "벽시계 − 도구 시간"으로 빼지 않는 이유: `loop.py`는 도구를 `gather`로
+**동시** 실행하므로 도구 시간의 합이 이미 벽시계보다 클 수 있다.
+
+### 반복 - 회차를 행으로 펴지 않는다
+
+`--repeats N`은 질의당 N회 돌리지만 행은 여전히 하나다(PK도 `(run_id, query_id)` 그대로).
+회차를 행으로 펴면 `aggregate`/`paired_delta`/`--compare`가 전부 "질의당 한 행" 가정
+위에 있어서 같이 고쳐야 하고, 그러면 옛 run 150개와의 비교가 끊긴다. 대신
+`metrics`에 평균, `metrics_std`에 모표준편차, `repeats`(JSONB)에 회차별 원본을 남긴다.
+
+한 회차가 실패해도 나머지로 채점한다. 전부 실패했을 때만 `error`다 - 3회 중 1회가
+API 타임아웃이라고 성공한 2회를 버리면 에이전트 경로에서는 그런 이유로 질의가 대량
+탈락한다.
+
+**파이프라인 run의 "+0.0345 유의" 같은 판정을 에이전트 run에 그대로 옮겨 읽지 마라.**
+그쪽은 분산이 0이고 이쪽은 아니다.
+
+### `none_correct`를 답변으로 옮긴 이유 — 그리고 첫 시도가 틀렸던 경위
+
+파이프라인의 `none_correct`는 "결과를 안 돌려줬는가"로 매긴다. 그런데 에이전트는
+후보를 훑고 나서 "관련 문서가 없습니다"라고 **답하는** 게 정상 동작이라, 회수 문서
+수로 매기면 옳게 행동한 에이전트가 구조적으로 0점이 된다.
+
+첫 구현은 `judge_search_log`의 claims가 비면 "실패를 인정한 답변"으로 봤다. judge
+프롬프트에 그렇게 적혀 있기 때문이다. **실측에서 정확히 반대 결론이 나왔다** -
+`v1-null-001`("육아휴직 신청 절차 안내")에 에이전트는 옳게 "찾지 못했습니다"라고
+답했는데, 그 답변이 자기 검색 과정을 이렇게 설명했다:
+
+    - 통합 검색(search)의 벡터/렉시컬 검색 모두 "육아휴직" 관련 0건 히트
+    - `chunks.text ILIKE '%육아휴직%'` SQL 조회도 0건
+
+전부 **검증 가능한 주장**이라 claims가 비지 않았고, none_correct가 0.0으로 찍혔다.
+**claims의 공백은 "검증할 주장이 없다"는 뜻이지 "없다고 답했다"는 뜻이 아니다.**
+두 개념은 겹칠 뿐 같지 않다. 그래서 전용 분류 호출(`judge_answer_declined`)로 따로
+묻는다 - null/negative는 186개 중 12개뿐이라 호출 한 번의 비용이 작다.
+
+`--mode agent`를 `--judge` 없이 돌리면 이 판정이 문서 기반으로 남아 에이전트에게
+구조적으로 불리하다. 그래서 summary에 `mode_warnings`로 경고가 찍힌다.
+
+### 첫 실측 (n=2, 통계적 의미 없음 - 배선 확인용)
+
+`v0-factoid-001` + `v1-entity_centric-003`, sonnet-5 via OpenRouter:
+
+| 경로 | ndcg@10 | total_ms |
+|---|---|---|
+| pipeline | 0.972 | ~1,500 |
+| agent | 0.713 | ~34,600 |
+
+**생성이 시간의 96%다**(retrieval 4.8s / generation 33.3s). 그리고 에이전트는
+`list_dir`을 불렀다가 "OKF 루트가 설정되어 있지 않습니다"로 턴 하나를 버렸다 -
+이 배포에서 죽어 있는 도구가 표면에 남아 있다는 뜻이다.
+
+n=2는 아무것도 증명하지 않는다. 다만 **에이전트 경로가 느리다는 것은 n=2로도
+분명하고, 비용이 곧 평가 항목이 된다**는 것이 이 열들을 만든 이유다.

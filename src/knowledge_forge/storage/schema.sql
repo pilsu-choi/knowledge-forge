@@ -394,3 +394,26 @@ CREATE TABLE IF NOT EXISTS eval_run_query (
 -- 시각을 갖는다 - 그 run의 진짜 시각은 eval_run.started_at을 봐야 한다.
 ALTER TABLE eval_run_query ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
 ALTER TABLE eval_run_query ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+-- 에이전트 경로 평가(`eval-ir --mode agent`)가 채우는 열들. 파이프라인 경로
+-- (`--mode pipeline`, 기본)에서는 retrieval_ms/total_ms만 차고 나머지는 NULL이다.
+-- NULL은 "0이었다"가 아니라 **이 경로에서는 측정되지 않는 값**이라는 뜻이므로
+-- 집계에서 0으로 채우지 말 것.
+--
+-- 왜 elapsed_ms를 그냥 두고 열을 더 붙이나: elapsed_ms에는 150개 run의 값이
+-- 이미 들어 있고 그 의미는 "retrieve() 내부 측정치"다. 같은 열에 에이전트
+-- 전체 시간을 섞으면 옛 행과 새 행이 다른 것을 재면서 같은 이름을 갖게 된다.
+-- retrieval_ms가 elapsed_ms를 이어받고, total_ms가 새로 생기는 개념이다.
+ALTER TABLE eval_run_query ADD COLUMN IF NOT EXISTS retrieval_ms  DOUBLE PRECISION;
+ALTER TABLE eval_run_query ADD COLUMN IF NOT EXISTS generation_ms DOUBLE PRECISION;
+ALTER TABLE eval_run_query ADD COLUMN IF NOT EXISTS total_ms      DOUBLE PRECISION;
+ALTER TABLE eval_run_query ADD COLUMN IF NOT EXISTS llm_calls     INT;
+ALTER TABLE eval_run_query ADD COLUMN IF NOT EXISTS tool_calls    INT;
+-- 에이전트가 내놓은 최종 답변. LLM-judge(groundedness/citation)의 입력이고,
+-- 점수가 떨어졌을 때 "검색이 못 찾았나 생성이 망쳤나"를 사람이 읽어 가르는 근거다.
+ALTER TABLE eval_run_query ADD COLUMN IF NOT EXISTS answer        TEXT;
+-- --repeats N > 1일 때 각 회차의 원본 기록([{metrics, timings, document_ids}, ...]).
+-- `metrics` 열은 회차 평균이고 `metrics_std`가 표준편차다 - 평균만 남기면
+-- "이 개선이 에이전트 노이즈보다 큰가"를 나중에 되물을 수 없다.
+ALTER TABLE eval_run_query ADD COLUMN IF NOT EXISTS repeats       JSONB;
+ALTER TABLE eval_run_query ADD COLUMN IF NOT EXISTS metrics_std   JSONB;

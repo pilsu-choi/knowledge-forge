@@ -31,7 +31,9 @@ import dataclasses
 import hashlib
 import json
 import logging
+import math
 import os
+import statistics
 import subprocess
 import time
 import traceback
@@ -42,7 +44,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from knowledge_forge.evaluation.golden import SPLITS, GoldenQuery, GoldenSet, check_staleness
 from knowledge_forge.evaluation.ir_metrics import DEFAULT_K_VALUES, QueryScore, aggregate, score_query
-from knowledge_forge.storage.eval_store import EvalRun, EvalRunQuery, EvalStore
+from knowledge_forge.storage.eval_store import EvalRun, EvalRunQuery, EvalStore, SearchLog
 
 if TYPE_CHECKING:
     from knowledge_forge.chat_provider import ChatProvider
@@ -526,6 +528,111 @@ def _steps_to_dicts(steps: Iterable[Any]) -> list[dict]:
     return out
 
 
+def latency_summary(rows: Sequence[EvalRunQuery]) -> dict[str, dict[str, float]]:
+    """run 전체의 지연 요약. 평균과 함께 **p50/p95**를 낸다 - 에이전트 경로의 지연은
+    도구를 몇 번 부르느냐에 좌우돼 꼬리가 길고, 평균 하나로는 "대부분 빠른데 몇 건이
+    아주 느리다"와 "전부 고르게 느리다"가 구분되지 않는다.
+
+    값이 하나도 없는 지표는 키 자체를 빼는데, 그래야 파이프라인 run의 리포트에
+    `generation_ms: 0`이 찍혀 "생성이 공짜였다"로 읽히지 않는다."""
+    out: dict[str, dict[str, float]] = {}
+    for name in ("retrieval_ms", "generation_ms", "total_ms"):
+        values = sorted(v for v in (getattr(r, name) for r in rows) if v is not None)
+        if not values:
+            continue
+        out[name] = {
+            "n": float(len(values)),
+            "mean": _mean(values),
+            "p50": _quantile(values, 0.50),
+            "p95": _quantile(values, 0.95),
+            "max": values[-1],
+        }
+    return out
+
+
+def _quantile(sorted_values: Sequence[float], q: float) -> float:
+    """가장 가까운 순위(nearest-rank) 분위수. 보간하지 않는 이유는 이 값이 항상
+    **실제로 관측된 한 질의의 시간**이어야 하기 때문이다 - 그래야 p95를 보고
+    `eval_run_query`에서 그 질의를 바로 찾아 열어 볼 수 있다."""
+    if not sorted_values:
+        raise ValueError("sorted_values is empty")
+    index = max(0, min(len(sorted_values) - 1, math.ceil(q * len(sorted_values)) - 1))
+    return sorted_values[index]
+
+
+def _mean(values: Sequence[float]) -> float:
+    return sum(values) / len(values)
+
+
+def _aggregate_repeats(attempts: Sequence[Mapping[str, Any]]) -> tuple[dict[str, float], dict[str, float]]:
+    """회차별 metrics를 (평균, 표준편차)로 접는다.
+
+    지표별로 **그 지표를 가진 회차만** 평균한다. 에이전트 경로에서는 회차마다 도구
+    호출이 달라 `count_match`가 어떤 회차에는 있고 어떤 회차에는 없다 - 없는 회차를
+    0으로 세면 "개수를 틀렸다"와 "개수를 말하지 않았다"가 같은 숫자가 된다.
+
+    표준편차는 모표준편차(n으로 나눔)다. 여기서 3회는 표본이 아니라 "이 질의에서
+    관측한 전부"이고, 알고 싶은 것도 모집단 추정이 아니라 **관측된 흔들림**이다."""
+    buckets: dict[str, list[float]] = {}
+    for attempt in attempts:
+        for name, value in (attempt.get("metrics") or {}).items():
+            buckets.setdefault(name, []).append(float(value))
+    mean = {name: _mean(values) for name, values in buckets.items()}
+    std = {
+        name: (statistics.pstdev(values) if len(values) > 1 else 0.0)
+        for name, values in buckets.items()
+    }
+    return mean, std
+
+
+def _mean_optional(attempts: Sequence[Mapping[str, Any]], key: str) -> float | None:
+    """회차별 타이밍/카운터의 평균. 아무 회차도 그 값을 안 실었으면 None을 지킨다 -
+    0으로 접으면 "측정되지 않음"이 "0ms였다"로 둔갑한다(schema.sql의 같은 경고)."""
+    values = [float(a[key]) for a in attempts if a.get(key) is not None]
+    return _mean(values) if values else None
+
+
+async def _judge_attempt(
+    q: GoldenQuery, answer: str, evidence: list[dict], judge_provider: ChatProvider
+) -> dict[str, float]:
+    """답변 품질 지표(`groundedness` / `citation_precision`)와, none 유형의
+    `none_correct` 재판정.
+
+    왜 none을 여기서 다시 매기나: 파이프라인 경로의 `none_correct`는 "결과를 안
+    돌려줬는가"로 매긴다. 그런데 에이전트는 후보를 훑고 나서 "관련 문서가 없습니다"라고
+    **답하는** 게 정상 동작이라, 회수한 문서 수로 매기면 옳게 행동한 에이전트가
+    구조적으로 0점이 된다. 그래서 판정을 답변 텍스트로 옮기고, 전용 분류 호출로
+    묻는다(`judge_answer_declined` - claims의 공백으로 추론하려다 실측에서 정확히
+    반대 결론이 나온 경위가 그 docstring에 있다).
+
+    judge 호출이 실패하면 그 지표를 빼고 돌려준다 - 지어낸 점수를 쓰느니 미채점이
+    낫다(`judge_search_log`가 None을 돌려주는 것과 같은 태도). none 유형에서
+    미채점이면 `score_query`가 매긴 문서 기반 값이 그대로 남는데, 그건 에이전트에게
+    불리한 값이므로 summary의 경고와 함께 읽어야 한다."""
+    from knowledge_forge.evaluation.judge import judge_answer_declined, judge_search_log
+
+    log = SearchLog(
+        log_id=f"eval:{q.id}",
+        query=q.query,
+        answer=answer,
+        evidence=evidence,
+        tool_calls=[],
+        latency_ms=0,
+        created_at=datetime.now(timezone.utc),
+    )
+    out: dict[str, float] = {}
+    verdict = await judge_search_log(log, judge_provider)
+    if verdict is not None:
+        out["groundedness"] = verdict.groundedness_score
+        if verdict.citation_precision is not None:
+            out["citation_precision"] = verdict.citation_precision
+    if q.expected.none:
+        declined = await judge_answer_declined(q.query, answer, judge_provider)
+        if declined is not None:
+            out["none_correct"] = 1.0 if declined else 0.0
+    return out
+
+
 async def _run_one(
     q: GoldenQuery,
     *,
@@ -538,38 +645,108 @@ async def _run_one(
     k_values: Sequence[int],
     strategies_override: list[str] | None,
     use_llm_constraints: bool,
+    repeats: int = 1,
+    judge_provider: ChatProvider | None = None,
 ) -> EvalRunQuery:
+    """한 질의를 `repeats`회 돌려 한 행으로 접는다.
+
+    회차를 늘려도 행은 하나다(PK는 여전히 `(run_id, query_id)`). 회차를 행으로 펴면
+    `--compare`/`aggregate`/`paired_delta`가 전부 "질의당 한 행" 가정 위에 있어서 같이
+    고쳐야 하고, 그러면 150개 옛 run과의 비교가 끊긴다. 대신 `metrics`에 평균,
+    `metrics_std`에 흔들림, `repeats`에 원본을 남긴다.
+
+    한 회차가 실패해도 나머지로 채점한다. 전부 실패했을 때만 `error`다 - 3회 중
+    1회가 API 타임아웃이라고 성공한 2회를 버리면, 에이전트 경로에서는 그런 이유로
+    질의가 대량 탈락한다."""
     row = EvalRunQuery(
         run_id=run_id, query_id=q.id, query_text=q.query, primary_type=q.primary_type, types=list(q.types)
     )
-    started = time.perf_counter()
-    try:
-        result = await retrieve_fn(
-            q.query,
-            store=store,
-            provider=provider,
-            project_id=project_id,
-            now=q.as_of,
-            limit=effective_limit(q, limit),
-            use_llm_constraints=use_llm_constraints,
-            strategies_override=strategies_override,
-        )
-        row.ranked_document_ids = list(result.document_ids)
-        row.scores = [float(s) for s in result.scores]
-        row.predicted_count = result.predicted_count
-        row.strategies = list(result.strategies)
-        row.steps = _steps_to_dicts(result.steps)
-        row.elapsed_ms = float(result.elapsed_ms)
-        row.metrics = score_query(
-            row.ranked_document_ids,
+    attempts: list[dict[str, Any]] = []
+    last_error: str | None = None
+
+    for index in range(max(1, repeats)):
+        started = time.perf_counter()
+        try:
+            result = await retrieve_fn(
+                q.query,
+                store=store,
+                provider=provider,
+                project_id=project_id,
+                now=q.as_of,
+                limit=effective_limit(q, limit),
+                use_llm_constraints=use_llm_constraints,
+                strategies_override=strategies_override,
+            )
+        except Exception as exc:  # noqa: BLE001 - one query's failure must not abort the run
+            last_error = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+            attempts.append(
+                {"repeat": index, "error": last_error, "total_ms": (time.perf_counter() - started) * 1000.0}
+            )
+            continue
+
+        wall_ms = (time.perf_counter() - started) * 1000.0
+        ranked = list(result.document_ids)
+        scores = [float(s) for s in result.scores]
+        metrics = score_query(
+            ranked,
             q.expected,
             k_values,
-            predicted_count=row.predicted_count,
-            scores=row.scores or None,
+            predicted_count=result.predicted_count,
+            scores=scores or None,
         )
-    except Exception as exc:  # noqa: BLE001 - one query's failure must not abort the run
-        row.error = "".join(traceback.format_exception_only(type(exc), exc)).strip()
-        row.elapsed_ms = (time.perf_counter() - started) * 1000.0
+        answer = str(getattr(result, "answer", "") or "")
+        if judge_provider is not None and answer:
+            metrics.update(await _judge_attempt(q, answer, list(getattr(result, "evidence", []) or []), judge_provider))
+        attempts.append(
+            {
+                "repeat": index,
+                "metrics": metrics,
+                "document_ids": ranked,
+                "scores": scores,
+                "predicted_count": result.predicted_count,
+                "strategies": list(result.strategies),
+                "steps": _steps_to_dicts(result.steps),
+                "answer": answer,
+                "elapsed_ms": float(result.elapsed_ms),
+                # 파이프라인 경로에는 생성 단계가 없어 아래 넷이 None이다. retrieval_ms는
+                # elapsed_ms(=retrieve() 내부 측정치)를 이어받고, total_ms는 하네스의 벽시계다.
+                "retrieval_ms": float(getattr(result, "retrieval_ms", result.elapsed_ms)),
+                "generation_ms": getattr(result, "generation_ms", None),
+                "total_ms": float(getattr(result, "total_ms", wall_ms)),
+                "llm_calls": getattr(result, "llm_calls", None),
+                "tool_calls": getattr(result, "tool_calls", None),
+            }
+        )
+
+    successes = [a for a in attempts if "error" not in a]
+    if not successes:
+        row.error = last_error
+        row.total_ms = _mean_optional(attempts, "total_ms")
+        row.elapsed_ms = row.total_ms or 0.0
+        row.repeats = attempts if len(attempts) > 1 else None
+        return row
+
+    first = successes[0]
+    row.ranked_document_ids = list(first["document_ids"])
+    row.scores = list(first["scores"])
+    row.predicted_count = first["predicted_count"]
+    row.strategies = list(first["strategies"])
+    row.steps = list(first["steps"])
+    row.answer = first["answer"] or None
+    row.elapsed_ms = _mean([a["elapsed_ms"] for a in successes])
+    row.retrieval_ms = _mean_optional(successes, "retrieval_ms")
+    row.generation_ms = _mean_optional(successes, "generation_ms")
+    row.total_ms = _mean_optional(successes, "total_ms")
+    llm_calls = _mean_optional(successes, "llm_calls")
+    tool_calls = _mean_optional(successes, "tool_calls")
+    row.llm_calls = round(llm_calls) if llm_calls is not None else None
+    row.tool_calls = round(tool_calls) if tool_calls is not None else None
+
+    mean_metrics, std_metrics = _aggregate_repeats(successes)
+    row.metrics = mean_metrics
+    if len(attempts) > 1:
+        row.metrics_std = std_metrics
+        row.repeats = attempts
     return row
 
 
@@ -595,6 +772,9 @@ async def run_ir_eval(
     concurrency: int = 4,
     content_hashes: Mapping[str, str] | None = None,
     settings_snapshot: Mapping[str, Any] | None = None,
+    mode: str = "pipeline",
+    repeats: int = 1,
+    judge_provider: ChatProvider | None = None,
 ) -> EvalRun:
     """Score every (selected) golden query and return the finished
     `EvalRun` with `queries` attached. Persisted through `eval_store` when
@@ -623,6 +803,11 @@ async def run_ir_eval(
         # 같아 버리면 `compare_runs`가 "같은 설정끼리 비교 = run-to-run 노이즈"
         # 경고를 내며 서로 다른 모집단을 짝지으려 든다.
         "split": split_filter,
+        # 같은 이유로 경로와 회차도 해시에 들어간다. pipeline run과 agent run은
+        # 애초에 다른 것을 재므로 config_hash가 같으면 절대 안 된다.
+        "mode": mode,
+        "repeats": repeats,
+        "judge": judge_provider is not None,
     }
     run = EvalRun(
         run_id=uuid.uuid4().hex,
@@ -677,6 +862,8 @@ async def run_ir_eval(
                 k_values=k_values,
                 strategies_override=strategies_override,
                 use_llm_constraints=use_llm_constraints,
+                repeats=repeats,
+                judge_provider=judge_provider,
             )
 
     rows = list(await asyncio.gather(*(_guarded(q) for q in queries)))
@@ -688,6 +875,17 @@ async def run_ir_eval(
     summary["errors"] = [{"query_id": r.query_id, "error": r.error} for r in rows if r.error is not None]
     summary["stale_queries"] = stale
     summary["staleness_checked"] = content_hashes is not None
+    summary["mode"] = mode
+    summary["repeats"] = repeats
+    summary["latency"] = latency_summary(rows)
+    if mode == "agent" and judge_provider is None:
+        # none 유형은 답변으로만 공정하게 채점된다(`_judge_attempt`의 긴 주석).
+        # judge 없이 돌면 그 6+6건이 "후보를 훑었다"는 이유로 0점이 되고, 그 0이
+        # 파이프라인 run과의 비교에서 경로 차이로 잘못 읽힌다.
+        summary["mode_warnings"] = [
+            "--mode agent를 --judge 없이 돌렸다: none/negative 유형의 none_correct는 "
+            "회수한 문서 수로 매겨져 에이전트 경로에 구조적으로 불리하다"
+        ]
     run.finished_at = datetime.now(timezone.utc)
 
     if eval_store is not None:

@@ -86,6 +86,19 @@ class EvalRunQuery(BaseModel):
     steps: list[dict] = Field(default_factory=list)
     elapsed_ms: float = 0.0
     error: str | None = None
+    # 시간 분해. `elapsed_ms`는 옛 행 150개가 이미 쓰고 있는 "retrieve() 내부
+    # 측정치"라 의미를 바꾸지 않고 그대로 두고, 새 개념만 열을 늘렸다.
+    # None은 "0이었다"가 아니라 이 경로에서 측정되지 않았다는 뜻이다.
+    retrieval_ms: float | None = None
+    generation_ms: float | None = None
+    total_ms: float | None = None
+    llm_calls: int | None = None
+    tool_calls: int | None = None
+    # 에이전트 경로의 최종 답변(LLM-judge 입력이자 사람이 읽는 근거).
+    answer: str | None = None
+    # --repeats N > 1의 회차별 원본. `metrics`는 그 평균, `metrics_std`는 표준편차.
+    repeats: list[dict] | None = None
+    metrics_std: dict[str, float] | None = None
     # DB가 채우는 감사 시각(스키마의 DEFAULT now() / upsert의 now()). 저장할
     # 때는 넘기지 않으므로 새로 만든 객체에서는 None이고, 읽어 온 행에서만 값이 있다.
     created_at: datetime | None = None
@@ -131,7 +144,10 @@ _RUN_COLUMNS = (
 # INSERT용(러너가 값을 주는 컬럼만). created_at/updated_at은 DB가 채우므로 빠져 있다.
 _RUN_QUERY_COLUMNS = (
     "run_id, query_id, query_text, primary_type, types, ranked_document_ids, scores, predicted_count, "
-    "metrics, strategies, steps, elapsed_ms, error"
+    "metrics, strategies, steps, elapsed_ms, error, "
+    # 나중에 ALTER로 붙은 열들은 맨 뒤 - 기존 행 인덱스(row[0..12])를 그대로 두려는
+    # 의도다(_RUN_COLUMNS의 dirty_files와 같은 규칙).
+    "retrieval_ms, generation_ms, total_ms, llm_calls, tool_calls, answer, repeats, metrics_std"
 )
 _RUN_QUERY_SELECT_COLUMNS = f"{_RUN_QUERY_COLUMNS}, created_at, updated_at"
 
@@ -192,8 +208,16 @@ def _row_to_run_query(row: tuple) -> EvalRunQuery:
         steps=row[10],
         elapsed_ms=row[11],
         error=row[12],
-        created_at=row[13],
-        updated_at=row[14],
+        retrieval_ms=row[13],
+        generation_ms=row[14],
+        total_ms=row[15],
+        llm_calls=row[16],
+        tool_calls=row[17],
+        answer=row[18],
+        repeats=row[19],
+        metrics_std=row[20],
+        created_at=row[21],
+        updated_at=row[22],
     )
 
 
@@ -395,7 +419,8 @@ class EvalStore:
             await cur.executemany(
                 f"""
                 INSERT INTO eval_run_query ({_RUN_QUERY_COLUMNS})
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (run_id, query_id) DO UPDATE SET
                     query_text = EXCLUDED.query_text,
                     primary_type = EXCLUDED.primary_type,
@@ -408,6 +433,14 @@ class EvalStore:
                     steps = EXCLUDED.steps,
                     elapsed_ms = EXCLUDED.elapsed_ms,
                     error = EXCLUDED.error,
+                    retrieval_ms = EXCLUDED.retrieval_ms,
+                    generation_ms = EXCLUDED.generation_ms,
+                    total_ms = EXCLUDED.total_ms,
+                    llm_calls = EXCLUDED.llm_calls,
+                    tool_calls = EXCLUDED.tool_calls,
+                    answer = EXCLUDED.answer,
+                    repeats = EXCLUDED.repeats,
+                    metrics_std = EXCLUDED.metrics_std,
                     updated_at = now()
                 """,
                 [
@@ -425,6 +458,14 @@ class EvalStore:
                         Jsonb(q.steps),
                         q.elapsed_ms,
                         q.error,
+                        q.retrieval_ms,
+                        q.generation_ms,
+                        q.total_ms,
+                        q.llm_calls,
+                        q.tool_calls,
+                        q.answer,
+                        Jsonb(q.repeats) if q.repeats is not None else None,
+                        Jsonb(q.metrics_std) if q.metrics_std is not None else None,
                     )
                     for q in rows
                 ],
