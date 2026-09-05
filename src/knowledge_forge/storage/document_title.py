@@ -66,13 +66,15 @@ _SOURCE_TITLE_KEYS = ("title", "name", "subject", "file_name", "filename")
 #       v0-whole_document_summary-003  0.631 -> 0.000 (슬랙 스레드가 1위를 먹고 단독 생존)
 #       v0-negative-001("Kubernetes 클러스터 구성 가이드")  none_correct 1.0 -> 0.0
 #
-# 그래서 지금은 발췌를 끈다(0). 켜는 조건은 명확하다 - 위 (3)의 `title_types` 술어가
-# `documents.title`을 종류 라벨로 쓰지 않게 고쳐지면, `_SLACK_EXCERPT_CHARS = 120`으로 되돌리고
-# `knowledge-forge db backfill-slack-names`를 다시 돌리면 된다. 재적재는 필요 없다 -
-# 발췌의 원재료(`sources.metadata.first_message`)는 이미 저장돼 있다.
+# **위 (3)의 조건이 충족되어 발췌를 켰다(120).** `title_types` 술어(`d.title ILIKE '%종류%'`)는
+# 커밋 09296fb에서 제거됐다 - 문서 종류를 제목으로 판정할 근거가 아예 없었기 때문이다
+# (`documents.metadata`에 `document_type` 키가 없고, `knowledge_objects` 쪽은 LLM 자유
+# 문자열이라 5107행에 571가지 값이며 KO가 붙은 문서도 263/358뿐이다). 그 술어를 쓰던 질의
+# 4건 중 둘이 위 붕괴의 당사자였고, 제거 후 v0 delta는 0.000(0승 0패 70무)이었다.
+# 재적재는 필요 없었다 - 발췌의 원재료(`sources.metadata.first_message`)가 이미 저장돼 있다.
 # 자세한 표와 질의별 증감은 wiki/search-evaluation.md.
 _SLACK_CHANNEL_KEYS = ("channel_name", "channel")
-_SLACK_EXCERPT_CHARS = 0  # 0이면 발췌를 붙이지 않는다 (위 주석의 근거)
+_SLACK_EXCERPT_CHARS = 120  # 위 (3)의 title_types 술어가 제거되어(09296fb) 켤 수 있게 됐다
 
 # 발췌에서 걷어내는 Slack 마크업. 검색이 맞출 수 없는 문자열이라 자릿수만 잡아먹는다.
 _SLACK_EMOJI_RE = re.compile(r":[a-z0-9_+\-]+:")
