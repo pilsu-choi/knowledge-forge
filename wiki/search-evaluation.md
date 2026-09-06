@@ -2610,3 +2610,49 @@ API 타임아웃이라고 성공한 2회를 버리면 에이전트 경로에서�
 
 n=2는 아무것도 증명하지 않는다. 다만 **에이전트 경로가 느리다는 것은 n=2로도
 분명하고, 비용이 곧 평가 항목이 된다**는 것이 이 열들을 만든 이유다.
+
+## sql_search 스키마 설명에 `sources.metadata` 키 사전을 넣었다 (2026-09-06)
+
+`sources.metadata`는 free-form JSONB다 - 스키마에서 키를 읽을 수 없으니, `sql_search`를
+받은 모델은 키 이름을 **추측하거나 탐색 쿼리로 한 턴을 버려야** 했다. 그런데 파이프라인
+쪽 `metadata_filter`가 못 푸는 질의들의 답이 대부분 이 안에 있다:
+
+    v1-metadata_filter-005  "메시지가 두 통 이상인 메일 스레드 전부"
+    -> (s.metadata->>'message_count')::int >= 2 AND s.source_type = 'gmail'   (13건)
+
+이건 **마커 사전으로 닫을 수 없는 종류**다. "두 통 이상"/"2건 넘게"/"여러 명이 참여한"처럼
+표면형이 열려 있어서, 수치 비교 술어를 정규식으로 뽑으려 하면 마커를 무한히 늘려야 한다.
+반대로 SQL을 쓰는 모델에게는 한 줄이다. 그래서 **파이프라인에 술어를 더 넣는 대신
+에이전트 경로가 그걸 쓸 수 있게** 했다.
+
+키는 전부 수집기 소스와 대조해 확인했다(`context/gmail.py::_merge`,
+`context/slack.py::_merge`, `collectors/saas/gdrive.py`, `.../notion.py`,
+`collectors/local_file.py`). 적어 둔 것 중 실제로 모델이 틀리는 지점 셋:
+
+- **slack.participants는 표시 이름이 아니라 user ID 배열**이다. 사람 이름 조건을 여기
+  걸면 에러가 아니라 **조용히 0행**이다 - 이름은 `participant_names`에 있고, 그건
+  `SlackDirectory`가 붙어 있을 때만 채워진다.
+- **키 존재(`metadata ? 'subject'`)와 값 non-null은 다르다.** gmail 스레드는 제목 없는
+  메일에서도 `subject` 키를 갖는다(값이 JSON null). 값을 조건에 쓸 거면
+  `metadata->>'키' IS NOT NULL`이어야 한다.
+- **notion.last_edited_time은 TIMESTAMPTZ가 아니라 ISO 문자열**이다. 시간 비교는
+  캐스팅해야 한다.
+
+source_type을 5종으로 열거해 놓고 키는 3종만 적으면 모델은 나머지 둘을 "metadata가
+비어 있다"로 읽는다 - notion/local_file도 같이 적은 이유다(회귀 테스트
+`test_describe_schema_covers_every_source_type_it_names`).
+
+### 이걸로 닫히지 않는 것 - 파이프라인 `count_match` 0.444
+
+같은 항목으로 묶여 있었지만 **원인이 다르다.** `retrieve.py::_Run.count()`는 SQL
+`COUNT(*)`를 `filter_step.applied ∈ {filter_only, no_overlap_fallback_to_filter}`일
+때만 쓰고, 그 외에는 `predicted_count = len(document_ids)`다. 즉:
+
+- `intersected:N->K`로 가면 개수 = **교집합 크기**(랭킹 산물, `EXHAUSTIVE_LIMIT` 상한).
+- 구조적 술어가 아예 없는 집계 질의(`v0-aggregation-001` "caddy-drift 알림이 올라온
+  메시지는 몇 건인가?", 정답 6)는 개수 = **어휘 arm이 물어온 문서 수**이고, 그건
+  `KF_TERM_COVERAGE_RATIO`가 정한다. 정답과 맞는다면 우연이다.
+
+`count()`가 목록과 개수의 일관성을 지키려고 일부러 좁게 잡은 것이라(그 함수 주석 참고)
+분기를 넓히는 것으로는 못 고친다. **어휘 조건 기반 count를 SQL로 내리는 것**이 남은
+작업이고, 그건 별건이다.
