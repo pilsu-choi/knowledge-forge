@@ -83,6 +83,7 @@ class RetrieveFn(Protocol):
         limit: int,
         use_llm_constraints: bool,
         strategies_override: list[str] | None,
+        grain: str | None,
     ) -> Awaitable[RetrievalResultLike]: ...
 
 
@@ -300,8 +301,15 @@ def embedding_consistency(snapshot: Mapping[str, Any] | None, embedding_model: s
     }
 
 
-def index_warnings(snapshot: Mapping[str, Any] | None, consistency: Mapping[str, Any]) -> list[str]:
-    """run 시작 시점에 사람에게 보여줄 경고들(한국어 한 줄씩)."""
+def index_warnings(
+    snapshot: Mapping[str, Any] | None, consistency: Mapping[str, Any], grain: str | None = None
+) -> list[str]:
+    """run 시작 시점에 사람에게 보여줄 경고들(한국어 한 줄씩).
+
+    `grain`(= `eval-ir --grain`이 벡터 arm을 좁힌 `target_kind`)이 주어지면 **그 grain의
+    벡터가 실제로 있는지**를 따로 본다. 전체 임베딩이 넉넉해도 좁힌 쪽이 0행이면 벡터 arm은
+    조용히 죽고(에러도 경고도 없이 0히트), 그 run의 낮은 점수는 "이 grain이 나쁘다"가 아니라
+    "이 grain을 아직 안 채웠다"는 뜻이다 - 둘을 섞어 읽으면 없는 결론이 생긴다."""
     out: list[str] = []
     status = consistency.get("status")
     model = consistency.get("embedding_model")
@@ -328,6 +336,19 @@ def index_warnings(snapshot: Mapping[str, Any] | None, consistency: Mapping[str,
         )
     if snapshot and not snapshot.get("documents"):
         out.append("인덱스에 문서가 0건이다 - 모든 질의가 빈손이 된다(project_id를 잘못 잡았을 수 있다)")
+    if grain is not None and status != "unknown":
+        grains = consistency.get("grains") or {}
+        embedded = int((grains.get(grain) or {}).get("embedded") or 0)
+        if embedded == 0:
+            present = ", ".join(
+                f"{k}={g['embedded']}" for k, g in sorted(grains.items()) if g.get("embedded")
+            )
+            out.append(
+                f"--grain {grain}으로 좁혔는데 모델 '{model}'의 {grain} grain 임베딩이 0행이다 - "
+                "벡터 arm이 통째로 빠진 채 어휘 arm만으로 측정된다"
+                + (f" (있는 grain: {present})" if present else "")
+                + ". 이 run의 점수는 grain 비교가 아니라 백필 누락을 재고 있다"
+            )
     return out
 
 
@@ -645,6 +666,7 @@ async def _run_one(
     k_values: Sequence[int],
     strategies_override: list[str] | None,
     use_llm_constraints: bool,
+    grain: str | None = None,
     repeats: int = 1,
     judge_provider: ChatProvider | None = None,
 ) -> EvalRunQuery:
@@ -676,6 +698,7 @@ async def _run_one(
                 limit=effective_limit(q, limit),
                 use_llm_constraints=use_llm_constraints,
                 strategies_override=strategies_override,
+                grain=grain,
             )
         except Exception as exc:  # noqa: BLE001 - one query's failure must not abort the run
             last_error = "".join(traceback.format_exception_only(type(exc), exc)).strip()
@@ -764,6 +787,7 @@ async def run_ir_eval(
     k_values: Sequence[int] = DEFAULT_K_VALUES,
     strategies_override: list[str] | None = None,
     use_llm_constraints: bool = True,
+    grain: str | None = None,
     label: str | None = None,
     retrieve_fn: RetrieveFn | None = None,
     query_filter: set[str] | None = None,
@@ -795,6 +819,10 @@ async def run_ir_eval(
         "limit": limit,
         "strategies_override": list(strategies_override) if strategies_override else None,
         "use_llm_constraints": use_llm_constraints,
+        # 벡터 arm이 본 임베딩 grain(`search/retrieve.py`의 `grain`). None = 두 grain이
+        # 경쟁한 현행 동작이고, 이 키가 config에 있어야 chunk run과 okf run의 config_hash가
+        # 갈린다 - 같으면 `compare_runs`가 "같은 설정끼리 비교"로 오판한다.
+        "grain": grain,
         "k_values": list(k_values),
         # 랭킹을 바꾸는 KF_ 노브들. 해시에 들어가는 동시에 원본 값 그대로 남는다
         # (위 RANKING_SETTING_FIELDS의 긴 주석 참고).
@@ -827,7 +855,7 @@ async def run_ir_eval(
     if eval_store is not None:
         started_snapshot = await eval_store.snapshot_index(effective_project)
         consistency = embedding_consistency(started_snapshot, knobs.get("embedding_model"))
-        warnings = index_warnings(started_snapshot, consistency)
+        warnings = index_warnings(started_snapshot, consistency, grain)
         # 상위 키는 시작 시점 카운트 그대로(하위호환), 새 정보는 그 옆에 붙인다.
         run.index_snapshot = {**started_snapshot, "embedding_coverage": consistency, "warnings": warnings}
         log_warnings(
@@ -862,6 +890,7 @@ async def run_ir_eval(
                 k_values=k_values,
                 strategies_override=strategies_override,
                 use_llm_constraints=use_llm_constraints,
+                grain=grain,
                 repeats=repeats,
                 judge_provider=judge_provider,
             )
@@ -877,6 +906,7 @@ async def run_ir_eval(
     summary["staleness_checked"] = content_hashes is not None
     summary["mode"] = mode
     summary["repeats"] = repeats
+    summary["grain"] = grain
     summary["latency"] = latency_summary(rows)
     if mode == "agent" and judge_provider is None:
         # none 유형은 답변으로만 공정하게 채점된다(`_judge_attempt`의 긴 주석).

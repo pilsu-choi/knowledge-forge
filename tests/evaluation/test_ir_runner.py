@@ -271,6 +271,51 @@ async def test_staleness_reported_but_not_excluded():
     assert run.summary["overall"]["n"] == 2  # still scored
 
 
+async def test_grain_is_forwarded_to_the_retriever_and_splits_the_config_hash():
+    """chunk run과 okf run은 **다른 코퍼스**를 잰 것이라 config_hash가 같으면 안 된다 -
+    같으면 `compare_runs`가 "같은 설정끼리 비교 = run-to-run 노이즈"로 경고하며 서로 다른
+    모집단을 짝지으려 든다(`--split`/`--mode`를 해시에 넣은 것과 같은 이유)."""
+    golden = _golden([Q_FACTOID])
+    kwargs: dict[str, Any] = {"store": STORE, "eval_store": None}
+
+    chunk_retriever = RecordingRetriever({"what is A?": FakeResult(["A"], [0.9])})
+    okf_retriever = RecordingRetriever({"what is A?": FakeResult(["A"], [0.9])})
+    both_retriever = RecordingRetriever({"what is A?": FakeResult(["A"], [0.9])})
+    chunk_run = await run_ir_eval(golden, retrieve_fn=chunk_retriever, grain="chunk", **kwargs)
+    okf_run = await run_ir_eval(golden, retrieve_fn=okf_retriever, grain="knowledge_object", **kwargs)
+    both_run = await run_ir_eval(golden, retrieve_fn=both_retriever, **kwargs)
+
+    assert chunk_retriever.calls[0]["grain"] == "chunk"
+    assert okf_retriever.calls[0]["grain"] == "knowledge_object"
+    assert both_retriever.calls[0]["grain"] is None
+    assert chunk_run.config["grain"] == "chunk"
+    assert chunk_run.summary["grain"] == "chunk"
+    assert len({chunk_run.config_hash, okf_run.config_hash, both_run.config_hash}) == 3
+
+
+def test_index_warnings_flags_a_grain_with_no_embeddings():
+    """좁힌 grain이 0행이면 벡터 arm이 통째로 빠진 채 측정된다 - 그 run의 낮은 점수는
+    "이 grain이 나쁘다"가 아니라 "아직 안 채웠다"는 뜻이고, 둘을 섞어 읽으면 없는
+    결론이 생긴다."""
+    from knowledge_forge.evaluation.ir_runner import index_warnings
+
+    snapshot = {"documents": 358, "chunks": 2856, "knowledge_objects": 5107}
+    consistency = {
+        "status": "ok",
+        "embedding_model": "text-embedding-3-small",
+        "grains": {
+            "chunk": {"total": 2856, "embedded": 2856, "coverage": 1.0},
+            "knowledge_object": {"total": 5107, "embedded": 0, "coverage": 0.0},
+        },
+    }
+
+    assert index_warnings(snapshot, consistency, "knowledge_object") != []
+    assert index_warnings(snapshot, consistency, "chunk") == []
+    # grain을 안 좁힌 run은 이 경고의 대상이 아니다 - KO 임베딩 0행은 결함이 아니라
+    # `KF_EMBEDDING_SOURCE=chunk`라는 설정일 수 있다(`embedding_consistency` 참고).
+    assert index_warnings(snapshot, consistency) == []
+
+
 async def test_config_hash_is_stable_and_records_names():
     retriever = RecordingRetriever({"nothing here": FakeResult([], [])})
     golden = _golden([Q_NULL])
@@ -285,6 +330,8 @@ async def test_config_hash_is_stable_and_records_names():
         "limit": 5,
         "strategies_override": None,
         "use_llm_constraints": True,
+        # 벡터 arm이 본 임베딩 grain. None = 두 grain이 경쟁한 현행 동작.
+        "grain": None,
         "k_values": [1, 5],
         # 랭킹 노브도 config에 들어간다 - 값 자체는 프로세스의 settings에서 오므로
         # 여기서는 "키가 있고 이름이 화이트리스트와 같다"까지만 고정한다(값 고정은

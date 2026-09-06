@@ -412,6 +412,9 @@ async def verify_queries(
                     limit=verify_k,
                     use_llm_constraints=False,
                     strategies_override=None,
+                    # 좁히지 않는다 - 이 검증은 "검색이 이 질의를 찾아내는가"를 보는
+                    # 것이지 grain을 비교하는 것이 아니다(`--grain`은 평가 전용 축이다).
+                    grain=None,
                 )
             except Exception as exc:  # noqa: BLE001 - 검증 실패는 질의를 버릴 이유가 아니다
                 q.notes += f" {REVIEW_FLAG_HARD} 자동 검증 실패: {exc!r}"

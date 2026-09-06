@@ -465,7 +465,12 @@ def _make_read_document_tool(database_url: str) -> ToolSpec:
 
 
 def _make_search_tool(
-    database_url: str, *, provider: ChatProvider | None, project_id: str | None, now: datetime | None = None
+    database_url: str,
+    *,
+    provider: ChatProvider | None,
+    project_id: str | None,
+    now: datetime | None = None,
+    grain: str | None = None,
 ) -> ToolSpec:
     """`search`(통합 검색, `search/retrieve.py`) - `vector_search`와 같은 "database_url이 있을
     때만, 호출마다 `PipelineStore`를 열고 닫는" 패턴. 개별 도구(document/lexical/vector/sql/
@@ -491,6 +496,9 @@ def _make_search_tool(
                 # None이라 `retrieve()`가 지금 시각을 쓴다 - "어제"의 기준을 호출자가
                 # 정할 수 있어야 상대 시간 질의를 재현 가능하게 채점할 수 있다.
                 now=now,
+                # 같은 이유로 평가만 값을 넣는다(`eval-ir --grain`). 실사용에서는 None이라
+                # 벡터 arm이 두 임베딩 grain을 한 랭킹에서 경쟁시킨다.
+                grain=grain,
             )
         payload = result.to_dict()
         hits = []
@@ -722,6 +730,7 @@ def default_tools(
     *,
     include_delegate: bool = True,
     now: datetime | None = None,
+    grain: str | None = None,
 ) -> list[ToolSpec]:
     """도구 집합 조립. **검색 도구 표면은 `settings.agent_tool_surface`
     (`KF_AGENT_TOOL_SURFACE`, 기본 "minimal")가 정한다** - 나머지(파일시스템/
@@ -730,12 +739,14 @@ def default_tools(
     "minimal"(기본) + `KF_DATABASE_URL` 설정됨:
         search, read_document, sql_search + 비검색 도구
     "minimal" + DB 없음(OKF 전용 배포):
-        file_search + 비검색 도구
+        (file_search - `KF_AGENT_FILE_SEARCH_ENABLED`가 켜져 있을 때만) + 비검색 도구
     "full" + DB 설정됨:
-        search, file_search, read_document, sql_search, vector_search,
-        document_search, lexical_search, plan_search(provider 있을 때) + 비검색 도구
+        search, read_document, sql_search, vector_search, document_search,
+        lexical_search, plan_search(provider 있을 때) + 비검색 도구
+        (+ file_search - `KF_AGENT_FILE_SEARCH_ENABLED`가 켜져 있을 때만)
     "full" + DB 없음:
-        file_search, plan_search(provider 있을 때) + 비검색 도구
+        plan_search(provider 있을 때) + 비검색 도구
+        (+ file_search - 같은 조건)
 
     왜 기본을 좁히는가: `search/retrieve.py`는 "어떤 검색을 어떤 순서로 돌릴지"를
     LLM에게서 빼앗아 결정론적 함수로 만들려고 존재하는 모듈이고(그 docstring),
@@ -747,15 +758,11 @@ def default_tools(
     안 나오기 때문이다(구조화 질의 비상구). `read_document`는 검색 도구가 아니라
     검색으로 특정한 문서를 끝까지 읽는 후속 동작이라 남는다.
 
-    `file_search`가 "minimal"에서 DB가 없을 때만 들어가는 것도 같은 이유의 뒷면
-    이다: 그 구성에서는 `search`/`sql_search`/`read_document`가 전부 빠져
-    (Postgres 없이는 실행 자체가 불가능하므로 - `embedding_enabled`와 같은
-    "설정 안 되어 있으면 조용히 빠짐" 컨벤션) 도구 목록에 검색 경로가 하나도
-    남지 않는다. `file_search`는 Postgres를 전혀 요구하지 않는 유일한 검색
-    경로이므로(`search/service.py` docstring의 "OKF-only deployment") 그때는
-    반드시 남아야 한다. 반대로 DB가 있으면 `search`가 같은 OKF 코퍼스를 색인한
-    Postgres 쪽을 더 넓게 훑으므로 기본 표면에서는 뺀다 - `KF_OKF_DIR`이 안
-    잡힌 배포에서 `file_search`는 조용히 `[]`만 돌려주기까지 한다.
+    **`file_search`는 지금 기본적으로 아예 빠진다** (`KF_AGENT_FILE_SEARCH_ENABLED`,
+    기본 False - config.py의 그 필드 주석에 이유가 있다). 표면 설정과 DB 유무를
+    보는 위 조건은 그대로 남겨 뒀지만 그 앞에 이 스위치가 하나 더 붙었으므로,
+    끄면 "minimal + DB 없음" 구성에는 검색 도구가 하나도 남지 않는다 - 그 구성을
+    쓸 때는 이 값을 켜야 한다.
 
     `plan_search`(Query Planning + Query Routing, `search/planner.py`)는 "full"
     에서만, 그것도 `provider`가 주어졌을 때만 추가된다 - 하위 질의 분해에 그
@@ -769,6 +776,11 @@ def default_tools(
     REPL(agent/runtime.py::AgentSession)은 세션당 하나의 `PlanState`를 만들어
     넘겨서 turn 사이에 계획이 유지되게 한다 - `history`가 유지되는 것과 같은
     이유.
+
+    `grain`은 `search` 도구가 부르는 `retrieve()`의 임베딩 grain 축을 그대로
+    내려보낸다(`search/retrieve.py::normalize_grain`). 실사용 호출자는 넘기지
+    않고(=None, 두 grain 경쟁), `eval-ir --grain`만 값을 넣는다 - 파이프라인 run과
+    에이전트 run을 같은 코퍼스 위에서 비교하기 위해서다.
 
     `write_memory`는 `project_id`로 스코프된다 - `project_id`가 None이면
     "_global" 기억 파일에 쓴다(`agent/memory.py`).
@@ -785,8 +797,10 @@ def default_tools(
     tools: list[ToolSpec] = []
     if database_url:
         # 1순위 검색 도구를 목록 맨 앞에 둔다 - 도구 순서는 모델이 읽는 순서이기도 하다.
-        tools.append(_make_search_tool(database_url, provider=provider, project_id=project_id, now=now))
-    if not database_url or not minimal:
+        tools.append(
+            _make_search_tool(database_url, provider=provider, project_id=project_id, now=now, grain=grain)
+        )
+    if settings.agent_file_search_enabled and (not database_url or not minimal):
         tools.append(_make_file_search_tool())
     if database_url:
         tools.append(_make_read_document_tool(database_url))

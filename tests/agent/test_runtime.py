@@ -109,6 +109,14 @@ def test_system_prompt_leads_with_search_and_matches_the_tool_surface(monkeypatc
     assert "lexical_search" not in minimal
     assert "plan_search" not in minimal
 
+    # `file_search`도 같은 규칙을 탄다 - 기본값(`KF_AGENT_FILE_SEARCH_ENABLED=false`)에서는
+    # 도구 목록에 없으므로 "그 구성에서 1순위로 쓸 것"이라는 지침도 없어야 한다.
+    monkeypatch.setattr(settings, "agent_file_search_enabled", False)
+    assert "file_search" not in build_system_prompt()
+    monkeypatch.setattr(settings, "agent_file_search_enabled", True)
+    assert "file_search" in build_system_prompt()
+    monkeypatch.setattr(settings, "agent_file_search_enabled", False)
+
     monkeypatch.setattr(settings, "agent_tool_surface", "full")
     full = build_system_prompt()
     assert "document_search" in full and "plan_search" in full

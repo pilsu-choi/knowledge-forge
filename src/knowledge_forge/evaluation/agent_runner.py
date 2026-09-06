@@ -290,6 +290,7 @@ def make_agent_retrieve_fn(
         limit: int,  # noqa: ARG001 - 몇 건을 볼지는 에이전트가 정한다. 그게 측정 대상이다.
         use_llm_constraints: bool,  # noqa: ARG001 - 에이전트 경로에는 대응 개념이 없다
         strategies_override: list[str] | None,  # noqa: ARG001 - 전략 선택이 곧 에이전트의 일이다
+        grain: str | None = None,
     ) -> AgentRetrievalResult:
         recorder = _Recorder()
         timed = _TimingProvider(provider or _fail_no_provider(), recorder)
@@ -299,8 +300,19 @@ def make_agent_retrieve_fn(
             # 넣는다 - 도구만 넣으면 모델이 "어제"를 자기 학습 시점 기준으로 문장에
             # 쓰고, 프롬프트만 넣으면 실제 필터가 오늘 기준으로 돈다.
             system += f"\n\n현재 시각은 {now.isoformat()}이다. 상대 시간 표현은 이 시각을 기준으로 해석할 것."
+        # `grain`은 `search` 도구 → `retrieve(grain=...)`까지 내려간다. 전략 선택은 모델의
+        # 일이라 넘기지 않지만(위 ARG001들), grain은 **어떤 코퍼스를 보느냐**라 모델이 정할
+        # 축이 아니다 - 파이프라인 run과 에이전트 run을 같은 grain에서 비교하려면 여기도
+        # 같이 좁혀져야 한다.
         tools = _instrument_tools(
-            default_tools(project_id=project_id, provider=timed, system=system, include_delegate=include_delegate, now=now),
+            default_tools(
+                project_id=project_id,
+                provider=timed,
+                system=system,
+                include_delegate=include_delegate,
+                now=now,
+                grain=grain,
+            ),
             recorder,
         )
 

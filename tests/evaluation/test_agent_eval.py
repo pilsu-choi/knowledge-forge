@@ -18,6 +18,7 @@ from knowledge_forge.evaluation.agent_runner import (
     _instrument_tools,
     _Recorder,
     _TimingProvider,
+    make_agent_retrieve_fn,
 )
 from knowledge_forge.evaluation.golden import GoldenExpected, GoldenQuery, GoldenSet, IndexSnapshot
 from knowledge_forge.evaluation.ir_runner import latency_summary, run_ir_eval
@@ -67,6 +68,42 @@ def test_predicted_count_takes_the_first_one_seen():
     assert _harvest_predicted_count({"predicted_count": 3, "hits": [{"predicted_count": 9}]}) == 3
     assert _harvest_predicted_count({"hits": [{"predicted_count": 9}]}) == 9
     assert _harvest_predicted_count({"hits": []}) is None
+
+
+# --- grain -------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_grain_reaches_the_agents_tool_set(monkeypatch):
+    """`eval-ir --grain`은 파이프라인 run만 좁히면 의미가 없다 - 에이전트 run도 같은
+    코퍼스를 봐야 두 경로를 비교할 수 있다. 전략 선택과 달리 grain은 "무엇을 보느냐"라
+    모델에게 맡길 축이 아니다."""
+    captured: dict[str, Any] = {}
+
+    def _fake_default_tools(**kwargs: Any) -> list[ToolSpec]:
+        captured.update(kwargs)
+        return []
+
+    async def _fake_run_agent(query, tools, system, provider, max_iterations=8):
+        return "답변", []
+
+    monkeypatch.setattr("knowledge_forge.agent.tools.default_tools", _fake_default_tools)
+    monkeypatch.setattr("knowledge_forge.agent.loop.run_agent", _fake_run_agent)
+
+    fn = make_agent_retrieve_fn(provider=_ScriptedProvider([]))
+    await fn(
+        "질문",
+        store=None,
+        provider=_ScriptedProvider([]),
+        project_id="p",
+        now=None,
+        limit=10,
+        use_llm_constraints=False,
+        strategies_override=None,
+        grain="chunk",
+    )
+
+    assert captured["grain"] == "chunk"
 
 
 # --- 도구 계측 ---------------------------------------------------------------------

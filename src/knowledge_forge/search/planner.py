@@ -173,6 +173,7 @@ async def _execute_subquery(
     store: PipelineStore | None,
     project_id: str | None,
     limit: int,
+    target_kind: str | None = None,
 ) -> tuple[list[dict[str, Any]], TimeRange | None]:
     augmented_query = _augment_with_dependencies(subquery, results_by_id)
     decision = route_query(augmented_query, available_sources)
@@ -187,7 +188,13 @@ async def _execute_subquery(
         )
     if VECTOR_SEARCH in decision.sources and store is not None:
         results_by_source[VECTOR_SEARCH] = await vector_search(
-            augmented_query, store, project_id=project_id, limit=limit, since=since, until=until
+            augmented_query,
+            store,
+            project_id=project_id,
+            limit=limit,
+            since=since,
+            until=until,
+            target_kind=target_kind,
         )
     return merge_and_rerank(results_by_source), time_range
 
@@ -200,6 +207,7 @@ async def plan_and_search(
     project_id: str | None = None,
     max_subqueries: int = DEFAULT_MAX_SUBQUERIES,
     limit_per_subquery: int = DEFAULT_LIMIT_PER_SUBQUERY,
+    target_kind: str | None = None,
 ) -> dict[str, Any]:
     """Decomposes `query`, executes the resulting sub-queries wave by wave
     (concurrently within a wave, `route_query()`-picked source(s) per
@@ -207,7 +215,14 @@ async def plan_and_search(
     evidence pool a caller (the `plan_search` agent tool) hands back to the
     model to synthesize into an actual answer. Never raises for a query it
     can't decompose or a source that returns nothing - worst case this
-    degrades to "search the whole query once against file_search"."""
+    degrades to "search the whole query once against file_search".
+
+    `target_kind` narrows every sub-query's `vector_search` to one embedding
+    grain ('chunk' / 'knowledge_object'); None (the default) lets both grains
+    compete. It exists so `retrieve()`'s `grain` axis stays honest when the
+    multihop strategy runs - narrowing the direct vector arm but not the
+    planner's would leave a run that is only half-narrowed, and a half-narrowed
+    run is not comparable with either pure one."""
     subqueries = await decompose_query(query, provider, max_subqueries)
     available_sources = [FILE_SEARCH] + ([VECTOR_SEARCH] if store is not None else [])
 
@@ -216,7 +231,9 @@ async def plan_and_search(
     for wave in _topological_waves(subqueries):
         wave_results = await asyncio.gather(
             *(
-                _execute_subquery(sq, results_by_id, available_sources, store, project_id, limit_per_subquery)
+                _execute_subquery(
+                    sq, results_by_id, available_sources, store, project_id, limit_per_subquery, target_kind
+                )
                 for sq in wave
             )
         )

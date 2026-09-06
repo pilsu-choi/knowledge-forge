@@ -253,6 +253,21 @@ class Settings(BaseSettings):
     # `lexical_search`/`plan_search`까지 전부 노출한다. `search`가 놓치는 질의를
     # 손으로 파고들 때(디버깅, A/B 비교)를 위해 지운 게 아니라 설정 뒤로 옮겼다.
     agent_tool_surface: Literal["minimal", "full"] = "minimal"
+    # `file_search`(OKF 파일 트리 위의 부분 문자열 검색, `search/service.py`)를 에이전트
+    # 도구 목록에 넣을지. **기본 False = 넣지 않는다.**
+    #
+    # 표면 설정과 무관하게 따로 스위치를 둔 이유: `file_search`는 다른 검색 도구와 코퍼스
+    # 자체가 다르다(Postgres가 아니라 `KF_OKF_DIR` 아래의 마크다운 트리). 그래서
+    #   - `KF_OKF_DIR`이 안 잡힌 배포에서는 에러가 아니라 조용히 `[]`를 돌려준다. 모델은
+    #     "그런 문서가 없다"로 읽고 답을 접는다 - 도구가 없는 것보다 나쁘다.
+    #   - 트리가 있어도 Postgres 코퍼스와 내용이 어긋나 있으면(인제스트와 `--okf-dir`
+    #     출력은 서로 독립이다) 두 도구가 서로 다른 사실을 돌려준다.
+    #   - 골든셋 평가(`eval-ir --mode agent`)의 채점 단위는 `document_id`인데 `file_search`
+    #     히트에는 그게 없다(`search/retrieve.py`의 "planner 경유 file_search 히트는 채점
+    #     단위가 없어 버린다"와 같은 문제). 즉 에이전트가 이 도구로만 찾아낸 문서는 점수에
+    #     반영되지 않으면서 iteration 예산만 쓴다.
+    # OKF 전용(Postgres 없는) 배포에서는 이게 유일한 검색 경로이므로 그때는 켜야 한다.
+    agent_file_search_enabled: bool = False
     # Runtime context compaction (agent/compaction.py, ported from
     # refs/hermes-agent's trajectory_compressor.py) - once `messages` in
     # agent/loop.py::run_agent crosses this token budget, the oldest

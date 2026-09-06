@@ -432,6 +432,9 @@ knowledge-forge eval-ir --golden tests/eval/golden/v1.json --split dev --no-llm 
 knowledge-forge eval-ir --golden tests/eval/golden/v1.json --split test --no-llm --label "adopted-test"
 # 일부만: 유형·질의 id 필터, 전략 override, 결과 수
 knowledge-forge eval-ir --golden tests/eval/golden/v1.json --type set_query,aggregation --strategies lexical --limit 20
+# 임베딩 grain 고정: 청크 임베딩만 vs KO(OKF) 임베딩만
+knowledge-forge eval-ir --golden tests/eval/golden/v1.json --no-llm --grain chunk --label "grain-chunk"
+knowledge-forge eval-ir --golden tests/eval/golden/v1.json --no-llm --grain okf --label "grain-okf"
 # 비교 / 목록
 knowledge-forge eval-ir --compare <run_a> <run_b> --metric ndcg@10
 knowledge-forge eval-ir --list --golden-version v1
@@ -444,8 +447,8 @@ knowledge-forge eval-ir --list --golden-version v1
 `types` 중 하나라도 맞으면 포함), `--query-id`(반복), `--split dev|test`(분할된 골든셋의 한쪽만 —
 분할이 없는 파일에 걸면 0개를 조용히 채점하는 대신 에러다. `config`에 들어가므로 dev run과
 test run은 `config_hash`가 갈리고, `--compare`가 둘을 짝지으려 들지 않는다), `--concurrency 4`,
-`--no-store`(DB 미기록 — `index_snapshot`/staleness 검사도 생략), `--json PATH`.
-`KF_DATABASE_URL`은 세 모드 모두 필수.
+`--no-store`(DB 미기록 — `index_snapshot`/staleness 검사도 생략), `--json PATH`,
+`--grain`(아래 절). `KF_DATABASE_URL`은 세 모드 모두 필수.
 출력은 전체 지표 한 줄 + 유형별 표(n, hit@1, recall@5, mrr, ndcg@10, exhaustive_recall,
 count_match, none_correct 중 존재하는 열) + 실패 질의 + stale 질의 + `run_id`.
 
@@ -457,7 +460,8 @@ count_match, none_correct 중 존재하는 열) + 실패 질의 + stale 질의 +
 2. 정답 문서들의 `sources.content_hash`를 가져와 `check_staleness` — stale 항목은 **경고만**
    (`summary.stale_queries`)하고 집계에서 빼지 않는다. 빼면 이전 run과 비교가 안 되고,
    표시하면 점수 하락을 드리프트 탓으로 돌릴 수 있다.
-3. 질의마다 `retrieve(q.query, store=, provider=, project_id=, now=q.as_of, limit=, strategies_override=)`.
+3. 질의마다 `retrieve(q.query, store=, provider=, project_id=, now=q.as_of, limit=, strategies_override=,
+   grain=)`.
    `exhaustive`/`count` 질의는 **limit을 200으로 승격** — 전체 결과 대비 채점인데 10개로 자르면
    검색 품질과 무관하게 실패한다. 예외는 그 질의의 `error`에 담고 계속(전체 실패 아님).
 4. `score_query(result.document_ids, expected, k_values, predicted_count=, scores=)` →
@@ -468,7 +472,7 @@ count_match, none_correct 중 존재하는 열) + 실패 질의 + stale 질의 +
 
 | 테이블 | 열 |
 |---|---|
-| `eval_run` | `run_id` PK, `golden_version`, `golden_path`, `project_id`, `config` JSONB(provider/model/limit/strategies_override/use_llm_constraints/k_values/split), `config_hash`, `index_snapshot` JSONB, `git_commit`, `label`, `started_at`, `finished_at`, `summary` JSONB(`aggregate` 결과 + errors/stale_queries) |
+| `eval_run` | `run_id` PK, `golden_version`, `golden_path`, `project_id`, `config` JSONB(provider/model/limit/strategies_override/use_llm_constraints/grain/k_values/split/mode/repeats/judge), `config_hash`, `index_snapshot` JSONB, `git_commit`, `label`, `started_at`, `finished_at`, `summary` JSONB(`aggregate` 결과 + errors/stale_queries) |
 | `eval_run_query` | PK(`run_id` FK CASCADE, `query_id`), `query_text`, `primary_type`, `types`, `ranked_document_ids`, `scores`, `predicted_count`, `metrics`, `strategies`, `steps`, `elapsed_ms`, `error` |
 
 run 행은 시작 시 한 번(summary 비움), 종료 시 한 번 더 upsert — 중간에 죽어도
@@ -484,6 +488,35 @@ run 행은 시작 시 한 번(summary 비움), 종료 시 한 번 더 upsert —
 - 두 run이 모두 채점한 질의만 짝지어 B−A(`ir_metrics.paired_delta`), 헤드라인 지표(기본
   `ndcg@10`)에 `bootstrap_ci`(seed 고정, 결정론) + win/loss/tie + 유형별 delta, 나머지 공유
   지표는 `per_metric`에 평균 delta만. `error`가 난 질의는 짝에서 빠진다(`n`이 알려줌).
+
+### `--grain` — 청크 임베딩만 vs OKF(KnowledgeObject) 임베딩만
+
+`knowledge_object_embeddings`에는 두 grain이 같이 산다(`KF_EMBEDDING_SOURCE`,
+[`embeddings.md`](embeddings.md)의 "청크 기반 vs KnowledgeObject 기반"): 원시 청크 텍스트를
+임베딩한 `target_kind='chunk'` 행과, 추출된 KnowledgeObject의 summary/content/topics를 임베딩한
+`target_kind='knowledge_object'` 행이다. 검색은 지금까지 **둘을 한 랭킹에서 경쟁**시켰고, 지금까지
+기록된 run은 전부 그 상태다 — `--grain`은 그 축을 한쪽으로 고정한다.
+
+| `--grain` | `target_kind` | 무엇을 재나 |
+| --- | --- | --- |
+| (생략) / `both` | None | 현행. 두 grain이 한 랭킹에서 경쟁 |
+| `chunk` / `chunks` | `chunk` | 원문 청크 임베딩만. 추출 품질의 천장이 없는 대신 노이즈가 많고 dedup되지 않는다 |
+| `okf` / `ko` / `knowledge_object` | `knowledge_object` | 추출된 KO 임베딩만. OKF 트리에 파일로 떨어지는 것과 같은 단위다 |
+
+- 좁히는 대상은 **벡터 arm뿐**이다. 어휘 arm(`document_search`/`lexical_search`)은 임베딩을 쓰지
+  않으므로 `--grain chunk`는 "청크만 본다"가 아니라 "벡터 arm이 청크 임베딩만 본다"는 뜻이다.
+- 멀티홉(`plan_and_search`)이 도는 경우 planner의 `vector_search`까지 같이 좁힌다
+  (`search/planner.py`). 한쪽만 좁히면 "순수 grain"이 아니라 반쯤 좁혀진 run이 되고, 그건
+  비교 대상이 없다.
+- `--mode agent`에서도 적용된다 — `default_tools(grain=)` → `search` 도구 → `retrieve()`.
+  전략 선택은 모델의 일이지만 grain은 "무엇을 보느냐"라 모델에게 맡길 축이 아니다.
+- `config["grain"]`으로 기록되어 **`config_hash`가 갈린다**. chunk run과 okf run은 서로 다른
+  코퍼스를 잰 것이라 해시가 같으면 `compare_runs`가 "같은 설정끼리 비교 = run-to-run 노이즈"로
+  오판한다(`--split`/`--mode`를 해시에 넣은 것과 같은 이유).
+- **함정: 좁힌 grain의 임베딩이 0행이면** 벡터 arm이 에러도 경고도 없이 통째로 빠지고 어휘
+  arm만으로 측정된다. 그 run의 낮은 점수는 "이 grain이 나쁘다"가 아니라 "아직 백필 안 했다"는
+  뜻이다. `index_warnings`가 run 시작 시 그 경우를 stderr로 크게 찍고 `summary.index_warnings`
+  에도 남긴다 — 그 줄이 보이면 점수를 읽지 말고 먼저 채워라.
 
 ## `knowledge-forge eval-gen` — 골든셋 초안 자동 생성 (구현됨)
 

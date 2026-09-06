@@ -36,8 +36,20 @@ def _default_tool_surface(monkeypatch):
     monkeypatch.setattr(settings, "agent_tool_surface", "minimal")
 
 
+@pytest.fixture(autouse=True)
+def _file_search_off_by_default(monkeypatch):
+    """`file_search`는 표면과 무관하게 `KF_AGENT_FILE_SEARCH_ENABLED`(기본 False)가
+    끄고 있다 - 위 두 fixture와 같은 이유로 여기서도 문서화된 기본값에 고정한다.
+    이 도구를 실제로 확인하는 테스트는 `_enable_file_search`로 되돌린다."""
+    monkeypatch.setattr(settings, "agent_file_search_enabled", False)
+
+
 def _full_surface(monkeypatch):
     monkeypatch.setattr(settings, "agent_tool_surface", "full")
+
+
+def _enable_file_search(monkeypatch):
+    monkeypatch.setattr(settings, "agent_file_search_enabled", True)
 
 
 async def test_default_tools_wraps_file_search_and_forwards_arguments(monkeypatch):
@@ -47,6 +59,7 @@ async def test_default_tools_wraps_file_search_and_forwards_arguments(monkeypatc
         captured.update(query=query, project_id=project_id, type=type, limit=limit, since=since, until=until)
         return [{"path": "p"}]
 
+    _enable_file_search(monkeypatch)
     monkeypatch.setattr("knowledge_forge.agent.tools.file_search", _fake_file_search)
 
     tools = default_tools()
@@ -73,6 +86,7 @@ async def test_default_tools_handler_uses_defaults_for_optional_arguments(monkey
         captured.update(query=query, project_id=project_id, type=type, limit=limit, since=since, until=until)
         return []
 
+    _enable_file_search(monkeypatch)
     monkeypatch.setattr("knowledge_forge.agent.tools.file_search", _fake_file_search)
 
     file_search_tool = next(t for t in default_tools() if t.name == "file_search")
@@ -91,6 +105,7 @@ async def test_default_tools_file_search_clamps_an_oversized_limit(monkeypatch):
         captured["limit"] = limit
         return []
 
+    _enable_file_search(monkeypatch)
     monkeypatch.setattr("knowledge_forge.agent.tools.file_search", _fake_file_search)
 
     file_search_tool = next(t for t in default_tools() if t.name == "file_search")
@@ -227,7 +242,7 @@ class _FakeProvider(ChatProvider):
 async def test_default_tools_includes_delegate_task_when_provider_and_system_given():
     tools = default_tools(provider=_FakeProvider(), system="system prompt")
 
-    assert [t.name for t in tools] == ["file_search"] + _EXPECTED_BASE_TOOL_NAMES + ["delegate_task"]
+    assert [t.name for t in tools] == _EXPECTED_BASE_TOOL_NAMES + ["delegate_task"]
 
 
 async def test_default_tools_include_delegate_false_omits_it_even_with_provider():
@@ -272,17 +287,30 @@ async def test_default_tools_default_surface_exposes_only_search_read_document_a
     assert [t.name for t in tools] == ["search", "read_document", "sql_search"] + _EXPECTED_BASE_TOOL_NAMES
 
 
-async def test_default_tools_default_surface_falls_back_to_file_search_without_database_url():
+async def test_default_tools_default_surface_falls_back_to_file_search_without_database_url(monkeypatch):
     """Postgres 없는 OKF 전용 배포 - search/read_document/sql_search가 전부 빠지므로
     Postgres를 요구하지 않는 유일한 검색 경로인 file_search가 그 자리를 대신한다
-    (`search/service.py` docstring의 "OKF-only deployment")."""
+    (`search/service.py` docstring의 "OKF-only deployment"). 단 `file_search` 자체가
+    `KF_AGENT_FILE_SEARCH_ENABLED`로 꺼져 있으므로, 그 구성을 쓰려면 켜야 한다."""
+    _enable_file_search(monkeypatch)
+
     tools = default_tools(provider=_FakeProvider())
 
     assert [t.name for t in tools] == ["file_search"] + _EXPECTED_BASE_TOOL_NAMES
 
 
+async def test_file_search_is_off_by_default_even_where_it_used_to_be_the_only_search_tool():
+    """`KF_AGENT_FILE_SEARCH_ENABLED` 기본 False의 회귀 테스트. OKF 전용 구성(위 테스트와
+    같은 상황)에서도 빠진다 - 그래서 그 배포는 이 값을 켜야 하고, 그 사실을 여기서 못
+    박아 둔다(config.py의 그 필드 주석에 왜 껐는지가 있다)."""
+    tools = default_tools(provider=_FakeProvider())
+
+    assert [t.name for t in tools] == _EXPECTED_BASE_TOOL_NAMES
+
+
 async def test_default_tools_full_surface_restores_every_narrow_search_tool(monkeypatch):
     _full_surface(monkeypatch)
+    _enable_file_search(monkeypatch)
     monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
 
     tools = default_tools()
@@ -463,6 +491,7 @@ async def test_default_tools_omits_plan_search_on_the_default_surface_even_with_
 
 async def test_default_tools_includes_plan_search_on_the_full_surface_when_provider_given(monkeypatch):
     _full_surface(monkeypatch)
+    _enable_file_search(monkeypatch)
 
     tools = default_tools(provider=_FakeProvider())
 
@@ -471,6 +500,7 @@ async def test_default_tools_includes_plan_search_on_the_full_surface_when_provi
 
 async def test_default_tools_orders_plan_search_after_every_other_search_tool(monkeypatch):
     _full_surface(monkeypatch)
+    _enable_file_search(monkeypatch)
     monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
 
     tools = default_tools(provider=_FakeProvider())
@@ -578,6 +608,7 @@ async def test_default_tools_file_search_resolves_a_natural_language_time_range(
         captured.update(since=since, until=until)
         return []
 
+    _enable_file_search(monkeypatch)
     monkeypatch.setattr("knowledge_forge.agent.tools.file_search", _fake_file_search)
 
     tool = next(t for t in default_tools() if t.name == "file_search")
@@ -595,6 +626,7 @@ async def test_default_tools_file_search_ignores_an_unrecognized_time_range(monk
         captured.update(since=since, until=until)
         return []
 
+    _enable_file_search(monkeypatch)
     monkeypatch.setattr("knowledge_forge.agent.tools.file_search", _fake_file_search)
 
     tool = next(t for t in default_tools() if t.name == "file_search")

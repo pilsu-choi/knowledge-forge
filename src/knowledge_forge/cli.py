@@ -33,6 +33,7 @@ from knowledge_forge.scheduling.scheduler import (
     DEFAULT_TRIGGER_API_HOST,
     DEFAULT_TRIGGER_API_PORT,
 )
+from knowledge_forge.search.retrieve import normalize_grain
 from knowledge_forge.storage import PipelineStore
 from knowledge_forge.storage.eval_store import EvalRun, EvalStore
 from knowledge_forge.storage.postgres_store import PostgresStore
@@ -1277,6 +1278,14 @@ def eval_ir(
     strategies: str | None = typer.Option(
         None, "--strategies", help="라우팅을 무시하고 이 전략만 실행(쉼표 구분, 예: vector,lexical)."
     ),
+    grain: str | None = typer.Option(
+        None,
+        "--grain",
+        help=(
+            "벡터 arm이 볼 임베딩 grain: chunk(원시 청크 임베딩) 또는 okf(=knowledge_object, "
+            "추출된 KO 임베딩). 생략하면 현행대로 둘이 한 랭킹에서 경쟁한다."
+        ),
+    ),
     no_llm: bool = typer.Option(False, "--no-llm", help="LLM 제약 추출 없이 실행(provider 생성 안 함)."),
     provider: str | None = typer.Option(
         None, "--provider", help="제약 추출에 쓸 ChatProvider. 생략하면 KF_AGENT_PROVIDER(에이전트와 동일)."
@@ -1407,6 +1416,11 @@ def eval_ir(
     if mode not in ("pipeline", "agent"):
         typer.echo("--mode는 pipeline|agent 중 하나여야 합니다.", err=True)
         raise typer.Exit(1)
+    try:
+        target_kind = normalize_grain(grain)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None
     if repeats < 1:
         typer.echo("--repeats는 1 이상이어야 합니다.", err=True)
         raise typer.Exit(1)
@@ -1452,6 +1466,7 @@ def eval_ir(
                     k_values=k_values,
                     strategies_override=_parse_csv_option(strategies),
                     use_llm_constraints=not no_llm,
+                    grain=target_kind,
                     label=label,
                     query_filter=query_set,
                     type_filter=type_set,
@@ -1476,6 +1491,7 @@ def eval_ir(
                     k_values=k_values,
                     strategies_override=_parse_csv_option(strategies),
                     use_llm_constraints=not no_llm,
+                    grain=target_kind,
                     label=label,
                     query_filter=query_set,
                     type_filter=type_set,

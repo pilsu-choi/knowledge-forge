@@ -104,9 +104,13 @@ CLI: `knowledge-forge agent "질문" [--project-id ID] [--provider anthropic|ope
 | `KF_AGENT_TOOL_SURFACE` | `KF_DATABASE_URL` | 검색 도구 |
 | --- | --- | --- |
 | `minimal` (기본) | 설정됨 | `search`, `read_document`, `sql_search` |
-| `minimal` (기본) | 없음 | `file_search` |
-| `full` | 설정됨 | `search`, `file_search`, `read_document`, `sql_search`, `vector_search`, `document_search`, `lexical_search`, `plan_search`(provider 있을 때) |
-| `full` | 없음 | `file_search`, `plan_search`(provider 있을 때) |
+| `minimal` (기본) | 없음 | (없음 — `file_search`가 꺼져 있으면) |
+| `full` | 설정됨 | `search`, `read_document`, `sql_search`, `vector_search`, `document_search`, `lexical_search`, `plan_search`(provider 있을 때) |
+| `full` | 없음 | `plan_search`(provider 있을 때) |
+
+위 표에 `file_search`가 없는 것은 오타가 아니다 — **`file_search`는 표면과 무관하게 따로
+꺼져 있다**(`KF_AGENT_FILE_SEARCH_ENABLED`, 기본 `False`). 켜면 예전대로 "`minimal` + DB 없음"
+과 `full` 두 줄에 들어온다. 아래 "`file_search`를 왜 껐는가" 참고.
 
 비검색 도구(`read_file`/`write_file`/`edit_file`/`list_dir`/`write_memory`/`write_plan`/
 `delegate_task`)는 표면과 무관하게 항상 같다.
@@ -123,14 +127,28 @@ CLI: `knowledge-forge agent "질문" [--project-id ID] [--provider anthropic|ope
 - **`read_document`** — 검색 도구가 아니라 "검색으로 특정한 문서를 끝까지 읽는" 후속 동작.
   top-k로 답이 안 되는 전체 요약/부재 확인/순서 비교에 필요하다.
 
-**`file_search`가 DB 없을 때만 들어오는 이유**는 그 뒷면이다: Postgres가 없으면 위 셋이 전부
+### `file_search`를 왜 껐는가 (`KF_AGENT_FILE_SEARCH_ENABLED`, 기본 `False`)
+
+`file_search`는 원래 "DB가 없을 때만" 들어오는 도구였다: Postgres가 없으면 기본 셋이 전부
 빠져(`vector_search`와 같은 "설정 안 되어 있으면 조용히 빠짐" 컨벤션) 검색 경로가 하나도 남지
-않는다. `file_search`는 Postgres를 전혀 요구하지 않는 유일한 검색 도구라
-(`search/service.py` docstring의 "OKF-only deployment") 그 구성에서는 반드시 남아야 한다.
-반대로 DB가 있으면 같은 OKF 코퍼스가 이미 색인돼 있어 `search`가 더 넓게 훑고, `KF_OKF_DIR`이
-안 잡힌 배포에서 `file_search`는 조용히 `[]`만 돌려주기까지 한다 — 예전 시스템 프롬프트의
-1원칙이 하필 그 도구를 먼저 부르라고 시키고 있었다(측정된 적 없고, 설정에 따라 빈손인 경로).
-지금 1원칙은 `search`다.
+않고, `file_search`는 Postgres를 전혀 요구하지 않는 유일한 검색 도구이기 때문이다
+(`search/service.py` docstring의 "OKF-only deployment"). 반대로 DB가 있으면 같은 OKF 코퍼스가
+이미 색인돼 있어 `search`가 더 넓게 훑는다.
+
+지금은 그 조건 **앞에 스위치가 하나 더** 붙어 기본적으로 아예 빠진다. 이유는 표면 문제가 아니라
+코퍼스 문제다 — `file_search`만 Postgres가 아니라 `KF_OKF_DIR` 아래 마크다운 트리를 본다:
+
+- `KF_OKF_DIR`이 안 잡힌 배포에서 이 도구는 에러가 아니라 조용히 `[]`를 돌려준다. 모델은
+  "그런 문서가 없다"로 읽고 답을 접는다 — 도구가 없는 것보다 나쁘다.
+- 트리가 있어도 Postgres 코퍼스와 어긋나 있을 수 있다. 인제스트와 `--okf-dir` 출력은 서로
+  독립이라 한쪽만 최신인 상태가 정상적으로 생기고, 그러면 두 도구가 서로 다른 사실을 답한다.
+- 골든셋 평가(`eval-ir --mode agent`)의 채점 단위는 `document_id`인데 `file_search` 히트에는
+  그게 없다(`retrieve()`가 planner 경유 `file_search` 히트를 같은 이유로 버린다). 즉 에이전트가
+  이 도구로만 찾아낸 문서는 점수에 반영되지 않으면서 iteration 예산만 쓴다.
+
+OKF 전용(Postgres 없는) 배포에서는 이게 유일한 검색 경로이므로 그때는
+`KF_AGENT_FILE_SEARCH_ENABLED=true`로 켜야 한다. 도구 자체와 그 배선은 그대로 남아 있고
+(`tests/agent/test_tools.py`가 켠 상태로 계속 검증한다), 기본값만 바뀐 것이다.
 
 `plan_search`가 "full"에만 있어도 멀티홉 분해가 사라지지는 않는다 — `retrieve()`가 `multihop`
 전략에서 같은 `plan_and_search()`를 안에서 부른다(단, `provider`가 있을 때만).

@@ -839,7 +839,7 @@ async def test_multihop_joins_planner_evidence_and_drops_hits_without_document_i
     _patch_vector(monkeypatch, [])
     captured = {}
 
-    async def _fake_plan_and_search(query, provider, *, store=None, project_id=None, limit_per_subquery=5):
+    async def _fake_plan_and_search(query, provider, *, store=None, project_id=None, limit_per_subquery=5, target_kind=None):
         captured.update(query=query, provider=provider, limit=limit_per_subquery)
         return {
             "subqueries": [{"id": 1, "query": "q1", "depends_on": []}],
@@ -1160,3 +1160,76 @@ def test_a_file_type_predicate_is_not_a_source_hint_only_filter():
     assert _is_source_hint_only_filter(c) is True
     c.file_extensions = [".xlsx"]
     assert _is_source_hint_only_filter(c) is False
+
+
+# --- 임베딩 grain (`eval-ir --grain`) -------------------------------------------
+
+
+def test_normalize_grain_maps_human_spellings_and_rejects_typos():
+    from knowledge_forge.search.retrieve import normalize_grain
+
+    assert normalize_grain(None) is None
+    assert normalize_grain("both") is None
+    assert normalize_grain("chunk") == "chunk"
+    assert normalize_grain("CHUNKS") == "chunk"
+    # "okf"는 KO의 별칭이다 - OKF 트리에 파일로 떨어지는 것이 바로 KnowledgeObject라서.
+    assert normalize_grain("okf") == "knowledge_object"
+    assert normalize_grain("ko") == "knowledge_object"
+    assert normalize_grain(" knowledge_object ") == "knowledge_object"
+    # 오타를 조용히 "둘 다"로 흘리면, 좁힌 줄 알고 잰 run이 사실은 안 좁혀진 run이 된다.
+    with pytest.raises(ValueError):
+        normalize_grain("chunkk")
+
+
+async def test_grain_narrows_the_vector_arm_to_one_target_kind(monkeypatch):
+    captured: list = []
+
+    async def _fake_vector_search(
+        query, store, project_id=None, type=None, limit=10, embedding_model=None, since=None, until=None, target_kind=None
+    ):
+        captured.append(target_kind)
+        return [_chunk_hit("d1", "c1", 0.9)]
+
+    monkeypatch.setattr(retrieve_module, "vector_search", _fake_vector_search)
+    store = _FakeStore()
+
+    await retrieve("리스크 항목 요약", store=store, now=_NOW, strategies_override=["vector"], grain="chunk")
+    await retrieve("리스크 항목 요약", store=store, now=_NOW, strategies_override=["vector"], grain="knowledge_object")
+    await retrieve("리스크 항목 요약", store=store, now=_NOW, strategies_override=["vector"])
+
+    # 마지막(기본)은 None - 두 grain이 한 랭킹에서 경쟁하는 현행 동작이 기본이어야 한다.
+    assert captured == ["chunk", "knowledge_object", None]
+
+
+async def test_grain_is_recorded_on_the_vector_step(monkeypatch):
+    """steps에 남아야 나중에 run 하나만 보고도 "이건 어느 grain이었나"를 답할 수 있다."""
+    _patch_vector(monkeypatch, [_chunk_hit("d1", "c1", 0.9)])
+
+    result = await retrieve("리스크 항목 요약", store=_FakeStore(), now=_NOW, strategies_override=["vector"], grain="chunk")
+
+    vector_step = next(s for s in result.steps if s.strategy == "vector")
+    assert vector_step.detail["grain"] == "chunk"
+
+
+async def test_grain_also_narrows_the_planner_the_multihop_strategy_runs(monkeypatch):
+    """멀티홉은 planner를 거쳐 `vector_search`를 또 부른다 - 직접 호출만 좁히고 이쪽을
+    빼면 "순수 grain" run이 아니라 반쯤 좁혀진 run이 되고, 그건 비교 대상이 없다."""
+    captured: list = []
+
+    async def _fake_plan_and_search(query, provider, *, store=None, project_id=None, limit_per_subquery=5, target_kind=None):
+        captured.append(target_kind)
+        return {"subqueries": [], "evidence": []}
+
+    monkeypatch.setattr(retrieve_module, "plan_and_search", _fake_plan_and_search)
+    _patch_vector(monkeypatch, [])
+
+    await retrieve(
+        "A와 B의 관계",
+        store=_FakeStore(),
+        provider=_FakeProvider(),
+        now=_NOW,
+        strategies_override=["multihop"],
+        grain="knowledge_object",
+    )
+
+    assert captured == ["knowledge_object"]
