@@ -24,9 +24,11 @@
    (`_Run.keyword_arm`) - 임베딩이 없는 배포에서도 실행기가 "아무것도 못 찾음"이 아니라 키워드
    기준선으로 동작하고, 임베딩이 있어도 어휘 신호가 RRF에 남는다.
 2. 병합: 소스별 히트 리스트를 `merge_and_rerank`(RRF)로 합치고, metadata_filter 집합이 있으면
-   교집합, document_lookup이 anchor 문서를 특정했으면 그 문서 히트를 최상위로 고정.
-3. 후처리: latest(시각 내림차순 + version_family 압축) → whole_document(read_document로 본문
-   청크 실음) → exhaustive/count(컷오프 없음, predicted_count).
+   교집합, 시간 감쇠(`_Run.age_decay`, 기본 꺼짐)로 최신 쪽에 한 표 이내의 보너스, 마지막으로
+   document_lookup이 anchor 문서를 특정했으면 그 문서 히트를 최상위로 고정.
+3. 후처리: 문서당 히트 상한(`_Run.cap_per_document`, 증거 다양성) → latest(시각 내림차순 +
+   version_family 압축) → whole_document(read_document로 본문 청크 실음) → exhaustive/count
+   (컷오프 없음, predicted_count).
 
 `agent/tools.py`의 `search` 도구는 이 함수를 얇게 감싼 어댑터다(계층: search/* < agent/*).
 """
@@ -99,6 +101,12 @@ SOURCE_DOCUMENT_LINKS = "document_links"
 # 링크 응집도는 후보 생성 단계가 아니라 병합 **뒤**에 얹는 재정렬이라 `suggest_strategies`가
 # 고를 대상이 아니고, `strategies_override`로 켜고 끄는 대상도 아니다.
 STRATEGY_LINK_COHESION = "link_cohesion"
+# 같은 이유로 `steps` 전용인 이름 둘 - 시간 감쇠(병합 뒤 재정렬)와 문서당 히트 상한(병합 뒤
+# 잘라내기). 둘 다 `settings`로 켜고 끄지 전략 라우팅에 실리지 않는다.
+STRATEGY_AGE_DECAY = "age_decay"
+SOURCE_AGE_DECAY = "age_decay"
+STRATEGY_DIVERSITY = "diversity"
+SOURCE_DIVERSITY = "diversity"
 
 # exhaustive/negative/count에서 "전부"를 대신하는 상한 - top-k 절단은 없애되 한 질의가 테이블
 # 전체를 끌어오지는 못하게(`search/sql.py::DEFAULT_MAX_ROWS`와 같은 200).
@@ -279,6 +287,24 @@ def _hit_time(hit: dict[str, Any]) -> str:
     (COALESCE(modified_at, collected_at))을 싣지만 planner 경유 file_search 히트는 없다."""
     value = hit.get("content_at") or hit.get("modified_at")
     return str(value) if value else ""
+
+
+def _hit_datetime(hit: dict[str, Any]) -> datetime | None:
+    """`_hit_time`의 datetime 판(시간 감쇠용). 소스마다 실어 오는 모양이 다르다 - Postgres 경로는
+    `datetime`(tz-aware), 평가/테스트 픽스처와 planner 경유 히트는 ISO 문자열이라 둘 다 받는다.
+    tz가 없는 값은 UTC로 본다(`sources.modified_at`은 전부 UTC로 저장된다). 파싱에 실패하거나
+    시각 자체가 없으면 None - 호출부가 "감쇠 보너스 없음"(중립)으로 다룬다."""
+    value = hit.get("content_at") or hit.get("modified_at")
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value:
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    else:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
 def _dedupe_documents(hits: list[dict[str, Any]]) -> tuple[list[str], list[float]]:
@@ -1163,6 +1189,99 @@ class _Run:
             ],
         )
 
+    def age_decay(self, merged: list[dict[str, Any]]) -> None:
+        """병합 랭킹에 **최신성 사전확률**을 한 표 이내로 얹는다(`merged`를 제자리 재정렬).
+
+        왜 가산인가: `rerank_score`는 RRF 값(`1/(k+rank)`)이라 감쇠 계수를 곱하면 오래된 문서의
+        점수가 통째로 무너져 랭킹이 사실상 시각순이 된다. 대신 `link_cohesion`과 같은 관례로
+        "1위 한 표"(`1/(k+1)`)를 상한으로 하는 보너스를 더한다:
+
+            bonus = weight × 0.5^(age_days / half_life) / (RRF_K + 1)
+
+        상한이 한 표라, 여러 소스가 합의해 올린 문서를 시각 하나가 뒤집지 못한다 - 손실이
+        갇혀 있다는 점에서 `_SEQUENCE_INTENT_RE` 게이트와 같은 종류의 안전장치다.
+
+        시각이 없는 히트는 보너스 0(중립)이다. **미래 시각은 age를 0으로 깎는다** - 시계가 어긋난
+        소스나 예정일이 들어간 메타데이터가 음수 age로 지수를 폭발시켜(0.5^-10 = 1024배) 한 문서가
+        랭킹을 통째로 먹는 것을 막는다.
+
+        `settings.age_decay_weight`가 0이면 아무것도 하지 않는다(기본값 - 골든셋으로 재기 전에는
+        켜지 않는다, `config.py`의 그 노브 주석 참고)."""
+        weight = settings.age_decay_weight
+        half_life = settings.age_decay_half_life_days
+        if weight <= 0.0 or half_life <= 0.0 or not merged:
+            return
+        unit = 1.0 / (DEFAULT_RRF_K + 1)
+        before, _ = _dedupe_documents(merged)
+        scored = 0
+        for hit in merged:
+            content_at = _hit_datetime(hit)
+            if content_at is None:
+                continue
+            age_days = max(0.0, (self.now - content_at).total_seconds() / 86400.0)
+            hit["rerank_score"] = float(hit.get("rerank_score") or 0.0) + weight * (0.5 ** (age_days / half_life)) * unit
+            scored += 1
+        # 안정 정렬이라 보너스가 같은(또는 둘 다 없는) 히트끼리는 병합 순서를 그대로 지킨다.
+        merged.sort(key=lambda hit: -float(hit.get("rerank_score") or 0.0))
+        after, _ = _dedupe_documents(merged)
+        self.step(
+            STRATEGY_AGE_DECAY,
+            SOURCE_AGE_DECAY,
+            scored,
+            weight=weight,
+            half_life_days=half_life,
+            no_timestamp=len(merged) - scored,
+            promoted=[
+                {"document_id": d, "from": before.index(d) + 1, "to": after.index(d) + 1}
+                for d in after[: self.limit]
+                if after.index(d) < before.index(d)
+            ],
+        )
+
+    def cap_per_document(self, hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """한 문서가 최종 히트 목록에서 차지하는 자리를 `settings.search_max_hits_per_document`
+        개로 제한한다(순서는 그대로, 초과분만 뺀다).
+
+        **채점 지표는 이 단계에 영향받지 않는다**: `_dedupe_documents`가 문서의 *첫* 등장 순서만
+        보므로, 같은 문서의 2번째 이후 히트를 지워도 `document_ids`의 내용과 순서가 변하지 않는다
+        (테스트 `test_diversity_cap_does_not_change_document_ranking`이 이걸 못박는다). 바뀌는 것은
+        **모델에게 실제로 건네는 증거 묶음**이다 - 지금은 긴 보고서 하나의 청크가 상위 10건을 통째로
+        먹을 수 있고, 그러면 근거의 다양성이 0이 된다.
+
+        `scores`는 미세하게 달라질 수 있다(`_dedupe_documents`가 남은 히트 중 최고 `score`를 쓰므로,
+        잘려나간 히트가 그 문서의 최고점이었으면 낮아진다). 그 값은 랭킹이 아니라 `none_correct`의
+        임계 판정에만 쓰이는데, 잘리는 쪽은 언제나 RRF 하위 히트라 문서의 대표 점수가 그것뿐인
+        경우는 없다.
+
+        `whole_document` **앞**에서 돈다 - 그쪽은 "한 문서를 통째로 싣는다"가 목적이라 여기서
+        자르면 기능 자체가 사라진다."""
+        cap = settings.search_max_hits_per_document
+        if cap <= 0 or not hits:
+            return hits
+        seen: dict[str, int] = {}
+        kept: list[dict[str, Any]] = []
+        for hit in hits:
+            document_id = hit.get("document_id")
+            if document_id is None:
+                kept.append(hit)
+                continue
+            count = seen.get(document_id, 0)
+            if count >= cap:
+                continue
+            seen[document_id] = count + 1
+            kept.append(hit)
+        dropped = len(hits) - len(kept)
+        if dropped:
+            self.step(
+                STRATEGY_DIVERSITY,
+                SOURCE_DIVERSITY,
+                len(kept),
+                cap=cap,
+                dropped=dropped,
+                capped_documents=sorted(d for d, n in seen.items() if n >= cap),
+            )
+        return kept
+
     async def merge(self) -> list[dict[str, Any]]:
         """관련도 랭킹(`merged`)에 메타데이터 필터(`filter_ids`)를 겹쳐 최종 순위를 만든다.
 
@@ -1253,6 +1372,13 @@ class _Run:
                     filter_note = "no_overlap_fallback_to_filter"
         if self.filter_step is not None:
             self.filter_step.detail["applied"] = filter_note
+
+        # 시간 감쇠는 필터 분기 **뒤**, anchor 고정 **앞**이다. 뒤인 이유: 위 분기들이 `merged`를
+        # 필터 집합으로 통째로 갈아치울 수 있어(`filter_only`/`no_overlap_fallback_to_filter`),
+        # 그 앞에서 얹으면 버려지는 랭킹에 점수를 더하고 `steps`에는 일어나지도 않은 승급이 남는다.
+        # 앞인 이유: anchor 고정은 "제목이 정확히 맞은 문서가 그 질의의 답"이라는 판정이라 시각
+        # 신호가 뒤집으면 안 되는 partition이다.
+        self.age_decay(merged)
 
         # anchor → comparison 대상 순으로 최상위 고정. 순서를 지키는 partition이라 나머지 랭킹은 그대로.
         for document_id in reversed([*([self.anchor] if self.anchor else []), *self.pinned]):
@@ -1436,6 +1562,10 @@ async def retrieve(
         await run.multihop(provider)
 
     hits = await run.merge()
+    # 다양성 상한은 병합 **직후**, 후처리 앞이다. `whole_document`가 뒤에서 문서 하나의 청크를
+    # 통째로 앞에 붙이는데 그것까지 자르면 그 전략이 하는 일이 사라지고, `latest`의 시각 재정렬은
+    # 문서 단위라 히트 몇 개가 빠져도 결과가 같다.
+    hits = run.cap_per_document(hits)
 
     # 후처리
     if STRATEGY_LATEST in strategies:

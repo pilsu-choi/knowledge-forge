@@ -1096,3 +1096,77 @@ if self.anchor is None and arm_documents < _ARM_STRONG_DOCUMENTS:   # = 2
 개발 DB 확인: `sources.metadata.participant_names`는 slack 소스 **197/197행 전부** 채워져
 있다(`["intel", "백상이(패트릭)", "안민균(베르)"]` 같은 모양). 즉 데이터는 이미 있고 코드만
 안 보고 있었다.
+
+## 시간 감쇠와 다양성 제약 (2026-09-07) — Cerebras 사내 KB 글에서 가져온 두 가지
+
+출처: [15,000 questions a day: Cerebras 사내 지식베이스](https://discuss.pytorch.kr/t/15-000-cerebras-feat-pgvector-rrf-mcp/11329).
+그 글의 스택(pgvector + HNSW, 어휘/벡터 하이브리드, RRF k=60, 계획기→실행기→종합, 원문 대신
+LLM 증류물 임베딩, 프로젝트 단위 범위 지정)은 이미 여기 있는 것과 거의 같다. **여기 없던 것**이
+네 가지였고 — 시간 감쇠, 다양성 제약, 재순위 모델, 버스팅 — 그중 앞의 둘을 구현했다.
+
+### 시간 감쇠 (`_Run.age_decay`, 기본 **꺼짐**)
+
+`latest` 후처리와 다른 물건이다. `latest`는 "최신 버전을 달라"는 질의에서만 켜지는 **하드**
+재정렬(시각 내림차순 + version_family 압축)이고, 이쪽은 질의 종류와 무관하게 "같은 관련도면
+최근 것"을 미는 **약한 사전확률**이다. 슬랙/메일처럼 같은 주제가 몇 달 간격으로 반복되는
+코퍼스에서 오래된 스레드가 최신 결론을 계속 밀어내는 것을 막는 용도.
+
+```python
+bonus = weight × 0.5 ** (age_days / half_life) / (RRF_K + 1)
+```
+
+- **곱이 아니라 가산이다.** `rerank_score`는 RRF 값(`1/(k+rank)`)이라 감쇠 계수를 곱하면
+  오래된 문서의 점수가 통째로 무너져 랭킹이 사실상 시각순이 된다 — 이 저장소가 세 번 밟은
+  붕괴("RRF 표를 문서 자신의 관련도 순위와 무관한 크기로 주면 랭킹이 붕괴한다", 위 term
+  fallback 절)와 같은 실패 양식이다. 상한을 **1위 한 표**(`1/(k+1)`)로 묶어 손실을 가뒀다:
+  두 소스가 합의해 올린 문서를 시각 하나가 뒤집지 못한다(`test_age_decay_cannot_outrank_a_
+  document_two_sources_agree_on`).
+- 적용 지점은 **필터 분기 뒤, anchor 고정 앞**이다. 뒤인 이유: `filter_only`/
+  `no_overlap_fallback_to_filter`가 `merged`를 통째로 갈아치우므로 그 앞에서 얹으면 버려질
+  랭킹에 점수를 더하고 `steps`에는 일어나지도 않은 승급이 남는다. 앞인 이유: anchor는 "제목이
+  정확히 맞은 문서가 답"이라는 판정이라 시각이 뒤집으면 안 된다.
+- 시각이 없는 히트는 보너스 0(중립), **미래 시각은 age를 0으로 깎는다** — 음수 age가 지수를
+  폭발시키면(`0.5^-10` = 1024배) 시계가 어긋난 소스 하나가 랭킹을 통째로 먹는다.
+
+**왜 기본값이 0.0(꺼짐)인가**: 이 저장소의 랭킹 노브는 전부 골든셋 스윕으로 값을 정했다
+(`vector_min_score` 0.45, `term_rare_df_max` 0, `latest_relevance_pool` 5). 시간 감쇠는 아직
+그 측정을 하지 못했다 — 구현 시점의 개발 머신 Postgres에는 골든셋 코퍼스가 없었다(문서 184건,
+`knowledge_object_embeddings`/`eval_run` 테이블 자체가 없음, v1 정답 document_id 0건 일치).
+측정 없이 켜면 "재본 적 없는 전역 재정렬"이고, 그건 게이트 없이 켰다가 정답을 4위로 밀어낸
+링크 확장과 같은 실수다. 스윕 명령:
+
+```bash
+for w in 0.0 0.25 0.5 1.0 2.0; do KF_AGE_DECAY_WEIGHT=$w uv run knowledge-forge eval-ir \
+  --golden tests/eval/golden/v1.json --split dev --no-llm --label "decay-w$w"; done
+for h in 30 90 180 365; do KF_AGE_DECAY_WEIGHT=<채택한 w> KF_AGE_DECAY_HALF_LIFE_DAYS=$h \
+  uv run knowledge-forge eval-ir --golden tests/eval/golden/v1.json --split dev --no-llm --label "decay-h$h"; done
+```
+
+봐야 할 지표는 ndcg@10 하나가 아니다. 이 노브가 깨뜨릴 수 있는 것은 **오래된 문서가 정답인
+질의**(factoid/navigational의 상당수)이므로 `hit@1`과 유형별 표를 같이 봐야 하고, `latest`
+유형이 오르는 것은 당연하므로 그것만으로 채택하면 안 된다.
+
+### 다양성 제약 (`_Run.cap_per_document`, 기본 **3**, 켜져 있음)
+
+한 문서가 최종 히트 목록에서 차지하는 자리를 `settings.search_max_hits_per_document`개로
+제한한다. 병합 직후 · `whole_document` 앞에서 돈다(그쪽은 "한 문서를 통째로 싣는다"가 목적이라
+여기서 자르면 전략이 사라진다).
+
+**이것은 채점 지표를 움직이지 않는다** — 그래서 측정 없이 켰다. `_dedupe_documents`가 문서의
+*첫* 등장 순서만 보므로 같은 문서의 2번째 이후 히트를 지워도 `document_ids`의 내용과 순서가
+같다(`test_diversity_cap_does_not_change_document_ranking`이 상한 없음/1 두 실행의
+`document_ids`가 동일함을 못박는다). 바뀌는 것은 **모델·UI에 실제로 건네는 증거 묶음**이다:
+지금까지는 긴 보고서 하나의 청크가 `search` 도구의 상위 10건을 통째로 먹을 수 있었고, 그러면
+근거의 다양성이 0이 된다. 3은 "한 문서에서 근거 세 조각이면 그 문서가 무슨 말을 하는지
+판단하기 충분하고, 나머지 자리는 다른 출처에 준다"는 예산 배분이다.
+
+`scores`는 미세하게 달라질 수 있다(남은 히트 중 최고 `score`를 쓰므로). 그 값은 랭킹이 아니라
+`none_correct`의 임계 판정에만 쓰이고, 잘리는 쪽은 언제나 RRF 하위 히트다.
+
+### 가져오지 않은 둘
+
+- **재순위 모델**(RRF 뒤에 소형 모델로 0~10 채점): `search/rerank.py`의 모듈 docstring이 이미
+  "미구현, 모델 한 번 더 태우는 비용"이라고 적어 둔 그대로다. 지연시간·비용 결정이 먼저다.
+- **버스팅**(긴 스레드에서 같은 작성자의 연속 메시지를 따로 임베딩, IDF≥4.0 / 200자 / 리액션
+  1개 이상을 모두 통과한 것만): 수집·청킹 쪽 변경이라 검색 계층 밖이다. 슬랙 발췌 개선
+  (`35b90f2`)이 건드린 문제와 같은 계보라 다음 후보로는 자연스럽다.

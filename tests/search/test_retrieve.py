@@ -1160,3 +1160,141 @@ def test_a_file_type_predicate_is_not_a_source_hint_only_filter():
     assert _is_source_hint_only_filter(c) is True
     c.file_extensions = [".xlsx"]
     assert _is_source_hint_only_filter(c) is False
+
+
+# --- 시간 감쇠(age decay) --------------------------------------------------------------
+
+
+def _age_decay(monkeypatch, weight: float, half_life_days: float = 180.0) -> None:
+    monkeypatch.setattr(retrieve_module.settings, "age_decay_weight", weight)
+    monkeypatch.setattr(retrieve_module.settings, "age_decay_half_life_days", half_life_days)
+
+
+async def test_age_decay_is_off_by_default(monkeypatch):
+    """기본값에서는 랭킹을 만지지도, `steps`에 흔적을 남기지도 않는다 - 골든셋으로 재기 전에는
+    켜지 않는다는 `config.py`의 결정이 코드에서도 참이어야 한다."""
+    store = _FakeStore()
+    _patch_vector(
+        monkeypatch,
+        [_chunk_hit("old", "c1", 0.9, content_at="2020-01-01T00:00:00+00:00"), _chunk_hit("new", "c2", 0.8)],
+    )
+
+    result = await retrieve("계약 조건", store=store, now=_NOW, strategies_override=["vector"])
+
+    assert result.document_ids == ["old", "new"]
+    assert not [s for s in result.steps if s.strategy == "age_decay"]
+
+
+async def test_age_decay_promotes_the_recent_document_over_a_narrow_relevance_gap(monkeypatch):
+    """관련도 차이가 RRF 한 칸(1위 vs 2위)뿐이면 최신 쪽이 이긴다 - 같은 주제가 몇 달 간격으로
+    반복되는 코퍼스에서 오래된 스레드가 최신 결론을 계속 밀어내는 것을 막는 것이 목적이다."""
+    store = _FakeStore()
+    _patch_vector(
+        monkeypatch,
+        [
+            _chunk_hit("old", "c1", 0.9, content_at="2019-01-01T00:00:00+00:00"),
+            _chunk_hit("new", "c2", 0.8, content_at="2026-09-01T00:00:00+00:00"),
+        ],
+    )
+    _age_decay(monkeypatch, 1.0)
+
+    result = await retrieve("배포 절차", store=store, now=_NOW, strategies_override=["vector"])
+
+    assert result.document_ids == ["new", "old"]
+    step = next(s for s in result.steps if s.strategy == "age_decay")
+    assert step.detail["weight"] == 1.0 and step.detail["no_timestamp"] == 0
+    assert step.detail["promoted"] == [{"document_id": "new", "from": 2, "to": 1}]
+
+
+async def test_age_decay_cannot_outrank_a_document_two_sources_agree_on(monkeypatch):
+    """보너스 상한이 **1위 한 표**라 합의를 뒤집지 못한다. 이 상한이 없으면(곱셈 감쇠 등) 랭킹이
+    사실상 시각순이 되고, 그건 `latest` 후처리가 예전에 밟았던 붕괴와 같은 종류다."""
+    store = _FakeStore(
+        title_hits={None: [_doc_hit("consensus", 1.0, content_at="2019-01-01T00:00:00+00:00")]},
+        chunk_hits={None: [_chunk_hit("consensus", "c1", 0.9, content_at="2019-01-01T00:00:00+00:00")]},
+    )
+    _patch_vector(monkeypatch, [_chunk_hit("fresh", "c2", 0.7, content_at="2026-09-06T00:00:00+00:00")])
+    _age_decay(monkeypatch, 1.0)
+
+    result = await retrieve("배포 절차", store=store, now=_NOW, strategies_override=["vector", "keyword_arm"])
+
+    assert result.document_ids[0] == "consensus"
+
+
+async def test_age_decay_is_neutral_without_a_timestamp_and_clamps_future_ones(monkeypatch):
+    """시각이 없는 히트는 보너스 0(중립), 미래 시각은 age를 0으로 깎는다 - 음수 age가 지수를
+    폭발시키면(0.5^-10 = 1024배) 시계가 어긋난 소스 하나가 랭킹을 통째로 먹는다."""
+    store = _FakeStore()
+    undated = _chunk_hit("undated", "c1", 0.9)
+    undated.pop("content_at"), undated.pop("modified_at")
+    _patch_vector(
+        monkeypatch,
+        [undated, _chunk_hit("future", "c2", 0.8, content_at="2030-01-01T00:00:00+00:00")],
+    )
+    _age_decay(monkeypatch, 1.0)
+
+    result = await retrieve("배포 절차", store=store, now=_NOW, strategies_override=["vector"])
+
+    step = next(s for s in result.steps if s.strategy == "age_decay")
+    assert step.detail["no_timestamp"] == 1
+    # 미래 문서가 받은 보너스는 "방금 만들어진 문서"와 정확히 같은 한 표 - 그 이상이 아니다.
+    future_hit = next(h for h in result.hits if h["document_id"] == "future")
+    assert future_hit["rerank_score"] == pytest.approx(1.0 / (60 + 2) + 1.0 / (60 + 1))
+
+
+# --- 다양성 제약(문서당 히트 상한) ------------------------------------------------------
+
+
+async def test_diversity_cap_limits_hits_per_document(monkeypatch):
+    """긴 문서 하나의 청크가 증거 묶음을 통째로 먹지 못하게 한다 - 상한을 넘긴 히트만 빠지고
+    남은 것들의 순서는 그대로다."""
+    monkeypatch.setattr(retrieve_module.settings, "search_max_hits_per_document", 2)
+    store = _FakeStore()
+    _patch_vector(
+        monkeypatch,
+        [_chunk_hit("big", f"c{i}", 0.9 - i * 0.01) for i in range(5)] + [_chunk_hit("other", "x", 0.5)],
+    )
+
+    result = await retrieve("리스크", store=store, now=_NOW, strategies_override=["vector"])
+
+    assert [h["chunk_id"] for h in result.hits] == ["c0", "c1", "x"]
+    step = next(s for s in result.steps if s.strategy == "diversity")
+    assert step.detail == {"cap": 2, "dropped": 3, "capped_documents": ["big"]}
+
+
+async def test_diversity_cap_does_not_change_document_ranking(monkeypatch):
+    """**채점 불변식**: `document_ids`는 문서의 첫 등장 순서라, 2번째 이후 히트를 지워도 내용과
+    순서가 같다. 이 상한이 ndcg/recall을 움직이지 않는다는 주장의 근거가 이 테스트다."""
+    hits = [
+        _chunk_hit("d1", "a1", 0.9),
+        _chunk_hit("d1", "a2", 0.88),
+        _chunk_hit("d2", "b1", 0.8),
+        _chunk_hit("d1", "a3", 0.7),
+        _chunk_hit("d3", "e1", 0.6),
+        _chunk_hit("d2", "b2", 0.5),
+    ]
+    _patch_vector(monkeypatch, hits)
+    monkeypatch.setattr(retrieve_module.settings, "search_max_hits_per_document", 0)  # 끈 상태
+    uncapped = await retrieve("리스크", store=_FakeStore(), now=_NOW, strategies_override=["vector"])
+
+    _patch_vector(monkeypatch, hits)
+    monkeypatch.setattr(retrieve_module.settings, "search_max_hits_per_document", 1)
+    capped = await retrieve("리스크", store=_FakeStore(), now=_NOW, strategies_override=["vector"])
+
+    assert uncapped.document_ids == capped.document_ids == ["d1", "d2", "d3"]
+    assert len(uncapped.hits) == 6 and len(capped.hits) == 3
+
+
+async def test_diversity_cap_leaves_whole_document_reading_intact(monkeypatch):
+    """`whole_document`는 "한 문서를 통째로 싣는다"가 목적이라 상한 **뒤**에서 돈다 - 여기서
+    잘리면 전략 자체가 사라진다."""
+    monkeypatch.setattr(retrieve_module.settings, "search_max_hits_per_document", 1)
+    store = _FakeStore(
+        title_hits={"report_v2.pdf": [_doc_hit("d1", 1.0)]},
+        documents={"d1": _seed_document("d1", ["첫째", "둘째", "셋째"])},
+    )
+    _patch_vector(monkeypatch, [_chunk_hit("d9", "c9", 0.9)])
+
+    result = await retrieve("report_v2.pdf 요약해줘", store=store, now=_NOW)
+
+    assert [h["chunk_id"] for h in result.hits[:3]] == ["d1-c0", "d1-c1", "d1-c2"]

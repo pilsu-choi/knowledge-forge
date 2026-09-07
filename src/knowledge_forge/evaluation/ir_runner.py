@@ -129,6 +129,13 @@ RANKING_SETTING_FIELDS: tuple[str, ...] = (
     "term_coverage_min",
     "term_rare_df_max",
     "latest_relevance_pool",
+    "age_decay_weight",
+    "age_decay_half_life_days",
+    # 문서당 히트 상한은 `document_ids`(채점 단위)를 바꾸지 않지만 - 문서의 첫 등장 순서만
+    # 보므로 - `scores`는 바꿀 수 있고(`none_correct`의 임계 판정에 쓰인다), 무엇보다 이 값이
+    # 다른 두 run은 **같은 실행이 아니다**. 해시에 넣는 기준은 "랭킹이 바뀌나"가 아니라
+    # "재현하려면 알아야 하나"다.
+    "search_max_hits_per_document",
     # 질의 임베딩이 놓이는 벡터 공간의 신원. 모델 이름은 사실상 파티션 키라
     # (`search/service.py::vector_search`의 docstring) 한 글자만 달라도 벡터 arm이
     # 에러 없이 0히트가 된다 - 그 run과 정상 run이 같은 해시면 안 된다.
