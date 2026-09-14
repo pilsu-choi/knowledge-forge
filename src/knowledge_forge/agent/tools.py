@@ -468,6 +468,7 @@ def _make_search_tool(
     *,
     provider: ChatProvider | None,
     project_id: str | None,
+    grain: str | None = None,
 ) -> ToolSpec:
     """`search`(통합 검색, `search/retrieve.py`) - `vector_search`와 같은 "database_url이 있을
     때만, 호출마다 `PipelineStore`를 열고 닫는" 패턴. 개별 도구(document/lexical/vector/sql/
@@ -488,6 +489,7 @@ def _make_search_tool(
                 provider=provider,
                 project_id=args.get("project_id") or project_id,
                 limit=limit,
+                grain=grain,
             )
         payload = result.to_dict()
         hits = []
@@ -718,6 +720,7 @@ def default_tools(
     system: str | None = None,
     *,
     include_delegate: bool = True,
+    grain: str | None = None,
 ) -> list[ToolSpec]:
     """도구 집합 조립. **검색 도구 표면은 `settings.agent_tool_surface`
     (`KF_AGENT_TOOL_SURFACE`, 기본 "minimal")가 정한다** - 나머지(파일시스템/
@@ -778,7 +781,8 @@ def default_tools(
     tools: list[ToolSpec] = []
     if database_url:
         # 1순위 검색 도구를 목록 맨 앞에 둔다 - 도구 순서는 모델이 읽는 순서이기도 하다.
-        tools.append(_make_search_tool(database_url, provider=provider, project_id=project_id))
+        # `grain`은 평가 e2e(eval/run.py)만 넘긴다 - search 도구의 벡터 조회를 골든셋 grain으로 고정.
+        tools.append(_make_search_tool(database_url, provider=provider, project_id=project_id, grain=grain))
     if settings.agent_file_search_enabled and (not database_url or not minimal):
         tools.append(_make_file_search_tool())
     if database_url:

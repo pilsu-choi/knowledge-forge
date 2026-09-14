@@ -604,8 +604,10 @@ class _Run:
         project_id: str | None,
         now: datetime,
         limit: int,
+        grain: str | None = None,
     ) -> None:
         self.store = store
+        self.grain = grain
         self.c = constraints
         self.strategies = strategies
         self.project_id = project_id
@@ -759,6 +761,7 @@ class _Run:
                 limit=self.fetch_limit,
                 since=self.since,
                 until=self.until,
+                target_kind=self.grain,
             )
             # 벡터 조회와 어휘 arm(`keyword_arm`)의 DB 왕복 두 개는 서로의 결과를 안 본다 -
             # 셋을 겹쳐서 던진다. 이게 이 파일에서 가장 큰 지연시간 항목이다: 벡터 조회에는
@@ -1058,6 +1061,7 @@ class _Run:
                 store=self.store,
                 project_id=self.project_id,
                 limit_per_subquery=self.limit,
+                target_kind=self.grain,
             )
         except Exception as exc:  # noqa: BLE001 - planner 실패가 나머지 전략 결과를 버리게 하면 안 된다
             logger.warning("plan_and_search failed, continuing without it: %s", exc)
@@ -1398,6 +1402,7 @@ async def retrieve(
     limit: int = 10,
     use_llm_constraints: bool = True,
     strategies_override: list[str] | None = None,
+    grain: str | None = None,
 ) -> RetrievalResult:
     """질의 하나를 제약 추출 → 전략 선택 → 실행 → 병합까지 돌려 `RetrievalResult`로 돌려준다.
 
@@ -1413,7 +1418,13 @@ async def retrieve(
       `["vector"]`가 진짜 순수 벡터 baseline이다. v0 ndcg@10 실측(76질의, --no-llm):
       기본 라우팅 0.893 / `vector,keyword_arm` 0.736 / `keyword_arm` 단독 0.663 /
       `vector` 단독 0.477 - 어휘 arm 없는 벡터는 하이브리드의 절반 조금 넘는 수준이다.
+    - `grain`: None이면 벡터 조회가 두 grain을 한 랭킹에서 경쟁시킨다(현행). `"chunk"`/
+      `"knowledge_object"`면 모든 벡터 조회(vector arm, multihop planner)를 그 grain의 임베딩으로만
+      좁힌다 - `KF_EMBEDDING_SOURCE`와 무관하게 이 값이 이긴다. grain 골든셋 평가의 전제다
+      (wiki/evaluation.md "grain").
     """
+    if grain not in (None, "chunk", "knowledge_object"):
+        raise ValueError(f"unknown grain: {grain!r}")
     started = time.perf_counter()
     now = now or datetime.now(timezone.utc)
     if provider is not None and use_llm_constraints:
@@ -1429,6 +1440,7 @@ async def retrieve(
         project_id=project_id,
         now=now,
         limit=limit,
+        grain=grain,
     )
 
     # 후보 생성 - document_lookup이 먼저다(anchor가 뒤 전략을 좁힌다).
