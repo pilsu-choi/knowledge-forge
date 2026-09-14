@@ -38,6 +38,56 @@ _LEVEL_ORDER = [
 # Western punctuation, documented as a known quality limitation.
 _SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?。！？])\s+")
 
+# `kss` (pecab backend, no mecab/C++ analyzer installed - see the `korean`
+# extra) is a Viterbi-style morpheme analyzer whose cost grows worse than
+# linearly in input length: ~0.3s at 300 chars, ~11s at 2,000 chars on
+# ordinary Korean prose (see wiki/adaptive-chunking.md for the full table).
+# A single long paragraph (e.g. a PDF page or Slack message with no
+# newlines) can therefore stall ingestion for minutes. _kss_windows() bounds
+# how much text a single kss call ever sees by cutting only at cheap,
+# already-mostly-safe boundaries (newlines, or _SENTENCE_BOUNDARY_RE) so a
+# paragraph at or under the cap - the overwhelming majority - is still fed
+# to kss whole, unchanged from before this cap existed.
+_KSS_WINDOW_CHARS = 1000
+_KSS_WINDOW_BOUNDARY_RE = re.compile(rf"\n|{_SENTENCE_BOUNDARY_RE.pattern}")
+
+
+def _kss_windows(text: str) -> list[str]:
+    """Partition text into <= _KSS_WINDOW_CHARS-char windows, cutting only at
+    _KSS_WINDOW_BOUNDARY_RE matches so windows are a lossless, boundary-
+    aligned partition of text (concatenating them reproduces it exactly). A
+    run longer than the cap with no boundary in it at all (e.g. one huge
+    whitespace-free token) gets a hard character cut instead - kss can't
+    find a sentence in it either way, and adaptive.py's _hard_split() will
+    re-split it by tokens further down the recursion regardless.
+    """
+    if len(text) <= _KSS_WINDOW_CHARS:
+        return [text]
+    pieces = []
+    pos = 0
+    for m in _KSS_WINDOW_BOUNDARY_RE.finditer(text):
+        pieces.append(text[pos : m.end()])
+        pos = m.end()
+    pieces.append(text[pos:])
+
+    windows = []
+    current = ""
+    for piece in pieces:
+        while len(piece) > _KSS_WINDOW_CHARS:
+            if current:
+                windows.append(current)
+                current = ""
+            windows.append(piece[:_KSS_WINDOW_CHARS])
+            piece = piece[_KSS_WINDOW_CHARS:]
+        if current and len(current) + len(piece) > _KSS_WINDOW_CHARS:
+            windows.append(current)
+            current = piece
+        else:
+            current += piece
+    if current:
+        windows.append(current)
+    return windows
+
 
 def next_level(level: HierarchyLevel) -> HierarchyLevel | None:
     idx = _LEVEL_ORDER.index(level)
@@ -189,7 +239,7 @@ def split_sentences(text: str) -> list[str]:
     try:
         import kss  # type: ignore
 
-        sentences = kss.split_sentences(text)
+        sentences = [s for window in _kss_windows(text) for s in kss.split_sentences(window)]
     except Exception:
         sentences = _SENTENCE_BOUNDARY_RE.split(text)
     return [s.strip() for s in sentences if s and s.strip()]
