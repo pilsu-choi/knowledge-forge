@@ -4,15 +4,13 @@
 랭킹(`RetrievalResult`)으로 돌려준다 - wiki/search-architecture.md "Retrieval Plan 실행기".
 
 왜 필요한가: 지금까지 "어떤 도구를 어떤 순서로 부를지"는 에이전트(LLM)가 매 턴 암묵적으로
-정했다. 그 판단은 (a) 에이전트 turn 없이 검색을 호출해야 하는 소비자 - 골든셋 IR 평가 하네스
-(`eval-ir`, wiki/search-evaluation.md (C)) - 에게는 존재하지 않고, (b) 같은 입력에 같은 출력을
-보장하지 않아 지표를 비교할 수 없다. 이 모듈은 그 판단을 `QueryConstraints`/`suggest_strategies`
+정했다. 그 판단은 같은 입력에 같은 출력을
+보장하지 않아 검색 품질을 재현 가능하게 비교할 수 없다. 이 모듈은 그 판단을 `QueryConstraints`/`suggest_strategies`
 위의 순수 함수 조합으로 꺼낸 것이다: LLM은 (1) 제약 추출 보강(`extract_constraints`)과 (2)
 멀티홉 분해(`plan_and_search`)에만 쓰이고, `provider=None`이면 둘 다 건너뛴 채 규칙만으로 돈다.
 
-반환 계약(`RetrievalResult`/`RetrievalStep`)은 `eval-ir` 쪽과 공유하는 약속이다 - 채점은
-`document_ids`(hits에서 document_id 첫 등장 순으로 중복 제거)와 `scores`/`predicted_count`만
-쓰고, `hits`/`steps`는 사람이 실패 원인을 추적하는 용도다(`evaluation/ir_metrics.score_query`).
+반환 계약(`RetrievalResult`/`RetrievalStep`): 랭킹은 `document_ids`(hits에서 document_id 첫 등장
+순으로 중복 제거)와 `scores`/`predicted_count`이고, `hits`/`steps`는 사람이 실패 원인을 추적하는 용도다.
 
 전략별 실행 규칙과 병합 결정(anchor 고정, metadata 필터 교집합, RRF)의 이유는 wiki에 표로 적어
 두었다. 여기서는 코드가 따르는 순서만 요약한다:
@@ -99,43 +97,6 @@ SOURCE_DOCUMENT_LINKS = "document_links"
 # 링크 응집도는 후보 생성 단계가 아니라 병합 **뒤**에 얹는 재정렬이라 `suggest_strategies`가
 # 고를 대상이 아니고, `strategies_override`로 켜고 끄는 대상도 아니다.
 STRATEGY_LINK_COHESION = "link_cohesion"
-
-# --- 임베딩 grain (벡터 arm이 볼 코퍼스) ---------------------------------
-#
-# `knowledge_object_embeddings`에는 두 grain이 같이 산다(`KF_EMBEDDING_SOURCE`,
-# wiki/embeddings.md "청크 기반 vs KnowledgeObject 기반"): 원시 청크 텍스트를 그대로
-# 임베딩한 `target_kind='chunk'` 행과, 추출된 KnowledgeObject의 summary/content/topics를
-# 임베딩한 `target_kind='knowledge_object'` 행이다. 기본값(None)은 **둘을 한 랭킹에서
-# 경쟁**시킨다 - 실사용에서 원하는 동작이고, 지금까지 잰 run이 전부 이 상태다.
-#
-# 평가에서만 이 축을 고정한다(`eval-ir --grain`). 두 grain이 섞인 채로는 "청크 임베딩이
-# 좋아서 오른 건가, KO 임베딩이 좋아서 오른 건가"를 답할 수 없고, 한쪽 백필이 밀려 있으면
-# (chunks 2856 / KO 임베딩 936처럼) 그 불균형이 코드 변경의 효과로 잘못 읽힌다.
-GRAIN_CHUNK = "chunk"
-GRAIN_KNOWLEDGE_OBJECT = "knowledge_object"
-# 사람이 치는 표기 → `target_kind` 값. "okf"는 OKF 트리에 파일로 떨어지는 것이 바로
-# KnowledgeObject라서 두는 별칭이고(`okf/writer.py::write_objects`), "both"는 "좁히지
-# 않음"(= 현행 동작)이다.
-GRAIN_ALIASES: dict[str, str | None] = {
-    "chunk": GRAIN_CHUNK,
-    "chunks": GRAIN_CHUNK,
-    "okf": GRAIN_KNOWLEDGE_OBJECT,
-    "ko": GRAIN_KNOWLEDGE_OBJECT,
-    "knowledge_object": GRAIN_KNOWLEDGE_OBJECT,
-    "both": None,
-    "all": None,
-}
-
-
-def normalize_grain(value: str | None) -> str | None:
-    """사람이 친 grain 표기를 `target_kind`로. 모르는 값은 `ValueError` - 오타를
-    조용히 "둘 다"로 흘리면, 좁힌 줄 알고 잰 run이 사실은 안 좁혀진 run이 된다."""
-    if value is None:
-        return None
-    key = value.strip().lower()
-    if key not in GRAIN_ALIASES:
-        raise ValueError(f"grain은 {sorted(GRAIN_ALIASES)} 중 하나여야 합니다 (받은 값: {value!r})")
-    return GRAIN_ALIASES[key]
 
 # exhaustive/negative/count에서 "전부"를 대신하는 상한 - top-k 절단은 없애되 한 질의가 테이블
 # 전체를 끌어오지는 못하게(`search/sql.py::DEFAULT_MAX_ROWS`와 같은 200).
@@ -643,7 +604,6 @@ class _Run:
         project_id: str | None,
         now: datetime,
         limit: int,
-        grain: str | None = None,
     ) -> None:
         self.store = store
         self.c = constraints
@@ -651,10 +611,6 @@ class _Run:
         self.project_id = project_id
         self.now = now
         self.limit = limit
-        # None = 두 grain 경쟁(현행). 값이 있으면 벡터 조회 전부(이 실행기의 `vector()`와
-        # planner 경유 멀티홉)가 그 `target_kind`만 본다 - 한 군데만 좁히면 "순수 grain"이
-        # 아니라 "일부만 좁힌" run이 되고, 그 run으로 잰 숫자는 비교 대상이 없다.
-        self.grain = grain
         self.wide = any(s in strategies for s in (STRATEGY_EXHAUSTIVE, STRATEGY_NEGATIVE, STRATEGY_COUNT))
         self.fetch_limit = EXHAUSTIVE_LIMIT if self.wide else limit * _OVERFETCH
         self.since = constraints.time_range.start if constraints.time_range else None
@@ -803,7 +759,6 @@ class _Run:
                 limit=self.fetch_limit,
                 since=self.since,
                 until=self.until,
-                target_kind=self.grain,
             )
             # 벡터 조회와 어휘 arm(`keyword_arm`)의 DB 왕복 두 개는 서로의 결과를 안 본다 -
             # 셋을 겹쳐서 던진다. 이게 이 파일에서 가장 큰 지연시간 항목이다: 벡터 조회에는
@@ -852,7 +807,6 @@ class _Run:
             error=error,
             min_score=floor,
             dropped_below_min_score=dropped,
-            grain=self.grain,
         )
 
     async def _keyword_arm_fetch(self, query: str) -> _KeywordArmHits:
@@ -1104,7 +1058,6 @@ class _Run:
                 store=self.store,
                 project_id=self.project_id,
                 limit_per_subquery=self.limit,
-                target_kind=self.grain,
             )
         except Exception as exc:  # noqa: BLE001 - planner 실패가 나머지 전략 결과를 버리게 하면 안 된다
             logger.warning("plan_and_search failed, continuing without it: %s", exc)
@@ -1445,13 +1398,12 @@ async def retrieve(
     limit: int = 10,
     use_llm_constraints: bool = True,
     strategies_override: list[str] | None = None,
-    grain: str | None = None,
 ) -> RetrievalResult:
     """질의 하나를 제약 추출 → 전략 선택 → 실행 → 병합까지 돌려 `RetrievalResult`로 돌려준다.
 
-    - `provider=None`: 규칙 기반 제약 추출만, multihop(planner)은 건너뜀 - 평가 하네스의 기준선.
+    - `provider=None`: 규칙 기반 제약 추출만, multihop(planner)은 건너뜀.
       `use_llm_constraints=False`면 provider가 있어도 제약 보강만 끈다(planner는 그대로).
-    - `now`: 상대 시간 표현("최근 3일", "올해")의 기준. 골든셋의 `as_of`를 넣어 재현한다.
+    - `now`: 상대 시간 표현("최근 3일", "올해")의 기준. 테스트는 고정값을 넣어 재현한다.
     - `limit`: 최종 `document_ids` 길이 상한(exhaustive/negative/count면 `EXHAUSTIVE_LIMIT`까지
       컷오프 없음). 소스별 조회는 `_OVERFETCH`배로 더 가져와 병합 뒤에도 limit개가 남게 한다.
     - `strategies_override`: `suggest_strategies` 대신 이 목록만 실행(A/B용). 이름은
@@ -1461,11 +1413,6 @@ async def retrieve(
       `["vector"]`가 진짜 순수 벡터 baseline이다. v0 ndcg@10 실측(76질의, --no-llm):
       기본 라우팅 0.893 / `vector,keyword_arm` 0.736 / `keyword_arm` 단독 0.663 /
       `vector` 단독 0.477 - 어휘 arm 없는 벡터는 하이브리드의 절반 조금 넘는 수준이다.
-    - `grain`: 벡터 조회가 볼 임베딩 grain(`target_kind`). None(기본)이면 청크 grain과 KO
-      grain이 한 랭킹에서 경쟁한다. `"chunk"`/`"knowledge_object"`로 좁히면 그 grain만 본다 -
-      `eval-ir --grain`이 쓰는 축이고, 사람이 치는 표기는 `normalize_grain()`이 옮긴다.
-      어휘 arm(`document_search`/`lexical_search`)은 임베딩을 쓰지 않으므로 이 값과 무관하다:
-      `--grain chunk`가 "청크만 본다"는 뜻이 아니라 "**벡터 arm이** 청크 임베딩만 본다"는 뜻이다.
     """
     started = time.perf_counter()
     now = now or datetime.now(timezone.utc)
@@ -1482,7 +1429,6 @@ async def retrieve(
         project_id=project_id,
         now=now,
         limit=limit,
-        grain=grain,
     )
 
     # 후보 생성 - document_lookup이 먼저다(anchor가 뒤 전략을 좁힌다).

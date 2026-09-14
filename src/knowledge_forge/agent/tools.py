@@ -14,7 +14,6 @@ delegating IS running a nested agent turn to completion. See
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from knowledge_forge.agent.memory import write_memory
@@ -469,14 +468,11 @@ def _make_search_tool(
     *,
     provider: ChatProvider | None,
     project_id: str | None,
-    now: datetime | None = None,
-    grain: str | None = None,
 ) -> ToolSpec:
     """`search`(통합 검색, `search/retrieve.py`) - `vector_search`와 같은 "database_url이 있을
     때만, 호출마다 `PipelineStore`를 열고 닫는" 패턴. 개별 도구(document/lexical/vector/sql/
     read_document)를 모델이 고르는 대신 질의 제약(`search/constraints.py`)으로 전략을 결정론적으로
-    조합한다 - 평가 하네스가 쓰는 것과 같은 경로라, 여기서 좋아진 것은 평가 지표에도 그대로
-    반영된다. `provider`가 있으면 제약 보강과 멀티홉 분해에 쓴다(없으면 규칙만).
+    조합한다. `provider`가 있으면 제약 보강과 멀티홉 분해에 쓴다(없으면 규칙만).
 
     결과는 `RetrievalResult.to_dict()`에서 hits 상위 limit개 + steps 요약만 싣는다 - 청크 원문은
     검색 소스가 이미 500자로 자르지만(`postgres_store.py::_CHUNK_HIT_SUMMARY_CHARS`) 여기서도
@@ -492,13 +488,6 @@ def _make_search_tool(
                 provider=provider,
                 project_id=args.get("project_id") or project_id,
                 limit=limit,
-                # 평가 하네스가 골든셋의 as_of를 내려보낼 때만 값이 있다. 실사용에서는
-                # None이라 `retrieve()`가 지금 시각을 쓴다 - "어제"의 기준을 호출자가
-                # 정할 수 있어야 상대 시간 질의를 재현 가능하게 채점할 수 있다.
-                now=now,
-                # 같은 이유로 평가만 값을 넣는다(`eval-ir --grain`). 실사용에서는 None이라
-                # 벡터 arm이 두 임베딩 grain을 한 랭킹에서 경쟁시킨다.
-                grain=grain,
             )
         payload = result.to_dict()
         hits = []
@@ -729,8 +718,6 @@ def default_tools(
     system: str | None = None,
     *,
     include_delegate: bool = True,
-    now: datetime | None = None,
-    grain: str | None = None,
 ) -> list[ToolSpec]:
     """도구 집합 조립. **검색 도구 표면은 `settings.agent_tool_surface`
     (`KF_AGENT_TOOL_SURFACE`, 기본 "minimal")가 정한다** - 나머지(파일시스템/
@@ -749,8 +736,7 @@ def default_tools(
         (+ file_search - 같은 조건)
 
     왜 기본을 좁히는가: `search/retrieve.py`는 "어떤 검색을 어떤 순서로 돌릴지"를
-    LLM에게서 빼앗아 결정론적 함수로 만들려고 존재하는 모듈이고(그 docstring),
-    골든셋 IR 평가가 재는 유일한 경로다(wiki/search-evaluation.md). 그런데 도구
+    LLM에게서 빼앗아 결정론적 함수로 만들려고 존재하는 모듈이다(그 docstring). 그런데 도구
     목록이 개별 검색 도구를 여덟 개 늘어놓으면 그 결정을 그대로 모델에게 되돌려
     주는 셈이라 - 모델이 고른 조합은 측정된 적이 없고 재현되지도 않는다.
     `sql_search`만 예외로 남긴 이유는 집계(COUNT/GROUP BY)와 임의 속성 조건이
@@ -777,11 +763,6 @@ def default_tools(
     넘겨서 turn 사이에 계획이 유지되게 한다 - `history`가 유지되는 것과 같은
     이유.
 
-    `grain`은 `search` 도구가 부르는 `retrieve()`의 임베딩 grain 축을 그대로
-    내려보낸다(`search/retrieve.py::normalize_grain`). 실사용 호출자는 넘기지
-    않고(=None, 두 grain 경쟁), `eval-ir --grain`만 값을 넣는다 - 파이프라인 run과
-    에이전트 run을 같은 코퍼스 위에서 비교하기 위해서다.
-
     `write_memory`는 `project_id`로 스코프된다 - `project_id`가 None이면
     "_global" 기억 파일에 쓴다(`agent/memory.py`).
 
@@ -797,9 +778,7 @@ def default_tools(
     tools: list[ToolSpec] = []
     if database_url:
         # 1순위 검색 도구를 목록 맨 앞에 둔다 - 도구 순서는 모델이 읽는 순서이기도 하다.
-        tools.append(
-            _make_search_tool(database_url, provider=provider, project_id=project_id, now=now, grain=grain)
-        )
+        tools.append(_make_search_tool(database_url, provider=provider, project_id=project_id))
     if settings.agent_file_search_enabled and (not database_url or not minimal):
         tools.append(_make_file_search_tool())
     if database_url:

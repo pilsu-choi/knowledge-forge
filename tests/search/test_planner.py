@@ -255,9 +255,7 @@ async def test_plan_and_search_uses_vector_search_when_store_is_given(monkeypatc
     async def _fake_file_search(query, project_id=None, type=None, limit=20, since=None, until=None):
         return [{"path": "p1"}]
 
-    async def _fake_vector_search(
-        query, store, project_id=None, type=None, limit=10, since=None, until=None, target_kind=None
-    ):
+    async def _fake_vector_search(query, store, project_id=None, type=None, limit=10, since=None, until=None):
         return [{"knowledge_object_id": "ko1", "score": 0.9}]
 
     monkeypatch.setattr("knowledge_forge.search.planner.file_search", _fake_file_search)
@@ -282,9 +280,7 @@ async def test_plan_and_search_deduplicates_a_knowledge_object_both_sources_find
     async def _fake_file_search(query, project_id=None, type=None, limit=20, since=None, until=None):
         return [{"path": "objects/decision/p1.md", "title": "실패 원인", "knowledge_object_id": "ko-shared"}]
 
-    async def _fake_vector_search(
-        query, store, project_id=None, type=None, limit=10, since=None, until=None, target_kind=None
-    ):
+    async def _fake_vector_search(query, store, project_id=None, type=None, limit=10, since=None, until=None):
         return [{"knowledge_object_id": "ko-shared", "score": 0.9}]
 
     monkeypatch.setattr("knowledge_forge.search.planner.file_search", _fake_file_search)

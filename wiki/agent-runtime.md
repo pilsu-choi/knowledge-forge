@@ -39,7 +39,7 @@
 src/knowledge_forge/
     chat_provider.py       # Message/ToolCall/AssistantTurn/ToolSpec, ChatProvider(ABC) - agent/search 공용
 src/knowledge_forge/search/
-    retrieve.py            # retrieve() - 제약/전략을 결정론적으로 조합하는 통합 실행기 (agent `search` 도구 + eval-ir 공용)
+    retrieve.py            # retrieve() - 제약/전략을 결정론적으로 조합하는 통합 실행기 (agent `search` 도구가 씀)
     constraints.py          # QueryConstraints/suggest_strategies() - 질의 -> 제약 + 전략 이름 목록
     document.py            # read_document() - 문서 하나의 청크 전체를 순서대로 (document expansion)
     service.py            # file_search() - OKF 파일 트리 키워드/frontmatter 검색, Postgres 불필요
@@ -93,8 +93,7 @@ CLI: `knowledge-forge agent "질문" [--project-id ID] [--provider anthropic|ope
 도구만 여덟 개(`file_search`/`vector_search`/`sql_search`/`document_search`/`lexical_search`/
 `read_document`/`search`/`plan_search`)를 늘어놓게 됐는데, 이건 그 사이에 생긴 `search/retrieve.py`
 와 정면으로 어긋난다: 그 모듈은 **"어떤 검색을 어떤 순서로 돌릴지"라는 판단을 LLM에게서 빼앗아
-결정론적 함수로 만들려고** 존재하고(그 docstring), 골든셋 IR 평가(`eval-ir`,
-[`search-evaluation.md`](search-evaluation.md))가 재는 유일한 경로다. 도구 목록이 개별 도구를
+결정론적 함수로 만들려고** 존재한다(그 docstring). 도구 목록이 개별 도구를
 여덟 갈래로 펼치면 그 판단이 그대로 모델에게 되돌아간다 — 모델이 고른 조합은 측정된 적이 없고
 같은 질의에 같은 답을 준다는 보장도 없다.
 
@@ -142,9 +141,9 @@ CLI: `knowledge-forge agent "질문" [--project-id ID] [--provider anthropic|ope
   "그런 문서가 없다"로 읽고 답을 접는다 — 도구가 없는 것보다 나쁘다.
 - 트리가 있어도 Postgres 코퍼스와 어긋나 있을 수 있다. 인제스트와 `--okf-dir` 출력은 서로
   독립이라 한쪽만 최신인 상태가 정상적으로 생기고, 그러면 두 도구가 서로 다른 사실을 답한다.
-- 골든셋 평가(`eval-ir --mode agent`)의 채점 단위는 `document_id`인데 `file_search` 히트에는
-  그게 없다(`retrieve()`가 planner 경유 `file_search` 히트를 같은 이유로 버린다). 즉 에이전트가
-  이 도구로만 찾아낸 문서는 점수에 반영되지 않으면서 iteration 예산만 쓴다.
+- `file_search` 히트에는 `document_id`가 없다(`retrieve()`가 planner 경유 `file_search` 히트를
+  같은 이유로 버린다). 즉 에이전트가 이 도구로만 찾아낸 문서는 다른 검색 결과와 같은 단위로
+  식별/집계되지 않으면서 iteration 예산만 쓴다.
 
 OKF 전용(Postgres 없는) 배포에서는 이게 유일한 검색 경로이므로 그때는
 `KF_AGENT_FILE_SEARCH_ENABLED=true`로 켜야 한다. 도구 자체와 그 배선은 그대로 남아 있고
@@ -184,7 +183,7 @@ description/tags(가중치 2) > body(가중치 1) 순으로 랭킹하고, `type`
 연속된 `tool` 메시지를 user 턴 하나로 합칠 때 이 순서에 의존한다.
 
 `stop_reason="max_tokens"`로 잘린 답변은 버리지 않고 반환하되 `"[잘림: ...]"` 표시를 붙인다 -
-호출자(CLI 사용자, `delegate_task`의 부모 에이전트, search_log)가 미완성 답변을 완결된 답변으로
+호출자(CLI 사용자, `delegate_task`의 부모 에이전트)가 미완성 답변을 완결된 답변으로
 오인할 수 없게 하기 위한 것.
 
 ### `agent/compaction.py::compact_messages`

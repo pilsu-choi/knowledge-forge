@@ -36,7 +36,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 
 from knowledge_forge.agent.compaction import compact_messages
 from knowledge_forge.agent.providers.base import AssistantTurn, ChatProvider, Message, ToolCall, ToolSpec
@@ -58,11 +57,6 @@ _TOOL_BUDGET_EXHAUSTED_NOTE = (
 
 _TRUNCATED_ANSWER_NOTE = "\n\n[잘림: 모델의 max_tokens 한도에 걸려 답변이 중간에서 끊겼다 - 위 내용은 미완성이다.]"
 
-_TOOL_RESULT_RE = re.compile(
-    r'^<tool_result tool="(?P<tool>[^"]*)">\n.*?\n---\n(?P<payload>.*)\n---\n</tool_result>$', re.DOTALL
-)
-
-
 def _wrap_untrusted(tool_name: str, result: object) -> str:
     """Tool output is untrusted content (it can come straight from an
     indexed document, which could contain a prompt-injection attempt) - this
@@ -70,28 +64,6 @@ def _wrap_untrusted(tool_name: str, result: object) -> str:
     it goes back into the conversation, rather than splicing it in raw."""
     payload = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
     return f'<tool_result tool="{tool_name}">\n{_UNTRUSTED_NOTE}\n---\n{payload}\n---\n</tool_result>'
-
-
-def parse_tool_result(content: str) -> tuple[str, object] | None:
-    """Inverse of `_wrap_untrusted` - `None` if `content` isn't one of its
-    envelopes, otherwise `(tool_name, payload)` with `payload` JSON-decoded
-    when it round-trips as JSON (a handler's structured return value) and
-    left as the raw string otherwise (a handler's plain-string return value,
-    or the `f"error: {exc}"` a failed tool call produces).
-
-    Exists for `evaluation/search_log.py` (wiki/search-evaluation.md (A)),
-    which reconstructs what a finished `run_agent()` turn actually searched
-    from its returned `messages` - `run_agent` itself has no logging hook
-    and never calls this; parsing happens only after the loop is done."""
-    match = _TOOL_RESULT_RE.match(content)
-    if match is None:
-        return None
-    payload_text = match.group("payload")
-    try:
-        payload: object = json.loads(payload_text)
-    except json.JSONDecodeError:
-        payload = payload_text
-    return match.group("tool"), payload
 
 
 async def _dispatch(call: ToolCall, tools_by_name: dict[str, ToolSpec]) -> str:
@@ -128,7 +100,7 @@ def _finalize(turn: AssistantTurn, messages: list[Message]) -> str:
     one. `run_agent`'s signature is fixed by its callers (agent/runtime.py,
     and agent/tools.py's `delegate_task`, which feeds the answer straight
     back to a parent model), so the marker goes IN the returned text: every
-    caller - human reader, parent agent, search_log - sees it without having
+    caller - human reader, parent agent - sees it without having
     to opt in. The transcript keeps the model's raw text, since that is what
     the model actually said."""
     messages.append(Message(role="assistant", content=turn.text))

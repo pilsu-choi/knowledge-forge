@@ -11,7 +11,7 @@ Grounding까지)을 레이어별로 정리한다. 실제 프로덕션 엔터프�
 
 | 레이어 | 상태 |
 |---|---|
-| ① Query Understanding (intent/entity/temporal) | **부분 구현** — `search/constraints.py`가 질의를 구조화된 제약(`QueryConstraints`: 시간 범위/작성자/식별자/문서 참조/소스·문서 타입)과 의도 플래그(latest/exhaustive/count/summary/whole_document/negative/comparison/multihop)로 분해하고 `suggest_strategies()`로 검색 전략 이름을 내놓는다(규칙 1단계 + 선택적 LLM 보강 2단계). temporal parsing(`search/temporal.py`)을 재사용. 그 전략 목록을 실제로 실행해 하나의 랭킹으로 합치는 실행기가 `search/retrieve.py`(아래 "Retrieval Plan 실행기" 절, 에이전트 `search` 도구와 `eval-ir`가 공유). 아직 없는 것: conversation-aware 질의 복원, 동의어/약어 확장 |
+| ① Query Understanding (intent/entity/temporal) | **부분 구현** — `search/constraints.py`가 질의를 구조화된 제약(`QueryConstraints`: 시간 범위/작성자/식별자/문서 참조/소스·문서 타입)과 의도 플래그(latest/exhaustive/count/summary/whole_document/negative/comparison/multihop)로 분해하고 `suggest_strategies()`로 검색 전략 이름을 내놓는다(규칙 1단계 + 선택적 LLM 보강 2단계). temporal parsing(`search/temporal.py`)을 재사용. 그 전략 목록을 실제로 실행해 하나의 랭킹으로 합치는 실행기가 `search/retrieve.py`(아래 "Retrieval Plan 실행기" 절, 에이전트 `search` 도구가 씀). 아직 없는 것: conversation-aware 질의 복원, 동의어/약어 확장 |
 | ② Query Planning (multi-hop 분해) | **구현됨** — `search/planner.py`, 아래 절 참고 |
 | Query Routing (소스 선택) | **구현됨** — `search/router.py`, 아래 절 참고 |
 | ③ Hybrid Retrieval (BM25+Vector+Metadata+Graph) | **부분 구현** — keyword(`file_search`)+semantic(`vector_search`)+metadata(`project_id`/`type`/시간 범위) 병행 실행 + RRF reranking까지 있음. 문서 제목/원문 청크의 pg_trgm 렉시컬 검색(`document_search`/`lexical_search`)도 있음. Graph 전용 API(`graph_search`)는 미구현이지만 `sql_search`로 `relations` 테이블을 직접 JOIN하는 것으로 상당 부분 대체 가능 |
@@ -21,8 +21,8 @@ Grounding까지)을 레이어별로 정리한다. 실제 프로덕션 엔터프�
 | ⑥ Temporal Search (자연어 시간 표현 → 범위 필터 / Text-to-SQL) | **구현됨** — `search/temporal.py`(자연어→범위 필터)와 `search/sql.py`(Text-to-SQL, `sql_search` 도구)로 시간 범위와 속성값 조건을 SQL WHERE/JOIN 하나로 결합하는 temporal join까지 가능해졌다. 아래 절 참고 |
 | Query Routing 확장 (SQL/Web 소스) | **부분 구현** — SQL 소스는 `sql_search`로 추가됐다(단, `search/router.py::route_query`의 자동 라우팅 대상에는 아직 없음 - 모델이 직접 판단해서 호출). Web 소스는 여전히 미구현 |
 | Evidence Grounding / Citation | **약하게 구현** — 시스템 프롬프트가 path/knowledge_object_id 인용을 지시할 뿐, claim-level 매칭/인용 파이프라인은 없음 |
-| Search Evaluation / Feedback Loop | **부분 구현** — 로깅(`search_log`/`search_feedback`)과 LLM-judge 기반 groundedness/citation 자동 평가는 구현됨, 골드셋 필요한 Recall/Precision/MRR/NDCG와 온라인 groundedness gate는 설계만 — [`search-evaluation.md`](search-evaluation.md) 참고 |
-| Iterative / Agentic Retrieval | **이미 구현됨**(암묵적 판단) — 아래 절 참고. 명시적 groundedness gate로 강화하는 안은 [`search-evaluation.md`](search-evaluation.md) (D) |
+| Search Evaluation / Feedback Loop | **미구현 — 재설계 예정 (2026-09-14 기존 구현 삭제)** — 로깅/LLM-judge 자동 평가/골든셋 IR 지표를 포함해 전면 삭제됐다. 재구현 인계 사항은 [`roadmap.md`](roadmap.md) 참고 |
+| Iterative / Agentic Retrieval | **이미 구현됨**(암묵적 판단) — 아래 절 참고. 명시적 groundedness gate로 강화하는 안은 설계만 남아 있다(평가 하네스 자체는 재구현 예정) |
 
 ---
 
@@ -41,10 +41,11 @@ query("그 프로젝트는?" → 이전 대화의 entity 복원)까지 포함하
 만들면 중복"이라고 적고, 뽑아낼 시점을 (a) 에이전트 turn 없이 검색을 호출하는 소비자가 생길 때,
 (b) LLM 판단만으로는 부정확한 구조화된 파싱이 필요할 때로 못 박아 두었다. 둘 다 왔다.
 
-- (a) **평가 하네스 = 에이전트 없는 소비자.** `search-evaluation.md`의 골든셋 기반 IR 지표
-  (Recall/MRR/NDCG)는 "질의 → 검색 결과"를 LLM 판단 없이 같은 입력에 같은 출력으로 재현해야
-  지표가 의미를 가진다. 에이전트가 매 턴 암묵적으로 하던 "이건 특정 문서 요약이다 / 작성자
-  필터다 / 개수 질문이다" 판단을 결정론적 함수로 꺼내지 않으면 평가할 대상 자체가 없다.
+- (a) **평가 하네스 = 에이전트 없는 소비자.** 골든셋 기반 IR 지표(Recall/MRR/NDCG)는
+  "질의 → 검색 결과"를 LLM 판단 없이 같은 입력에 같은 출력으로 재현해야 지표가 의미를
+  가진다. 에이전트가 매 턴 암묵적으로 하던 "이건 특정 문서 요약이다 / 작성자
+  필터다 / 개수 질문이다" 판단을 결정론적 함수로 꺼내지 않으면 평가할 대상 자체가 없다
+  (이 평가 하네스는 2026-09-14 삭제, 재구현 예정 — [`roadmap.md`](roadmap.md)).
 - (b) **검색 유형 표의 절반은 유사도 검색으로 원리적으로 못 잡는다.** `query-types.md`의
   20개 유형 중 Navigational/Aggregation/Set Query/Negative/Latest/Version/Whole-document Summary는
   임베딩 유사도가 아니라 제목 조회, COUNT, exhaustive 수집, 정렬, 문서 전체 읽기가 필요하다.
@@ -100,16 +101,16 @@ strategies_override=None) -> RetrievalResult`. 위 전략 이름 목록을 실�
 랭킹**으로 합치는 함수이며, 에이전트 루프 없이 호출된다.
 
 **왜 필요했나.** 소비자가 둘이고 둘 다 "어떤 도구를 어떤 순서로 부를지"를 LLM 판단에 맡길 수 없다.
-(1) 골든셋 IR 평가 하네스(`eval-ir`, [`search-evaluation.md`](search-evaluation.md) (C))는 에이전트
-턴 없이 질의 → `document_ids` 랭킹을 얻어야 하고, 같은 입력에 같은 출력이어야 지표 비교가
-성립한다. (2) 에이전트에게 도구가 7개(document/lexical/vector/sql/read_document/plan/file)로
+(1) 골든셋 IR 평가 하네스(에이전트 턴 없이 질의 → `document_ids` 랭킹을 얻어야 하고, 같은
+입력에 같은 출력이어야 지표 비교가 성립하는 소비자 — 이 하네스 자체는 2026-09-14 삭제,
+재구현 예정. [`roadmap.md`](roadmap.md) 참고). (2) 에이전트에게 도구가 7개(document/lexical/vector/sql/read_document/plan/file)로
 늘면서 "이 질의엔 뭘 먼저?"를 매 턴 다시 추론하는 비용과 편차가 커졌다 - `search` 도구
 (`agent/tools.py::_make_search_tool`)는 이 실행기를 그대로 감싼 것이라, 실행기가 좋아지면
 평가 지표와 에이전트 경험이 같이 좋아진다(분리돼 있으면 둘이 따로 논다). LLM은 (a) 제약 보강
 (`extract_constraints`), (b) 멀티홉 분해(`plan_and_search`)에만 쓰이고 `provider=None`이면 둘 다
 건너뛴다 - 결정론적 기준선.
 
-**반환 계약** (`eval-ir`와 공유, 변경하려면 양쪽 동시에): `RetrievalResult{query, constraints
+**반환 계약**: `RetrievalResult{query, constraints
 (QueryConstraints.to_dict()), strategies, steps: [RetrievalStep{strategy, source, n_hits, detail}],
 hits(각 hit에 document_id/target_kind/score 필수), document_ids(hits에서 첫 등장 순 중복 제거 -
 채점 단위), scores(문서별 최고 점수), predicted_count(wants_count일 때), documents_read
@@ -135,8 +136,8 @@ hits(각 hit에 document_id/target_kind/score 필수), document_ids(hits에서 �
 **어휘 arm (`keyword_arm`)**:
 
 `semantic_query`를 제목·본문에도 거는 하이브리드의 어휘 쪽 팔이다. 원래는 vector가 빈손일 때만
-도는 degrade 경로였고(임베딩 0행 배포용), 상시 arm으로 승격한 경위는
-[`search-evaluation.md`](search-evaluation.md) 다섯 번째 실측에 있다. 두 단계로 돈다.
+도는 degrade 경로였고(임베딩 0행 배포용), 상시 arm으로 승격한 경위는 골든셋 다섯 번째
+실측에서 나왔다(그 평가 하네스는 2026-09-14 삭제, 재구현 예정). 두 단계로 돈다.
 
 1. **전체 질의**: `semantic_query` 문자열 그대로 `document_search`(제목) + `lexical_search`(본문).
 2. **term 분해** (`_term_fallback`) — 1단계가 **양쪽 다 빈손일 때만**. `keyword_terms`가 질의를
@@ -154,8 +155,8 @@ conversation_thread(0.250)/sequence(0.343)가 낮았던 실제 원인이 이것�
 더하므로, 나누면 "질의의 term을 더 많이 담은 문서"가 자동으로 위로 온다. 한 리스트에 몰아넣으면
 그 신호가 사라진다.
 
-세 개의 안전장치가 붙어 있다. 전부 실측으로 필요성이 확인된 것이다(수치는
-`search-evaluation.md`의 스윕 표):
+세 개의 안전장치가 붙어 있다. 전부 실측으로 필요성이 확인된 것이다(스윕 표는 삭제된
+평가 하네스의 산출물이었다 — 재구현 예정, [`roadmap.md`](roadmap.md) 참고):
 
 - **coverage 임계값** (`KF_TERM_COVERAGE_RATIO` 기본 2/3, `KF_TERM_COVERAGE_MIN` 기본 2):
   질의의 term을 `ceil(term수 × ratio)`개 이상 담은 문서만 후보로 남긴다. 없으면 term 하나만 스친
@@ -237,7 +238,8 @@ term 분해로 내려간 것이다). 게이트를 여기까지 확장하지 않�
   본문에 "Google Drive"/"드라이브"를 언급하는 문서의 source_type은 **gmail 11건 / slack 4건 /
   google_drive 3건**이었다. Drive에 저장된 파일은 본문에 "Google Drive"라고 쓸 이유가 없고, Drive
   공유요청 알림 메일은 항상 쓴다. 반대로 작성자/참여자/시간/제목 종류는 질의가 명시한 구조적
-  술어라 교집합이 0이어도 필터 쪽을 믿는다(자세한 근거는 wiki/search-evaluation.md의 회귀 기록).
+  술어라 교집합이 0이어도 필터 쪽을 믿는다(자세한 근거는 삭제된 평가 하네스의 회귀 기록에
+  있었다 — 재구현 예정, [`roadmap.md`](roadmap.md) 참고).
 - `limit`은 최종 `document_ids` 길이다. 소스별 조회는 3배 over-fetch해서 필터/anchor 좁히기 뒤에도
   limit개가 남게 한다.
 - `strategies_override`는 목록에 적힌 전략**만** 돌린다 - 어휘 arm도 `"keyword_arm"`으로 적어야
@@ -360,8 +362,8 @@ router가 필요한 곳은 **프로그램적으로 생성된**(모델 턴이 없
 
 "충분한가?"의 판단 자체는 여전히 모델의 암묵적 자기평가에 전적으로 의존한다 - 강제되는 검증
 단계는 없다. 답변 확정 직전에 claim-evidence 매칭으로 한 번 더 검증하는 명시적 groundedness
-gate를 얹는 안은 [`search-evaluation.md`](search-evaluation.md) (D)에 설계해뒀다 - 아래
-Search Evaluation / Feedback Loop 절과 판정기를 공유하는 옵션 확장이라 그쪽에서 같이 다룬다.
+gate는 설계안만 있었으나, 그 설계가 실려 있던 평가 서브시스템이 2026-09-14 전면 삭제됐다 -
+재구현 시 아래 Search Evaluation / Feedback Loop 절과 함께 다시 설계한다.
 
 ## ③ Hybrid Retrieval — 부분 구현
 
@@ -421,7 +423,7 @@ Search Evaluation / Feedback Loop 절과 판정기를 공유하는 옵션 확장
     여럿이면 전부 돌려주고 모델이 사용자에게 되묻게 한다. `lexical_search`는 `vector_search`의
     chunk grain 히트와 같은 키(`target_kind:"chunk"`, `document_id`, `chunk_id`, `summary`=일치
     지점 주변 500자, `score`)라 `search/rerank.py`가 그대로 병합할 수 있다. 둘 다 `document_id`를
-    항상 싣는다 - [`search-evaluation.md`](search-evaluation.md) (C) 골든셋의 채점 단위.
+    항상 싣는다 - 골든셋 채점 단위였다(평가 하네스는 재구현 예정).
   - `search/router.py`: `_ID_LIKE_RE`가 못 잡던 숫자 시작/한글 혼합 식별자(`2025_SH_업무_보고서`
     - `_`/`-`로 이어진 3토큰 이상)와 확장자(.pdf/.xlsx/.docx/.pptx/.hwp…) 포함 토큰을
     `has_exact_match_signal()`의 정확 일치 신호로 추가했다. `plan_search`의 하위 질의 라우팅은
@@ -571,7 +573,8 @@ GUC가 없는 pgvector(<0.8)에서는 경고만 남기고 넘어간다.
 
 **고치지 않았지만 반드시 알고 있어야 하는 것 두 가지** — 둘 다 "임베딩 0행" 시절의 골든셋
 점수(v0 ndcg@10 0.865)를 임베딩을 채운 뒤와 비교할 때 지표를 움직인다. 임계값을 찍어 맞히는
-대신 `eval-ir`로 재고 나서 결정할 문제라 지금은 동작만 테스트로 고정해 두었다:
+대신 골든셋 IR 평가로 재고 나서 결정할 문제인데, 그 평가 하네스는 2026-09-14 삭제되어
+재구현이 먼저다 - 지금은 동작만 테스트로 고정해 두었다:
 
 1. **키워드 fallback이 사실상 영원히 안 돈다.** `_Run._keyword_fallback`/`_term_fallback`은
    벡터가 0히트일 때만 도는 degrade 경로인데(임베딩 0행 상태를 위한 것), ANN은 관련도와 무관하게
@@ -587,7 +590,8 @@ GUC가 없는 pgvector(<0.8)에서는 경고만 남기고 넘어간다.
 "보낸"(`nonghyup.com 도메인 발신자가 보낸 메일`), "내용"(`… .pptx 내용을 요약해줘`)처럼 의미가
 남지 않은 잔여 토큰으로 벡터가 붙는 경우가 있다(6자 이하 7건). 다만 **길이 기준으로 막으면 안
 된다** - 같은 구간에 "동양생명"/"광주은행"/"인수인계"처럼 정상적인 4자 개념어가 섞여 있다.
-올바른 수정은 `_FILLER_RE`에 잔여 기능어를 더하는 쪽이고, 그건 `eval-ir` 회귀로 재고 나서 할 일.
+올바른 수정은 `_FILLER_RE`에 잔여 기능어를 더하는 쪽이고, 그건 골든셋 IR 회귀로 재고 나서
+할 일 - 그 평가 하네스는 2026-09-14 삭제되어 재구현이 먼저다.
 
 **실적재 확인** (2026-09-04, 청크 936개): 실제로 저장된 `embedding_model`은
 `openai/text-embedding-3-small`(OpenRouter의 모델 id)이고 `Settings.embedding_model`의 기본값은
@@ -774,19 +778,12 @@ WHERE e.content->>'name' = '유지희'
 claim을 추출해 evidence와 자동으로 매칭/인용하는 별도 단계(Claim extraction → Evidence matching
 → Citation)는 없다. 모델이 지시를 무시하면 인용 없는 답이 나올 수 있다.
 
-## Search Evaluation / Feedback Loop — 부분 구현
+## Search Evaluation / Feedback Loop — 미구현, 재설계 예정 (2026-09-14 기존 구현 삭제)
 
-`storage/eval_store.py::EvalStore`가 모든 에이전트 턴을 `search_log`에 기록하고(질의/답변/
-근거/도구 호출 시퀀스/지연시간), `--interactive` REPL의 `/feedback`과 `knowledge-forge
-feedback` 커맨드로 사용자 평가(👍/👎 + 코멘트)를 붙일 수 있다. `evaluation/judge.py`가
-LLM-as-judge로 답변의 각 claim을 근거와 대조해 groundedness/citation 점수를 매기고
-(`knowledge-forge eval` 배치, 골드셋 불필요), `eval_score`에 저장한다 - 쿼리별 실패 원인
-추적의 최소 형태(사람이 `search_log`/`eval_score`를 직접 읽는 것)는 이제 가능하다.
-
-아직 없는 것: Recall/Precision/MRR/NDCG(relevance judgment 골드셋이 있어야 정의되는 지표라
-별도 사람 큐레이션이 선행돼야 함)와, 위 Iterative Retrieval을 강화하는 온라인 groundedness
-gate(judge를 답변 확정 전 실시간으로 돌려 재검색을 강제하는 것 - 지금은 오프라인 배치로만
-돈다). 둘 다 [`search-evaluation.md`](search-evaluation.md)의 (C)/(D)에 설계만 남아있다.
+에이전트 턴 로깅(`search_log`/`search_feedback`), 사람 피드백(`/feedback`,
+`knowledge-forge feedback`), LLM-as-judge groundedness/citation 채점(`knowledge-forge eval`),
+골든셋 기반 Recall/Precision/MRR/NDCG IR 평가 하네스(`eval-ir`/`eval-gen`) 전체가 2026-09-14
+전면 삭제됐다 - 재구현부터 다시 설계한다. 인계 사항은 [`roadmap.md`](roadmap.md) 참고.
 
 ## 왜 지금 여기서 멈추는가
 

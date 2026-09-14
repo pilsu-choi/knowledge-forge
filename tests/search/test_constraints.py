@@ -629,7 +629,7 @@ def test_keyword_terms_respects_max_terms():
 
 
 def test_constraints_module_imports_standalone_without_agent_or_storage():
-    """test_layering.py와 같은 이유(search/*는 agent/* 아래) + 평가 하네스가 DB/임베딩 없이 이
+    """test_layering.py와 같은 이유(search/*는 agent/* 아래) + DB/임베딩 없이 이
     모듈만 단독으로 쓸 수 있어야 하므로 agent/storage/planner가 딸려 오지 않는지 확인.
     `search/service.py`는 `search/__init__.py`가 패키지 차원에서 import하므로 검사 대상에서 뺀다."""
     import subprocess

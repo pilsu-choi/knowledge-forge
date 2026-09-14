@@ -103,8 +103,8 @@ class Settings(BaseSettings):
     # vector가 빈손일 때 질의를 term으로 쪼개 각각 조회하고, "질의의 term을 몇 개나 담았나"로
     # 후보를 거른다. ratio는 term 수 대비 비율, min은 그 하한(term이 두세 개뿐인 짧은 질의에서
     # 비율만 쓰면 1개만 겹쳐도 통과한다). 0으로 두면 필터가 꺼진다 - 재현율은 오르지만 "관련
-    # 문서 없음"이 정답인 질의(null/negative)와 개수 질의가 무너진다(wiki/search-evaluation.md).
-    # 기본값 2/3은 v0 골든셋 스윕에서 고른 값이다(wiki/search-evaluation.md의 표): 이보다
+    # 문서 없음"이 정답인 질의(null/negative)와 개수 질의가 무너진다.
+    # 기본값 2/3은 v0 골든셋 스윕에서 고른 값이다: 이보다
     # 느슨하면(0.5~0.6) ndcg는 조금 더 오르지만 none_correct가 1.000에서 내려가고, 더 조이면
     # (0.75) 재현율이 baseline 쪽으로 되돌아간다. 2/3은 baseline 대비 어느 지표도 나빠지지 않는
     # 유일한 지점이었다.
@@ -123,8 +123,8 @@ class Settings(BaseSettings):
     # 이다: 0이면 순수하게 "가장 희귀한 term(동점이면 전부)"만 요구하고, 올릴수록 df가 그 이하인
     # term을 전부 요구해 더 조인다. 음수면 이 게이트를 끈다(옛 개수 전용 동작).
     #
-    # 기본 0은 v0 골든셋 스윕(-1/0/1/2/3/4/5/6/8)에서 고른 값이다(wiki/search-evaluation.md의
-    # 표). 0 이상이면 어디서든 none_correct 1.000 / recall@5 0.888 / exhaustive_recall 0.908로
+    # 기본 0은 v0 골든셋 스윕(-1/0/1/2/3/4/5/6/8)에서 고른 값이다.
+    # 0 이상이면 어디서든 none_correct 1.000 / recall@5 0.888 / exhaustive_recall 0.908로
     # 필수 조건을 만족하고, ndcg@10만 0~2에서 0.886, 3~5에서 0.892(질의 2개 차이, 95% CI가 0을
     # 포함)로 갈린 뒤 8에서 절벽이다(recall@5 0.881 / exhaustive_recall 0.891).
     # 더 높은 고원(3~5)의 +0.006을 일부러 버렸다. 이유는 이 노브가 **절대** df라 코퍼스가 작을수록
@@ -139,7 +139,7 @@ class Settings(BaseSettings):
     # `latest` 후처리가 시각 내림차순으로 재정렬할 때 대상으로 삼는 **관련도 상위 문서 수**.
     # 전체 후보를 시각으로 정렬하면 관련도 랭킹이 통째로 버려져 "질의와 상관없이 가장 최근
     # 문서"가 1위가 된다 - 후보가 늘어날수록 나빠진다(v0-latest-001/002가 그렇게 0.000이 됐다).
-    # 기본 5는 v0 스윕에서 고른 값이다(wiki/search-evaluation.md): 7 이상이면 latest 0.544 /
+    # 기본 5는 v0 스윕에서 고른 값이다: 7 이상이면 latest 0.544 /
     # version 0.947로 되돌아가고, 5 이하는 latest 0.667 / version 1.000으로 평평하다. 다만
     # 근거가 latest 3개 + version 7개뿐이라 잠정값이다 - 골든셋 v1에서 다시 재야 한다.
     latest_relevance_pool: int = 5
@@ -150,12 +150,12 @@ class Settings(BaseSettings):
     # 쓰기 때문에 임베딩을 채우자 v0에서 none_correct 1.000 → 0.000, count_match 0.333 →
     # 0.000이 됐다(run 9ad2bba2). 이 값보다 낮은 코사인 유사도(`1 - distance`)의 벡터 히트를
     # 버린다. 0.0은 끄는 값(하한 없음)이고, 모델/코퍼스마다 달라지는 값이라 기본값은 추측이
-    # 아니라 eval-ir 스윕으로 정한다 - 근거는 wiki/search-evaluation.md.
+    # 아니라 골든셋 스윕으로 정했다.
     #
     # 0.45는 v0 골든셋 76개 스윕(0.0/0.35/0.40/0.42~0.48/0.50)에서 고른 값이다. 0.42~0.47이
     # ndcg@10 0.876~0.888의 고원이고 none_correct 1.000 / count_match 0.333이 그 구간 내내
     # 유지된다. 최고점은 0.42(0.888)지만 기본값은 고원 한가운데로 잡았다 - v0는 사람 검수를
-    # 거치지 않은 스모크셋이라(wiki/search-evaluation.md) argmax를 박으면 과적합이고,
+    # 거치지 않은 스모크셋이라 argmax를 박으면 과적합이고,
     # 0.40에서 none_correct가 0.833으로 무너지는 절벽과의 안전거리가 ndcg +0.002보다 낫다.
     # 0.0으로 두면 하한이 꺼지고 임베딩 채운 직후의 동작(ndcg 0.870)으로 돌아간다.
     vector_min_score: float = 0.45
@@ -241,9 +241,7 @@ class Settings(BaseSettings):
     # `read_document` + `sql_search`뿐이다. `search/retrieve.py`가 존재하는 이유가
     # "어떤 검색을 어떤 순서로 돌릴지"를 LLM에게서 빼앗아 결정론적 함수로 만드는
     # 것인데(그 모듈 docstring), 도구 목록이 개별 검색 도구를 여덟 개 늘어놓으면
-    # 그 결정을 다시 모델에게 돌려주는 셈이다 - 게다가 골든셋 평가(eval-ir,
-    # wiki/search-evaluation.md)가 재는 경로는 `search` 하나뿐이라, 모델이 고른
-    # 다른 경로는 측정된 적이 없는 경로다. `sql_search`는 집계/속성 조건처럼
+    # 그 결정을 다시 모델에게 돌려주는 셈이다. `sql_search`는 집계/속성 조건처럼
     # `search`가 다루지 못하는 구조화 질의용 비상구로 남기고, `read_document`는
     # 검색이 아니라 "특정한 문서를 끝까지 읽는" 후속 동작이라 남는다.
     # Postgres가 없는 OKF 전용 배포에서는 이 셋이 전부 빠지므로 `file_search`가
@@ -262,10 +260,6 @@ class Settings(BaseSettings):
     #     "그런 문서가 없다"로 읽고 답을 접는다 - 도구가 없는 것보다 나쁘다.
     #   - 트리가 있어도 Postgres 코퍼스와 내용이 어긋나 있으면(인제스트와 `--okf-dir`
     #     출력은 서로 독립이다) 두 도구가 서로 다른 사실을 돌려준다.
-    #   - 골든셋 평가(`eval-ir --mode agent`)의 채점 단위는 `document_id`인데 `file_search`
-    #     히트에는 그게 없다(`search/retrieve.py`의 "planner 경유 file_search 히트는 채점
-    #     단위가 없어 버린다"와 같은 문제). 즉 에이전트가 이 도구로만 찾아낸 문서는 점수에
-    #     반영되지 않으면서 iteration 예산만 쓴다.
     # OKF 전용(Postgres 없는) 배포에서는 이게 유일한 검색 경로이므로 그때는 켜야 한다.
     agent_file_search_enabled: bool = False
     # Runtime context compaction (agent/compaction.py, ported from
