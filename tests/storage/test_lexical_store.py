@@ -18,7 +18,7 @@ import pytest_asyncio
 from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.document import Document, DocumentMetadata, Heading, TextBlock
 from knowledge_forge.models.source import Source, SourceRef, SourceType
-from knowledge_forge.storage.postgres_store import PostgresStore
+from knowledge_forge.storage.postgres_store import PostgresStore, _like_pattern, _token_patterns
 from knowledge_forge.text_normalize import to_nfc
 
 DSN = os.environ.get("KF_TEST_DATABASE_URL")
@@ -283,6 +283,51 @@ async def test_search_chunks_lexical_respects_time_window(store):
     hits = await store.search_chunks_lexical("KF-1234", project_id=_PROJECT, since=_T0 + timedelta(days=15))
 
     assert [h["document_id"] for h in hits] == ["test-lex-d3"]
+
+
+async def test_search_chunks_lexical_matches_the_single_predicate_it_replaced(store):
+    """`search_chunks_lexical`은 tier마다 trigram 인덱스로 후보를 뽑아 합친다
+    (`_lexical_candidates_sql`). 그 재작성이 예전의 한 WHERE(`ILIKE OR ILIKE ALL OR
+    word_similarity >= 0.5`)와 같은 행·순서·점수를 내는지 그 술어를 오라클로 직접 대조한다.
+    눈여겨볼 행: trigram이 하나도 없는 2글자 토큰만으로 all-tokens tier에 걸리는 청크(c2),
+    오타로 fuzzy tier에만 걸리는 청크(c5), 유사도가 임계값과 정확히 같은 0.5인 청크(c7) -
+    인덱스 분기에서 빠지기 가장 쉬운 경우들이다."""
+    docs = await _seed(store)
+    await store.save_chunks(
+        [
+            _chunk(1, docs["d1"], "명함 제작 일정을 공유합니다", seq=0),
+            _chunk(2, docs["d2"], "제작 업체가 보낸 명함 시안", seq=0),
+            _chunk(3, docs["d3"], "명함제작소 견적서", seq=0),
+            _chunk(4, docs["d1"], "한화손해보험 계약 갱신 안내", seq=1),
+            _chunk(5, docs["d2"], "한화손해보 계약 갱신", seq=1),
+            _chunk(7, docs["d1"], "한화 손해보험 계약", seq=2),
+            _chunk(6, docs["d3"], "관련 없는 본문", seq=1),
+        ]
+    )
+
+    async def oracle(query: str) -> list[tuple[str, float]]:
+        params = {"p": _like_pattern(query), "t": _token_patterns(query), "q": query, "project": _PROJECT}
+        cur = await store.conn.execute(
+            """
+            SELECT c.chunk_id, c.text ILIKE %(p)s AS is_substring, word_similarity(%(q)s, c.text) AS sim
+            FROM chunks c JOIN documents d ON d.document_id = c.document_id
+            WHERE d.project_id = %(project)s
+              AND (c.text ILIKE %(p)s OR c.text ILIKE ALL(%(t)s::text[]) OR word_similarity(%(q)s, c.text) >= 0.5)
+            ORDER BY is_substring DESC, sim DESC, c.document_id, c.sequence_index
+            """,
+            params,
+        )
+        return [(row[0], 1.0 if row[1] else float(row[2])) for row in await cur.fetchall()]
+
+    for query in ("명함 제작", "한화손해보험", "제작", "명함"):
+        hits = await store.search_chunks_lexical(query, project_id=_PROJECT, limit=50)
+        assert [(h["chunk_id"], h["score"]) for h in hits] == await oracle(query), query
+
+    ids = {h["chunk_id"] for h in await store.search_chunks_lexical("명함 제작", project_id=_PROJECT)}
+    assert "test-lex-c2-0" in ids  # 2글자 토큰만으로 걸리는 all-tokens tier
+    fuzzy = {h["chunk_id"]: h["score"] for h in await store.search_chunks_lexical("한화손해보험", project_id=_PROJECT)}
+    assert 0.5 < fuzzy["test-lex-c5-1"] < 1.0  # fuzzy tier에만 걸리는 오타
+    assert fuzzy["test-lex-c7-2"] == 0.5  # `<%`도 `>=` 경계를 포함한다
 
 
 # --- 유니코드 정규화 (NFC) -------------------------------------------------

@@ -142,7 +142,11 @@ class _FakeStore:
 
 
 def _patch_vector(monkeypatch, hits: list[dict] | Exception, calls: list | None = None):
-    async def _fake_vector_search(query, store, project_id=None, type=None, limit=10, embedding_model=None, since=None, until=None, target_kind=None):
+    async def _fake_vector_search(
+        query, store, project_id=None, type=None, limit=10, embedding_model=None, since=None, until=None, target_kind=None, document_ids=None
+    ):
+        if document_ids is not None:
+            return []  # grain expansion lookup - tests that care patch their own fake
         if calls is not None:
             calls.append((query, limit, since, until))
         if isinstance(hits, Exception):
@@ -150,6 +154,19 @@ def _patch_vector(monkeypatch, hits: list[dict] | Exception, calls: list | None 
         return [dict(h) for h in hits]
 
     monkeypatch.setattr(retrieve_module, "vector_search", _fake_vector_search)
+
+
+def _patch_grain_vector(monkeypatch, arm_hits: list[dict], units: dict[str, list[dict]], calls: list):
+    """Vector fake that answers the arm call with `arm_hits` and a per-document
+    grain-expansion call (`document_ids=[d]`) with `units[d]`."""
+
+    async def _fake(query, store, project_id=None, type=None, limit=10, embedding_model=None, since=None, until=None, target_kind=None, document_ids=None):
+        calls.append({"query": query, "target_kind": target_kind, "document_ids": document_ids, "limit": limit})
+        if document_ids is None:
+            return [dict(h) for h in arm_hits]
+        return [dict(h) for h in units.get(document_ids[0], [])]
+
+    monkeypatch.setattr(retrieve_module, "vector_search", _fake)
 
 
 def _filter_row(document_id: str, content_at: datetime) -> tuple:
@@ -195,6 +212,228 @@ async def test_document_lookup_two_substring_matches_is_ambiguous_and_lists_both
     assert lookup.detail["anchor"] is None
     assert lookup.detail["anchor_reason"] == "ambiguous"
     assert result.document_ids == ["d1", "d2"]
+
+
+# --- grain expansion -------------------------------------------------------------
+
+
+def _ko_hit(document_id: str, ko_id: str, score: float = 0.5) -> dict:
+    return {"target_kind": "knowledge_object", "knowledge_object_id": ko_id, "chunk_id": None, "document_id": document_id, "score": score}
+
+
+async def test_explicit_chunk_grain_fills_a_title_only_document_with_its_best_chunks_at_its_rank(monkeypatch):
+    store = _FakeStore(title_hits={"report_v2.pdf": [_doc_hit("d1", 1.0)]})
+    calls: list = []
+    _patch_grain_vector(monkeypatch, [], {"d1": [_chunk_hit("d1", "c1a", 0.4), _chunk_hit("d1", "c1b", 0.3)]}, calls)
+
+    result = await retrieve("report_v2.pdf 에서 리스크 항목", store=store, now=_NOW, grain="chunk")
+
+    # d1 is ranked by its title hit alone - no chunk id to score before expansion
+    assert result.document_ids == ["d1"]
+    assert [h.get("chunk_id") for h in result.hits if h.get("chunk_id")] == ["c1a", "c1b"]
+    expansion = [c for c in calls if c["document_ids"] is not None]
+    assert expansion == [{"query": result.constraints["semantic_query"], "target_kind": "chunk", "document_ids": ["d1"], "limit": 3}]
+    step = next(s for s in result.steps if s.strategy == "grain_expansion")
+    assert step.n_hits == 2 and step.detail["documents_without_grain_hit"] == 1
+    assert result.hits[1]["retrieval_sources"] == ["grain_expansion"]
+
+
+async def test_expansion_places_units_after_the_documents_first_hit_and_skips_covered_documents(monkeypatch):
+    store = _FakeStore(
+        filter_rows=[_filter_row("d1", datetime(2026, 8, 3, tzinfo=timezone.utc)), _filter_row("d2", datetime(2026, 8, 2, tzinfo=timezone.utc))],
+    )
+    calls: list = []
+    _patch_grain_vector(monkeypatch, [], {"d1": [_chunk_hit("d1", "c1")], "d2": [_chunk_hit("d2", "c2")]}, calls)
+
+    result = await retrieve("작년 8월에 김민수가 보낸 메일", store=store, now=_NOW, grain="chunk", strategies_override=["metadata_filter"])
+
+    assert result.document_ids == ["d1", "d2"]
+    assert [h["document_id"] for h in result.hits] == ["d1", "d1", "d2", "d2"]
+    assert [h.get("chunk_id") for h in result.hits] == [None, "c1", None, "c2"]
+
+
+async def test_grain_from_settings_does_not_expand(monkeypatch):
+    store = _FakeStore(title_hits={"report_v2.pdf": [_doc_hit("d1", 1.0)]})
+    calls: list = []
+    _patch_grain_vector(monkeypatch, [], {"d1": [_chunk_hit("d1", "c1")]}, calls)
+
+    result = await retrieve("report_v2.pdf 에서 리스크 항목", store=store, now=_NOW)
+
+    assert all(c["document_ids"] is None for c in calls)
+    assert not any(s.strategy == "grain_expansion" for s in result.steps)
+    assert not any(h.get("chunk_id") for h in result.hits)
+
+
+async def test_ko_grain_expands_documents_that_only_have_chunk_hits(monkeypatch):
+    store = _FakeStore(chunk_hits={None: [_chunk_hit("d1", "c1"), _chunk_hit("d2", "c2")]})
+    calls: list = []
+    _patch_grain_vector(monkeypatch, [_ko_hit("d2", "ko2", 0.9)], {"d1": [_ko_hit("d1", "ko1")]}, calls)
+
+    result = await retrieve("배포 롤백 절차", store=store, now=_NOW, grain="knowledge_object")
+
+    expanded = [c["document_ids"] for c in calls if c["document_ids"] is not None]
+    assert expanded == [["d1"]]  # d2 already has a KO hit
+    assert {h.get("knowledge_object_id") for h in result.hits} >= {"ko1", "ko2"}
+
+
+async def test_grain_expansion_failure_is_recorded_not_raised(monkeypatch):
+    store = _FakeStore(title_hits={"report_v2.pdf": [_doc_hit("d1", 1.0)]})
+
+    async def _fake(query, store, document_ids=None, **kwargs):
+        if document_ids is not None:
+            raise RuntimeError("embedder down")
+        return []
+
+    monkeypatch.setattr(retrieve_module, "vector_search", _fake)
+
+    result = await retrieve("report_v2.pdf 에서 리스크 항목", store=store, now=_NOW, grain="chunk")
+
+    assert result.document_ids == ["d1"]
+    step = next(s for s in result.steps if s.strategy == "grain_expansion")
+    assert step.n_hits == 0 and "embedder down" in step.detail["error"]
+
+
+# --- wide queries and the anchor ----------------------------------------------------
+
+
+async def test_wide_query_pins_the_title_anchor_but_keeps_every_other_document(monkeypatch):
+    store = _FakeStore(
+        title_hits={"한화손해보험": [_doc_hit("title_doc", 1.0)]},
+        chunk_hits={"한화손해보험": [_chunk_hit("a", "ca"), _chunk_hit("b", "cb"), _chunk_hit("title_doc", "ct")]},
+    )
+    _patch_vector(monkeypatch, [_chunk_hit("c", "cc", 0.9)])
+
+    result = await retrieve("한화손해보험 관련 문서 전부", store=store, now=_NOW)
+
+    assert "exhaustive" in result.strategies
+    assert result.document_ids[0] == "title_doc"
+    assert set(result.document_ids) == {"title_doc", "a", "b", "c"}
+    assert not any(s.detail.get("anchor_narrowing") == "narrowed" for s in result.steps)
+
+
+async def test_wide_query_with_an_anchor_still_runs_the_term_fallback_when_the_arm_is_weak(monkeypatch):
+    store = _FakeStore(title_hits={None: [_doc_hit("d1", 1.0)]})
+    _patch_vector(monkeypatch, [])
+
+    wide = await retrieve("배포 롤백 절차 관련 문서 전부", store=store, now=_NOW)
+
+    assert "exhaustive" in wide.strategies
+    assert any(s.detail.get("mode") == "per_term" for s in wide.steps)
+
+    narrow = await retrieve("배포 롤백 절차", store=_FakeStore(title_hits={None: [_doc_hit("d1", 1.0)]}), now=_NOW)
+    assert not any(s.detail.get("mode") == "per_term" for s in narrow.steps)
+
+
+# --- time range relaxation ---------------------------------------------------------
+
+
+class _TimeBoundStore(_FakeStore):
+    """Title/body lookups answer only when no since/until is passed - models a
+    corpus whose matching documents all lie outside the query's date."""
+
+    def __init__(self, *, in_range: dict | None = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.in_range = in_range or {}
+
+    async def search_documents_by_title(self, query, *, project_id=None, source_type=None, since=None, until=None, limit=10):
+        if since is not None or until is not None:
+            return [dict(h) for h in self.in_range.get(query, [])]
+        return await super().search_documents_by_title(query, project_id=project_id, limit=limit)
+
+    async def search_chunks_lexical(self, query, *, project_id=None, since=None, until=None, limit=10):
+        if since is not None or until is not None:
+            return []
+        return await super().search_chunks_lexical(query, project_id=project_id, limit=limit)
+
+
+def _patch_time_bound_vector(monkeypatch, hits: list[dict], calls: list):
+    async def _fake(query, store, project_id=None, type=None, limit=10, embedding_model=None, since=None, until=None, target_kind=None, document_ids=None):
+        calls.append((since, until))
+        return [] if since is not None or until is not None else [dict(h) for h in hits]
+
+    monkeypatch.setattr(retrieve_module, "vector_search", _fake)
+
+
+async def test_a_date_that_describes_content_is_relaxed_when_every_arm_is_empty(monkeypatch):
+    store = _TimeBoundStore(title_hits={None: [_doc_hit("contract", 0.6)]})
+    calls: list = []
+    _patch_time_bound_vector(monkeypatch, [_chunk_hit("contract", "c1", 0.8)], calls)
+
+    result = await retrieve("2022년에 종료된 삼성화재 운영 계약의 종료일은?", store=store, now=_NOW)
+
+    assert result.document_ids == ["contract"]
+    relaxed = next(s for s in result.steps if s.strategy == "time_range_relaxed")
+    assert relaxed.detail["since"] is not None
+    assert calls[0] != (None, None) and calls[-1] == (None, None)
+    assert next(s for s in result.steps if s.strategy == "metadata_filter").detail["applied"] == "filter_empty_ignored"
+
+
+async def test_relaxed_candidates_are_not_intersected_with_a_time_only_filter(monkeypatch):
+    # the day has documents (filter rows) but none match the question - the date was content
+    store = _TimeBoundStore(
+        title_hits={None: [_doc_hit("agenda", 0.6)]},
+        filter_rows=[_filter_row("same_day_noise", datetime(2026, 9, 1, 3, tzinfo=timezone.utc))],
+    )
+    _patch_time_bound_vector(monkeypatch, [], [])
+
+    result = await retrieve("2026년 9월 1일에 어떤 회의가 예정되어 있나요?", store=store, now=_NOW)
+
+    assert result.document_ids == ["agenda"]
+    assert next(s for s in result.steps if s.strategy == "metadata_filter").detail["applied"] == "time_range_relaxed"
+
+
+async def test_relaxation_that_still_finds_nothing_keeps_the_filter_only_answer(monkeypatch):
+    store = _TimeBoundStore(filter_rows=[_filter_row("same_day", datetime(2026, 9, 1, 3, tzinfo=timezone.utc))])
+    _patch_time_bound_vector(monkeypatch, [], [])
+
+    result = await retrieve("2026년 9월 1일에 어떤 회의가 예정되어 있나요?", store=store, now=_NOW)
+
+    assert result.document_ids == ["same_day"]
+    assert next(s for s in result.steps if s.strategy == "metadata_filter").detail["applied"] == "filter_only"
+
+
+async def test_a_wide_query_whose_filter_found_documents_is_not_relaxed(monkeypatch):
+    # "2026년 6월 메일 전부": the month is the condition, and the filter set is the answer
+    store = _TimeBoundStore(
+        title_hits={None: [_doc_hit("out_of_range_noise", 0.6)]},
+        filter_rows=[_filter_row("june_mail", datetime(2026, 6, 10, 3, tzinfo=timezone.utc))],
+    )
+    _patch_time_bound_vector(monkeypatch, [_chunk_hit("out_of_range_noise", "n1", 0.8)], [])
+
+    result = await retrieve("2026년 6월 메일 문서 전부", store=store, now=_NOW)
+
+    assert "exhaustive" in result.strategies
+    assert not any(s.strategy == "time_range_relaxed" for s in result.steps)
+    assert result.document_ids == ["june_mail"]
+
+
+async def test_a_temporal_query_with_matches_in_range_is_not_relaxed(monkeypatch):
+    store = _TimeBoundStore(
+        in_range={"회의록": [_doc_hit("last_week_minutes", 1.0)]},
+        title_hits={None: [_doc_hit("old_minutes", 1.0)]},
+        filter_rows=[_filter_row("last_week_minutes", datetime(2026, 8, 26, tzinfo=timezone.utc))],
+    )
+    calls: list = []
+    _patch_time_bound_vector(monkeypatch, [_chunk_hit("old_minutes", "c", 0.9)], calls)
+
+    result = await retrieve("지난주 회의록", store=store, now=_NOW)
+
+    assert result.document_ids == ["last_week_minutes"]
+    assert not any(s.strategy == "time_range_relaxed" for s in result.steps)
+    assert all(call != (None, None) for call in calls)
+
+
+async def test_an_author_and_time_query_keeps_trusting_the_filter(monkeypatch):
+    store = _TimeBoundStore(
+        title_hits={None: [_doc_hit("noise", 0.6)]},
+        filter_rows=[_filter_row("kim_mail", datetime(2026, 8, 27, tzinfo=timezone.utc))],
+    )
+    _patch_time_bound_vector(monkeypatch, [], [])
+
+    result = await retrieve("지난주 김민수가 보낸 메일", store=store, now=_NOW)
+
+    assert not any(s.strategy == "time_range_relaxed" for s in result.steps)
+    assert result.document_ids == ["kim_mail"]
 
 
 # --- metadata_filter --------------------------------------------------------------

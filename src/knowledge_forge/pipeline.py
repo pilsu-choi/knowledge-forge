@@ -164,9 +164,9 @@ async def run_pipeline(
     `documents` are filtered by in the read API (wiki/api.md) and job queue
     (`jobs.project_id`).
 
-    Within one document: chunks are bundled into groups of
-    `settings.extraction_chunk_group_size` before extraction (see
-    extraction/grouping.py), each group's near-duplicate objects are merged
+    Within one document: chunks are bundled into groups of up to
+    `settings.extraction_group_max_tokens` total tokens before extraction
+    (see extraction/grouping.py), each group's near-duplicate objects are merged
     (extraction/versioning.py counterpart, dedup.py) at
     `settings.dedup_similarity_threshold`, and - when `store` is given, so
     there is something to compare against - new objects are matched to the
@@ -276,7 +276,7 @@ async def run_pipeline(
             yield ExtractionOutcome(objects=[], relations=[])
             continue
 
-        chunk_groups = group_chunks(chunks, settings.extraction_chunk_group_size)
+        chunk_groups = group_chunks(chunks, settings.extraction_group_max_tokens)
 
         async def _extract(group):
             try:

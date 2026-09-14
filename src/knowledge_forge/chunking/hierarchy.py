@@ -74,6 +74,14 @@ def next_level(level: HierarchyLevel) -> HierarchyLevel | None:
     return _LEVEL_ORDER[idx + 1]
 
 
+def level_rank(level: HierarchyLevel) -> int:
+    """Position of `level` in Document(0) -> Chapter -> Section -> Paragraph
+    -> Sentence -> Line(5) - lower is coarser. Lets a caller outside this
+    module (adaptive.py's small-sibling merge pass) pick the coarser of two
+    levels without reaching into the private _LEVEL_ORDER list."""
+    return _LEVEL_ORDER.index(level)
+
+
 @dataclass
 class Node:
     level: HierarchyLevel
@@ -92,6 +100,14 @@ class Node:
     # How many leading rows of table_rows are header rows (see
     # TableElement.header_rows). Meaningless when table_rows is None.
     header_rows: int = 1
+    # True for a table paragraph and every row-group split_table_by_rows()
+    # derives from it (table_rows is cleared on those derived nodes, so this
+    # flag is what survives to mark them). adaptive.py's small-sibling merge
+    # pass never folds a table chunk into (or with) a non-table one, or two
+    # table row-groups together - a merge would either mix tabular data with
+    # prose or require re-deriving one row-group's repeated header/caption
+    # block for the other, neither of which the merge pass does.
+    is_table: bool = False
 
     @property
     def page_range(self) -> tuple[int, int] | None:
@@ -167,6 +183,7 @@ def _build_paragraph(element: DocumentElement) -> Node:
         table_rows=element.rows if isinstance(element, TableElement) else None,
         table_caption=element.caption if isinstance(element, TableElement) else None,
         header_rows=element.header_rows if isinstance(element, TableElement) else 1,
+        is_table=isinstance(element, TableElement),
     )
 
 
@@ -249,7 +266,14 @@ def split_to_next_level(node: Node) -> list[Node] | None:
     if len(pieces) <= 1:
         return None
     return [
-        Node(level=level, text=piece, element_ids=node.element_ids, pages=node.pages, children=None)
+        Node(
+            level=level,
+            text=piece,
+            element_ids=node.element_ids,
+            pages=node.pages,
+            children=None,
+            is_table=node.is_table,
+        )
         for piece in pieces
     ]
 
@@ -331,6 +355,12 @@ def split_table_by_rows(node: Node, budget: int) -> list[Node] | None:
         return None
 
     return [
-        Node(level=HierarchyLevel.PARAGRAPH, text=render(g), element_ids=node.element_ids, pages=node.pages)
+        Node(
+            level=HierarchyLevel.PARAGRAPH,
+            text=render(g),
+            element_ids=node.element_ids,
+            pages=node.pages,
+            is_table=True,
+        )
         for g in groups
     ]

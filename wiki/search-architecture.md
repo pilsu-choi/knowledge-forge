@@ -132,6 +132,7 @@ hits(각 hit에 document_id/target_kind/score 필수), document_ids(hits에서 �
 | `exhaustive`/`negative` | 소스별 limit을 200으로, 최종 컷오프 없음 | 부재 판정은 LLM 몫 - 실행기는 후보만 |
 | `count` | `predicted_count` = 최종 문서 수. 필터 단독 결과면 같은 WHERE로 `SELECT COUNT(*)` | count도 exhaustive 수집을 함의 |
 | `whole_document` | anchor(없으면 상위 2개 문서)를 `read_document`로 읽어 `documents_read`에, 청크를 문서 순서대로 히트 맨 앞에 | 같은 청크를 가리키던 검색 히트는 중복이라 제거 |
+| (grain 펼치기) | 호출자가 `grain`을 **명시**했을 때만. limit 절단 뒤 grain 히트(`chunk_id`/`knowledge_object_id`)가 없는 문서마다 `vector_search(document_ids=[문서])`로 그 문서의 grain 단위 3개를 질의 유사도 순으로 골라 문서의 첫 히트 바로 뒤에 끼움. step `grain_expansion` | 2026-09-14. 제목·필터 히트는 문서 id만 싣고 anchor 좁히기가 벡터 히트를 지워서, 정답 문서를 1위로 찾고도 grain 채점 리스트가 비었다(평가 스모크). 문서 순서·`scores`는 그대로, 새 문서는 안 데려옴, `vector_min_score` 하한 없음(문서는 이미 뽑혔다). `grain=None`(설정 grain)은 펼치지 않는다 - 제품 경로는 문서 단위 히트로 충분하고 문서당 조회 비용을 낼 이유가 없다. 문서 id 필터는 btree + 정확 정렬이라 1ms |
 
 **어휘 arm (`keyword_arm`)**:
 
@@ -228,6 +229,7 @@ term 분해로 내려간 것이다). 게이트를 여기까지 확장하지 않�
   |---|---|---|
   | 필터 질의가 0행 | `filter_empty_ignored` | 필터 무시, 관련도 랭킹 그대로 |
   | 후보 생성 전략이 하나도 히트 없음 | `filter_only` | 필터 집합을 최신순으로 - "지난주 김철수 메일"은 필터만으로 답이 되는 질의다 |
+  | 시간 범위를 풀고 다시 돈 arm이 후보를 찾음(아래) | `time_range_relaxed` | 필터 무시 - 이 경우 필터는 시간(+출처 힌트)뿐이다 |
   | 필터가 **어휘 힌트뿐**(`source_type IN (...)` 하나) | `source_hint_not_applied` | 필터 무시, 관련도 랭킹 그대로 |
   | 그 밖에 교집합이 있음 | `intersected:N->M` | 교집합 |
   | 그 밖에 교집합이 0 | `no_overlap_fallback_to_filter` | 필터 집합을 최신순으로 |
@@ -240,6 +242,17 @@ term 분해로 내려간 것이다). 게이트를 여기까지 확장하지 않�
   공유요청 알림 메일은 항상 쓴다. 반대로 작성자/참여자/시간/제목 종류는 질의가 명시한 구조적
   술어라 교집합이 0이어도 필터 쪽을 믿는다(자세한 근거는 삭제된 평가 하네스의 회귀 기록에
   있었다 — 재구현 예정, [`roadmap.md`](roadmap.md) 참고).
+- **시간 범위는 결과를 0건으로 만들지 못한다** (`_Run.relax_time_range`, 2026-09-14). 질의 속 날짜는
+  문서 시각이 아니라 내용을 가리키는 경우가 흔하다("2022년에 종료된 계약의 종료일은?", "이번 주 해야 할
+  업무는?", "2026년 9월 1일에 어떤 회의가 예정되어 있나요?" - 평가 스모크에서 since/until이 모든 arm을
+  0건으로 만들었다). 그래서 범위 안에서 후보 arm(document_lookup/lexical/vector/keyword_arm/comparison)이
+  **전부** 빈손이면 since/until을 풀고 arm을 한 번 더 돌린다(step `time_range_relaxed`). 범위 안에서
+  무엇이든 찾으면 지금처럼 하드 필터라 "지난주 회의록"류는 그대로다. 풀고 찾은 후보는 어차피 범위 밖이라
+  (범위 안이었으면 첫 판에 걸렸다) 범위 안을 앞세우는 재정렬은 두지 않았다. 안 푸는 경우: arm이 아예 안
+  돌았거나(제약이 곧 질의 - `filter_only`가 답), 필터에 작성자/참여자/확장자/MIME이 있다(semantic_query가
+  찌꺼기라 빈손이 정상, 필터를 믿는 기존 분기가 맞다). 풀고 찾은 후보에 시간 필터를 교집합으로 걸거나
+  `no_overlap_fallback_to_filter`로 날짜 집합을 최신순으로 내면 날짜를 되살리는 셈이라 필터를 적용하지
+  않는다. 다시 돌아도 빈손이면 예전과 같은 `filter_only`.
 - `limit`은 최종 `document_ids` 길이다. 소스별 조회는 3배 over-fetch해서 필터/anchor 좁히기 뒤에도
   limit개가 남게 한다.
 - `strategies_override`는 목록에 적힌 전략**만** 돌린다 - 어휘 arm도 `"keyword_arm"`으로 적어야
@@ -534,6 +547,72 @@ NFC로 저장되는가, 300자 자르기가 정규화 **뒤에** 오는가 — �
 NFD로 파싱된 청크는 NFC로 저장되면서도 임베딩은 NFD 텍스트로 만들어진다. 토크나이저가 다르게
 쪼개니 벡터 품질에 미세한 영향이 있을 수 있지만, 이번에 깨진 건 어휘 arm이고 임베딩 쪽은 측정한
 바가 없어 범위 밖으로 뒀다. 고친다면 `Chunk` 모델이나 청커 출력이 정규화 지점이 된다.
+
+### 어휘 검색 SQL이 trigram 인덱스를 타게 (2026-09-14, `perf/lexical-sql`)
+
+**문제.** `search_chunks_lexical`의 `WHERE (text ILIKE p OR text ILIKE ALL(tokens) OR word_similarity(q, text) >= 0.5)`는
+`word_similarity()`가 인덱스 연산자가 아니고 `ILIKE ALL(array)`도 GIN이 받지 못해 항상 `Seq Scan on chunks`였다 -
+행마다 긴 본문의 trigram을 만들어 유사도를 계산하는 게 비용의 정체다(2,856청크에서 호출당 ~350-460ms). term
+fallback이 질의당 최대 10회 부르므로 질의 지연의 대부분이 여기서 났다.
+
+**선택한 형태.** 결과는 그대로 두고 후보 수집만 바꿨다(`postgres_store.py::_lexical_candidates_sql`).
+
+```sql
+-- READ ONLY + 무조건 롤백 트랜잭션 안에서 (_read_transaction)
+SET LOCAL pg_trgm.word_similarity_threshold = 0.5;  -- 제목은 0.3
+SET LOCAL enable_seqscan = off;
+WITH hits AS MATERIALIZED (
+  SELECT chunk_id FROM chunks WHERE text ILIKE %(pattern)s
+  UNION SELECT chunk_id FROM chunks WHERE %(query)s <% text
+  UNION SELECT chunk_id FROM chunks WHERE text ILIKE %(token0)s AND text ILIKE %(token1)s ...  -- 토큰이 전체 패턴과 다를 때만
+)
+SELECT ... is_substring, word_similarity(q, c.text) AS sim  -- 후보에만 계산
+FROM hits JOIN chunks c ... ORDER BY/LIMIT 기존과 동일
+```
+
+- **결과 동일성 근거.** 세 분기의 합집합이 예전 OR 술어와 같은 집합이다. `q <% col`은 pg_trgm 내부에서
+  `word_similarity(q, col) >= pg_trgm.word_similarity_threshold`와 같은 계산(임계값을 넘는 순간 멈추는 최적화만 있음)이고,
+  GIN의 `<%` consistent는 "질의 trigram 중 행에 있는 비율 >= 임계값"이라는 상한이라 재검사로 정확해진다.
+  `ILIKE ALL(array)`를 `ILIKE ... AND`로 펼친 것은 같은 술어다. 정렬 키(`document_id, sequence_index` / `title, document_id`)는
+  전순서라 계획이 바뀌어도 순서가 흔들리지 않는다.
+- **all-tokens tier를 다른 분기에서 유도하지 않은 이유.** 2글자 한글 토큰("명함 제작")은 LIKE 패턴에서 trigram이 0개라
+  그 tier의 행이 substring/`<%` 분기에 들어 있다는 보장이 없다. 그래서 별도 분기로 두고, trigram 없는 패턴은
+  GIN 전체 스캔 + 재검사로 정확히(느리지만) 답하게 했다. 공백 없는 질의(term fallback의 대부분)는 토큰 분기가
+  substring 분기와 같아 생략한다.
+- **OR 하나(BitmapOr)가 아니라 UNION인 이유.** BitmapOr는 재검사 때 OR 전체를 평가한다. 한 분기가 trigram 없는
+  패턴(2글자 term)이면 비트맵이 전체 행이 되고, 그 모든 행에 `word_similarity`를 계산하는 예전 비용으로 돌아간다
+  ("AI 보고" 실측 464ms).
+- **`SET LOCAL enable_seqscan = off`를 쓴 이유.** 분기를 나눠도 이 규모에서는 플래너가 `<%` 분기를 순차 스캔으로
+  골랐다(7어절 질의 361ms). 함수 비용 추정(`COST 1`)이 긴 본문의 trigram 생성 비용을 모르기 때문이다. 플래너 설정은
+  계획만 바꾸고 결과는 바꾸지 못하며, 이 트랜잭션에는 이 SELECT 하나만 있다. MATERIALIZED CTE만으로는 분기 안의
+  스캔 선택을 강제하지 못해 대안이 되지 않았다.
+- 제목 검색(`search_documents_by_title`)도 같은 빌더를 쓴다. 문서 358행이라 절대 이득은 작다.
+
+**동일성 증거(`knowledge_forge`, 읽기 전용).** 예전 SQL을 그대로 복사한 구현과 새 구현을 같은 DB에서 나란히 불러
+결과 리스트(dict 전체 - id·순서·score·snippet)를 비교했다. 문자열 2,508개 = 두 골든셋 질의 562개 + 그 공백 토큰 1,540개 +
+`keyword_terms` term 1,103개 + 경계 사례 14개(`""`, `"?"`, `"_"`, `"%"`, `"\\"`, `"AI"`, `"명함"`, 9토큰 질의 등).
+- 청크: limit 10/20/60/200 전부(새 결과를 예전 limit 200의 앞부분과 비교 - 정렬이 전순서라 유효), 골든 질의는 예전
+  limit 10/20/60을 직접 호출해서도 비교.
+- 제목: limit 10/20/60/200 전부 직접 비교(재채점 때문에 앞부분 비교가 성립하지 않는다).
+- 필터 변형(골든 질의, limit 20): `project_id`, `since`, `until`, 셋 모두, 제목은 `source_type`+`since`까지.
+- **26,808회 비교(279,294행), 불일치 0.**
+
+**지연(순차, 쌍마다 old/new 순서 무작위, 골든 562 + term 300, 다른 평가 작업과 DB 공유 중).**
+
+| 호출 | old p50 / p95 | new p50 / p95 | 쌍별 new/old p5 / p50 / p95 | 느려진 쌍 |
+|---|---|---|---|---|
+| `search_chunks_lexical` limit 20 | 372.0 / 497.7ms | 9.4 / 100.1ms | 0.014 / 0.022 / 0.281 | 1/862 ("to" 348→450ms) |
+| `search_documents_by_title` limit 10 | 6.9 / 9.0ms | 4.1 / 6.5ms | 0.480 / 0.584 / 0.892 | 12/862 (최대 1.42배, 절대 1ms 안팎) |
+
+EXPLAIN ANALYZE(새 SQL): 7어절 질의는 세 분기 모두 `Bitmap Index Scan on idx_chunks_text_trgm`, 2.5ms(예전 380ms).
+"한화손해보험" 67ms(예전 357ms) - 후보 54행의 `<%` 재검사와 SELECT의 `word_similarity`가 대부분이다. "명함"(trigram 없는
+2글자 패턴)은 substring 분기가 GIN 전체 스캔 + 재검사 2,853행으로 65ms. "AI 보고" 304ms(예전 464ms) - fuzzy 후보 346행.
+
+**남은 비용과 하지 않은 것.** 느린 꼬리는 fuzzy 후보가 수백 행인 짧은 term("to", "AI", "70")이다. 후보마다 유사도를
+두 번(인덱스 재검사 + 정렬용 SELECT) 계산하고, trigram 없는 패턴은 전체 인덱스 스캔이 된다. 스키마를 바꾸는 개선은
+하지 않고 기록만 한다: `word_similarity`/`word_similarity_op`의 `COST`를 올리면 `enable_seqscan` 없이도 플래너가
+인덱스를 고른다(확장 소유 함수라 `ALTER FUNCTION`은 DDL). 1-2글자 토큰을 인덱스로 받으려면 bigram 인덱스
+(`pg_bigm`) 같은 별도 확장이 필요하다.
 
 ### 벡터 경로(pgvector) — 임베딩이 실제로 채워졌을 때 (2026-09-04 검증)
 
@@ -1098,3 +1177,34 @@ if self.anchor is None and arm_documents < _ARM_STRONG_DOCUMENTS:   # = 2
 개발 DB 확인: `sources.metadata.participant_names`는 slack 소스 **197/197행 전부** 채워져
 있다(`["intel", "백상이(패트릭)", "안민균(베르)"]` 같은 모양). 즉 데이터는 이미 있고 코드만
 안 보고 있었다.
+
+### 랭킹 구조 수정 A/B와 채택 결과 (2026-09-14)
+
+`feature/search-ranking`의 7개 커밋을 골든셋 v1 두 벌(chunk / knowledge_object)의 dev split으로 **커밋마다 바로 앞 커밋과** 짝지어 쟀다. 지표는 항목별 대표 점수(lookup ndcg@10 / exhaustive recall / none_correct)의 평균이다.
+
+| 커밋 | chunk | KO | 결정 |
+|---|---|---|---|
+| grain 명시 실행에서 문서 단위 히트를 grain 단위로 펼치기 | +0.099 [+0.052, +0.153] | +0.051 [+0.006, +0.100] | 채택 |
+| 시간 범위가 arm을 전부 0건으로 만들면 풀기 | −0.007 (1승 2패) | −0.007 | 퇴행 수정 후 채택 |
+| 문서 단위 RRF와 질의별 소스 분리 | +0.020 (20승 14패) | −0.013 (19승 23패) | 제외 — 유의하지 않고 방향이 엇갈림 |
+| wide 질의 anchor는 고정만, 좁히지 않기 | 0 | 0 | 채택 — 골든셋에 해당 질의가 없어 프로브("한화손해보험 관련 문서 전부" 2→7문서)로 검증 |
+| term fallback coverage를 문서별 SQL로 | **−0.018 [−0.039, −0.002]** | −0.004 (0승 3패) | 제외 — 유의한 손실 |
+| 시간 범위만으로 출처 힌트를 하드 필터로 올리지 않기 | −0.014 (0승 2패) | 0 | 제외 |
+| semantic_query가 빈 wide 질의에 원문 keyword_arm | 0 | 0 | 제외 — 근거 없음, 정밀도 낮음 |
+
+제외한 커밋에서 배운 것:
+- **coverage를 정확히 세자 노이즈가 늘었다.** `keyword_terms`가 "어떤", "위해", "하나요", "알려주세요" 같은 질문 어미를 term으로 남기는데, 예전 top-20 절단이 우연히 이들을 걸러 주고 있었다. 정답 없는 질의가 1.0 → 0.0으로 떨어졌다. 진짜 수정은 term 추출의 불용어 처리다(미구현).
+- **시간 완화의 퇴행**: "2026년 6월 메일 문서 전부"처럼 필터 집합이 곧 답인 wide 질의에서도 완화가 켜져 1.0 → 0.0. wide 질의에서 필터가 문서를 찾았으면 완화하지 않도록 고쳤다.
+- **출처 힌트 강등의 퇴행**: "슬랙 채널에서 2026년 7월 문서 전부"가 필터 집합 대신 시간만 건 교집합을 내 1.0 → 0.0.
+
+채택한 3개(+퇴행 수정)를 main 위에 다시 쌓은 최종 후보 vs main:
+
+| split | chunk 종합 | chunk lookup ndcg@10 | KO 종합 | KO lookup ndcg@10 |
+|---|---|---|---|---|
+| dev (n=141) | +0.106 [+0.058, +0.160] | +0.065 [+0.020, +0.115] | +0.058 [+0.011, +0.108] | +0.011 [−0.032, +0.058] |
+| test (n=140) | **+0.123 [+0.069, +0.179]** | **+0.080 [+0.034, +0.130]** | **+0.046 [+0.003, +0.094]** | −0.010 [−0.044, +0.028] |
+
+읽는 법:
+- 종합 점수의 이득은 대부분 exhaustive recall이다(test chunk 0.049 → 0.805). 필터·제목이 찾은 문서가 grain 채점 리스트에 들어가게 됐다.
+- **grain 펼치기는 `retrieve(grain=...)`를 명시할 때만 켜진다** — 평가와 e2e가 그 경우다. 에이전트 `search` 도구(grain 미지정)의 동작을 바꾸는 채택분은 시간 완화와 wide anchor 둘뿐이다.
+- lookup은 승보다 패가 많다(test KO 4승 13패). 문서당 3개씩 끼워 넣는 grain 단위가 다른 정답을 밀어내는 것으로 보이며, 끼워 넣는 개수·유사도 하한 조정이 후속 과제다.

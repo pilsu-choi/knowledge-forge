@@ -97,6 +97,11 @@ SOURCE_DOCUMENT_LINKS = "document_links"
 # 링크 응집도는 후보 생성 단계가 아니라 병합 **뒤**에 얹는 재정렬이라 `suggest_strategies`가
 # 고를 대상이 아니고, `strategies_override`로 켜고 끄는 대상도 아니다.
 STRATEGY_LINK_COHESION = "link_cohesion"
+# `_Run.expand_to_grain`의 steps 이름이자 펼친 히트의 `retrieval_sources` 값. 링크 응집도와 같은 이유로
+# 라우팅되는 전략이 아니다 - 호출자가 grain을 명시했을 때만 도는 후처리다.
+STRATEGY_GRAIN_EXPANSION = "grain_expansion"
+# `_Run.relax_time_range`의 steps 이름 - 시간 범위를 풀고 후보 arm을 다시 돌렸다는 기록.
+STRATEGY_TIME_RANGE_RELAXED = "time_range_relaxed"
 
 # exhaustive/negative/count에서 "전부"를 대신하는 상한 - top-k 절단은 없애되 한 질의가 테이블
 # 전체를 끌어오지는 못하게(`search/sql.py::DEFAULT_MAX_ROWS`와 같은 200).
@@ -125,6 +130,10 @@ _ARM_STRONG_DOCUMENTS = 2
 _WHOLE_DOCUMENT_TOP_N = 2
 _WHOLE_DOCUMENT_MAX_CHARS = 50_000
 _HIT_SUMMARY_CHARS = 500
+# grain 펼치기(`_Run.expand_to_grain`)에서 grain 히트가 없는 문서 하나당 채울 청크/KO 수. 1이면 정답 단위가
+# 그 문서의 최고 유사도 단위가 아닐 때 놓치고, 크면 뒤 문서의 단위를 채점 리스트 아래로 민다 - 잠정값.
+_GRAIN_EXPANSION_PER_DOCUMENT = 3
+_GRAIN_ID_KEY = {"chunk": "chunk_id", "knowledge_object": "knowledge_object_id"}
 # comparison 대상별로 실을 문서 수 - "대상별 최상위 문서"를 하나만 고르면 제목 조회의 tie에서
 # 정답이 2위로 밀렸을 때 비교 자체가 무너지므로 약간 여유를 둔다.
 _COMPARISON_PER_TARGET = 2
@@ -605,9 +614,11 @@ class _Run:
         now: datetime,
         limit: int,
         grain: str | None = None,
+        expand_grain: bool = False,
     ) -> None:
         self.store = store
         self.grain = grain
+        self.expand_grain = expand_grain
         self.c = constraints
         self.strategies = strategies
         self.project_id = project_id
@@ -630,6 +641,7 @@ class _Run:
         # `vector()`가 어휘 arm 몫으로 미리 던져 둔 조회 결과(`keyword_arm()`이 소비).
         # None이면 arm이 자기 조회를 직접 던진다 - `vector` 없이 arm만 도는 실행일 때다.
         self.arm_fetched: _KeywordArmHits | None = None
+        self.time_range_relaxed = False
 
     def add_hits(self, source: str, hits: list[dict[str, Any]]) -> None:
         self.results_by_source.setdefault(source, []).extend(hits)
@@ -639,7 +651,87 @@ class _Run:
         self.steps.append(step)
         return step
 
+    def narrow(self, hits: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str | None]:
+        """anchor로 좁히기(`_narrow_to_anchor`) - 단 wide(exhaustive/negative/count) 질의는 좁히지 않는다.
+
+        anchor는 "사용자가 가리킨 문서 하나"라는 뜻인데, "한화손해보험 관련 문서 전부"는 **집합**을 묻는다.
+        제목에 그 단어가 든 문서 하나가 anchor가 되자 본문 히트가 전부 그 문서로 붕괴해 정답 7건 중 2건만
+        나왔다(리뷰 결함2). wide에서도 anchor는 `merge()`가 최상위로 고정한다."""
+        if self.wide and self.anchor is not None:
+            return hits, "wide_not_narrowed"
+        return _narrow_to_anchor(hits, self.anchor)
+
     # -- 후보 생성 ------------------------------------------------------------
+
+    async def generate(self, provider: ChatProvider | None, *, with_filter: bool = True) -> None:
+        """후보 생성 전략을 계약된 순서로 돈다. document_lookup이 먼저다(anchor가 뒤 전략을 좁힌다).
+        arm은 vector 다음이어야 한다 - `_claim_anchor`는 먼저 잡힌 anchor를 덮어쓰지 않고,
+        `_narrow_to_anchor`는 그 시점의 anchor로 좁힌다. 순서를 바꾸면 지표가 움직인다.
+        `with_filter=False`는 `relax_time_range` 뒤 다시 돌 때다 - 필터 집합은 이미 있다.
+        multihop은 시간 범위를 쓰지 않고(planner가 하위 질의마다 따로 해석) 비싸서 호출자가 한 번만 부른다."""
+        s = self.strategies
+        if STRATEGY_DOCUMENT_LOOKUP in s:
+            await self.document_lookup()
+        if STRATEGY_LEXICAL in s:
+            await self.lexical()
+        if with_filter and STRATEGY_METADATA_FILTER in s:
+            await self.metadata_filter()
+        if STRATEGY_VECTOR in s:
+            await self.vector()
+        if STRATEGY_KEYWORD_ARM in s:
+            await self.keyword_arm()
+        if STRATEGY_COMPARISON in s:
+            await self.comparison()
+
+    def relax_time_range(self) -> bool:
+        """시간 범위 때문에 후보 arm이 **전부** 빈손이면 범위를 풀고 True(호출자가 arm을 다시 돌린다).
+
+        왜: 질의 속 날짜는 문서 시각이 아니라 **내용**을 가리키는 경우가 흔하다("2022년에 종료된 계약의
+        종료일은?", "이번 주 해야 할 업무는?", "2026년 9월 1일에 어떤 회의가 예정되어 있나요?" - 2026-09-14
+        평가 스모크). 그 날짜가 since/until로 모든 arm에 걸리면 정답 문서(그 날짜를 **언급한** 더 이른
+        문서)가 범위 밖이라 전부 0건이 된다. 그래서 시간 범위를 "결과를 0건으로 만들 수 없는" 약한
+        신호로 둔다: 범위 안에서 arm이 하나라도 뭔가 찾으면 지금처럼 하드 필터로 쓰고("지난주 회의록"이
+        범위 안에 있으면 그대로), 전부 빈손일 때만 푼다. 풀고 다시 찾은 후보는 어차피 범위 밖 문서라
+        (범위 안 문서였다면 첫 판에서 걸렸다) 범위 안을 앞세우는 재정렬은 할 일이 없다.
+
+        안 푸는 경우:
+        - arm이 하나도 안 돌았다(semantic_query·식별자 없음): "작년 3분기에 김민수가 보낸 메일"처럼 제약이
+          곧 질의인 경우라 `filter_only`가 답이다.
+        - 필터에 작성자/참여자/확장자/MIME 같은 **시간 외 구조적 술어**가 있다: 그런 질의는 제약을 걷으면
+          semantic_query가 "보낸" 같은 찌꺼기라 arm이 빈손인 게 정상이고, 필터 쪽을 믿는 기존 분기
+          (`filter_only`/`no_overlap_fallback_to_filter`)가 맞다.
+
+        필터와의 관계는 `merge()`가 정한다: 풀고 다시 돈 arm이 후보를 찾으면 필터(이 조건상 시간 + 출처
+        힌트뿐)를 적용하지 않는다(`applied=time_range_relaxed`). `no_overlap_fallback_to_filter`로 가면
+        안 된다 - 그건 날짜로 고른 필터 집합을 최신순으로 내는데, 여기서 날짜는 내용이었다. 다시 돌아도
+        빈손이면 예전과 같은 `filter_only`(범위 안 문서 최신순)로 떨어진다."""
+        if self.since is None and self.until is None:
+            return False
+        # wide 질의에서 필터가 문서를 찾았으면 그 집합이 답이다("2026년 6월 메일 전부") - 여기서 날짜는
+        # 내용이 아니라 조건이다. 풀면 범위 밖 후보가 필터를 대체해 정답을 통째로 잃는다(A/B 2026-09-14:
+        # 월 단위 exhaustive 2건 1.0 -> 0.0).
+        if self.wide and self.filter_hits:
+            return False
+        if not self.results_by_source or any(self.results_by_source.values()):
+            return False
+        if self.c.authors or self.c.participants or self.c.file_extensions or self.c.mime_types:
+            return False
+        self.step(
+            STRATEGY_TIME_RANGE_RELAXED,
+            SOURCE_SQL_SEARCH,
+            0,
+            reason="all_candidate_arms_empty_in_time_range",
+            arms=sorted(self.results_by_source),
+            since=_iso(self.since),
+            until=_iso(self.until),
+        )
+        self.since = self.until = None
+        self.results_by_source = {}
+        self.anchor = None
+        self.pinned = []
+        self.arm_fetched = None
+        self.time_range_relaxed = True
+        return True
 
     def _claim_anchor(self, title_hits: list[dict[str, Any]]) -> tuple[str, list[tuple[str, float]]]:
         """`document_search` 결과에서 anchor를 판정해 `self.anchor`에 싣고
@@ -713,7 +805,7 @@ class _Run:
             )
         )
         collected: list[dict[str, Any]] = [hit for hits in per_term for hit in hits]
-        collected, narrowing = _narrow_to_anchor(collected, self.anchor)
+        collected, narrowing = self.narrow(collected)
         self.add_hits(SOURCE_LEXICAL_SEARCH, collected)
         self.step(STRATEGY_LEXICAL, SOURCE_LEXICAL_SEARCH, len(collected), terms=terms, anchor_narrowing=narrowing)
 
@@ -790,7 +882,7 @@ class _Run:
                 error = f"{type(vector_error).__name__}: {vector_error}"
             else:
                 hits = vector_hits
-        hits, narrowing = _narrow_to_anchor(hits, self.anchor)
+        hits, narrowing = self.narrow(hits)
         # 관련도 하한 - config.py의 vector_min_score 주석 참고. anchor 좁히기 뒤에 거는 이유는
         # anchor가 이미 "제목이 정확히 맞은 문서"라는 더 강한 신호라, 그 안에서 유사도가 낮다고
         # 버리면 정답을 잃기 때문이다.
@@ -873,7 +965,7 @@ class _Run:
         anchor_reason = "already_anchored"
         if self.anchor is None:
             anchor_reason, _ranked = self._claim_anchor(title_hits)
-        title_hits, _ = _narrow_to_anchor(title_hits, self.anchor)
+        title_hits, _ = self.narrow(title_hits)
         self.add_hits(SOURCE_DOCUMENT_SEARCH_SEMANTIC, title_hits)
         self.step(
             STRATEGY_DOCUMENT_LOOKUP,
@@ -884,7 +976,7 @@ class _Run:
             anchor=self.anchor,
             anchor_reason=anchor_reason,
         )
-        body_hits, _ = _narrow_to_anchor(fetched.body, self.anchor)
+        body_hits, _ = self.narrow(fetched.body)
         self.add_hits(SOURCE_LEXICAL_SEARCH_SEMANTIC, body_hits)
         self.step(STRATEGY_LEXICAL, SOURCE_LEXICAL_SEARCH_SEMANTIC, len(body_hits), query=query, arm="semantic_query")
         # 질의 문자열 통째로 뭔가 **강하게** 걸렸으면 그게 term 하나하나보다 강한 신호다 -
@@ -912,7 +1004,8 @@ class _Run:
         arm_documents = len(
             {hit["document_id"] for hit in [*title_hits, *body_hits] if hit.get("document_id")}
         )
-        if self.anchor is None and arm_documents < _ARM_STRONG_DOCUMENTS:
+        # wide 질의에서는 anchor가 "이 문서가 답"이 아니므로(`narrow`) 강한 신호로 치지 않는다.
+        if (self.anchor is None or self.wide) and arm_documents < _ARM_STRONG_DOCUMENTS:
             await self._term_fallback()
 
     async def _term_fallback(self) -> None:
@@ -948,7 +1041,7 @@ class _Run:
             # df는 코퍼스의 성질이라 anchor 좁히기 **전**에 센다 - 좁힌 뒤 세면 anchor가 잡힌
             # 질의에서 모든 term의 df가 1로 붙어 변별력 판정이 무의미해진다.
             observed_df[term] = len({hit.get("document_id") for hit in raw_hits if hit.get("document_id")})
-            hits, _ = _narrow_to_anchor(raw_hits, self.anchor)
+            hits, _ = self.narrow(raw_hits)
             hits_by_term[term] = hits
             for hit in hits:
                 document_id = hit.get("document_id")
@@ -1218,6 +1311,10 @@ class _Run:
                 # 아래 source_hint 분기와 정반대 상황이라 같이 손댈 이유가 없다.
                 merged = merge_and_rerank({SOURCE_SQL_SEARCH: self.filter_hits})
                 filter_note = "filter_only"
+            elif self.time_range_relaxed:
+                # 시간 범위를 푼 뒤 찾은 후보다 - 이 필터는 시간(+출처 힌트)뿐이라 걸면 범위를 되살린다.
+                # 교집합 0에서 필터 집합으로 가는 분기는 날짜가 내용이었던 질의에서 틀린다(`relax_time_range`).
+                filter_note = "time_range_relaxed"
             elif _is_source_hint_only_filter(self.c):
                 # **어휘 힌트뿐인 필터는 하드 필터로 쓰지 않는다.** `source_type IN (...)` 하나뿐인
                 # WHERE는 `SOURCE_TYPE_MARKERS` 정규식이 질의 표면 어휘만 보고 찍은 추측이고, 그
@@ -1372,6 +1469,68 @@ class _Run:
         # 본문 청크를 문서 순서대로 앞에, 같은 청크를 가리키던 검색 히트는 중복이라 뺀다.
         return chunk_hits + [hit for hit in hits if hit.get("chunk_id") not in read_chunk_ids]
 
+    async def expand_to_grain(self, hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """최종 랭킹에서 grain 히트(`chunk_id`/`knowledge_object_id`)가 하나도 없는 문서마다 그 문서 안의
+        grain 단위를 질의 임베딩 유사도 순으로 `_GRAIN_EXPANSION_PER_DOCUMENT`개 골라 **그 문서의 첫 히트
+        바로 뒤에** 끼운다. 문서 순서(`document_ids`)는 바뀌지 않는다.
+
+        왜: 제목·필터 히트는 문서 id만 싣고, anchor 좁히기는 다른 문서의 벡터 히트를 지운다. 그래서 grain
+        채점(청크/KO id를 가진 히트만 센다)에서는 정답 문서를 1위로 찾고도 채점 리스트가 빈다(2026-09-14
+        평가 스모크: 제목 anchor 28건 + 벡터 0건 → 빈 리스트). 이미 고른 문서 안에서만 고르므로 후보
+        집합은 넓히지 않는다 - 새 문서를 데려오지 않는다.
+
+        `vector_min_score` 하한은 걸지 않는다 - 문서는 이미 다른 신호로 랭킹에 들었고, 여기서는 "그 문서의
+        어느 단위인가"만 고른다. 질의 임베딩은 vector arm이 쓴 `semantic_query`를 그대로 써서 캐시
+        (`embedding/cache.py`)에서 받는다. semantic_query가 비면 원문 질의로 한 번 임베딩한다 - 첫 문서를
+        먼저 기다리는 이유가 그것이다(동시에 던지면 캐시 miss가 문서 수만큼 임베딩을 부른다)."""
+        assert self.grain is not None
+        key = _GRAIN_ID_KEY[self.grain]
+        covered = {hit["document_id"] for hit in hits if hit.get(key)}
+        ranked, _ = _dedupe_documents(hits)
+        missing = [d for d in ranked if d not in covered]
+        if not missing:
+            return hits
+        query = self.c.semantic_query or self.c.query
+
+        def _fetch(document_id: str) -> Coroutine[Any, Any, tuple[list[dict[str, Any]], BaseException | None]]:
+            return _capture_exception(
+                vector_search(
+                    query,
+                    self.store,
+                    project_id=self.project_id,
+                    limit=_GRAIN_EXPANSION_PER_DOCUMENT,
+                    target_kind=self.grain,
+                    document_ids=[document_id],
+                )
+            )
+
+        first = await _fetch(missing[0])
+        results = [first, *await asyncio.gather(*(_fetch(d) for d in missing[1:]))]
+        units: dict[str, list[dict[str, Any]]] = {}
+        error: str | None = None
+        for document_id, (found, exc) in zip(missing, results, strict=True):
+            if exc is not None:
+                error = error or f"{type(exc).__name__}: {exc}"
+            elif found:
+                units[document_id] = [{**unit, "retrieval_sources": [STRATEGY_GRAIN_EXPANSION]} for unit in found]
+        if error is not None:
+            logger.warning("grain expansion failed for some documents: %s", error)
+        expanded: list[dict[str, Any]] = []
+        for hit in hits:
+            expanded.append(hit)
+            expanded.extend(units.pop(hit["document_id"], []))
+        self.step(
+            STRATEGY_GRAIN_EXPANSION,
+            SOURCE_VECTOR_SEARCH,
+            len(expanded) - len(hits),
+            grain=self.grain,
+            query=query,
+            documents_without_grain_hit=len(missing),
+            per_document=_GRAIN_EXPANSION_PER_DOCUMENT,
+            error=error,
+        )
+        return expanded
+
     async def count(self, document_ids: list[str]) -> None:
         via = "document_ids"
         sql: str | None = None
@@ -1422,9 +1581,14 @@ async def retrieve(
       `"knowledge_object"`면 모든 벡터 조회(vector arm, multihop planner)를 그 grain의 임베딩으로만
       좁힌다 - `KF_EMBEDDING_SOURCE`와 무관하게 이 값이 이긴다. grain 골든셋 평가의 전제다
       (wiki/evaluation.md "grain").
+      **명시한 grain만** 최종 랭킹의 문서 단위 히트를 그 grain 단위로 펼친다(`_Run.expand_to_grain`) -
+      grain 채점은 청크/KO id가 있는 히트만 보기 때문이다. None이면 설정 grain으로 벡터를 좁히기만 하고
+      펼치지 않는다: 제품 경로(에이전트 search 도구의 기본값, API)는 문서 단위 히트로 충분하고, 문서당
+      벡터 조회가 더 붙는 비용을 낼 이유가 없다. "명시했는가"는 인자가 None인지로만 가른다.
     """
     if grain not in (None, "chunk", "knowledge_object"):
         raise ValueError(f"unknown grain: {grain!r}")
+    expand_grain = grain is not None
     # 두 grain 임베딩이 같이 적재된 DB에서 섞어 보면 같은 문서가 청크와 KO로 랭킹에 두 번 오른다
     # (wiki/embeddings.md "한 실행에 한 grain"). 그래서 지정이 없으면 적재 설정을 따른다.
     grain = grain or settings.embedding_source
@@ -1444,23 +1608,12 @@ async def retrieve(
         now=now,
         limit=limit,
         grain=grain,
+        expand_grain=expand_grain,
     )
 
-    # 후보 생성 - document_lookup이 먼저다(anchor가 뒤 전략을 좁힌다).
-    if STRATEGY_DOCUMENT_LOOKUP in strategies:
-        await run.document_lookup()
-    if STRATEGY_LEXICAL in strategies:
-        await run.lexical()
-    if STRATEGY_METADATA_FILTER in strategies:
-        await run.metadata_filter()
-    if STRATEGY_VECTOR in strategies:
-        await run.vector()
-    # arm은 vector 다음이어야 한다 - `_claim_anchor`는 먼저 잡힌 anchor를 덮어쓰지 않고,
-    # `_narrow_to_anchor`는 그 시점의 anchor로 좁힌다. 순서를 바꾸면 지표가 움직인다.
-    if STRATEGY_KEYWORD_ARM in strategies:
-        await run.keyword_arm()
-    if STRATEGY_COMPARISON in strategies:
-        await run.comparison()
+    await run.generate(provider)
+    if run.relax_time_range():
+        await run.generate(provider, with_filter=False)
     if STRATEGY_MULTIHOP in strategies:
         await run.multihop(provider)
 
@@ -1477,6 +1630,9 @@ async def retrieve(
         keep = set(document_ids[:limit])
         hits = [hit for hit in hits if hit["document_id"] in keep]
         document_ids, scores = document_ids[:limit], scores[:limit]
+    # 절단 뒤라 최종 문서만 펼친다. 문서 순서와 scores는 펼치기 전 값 그대로다(같은 문서 안에 단위를 끼울 뿐).
+    if run.expand_grain:
+        hits = await run.expand_to_grain(hits)
     for hit in hits:
         hit.setdefault("score", 0.0)
         hit.setdefault("target_kind", "document")

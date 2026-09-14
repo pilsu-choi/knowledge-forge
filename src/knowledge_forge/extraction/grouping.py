@@ -11,18 +11,39 @@ evidence was never more than a single-element list in practice.
 Grouping is a plain windowing pass over one document's already-ordered
 chunk list (chunker.chunk() output), not a semantic/similarity pass -
 adjacency in the chunk sequence is the cheap, reliable proxy for "likely
-part of the same claim". `group_size=1` (the default, see
-config.extraction_chunk_group_size) reproduces the exact prior
-one-chunk-per-call behavior.
+part of the same claim". It's token-budget based (see
+config.extraction_group_max_tokens), not count based: one already-large
+chunk (e.g. a whole Chapter under AdaptiveChunker's budget) stays alone in
+its own call, while several small chunks (short Slack messages, merged
+paragraph leaves - see chunking/adaptive.py's small-sibling merge) get
+bundled into one call up to the token budget, which is what actually cuts
+the number of LLM calls a token-count knob wouldn't: two documents with the
+same chunk *count* can need a very different number of extraction calls
+depending on how large those chunks are.
 """
 
 from knowledge_forge.models.chunk import Chunk
 
+DEFAULT_GROUP_MAX_TOKENS = 4000
 
-def group_chunks(chunks: list[Chunk], group_size: int = 1) -> list[list[Chunk]]:
-    """Splits `chunks` into consecutive, non-overlapping windows of up to
-    `group_size` chunks each, preserving order. The last window may be
-    smaller than `group_size` if it doesn't divide evenly."""
-    if group_size < 1:
-        raise ValueError("group_size must be >= 1")
-    return [chunks[i : i + group_size] for i in range(0, len(chunks), group_size)]
+
+def group_chunks(chunks: list[Chunk], max_tokens: int = DEFAULT_GROUP_MAX_TOKENS) -> list[list[Chunk]]:
+    """Greedily bundles consecutive chunks (preserving order) so each
+    bundle's total `token_count` stays within `max_tokens` - a single chunk
+    already at or over the budget is never split further, it just forms a
+    bundle of one."""
+    if max_tokens < 1:
+        raise ValueError("max_tokens must be >= 1")
+    groups: list[list[Chunk]] = []
+    current: list[Chunk] = []
+    current_tokens = 0
+    for chunk in chunks:
+        if current and current_tokens + chunk.token_count > max_tokens:
+            groups.append(current)
+            current = []
+            current_tokens = 0
+        current.append(chunk)
+        current_tokens += chunk.token_count
+    if current:
+        groups.append(current)
+    return groups

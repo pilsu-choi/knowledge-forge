@@ -181,6 +181,44 @@ async def test_list_knowledge_objects_by_source_returns_empty_for_unknown_source
     assert await store.list_knowledge_objects_by_source("no-such-source") == []
 
 
+async def test_list_knowledge_objects_by_source_excludes_superseded_objects(store):
+    """extraction/versioning.py's O(new x prior) supersedes matching only
+    needs the current "head" of each claim's version chain, not every
+    KnowledgeObject a source has ever produced across every revision - see
+    PostgresStore.list_knowledge_objects_by_source's docstring. test-ko1
+    (superseded by a newer object below) must not come back; test-ko2
+    (never superseded) and the new object must."""
+    src, doc, chunk, objects, relation = _sample_records()
+    await store.save_source(src, raw_path=None)
+    await store.save_document(doc)
+    await store.save_chunks([chunk])
+    await store.save_knowledge_objects(objects)
+    await store.save_relations([relation])
+
+    newer = KnowledgeObject(
+        knowledge_object_id="test-ko1-v2",
+        type=KnowledgeObjectType.ENTITY,
+        source=SourceRef.from_source(src),
+        document=DocumentRef(document_id="test-d1", title="T"),
+        evidence=[Evidence(chunk_id="test-c1", document_id="test-d1", hierarchy_level=HierarchyLevel.PARAGRAPH, sequence_index=0)],
+        summary="Acme Corp",
+        content={"name": "Acme Corp", "entity_type": "ORG", "description": None},
+        topics=["t"],
+        document_type="report",
+        extracted_at=datetime.now(timezone.utc),
+        model_used="claude-opus-5",
+        pipeline_version="0.1.0",
+        source_hash="h1",
+        supersedes="test-ko1",
+        version=2,
+    )
+    await store.save_knowledge_objects([newer])
+
+    fetched = await store.list_knowledge_objects_by_source(src.source_id)
+
+    assert {ko.knowledge_object_id for ko in fetched} == {"test-ko2", "test-ko1-v2"}
+
+
 async def test_save_chunks_persists_page_range(store):
     src, doc, chunk, _, _ = _sample_records()
     await store.save_source(src, raw_path=None)
@@ -828,6 +866,10 @@ async def test_search_by_embedding_mixes_grains_by_default_and_narrows_on_target
     # A KO `type` filter can only ever match KO rows, so it implicitly drops chunk hits.
     typed = await store.search_by_embedding(vector_a, "test-model", None, "entity", 10)
     assert [r["knowledge_object_id"] for r in typed] == [ko_id]
+    # `document_ids` scopes the search to those documents (grain expansion in search/retrieve.py).
+    in_doc = await store.search_by_embedding(vector_a, "test-model", None, None, 10, document_ids=[doc.document_id])
+    assert len(in_doc) == 2
+    assert await store.search_by_embedding(vector_a, "test-model", None, None, 10, document_ids=["missing"]) == []
 
 
 async def test_init_schema_migrates_the_pre_chunk_embeddings_table_in_place():
