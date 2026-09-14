@@ -284,7 +284,7 @@ base `aa12fb1`. 결함마다 커밋을 나눠 커밋별로 A/B를 돌렸다.
 |---|---|---|---|
 | `ff8a926` | `_particle_fits`: "하"/"되" 뒤 "는"은 조사가 아님("진행되는"→`진행되` 방지) | sq·terms 55 | 채택 |
 | `be8974c` | 식별자 자리표시 앞을 붙임("/aegis-email"→`/ aegis-email` 방지, "#proj_…"도 같음) | sq 19 | 채택(점수 변화 0) |
-| `9aa9d8f` | 파일명·연결 토큰(문서 참조)도 자리표시로 semantic_query 제자리에 남김. `document_reference`는 그대로 | sq 35 | 보류 가능(아래) |
+| `9aa9d8f` | 파일명·연결 토큰(문서 참조)도 자리표시로 semantic_query 제자리에 남김. `document_reference`는 그대로 | sq 35 | **보류 - main에 넣지 않음**(`fix/parsing-residuals`에만). 순효과 0 근처에 항목별 ±0.6 흔들림 |
 | `bbe0e57` | `resolve_within_year`: "올해 5월 15일"→그 날(KST), 없는 날은 그 달 | 0 | 채택 |
 | `03b18ff` | `keyword_terms` 가장자리 `._-` 제거(`be8974c`가 만든 `-ai-agent` 파편 term) | terms 5 | 채택(점수 변화 0) |
 
@@ -307,4 +307,5 @@ base `aa12fb1`. 결함마다 커밋을 나눠 커밋별로 A/B를 돌렸다.
   - KO 손실 둘은 공백 든 제목이 잘린 참조다("프로젝트 투입 관리_2025-023" → `관리_2025-023`, "애자일소다_사업실적 관리.xlsx" → `관리.xlsx`). 규칙으로 가를 수 없어 좁히지 않았다. 다음 결함은 이 참조 절단이다.
 - 노이즈: KO `lookup-006`이 같은 코드 재실행에서 0.387 ↔ 0.613로 흔들렸다.
 - 코퍼스 지문은 모든 실행에서 동일(문서 358, 임베딩 chunk 2,856 / KO 5,107). 결과 JSON은 scratchpad `eval-runs-residuals/`.
-- 검증: `pytest tests --ignore=tests/api` 946 passed(DB 테스트 제외), `ruff check src tests`·`mypy src` 통과.
+- main 머지는 `9aa9d8f`를 뺀 4커밋이다(브랜치 `integrate/parsing-residuals`). 위 A/B 표는 `9aa9d8f`를 포함한 값이다. 커밋별 분해상 lookup 변화는 전부 그 커밋에서 나왔으므로, 머지분의 lookup ndcg@10 변화는 0이고 none·exhaustive 이득(`ff8a926`)만 남는다.
+- 검증: 머지분 기준 `pytest tests --ignore=tests/api` 1045 passed(DB 포함, 스크래치 DB `knowledge_forge_itest`), `ruff check src tests`·`mypy src` 통과.
