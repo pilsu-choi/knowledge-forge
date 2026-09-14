@@ -59,6 +59,10 @@ class PipelineStore:
         await self._db.save_relations(relations)
 
     async def list_prior_knowledge_objects(self, source_id: str) -> list[KnowledgeObject]:
+        """The current "head" (not-yet-superseded) KnowledgeObjects for this
+        source - see PostgresStore.list_knowledge_objects_by_source for why
+        it's restricted to those rather than every object ever extracted
+        from this source."""
         return await self._db.list_knowledge_objects_by_source(source_id)
 
     async def record_embeddings(

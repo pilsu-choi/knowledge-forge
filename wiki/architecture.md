@@ -299,6 +299,27 @@ claim인가"라는 질문을 (a) **같은 실행 안에서** 물으면 중복 �
   남아 다음 `list_knowledge_objects_by_source()` 조회의 후보 풀이 된다) 새 버전이 그것을
   가리키는 방식이라 두 버전 모두 id로 계속 조회 가능하다.
 
+**`feature/chunk-merge`: `list_knowledge_objects_by_source()`를 "head" 객체로 제한.**
+원래 이 메서드는 `source_id`가 같은 KnowledgeObject를 과거의 모든 재추출 실행에 걸쳐 전부
+반환했다 — 소스를 재수집할 때마다 후보 풀이 계속 늘어나기만 해서, `resolve_supersedes()`의
+O(new × prior) 유사도 비교가 재추출 횟수에 비례해 무한정 느려지는 원인이었다. 지금은
+`ko.knowledge_object_id`를 가리키는 `supersedes`를 가진 다른 객체가 없는("아무도 대체하지
+않은", 즉 각 claim 버전 체인의 head) 객체로만 제한한다(`NOT EXISTS` 서브쿼리, SQL 자체는
+`storage/postgres_store.py`).
+
+검토한 대안은 "이 source의 가장 최근 `documents` 행에 속한 객체만"이었다 — 더 간단해 보이지만
+호출 시점 문제로 깨진다: `run_pipeline`은 현재 실행의 새 `documents` 행을 먼저 쓰고
+(`record_document`) 그 다음에야 "이전" 객체를 조회하므로, "가장 최근 문서" 기준은 매번 방금
+쓴 그 문서(아직 KnowledgeObject가 하나도 없는) 자신을 가리켜 후보 풀이 항상 비어버린다 —
+supersedes 연결이 조용히 전부 끊기는 사고. "아무도 대체하지 않은 객체" 기준은 `knowledge_objects`
+행만 보므로 이 경쟁 문제가 없고, 문서가 리비전마다 부분적으로만 바뀌는 경우에도 더 안전하다 —
+리비전 N의 재추출이 N-1의 객체 O의 claim을 우연히 다시 언급하지 않으면 O는 계승자가 없는 채
+"문서 기준" 방식에서는 그 순간 후보 풀에서 영영 빠지지만("가장 최근 문서"가 N으로 바뀌므로),
+"head 기준"에서는 O가 여전히 head로 남아 N+1의 매칭 후보가 될 수 있다. 이 제한이 곧
+O(new × prior) 매칭의 상한이기도 하다 — 한 claim이 한 번이라도 재추출되면 그 이전 버전은
+후보 풀에서 영구히 빠지므로, 풀 크기는 과거 리비전 수가 아니라 "지금 살아있는 claim 수"를
+따라간다.
+
 두 패스 모두 `pipeline.run_pipeline`이 한 문서의 모든 청크 그룹을 `asyncio.gather`로 모은
 직후, 저장/OKF 기록/yield 전에 실행된다 — 문서 하나를 통째로 봐야만 "그룹 A의 객체가 그룹
 B의 객체와 중복인가"/"이 새 객체가 이전 실행의 무엇을 대체하는가"를 정확히 판단할 수 있기
