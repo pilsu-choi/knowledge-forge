@@ -101,6 +101,9 @@ n=300이어도 +0.03 이하 차이는 CI가 0을 포함할 수 있다.
 - none 게이트의 term 문서빈도는 청크 본문 ILIKE 기준(`retrieve.py::_term_document_frequency_sql` 재사용)이라 제목에만 있는 단어는 못 본다.
 - e2e의 `delegate_task` 자식 에이전트는 grain 없이 검색하고, 그 검색 결과는 채점 리스트에 들어가지 않는다.
 - 합성 질의는 여전히 "메일 테스트" 같은 빈약한 원문에서 약한 질의를 만든다. 사람 스팟체크가 필요하다.
+- 2026-09-15 품질 조사에서 추가로 확인한 한계(라벨 확장이 현재 retrieve 상위 8개에만 기대는 풀링 편향, none이
+  `vector_min_score`에 묶임, overall이 이종 지표 평균, 번호 짝홀 dev/test 분할의 문서 누수)는
+  [`search-quality-review-2026-09-15.md`](search-quality-review-2026-09-15.md) "3. 평가" 참고.
 
 ## 골든셋 v1과 기준 점수 (2026-09-14)
 

@@ -37,6 +37,8 @@
 | [`agent-runtime.md`](agent-runtime.md) | 모델 벤더 중립 Agent Runtime(harness) — `file_search`/`vector_search`/`sql_search`/`plan_search`/FileSystem/Memory/SubAgents 도구를 실제로 쥐고 도는 `knowledge-forge agent` CLI(구현됨), 자체 `ChatProvider` 추상화(Anthropic 네이티브 + OpenAI-호환) |
 | [`search-architecture.md`](search-architecture.md) | 넓은 엔터프라이즈 RAG 아키텍처 레이어별 상태 — Query Planning/Routing/Reranking/Temporal Search/Text-to-SQL 구현 현황, Retrieval Plan 실행기 규칙, 어휘 검색 SQL의 trigram 인덱스 활용(2026-09-14), 랭킹 구조 수정 7건 A/B와 채택 결과, 평가 재구현 연결 |
 | [`evaluation.md`](evaluation.md) | 검색 평가(2026-09-14 재구현) — grain(chunk/KO) 고정 골든셋 자동 생성(`eval gen`)과 자동 게이트, retrieval 지표(기본)·에이전트 답변 채점(`--e2e`), paired bootstrap 비교(`eval compare`) |
+| [`search-code-review-2026-09-14.md`](search-code-review-2026-09-14.md) | 검색 파이프라인·에이전트 경로 코드 리뷰와 `fix/search-parsing` 수정 내역(시간 파싱, 마커 경계, `project_id` 검증, 깨진 JSON), 회귀 probe |
+| [`search-quality-review-2026-09-15.md`](search-quality-review-2026-09-15.md) | 검색·평가 품질 조사(미수정) — 질의 해석 오탐이 믿는 필터로 들어가는 문제, 문서 단위 RRF 미합산·anchor 격차 소수점 버그, 평가의 라벨 풀링 편향·none 임계값 결합·dev/test 누수, 추천 순서와 재현 |
 | [`query-types.md`](query-types.md) | 검색 유형 20종(Navigational/Temporal/Metadata/Exact/Aggregation/Negative/Comparison/...)별 "왜 유사도가 어려운가 / 필요한 전략 / `search/constraints.py`의 어떤 플래그가 잡는가 / 현재 상태" 표 |
 | [`okf.md`](okf.md) | `OKFWriter` — manifest.yaml + resources/objects/relations 파일 트리로 된 Knowledge Base, Postgres와 독립적인 opt-in 출력 |
 | [`ui.md`](ui.md) | `/ui` — React+Vite 기반 OKF 뷰어(마크다운+그래프). Tailwind+shadcn/ui 기반 Obsidian풍 비주얼, 디렉터리 구조, 알려진 CSS/타입 함정 |
