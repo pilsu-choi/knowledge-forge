@@ -43,6 +43,10 @@ class GoldenItem(BaseModel):
     knowledge_object_ids: list[str] = Field(default_factory=list)
     predicate_sql: str | None = None
     document_ids: list[str] = Field(default_factory=list)
+    # lookup 전용, dev/test 분할 키(generate.py::_split_for) - chunk grain은 evidence에도 document_id가
+    # 있지만 KO grain은 knowledge_object_ids만 있어 문서 id를 따로 들고 있어야 한다. 없어도(v1 이전
+    # 골든셋) 동작하도록 Optional - 그 파일들은 여전히 옛 분할(번호 짝홀)을 쓴다.
+    document_id: str | None = None
 
 
 class GoldenSet(BaseModel):

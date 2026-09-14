@@ -11,6 +11,7 @@ kind별 경로:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import random
@@ -19,6 +20,7 @@ from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
+from itertools import zip_longest
 from typing import Any, TypeVar
 
 from knowledge_forge.chat_provider import ChatProvider, Message
@@ -39,7 +41,7 @@ from knowledge_forge.eval.goldenset import (
 from knowledge_forge.exceptions import EvalError
 from knowledge_forge.search.constraints import _extract_json_object
 from knowledge_forge.search.retrieve import _sql_literal, _term_document_frequency_sql, retrieve
-from knowledge_forge.search.service import vector_search
+from knowledge_forge.search.service import lexical_search, vector_search
 from knowledge_forge.storage import PipelineStore
 
 T = TypeVar("T")
@@ -106,6 +108,37 @@ def anchor_quote(text: str, quote: str) -> str | None:
     q, t = normalize_text(quote), normalize_text(text)
     match = SequenceMatcher(None, q, t, autojunk=False).find_longest_match(0, len(q), 0, len(t))
     return t[match.b : match.b + match.size].strip() if match.size >= MIN_ANCHOR_CHARS else None
+
+
+def pool_candidate_ids(*id_lists: Sequence[str], cap: int) -> list[str]:
+    """서로 다른 검색 arm의 id 리스트를 라운드로빈으로 섞어 중복 제거하고 `cap`개로 자른다 - 한
+    arm이 상위를 독점해 다른 arm의 후보가 밀려나지 않게 한다."""
+    pooled: list[str] = []
+    for row in zip_longest(*id_lists):
+        for candidate_id in row:
+            if candidate_id and candidate_id not in pooled:
+                pooled.append(candidate_id)
+                if len(pooled) >= cap:
+                    return pooled
+    return pooled
+
+
+def split_key(item: GoldenItem) -> str:
+    """dev/test 분할 해시 입력 - lookup은 문서 id(chunk grain evidence의 첫 문서 = KO grain의
+    `document_id`, 둘 다 lookup()이 채운다), exhaustive는 정답 문서 중 가장 앞선 id, none은 문서가
+    없으므로 질의 자체를 쓴다. 문서 id 기준이라 문서당 최대 `PER_DOCUMENT_CAP`개인 lookup들이
+    같은 쪽으로 몰려 dev/test 사이에 새지 않는다(번호 짝홀 분할의 누수, wiki/search-quality-review-
+    2026-09-15.md 3.4)."""
+    if item.document_id:
+        return item.document_id
+    if item.document_ids:
+        return min(item.document_ids)
+    return item.query
+
+
+def split_for(key: str) -> str:
+    """`key`의 sha256 해시 첫 바이트로 dev/test를 결정 - 같은 키는 항상 같은 쪽에 떨어진다."""
+    return "test" if hashlib.sha256(key.encode("utf-8")).digest()[0] % 2 else "dev"
 
 
 # --- LLM ---------------------------------------------------------------------------
@@ -248,7 +281,7 @@ class _Generator:
         reason = rule_gate(query, source_text)
         if reason:
             return reason
-        item = GoldenItem(id="", query=query, answer=answer, kind="lookup", split="dev")
+        item = GoldenItem(id="", query=query, answer=answer, kind="lookup", split="dev", document_id=document_id)
         if chunk:
             anchored = anchor_quote(source_text, quote)
             if anchored is None:
@@ -272,10 +305,12 @@ class _Generator:
         return [Evidence(document_id=doc, quote=quote) for doc in documents]
 
     async def expand_labels(self, item: GoldenItem) -> GoldenItem | str:
-        """같은 grain 검색 상위 후보 중 같은 답을 담은 것을 정답에 더한다. 검색이 원래 정답을 못 찾아도
-        항목은 버리지 않는다 - 그게 바로 평가가 잡아야 할 실패다."""
-        result = await retrieve(item.query, store=self.store, use_llm_constraints=False, grain=self.grain)
-        ranked = ranked_ids(result.hits, self.grain)[:EXPANSION_TOP]
+        """서로 독립적인 검색 arm(전체 파이프라인, 벡터 단독, 어휘 단독)에서 모은 후보 중 같은 답을
+        담은 것을 정답에 더한다. `retrieve()` 상위만 보면 그 파이프라인이 놓친 정답 청크가 영구히
+        오답으로 채점되어 A/B가 현재 파이프라인에 유리해진다(풀링 편향,
+        wiki/search-quality-review-2026-09-15.md 3장). 검색이 원래 정답을 못 찾아도 항목은 버리지
+        않는다 - 그게 바로 평가가 잡아야 할 실패다."""
+        ranked = await self._candidate_pool(item.query)
         if ranked:
             reason = await self._judge_candidates(item, ranked)
             if reason:
@@ -286,6 +321,18 @@ class _Generator:
         if gold is None:
             return stale or "no_labels"
         return "anchorless" if len(gold) > MAX_POSITIVES else item
+
+    async def _candidate_pool(self, query: str) -> list[str]:
+        """`retrieve()`(전체 파이프라인), `vector_search`(벡터 단독), chunk grain이면
+        `lexical_search`(어휘 단독) 상위를 라운드로빈으로 섞어 `EXPANSION_TOP`개로 자른다 - 판정
+        비용을 기존과 비슷하게 유지하면서 한 arm에만 있는 후보도 판정 대상에 들어오게 한다."""
+        retrieved = await retrieve(query, store=self.store, use_llm_constraints=False, grain=self.grain)
+        vector_hits = await vector_search(query, self.store, limit=EXPANSION_TOP, target_kind=self.grain)
+        arms = [ranked_ids(retrieved.hits, self.grain), ranked_ids(vector_hits, self.grain)]
+        if self.grain == "chunk":
+            lexical_hits = await lexical_search(query, self.store, limit=EXPANSION_TOP)
+            arms.append(ranked_ids(lexical_hits, self.grain))
+        return pool_candidate_ids(*arms, cap=EXPANSION_TOP)
 
     async def _judge_candidates(self, item: GoldenItem, ranked: list[str]) -> str | None:
         """상위 후보 중 같은 답을 담았다고 LLM이 판정한 것을 `item` 정답에 더한다(거부 사유 또는 None)."""
@@ -417,6 +464,11 @@ async def generate_golden(
 ) -> tuple[GoldenSet, Counter[str]]:
     """골든셋 하나와 게이트별 거부 수. 해당 grain 임베딩이 0건이면 라벨 확장·none 게이트가 무의미해서 거부한다."""
     corpus = await corpus_fingerprint(store)
+    # none 게이트는 이 시점의 `KF_VECTOR_MIN_SCORE`로 채택 여부를 정한다(`_Generator.none`) - 하한을
+    # 올리기만 해도 none_correct가 오르는데(검색 품질이 아니라 임계값을 잰다), 골든셋에 그 값을
+    # 남겨야 나중에 무엇을 기준으로 만들었는지 알 수 있다. `corpus`는 `dict[str, Any]`라 기존
+    # 골든셋 파일(이 키가 없음)도 그대로 로드된다.
+    corpus["none_gate"] = {"vector_min_score": settings.vector_min_score}
     if corpus["embeddings"][grain] == 0:
         raise EvalError(
             f"{grain} 임베딩이 0건이다(KF_EMBEDDING_MODEL={settings.embedding_model}). "
@@ -436,7 +488,7 @@ async def generate_golden(
 
     nones = await gen.fill(mix["none"], range(mix["none"] * NONE_ATTEMPTS_PER_ITEM), _none)
     items = [
-        item.model_copy(update={"id": f"{kind}-{i:03d}", "split": "dev" if i % 2 == 0 else "test"})
+        item.model_copy(update={"id": f"{kind}-{i:03d}", "split": split_for(split_key(item))})
         for kind, group in (("lookup", lookups), ("exhaustive", exhaustive), ("none", nones))
         for i, item in enumerate(group)
     ]
