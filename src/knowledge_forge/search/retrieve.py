@@ -100,6 +100,8 @@ STRATEGY_LINK_COHESION = "link_cohesion"
 # `_Run.expand_to_grain`의 steps 이름이자 펼친 히트의 `retrieval_sources` 값. 링크 응집도와 같은 이유로
 # 라우팅되는 전략이 아니다 - 호출자가 grain을 명시했을 때만 도는 후처리다.
 STRATEGY_GRAIN_EXPANSION = "grain_expansion"
+# `_Run.relax_time_range`의 steps 이름 - 시간 범위를 풀고 후보 arm을 다시 돌렸다는 기록.
+STRATEGY_TIME_RANGE_RELAXED = "time_range_relaxed"
 
 # exhaustive/negative/count에서 "전부"를 대신하는 상한 - top-k 절단은 없애되 한 질의가 테이블
 # 전체를 끌어오지는 못하게(`search/sql.py::DEFAULT_MAX_ROWS`와 같은 200).
@@ -639,6 +641,7 @@ class _Run:
         # `vector()`가 어휘 arm 몫으로 미리 던져 둔 조회 결과(`keyword_arm()`이 소비).
         # None이면 arm이 자기 조회를 직접 던진다 - `vector` 없이 arm만 도는 실행일 때다.
         self.arm_fetched: _KeywordArmHits | None = None
+        self.time_range_relaxed = False
 
     def add_hits(self, source: str, hits: list[dict[str, Any]]) -> None:
         self.results_by_source.setdefault(source, []).extend(hits)
@@ -649,6 +652,71 @@ class _Run:
         return step
 
     # -- 후보 생성 ------------------------------------------------------------
+
+    async def generate(self, provider: ChatProvider | None, *, with_filter: bool = True) -> None:
+        """후보 생성 전략을 계약된 순서로 돈다. document_lookup이 먼저다(anchor가 뒤 전략을 좁힌다).
+        arm은 vector 다음이어야 한다 - `_claim_anchor`는 먼저 잡힌 anchor를 덮어쓰지 않고,
+        `_narrow_to_anchor`는 그 시점의 anchor로 좁힌다. 순서를 바꾸면 지표가 움직인다.
+        `with_filter=False`는 `relax_time_range` 뒤 다시 돌 때다 - 필터 집합은 이미 있다.
+        multihop은 시간 범위를 쓰지 않고(planner가 하위 질의마다 따로 해석) 비싸서 호출자가 한 번만 부른다."""
+        s = self.strategies
+        if STRATEGY_DOCUMENT_LOOKUP in s:
+            await self.document_lookup()
+        if STRATEGY_LEXICAL in s:
+            await self.lexical()
+        if with_filter and STRATEGY_METADATA_FILTER in s:
+            await self.metadata_filter()
+        if STRATEGY_VECTOR in s:
+            await self.vector()
+        if STRATEGY_KEYWORD_ARM in s:
+            await self.keyword_arm()
+        if STRATEGY_COMPARISON in s:
+            await self.comparison()
+
+    def relax_time_range(self) -> bool:
+        """시간 범위 때문에 후보 arm이 **전부** 빈손이면 범위를 풀고 True(호출자가 arm을 다시 돌린다).
+
+        왜: 질의 속 날짜는 문서 시각이 아니라 **내용**을 가리키는 경우가 흔하다("2022년에 종료된 계약의
+        종료일은?", "이번 주 해야 할 업무는?", "2026년 9월 1일에 어떤 회의가 예정되어 있나요?" - 2026-09-14
+        평가 스모크). 그 날짜가 since/until로 모든 arm에 걸리면 정답 문서(그 날짜를 **언급한** 더 이른
+        문서)가 범위 밖이라 전부 0건이 된다. 그래서 시간 범위를 "결과를 0건으로 만들 수 없는" 약한
+        신호로 둔다: 범위 안에서 arm이 하나라도 뭔가 찾으면 지금처럼 하드 필터로 쓰고("지난주 회의록"이
+        범위 안에 있으면 그대로), 전부 빈손일 때만 푼다. 풀고 다시 찾은 후보는 어차피 범위 밖 문서라
+        (범위 안 문서였다면 첫 판에서 걸렸다) 범위 안을 앞세우는 재정렬은 할 일이 없다.
+
+        안 푸는 경우:
+        - arm이 하나도 안 돌았다(semantic_query·식별자 없음): "작년 3분기에 김민수가 보낸 메일"처럼 제약이
+          곧 질의인 경우라 `filter_only`가 답이다.
+        - 필터에 작성자/참여자/확장자/MIME 같은 **시간 외 구조적 술어**가 있다: 그런 질의는 제약을 걷으면
+          semantic_query가 "보낸" 같은 찌꺼기라 arm이 빈손인 게 정상이고, 필터 쪽을 믿는 기존 분기
+          (`filter_only`/`no_overlap_fallback_to_filter`)가 맞다.
+
+        필터와의 관계는 `merge()`가 정한다: 풀고 다시 돈 arm이 후보를 찾으면 필터(이 조건상 시간 + 출처
+        힌트뿐)를 적용하지 않는다(`applied=time_range_relaxed`). `no_overlap_fallback_to_filter`로 가면
+        안 된다 - 그건 날짜로 고른 필터 집합을 최신순으로 내는데, 여기서 날짜는 내용이었다. 다시 돌아도
+        빈손이면 예전과 같은 `filter_only`(범위 안 문서 최신순)로 떨어진다."""
+        if self.since is None and self.until is None:
+            return False
+        if not self.results_by_source or any(self.results_by_source.values()):
+            return False
+        if self.c.authors or self.c.participants or self.c.file_extensions or self.c.mime_types:
+            return False
+        self.step(
+            STRATEGY_TIME_RANGE_RELAXED,
+            SOURCE_SQL_SEARCH,
+            0,
+            reason="all_candidate_arms_empty_in_time_range",
+            arms=sorted(self.results_by_source),
+            since=_iso(self.since),
+            until=_iso(self.until),
+        )
+        self.since = self.until = None
+        self.results_by_source = {}
+        self.anchor = None
+        self.pinned = []
+        self.arm_fetched = None
+        self.time_range_relaxed = True
+        return True
 
     def _claim_anchor(self, title_hits: list[dict[str, Any]]) -> tuple[str, list[tuple[str, float]]]:
         """`document_search` 결과에서 anchor를 판정해 `self.anchor`에 싣고
@@ -1227,6 +1295,10 @@ class _Run:
                 # 아래 source_hint 분기와 정반대 상황이라 같이 손댈 이유가 없다.
                 merged = merge_and_rerank({SOURCE_SQL_SEARCH: self.filter_hits})
                 filter_note = "filter_only"
+            elif self.time_range_relaxed:
+                # 시간 범위를 푼 뒤 찾은 후보다 - 이 필터는 시간(+출처 힌트)뿐이라 걸면 범위를 되살린다.
+                # 교집합 0에서 필터 집합으로 가는 분기는 날짜가 내용이었던 질의에서 틀린다(`relax_time_range`).
+                filter_note = "time_range_relaxed"
             elif _is_source_hint_only_filter(self.c):
                 # **어휘 힌트뿐인 필터는 하드 필터로 쓰지 않는다.** `source_type IN (...)` 하나뿐인
                 # WHERE는 `SOURCE_TYPE_MARKERS` 정규식이 질의 표면 어휘만 보고 찍은 추측이고, 그
@@ -1523,21 +1595,9 @@ async def retrieve(
         expand_grain=expand_grain,
     )
 
-    # 후보 생성 - document_lookup이 먼저다(anchor가 뒤 전략을 좁힌다).
-    if STRATEGY_DOCUMENT_LOOKUP in strategies:
-        await run.document_lookup()
-    if STRATEGY_LEXICAL in strategies:
-        await run.lexical()
-    if STRATEGY_METADATA_FILTER in strategies:
-        await run.metadata_filter()
-    if STRATEGY_VECTOR in strategies:
-        await run.vector()
-    # arm은 vector 다음이어야 한다 - `_claim_anchor`는 먼저 잡힌 anchor를 덮어쓰지 않고,
-    # `_narrow_to_anchor`는 그 시점의 anchor로 좁힌다. 순서를 바꾸면 지표가 움직인다.
-    if STRATEGY_KEYWORD_ARM in strategies:
-        await run.keyword_arm()
-    if STRATEGY_COMPARISON in strategies:
-        await run.comparison()
+    await run.generate(provider)
+    if run.relax_time_range():
+        await run.generate(provider, with_filter=False)
     if STRATEGY_MULTIHOP in strategies:
         await run.multihop(provider)
 

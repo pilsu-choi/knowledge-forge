@@ -293,6 +293,103 @@ async def test_grain_expansion_failure_is_recorded_not_raised(monkeypatch):
     assert step.n_hits == 0 and "embedder down" in step.detail["error"]
 
 
+# --- time range relaxation ---------------------------------------------------------
+
+
+class _TimeBoundStore(_FakeStore):
+    """Title/body lookups answer only when no since/until is passed - models a
+    corpus whose matching documents all lie outside the query's date."""
+
+    def __init__(self, *, in_range: dict | None = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.in_range = in_range or {}
+
+    async def search_documents_by_title(self, query, *, project_id=None, source_type=None, since=None, until=None, limit=10):
+        if since is not None or until is not None:
+            return [dict(h) for h in self.in_range.get(query, [])]
+        return await super().search_documents_by_title(query, project_id=project_id, limit=limit)
+
+    async def search_chunks_lexical(self, query, *, project_id=None, since=None, until=None, limit=10):
+        if since is not None or until is not None:
+            return []
+        return await super().search_chunks_lexical(query, project_id=project_id, limit=limit)
+
+
+def _patch_time_bound_vector(monkeypatch, hits: list[dict], calls: list):
+    async def _fake(query, store, project_id=None, type=None, limit=10, embedding_model=None, since=None, until=None, target_kind=None, document_ids=None):
+        calls.append((since, until))
+        return [] if since is not None or until is not None else [dict(h) for h in hits]
+
+    monkeypatch.setattr(retrieve_module, "vector_search", _fake)
+
+
+async def test_a_date_that_describes_content_is_relaxed_when_every_arm_is_empty(monkeypatch):
+    store = _TimeBoundStore(title_hits={None: [_doc_hit("contract", 0.6)]})
+    calls: list = []
+    _patch_time_bound_vector(monkeypatch, [_chunk_hit("contract", "c1", 0.8)], calls)
+
+    result = await retrieve("2022년에 종료된 삼성화재 운영 계약의 종료일은?", store=store, now=_NOW)
+
+    assert result.document_ids == ["contract"]
+    relaxed = next(s for s in result.steps if s.strategy == "time_range_relaxed")
+    assert relaxed.detail["since"] is not None
+    assert calls[0] != (None, None) and calls[-1] == (None, None)
+    assert next(s for s in result.steps if s.strategy == "metadata_filter").detail["applied"] == "filter_empty_ignored"
+
+
+async def test_relaxed_candidates_are_not_intersected_with_a_time_only_filter(monkeypatch):
+    # the day has documents (filter rows) but none match the question - the date was content
+    store = _TimeBoundStore(
+        title_hits={None: [_doc_hit("agenda", 0.6)]},
+        filter_rows=[_filter_row("same_day_noise", datetime(2026, 9, 1, 3, tzinfo=timezone.utc))],
+    )
+    _patch_time_bound_vector(monkeypatch, [], [])
+
+    result = await retrieve("2026년 9월 1일에 어떤 회의가 예정되어 있나요?", store=store, now=_NOW)
+
+    assert result.document_ids == ["agenda"]
+    assert next(s for s in result.steps if s.strategy == "metadata_filter").detail["applied"] == "time_range_relaxed"
+
+
+async def test_relaxation_that_still_finds_nothing_keeps_the_filter_only_answer(monkeypatch):
+    store = _TimeBoundStore(filter_rows=[_filter_row("same_day", datetime(2026, 9, 1, 3, tzinfo=timezone.utc))])
+    _patch_time_bound_vector(monkeypatch, [], [])
+
+    result = await retrieve("2026년 9월 1일에 어떤 회의가 예정되어 있나요?", store=store, now=_NOW)
+
+    assert result.document_ids == ["same_day"]
+    assert next(s for s in result.steps if s.strategy == "metadata_filter").detail["applied"] == "filter_only"
+
+
+async def test_a_temporal_query_with_matches_in_range_is_not_relaxed(monkeypatch):
+    store = _TimeBoundStore(
+        in_range={"회의록": [_doc_hit("last_week_minutes", 1.0)]},
+        title_hits={None: [_doc_hit("old_minutes", 1.0)]},
+        filter_rows=[_filter_row("last_week_minutes", datetime(2026, 8, 26, tzinfo=timezone.utc))],
+    )
+    calls: list = []
+    _patch_time_bound_vector(monkeypatch, [_chunk_hit("old_minutes", "c", 0.9)], calls)
+
+    result = await retrieve("지난주 회의록", store=store, now=_NOW)
+
+    assert result.document_ids == ["last_week_minutes"]
+    assert not any(s.strategy == "time_range_relaxed" for s in result.steps)
+    assert all(call != (None, None) for call in calls)
+
+
+async def test_an_author_and_time_query_keeps_trusting_the_filter(monkeypatch):
+    store = _TimeBoundStore(
+        title_hits={None: [_doc_hit("noise", 0.6)]},
+        filter_rows=[_filter_row("kim_mail", datetime(2026, 8, 27, tzinfo=timezone.utc))],
+    )
+    _patch_time_bound_vector(monkeypatch, [], [])
+
+    result = await retrieve("지난주 김민수가 보낸 메일", store=store, now=_NOW)
+
+    assert not any(s.strategy == "time_range_relaxed" for s in result.steps)
+    assert result.document_ids == ["kim_mail"]
+
+
 # --- metadata_filter --------------------------------------------------------------
 
 
