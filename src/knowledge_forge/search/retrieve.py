@@ -121,6 +121,9 @@ _MAX_FALLBACK_TERMS = 10
 # 2위와 이만큼 벌어져야 한다. 2위도 1.0이면("AGENTS.md" vs "agents-skills-AGENTS.md") ambiguous.
 _ANCHOR_MIN_SCORE = 1.0
 _ANCHOR_MIN_GAP = 0.2
+# 격차 비교의 부동소수점 여유 - `1.0 - 0.8`은 0.19999999999999996이라 여유 없이 비교하면 2위가 토큰 tier
+# 상한(`title_match._SUBSET_AMBIGUOUS_SCORE` 0.8)일 때 제목 정확 일치가 anchor를 잃는다.
+_ANCHOR_GAP_EPSILON = 1e-9
 # `keyword_arm`이 term 단위 fallback(`_term_fallback`)으로 내려가는 기준 - 질의 문자열 통째로
 # 건 두 조회(제목+본문)가 **서로 다른 문서를 이만큼도 못 물어왔으면** 그건 랭킹이 아니라 우연
 # 한 건이다. 문서 수로 세는 이유와 값이 2인 이유는 `keyword_arm` 안의 주석에.
@@ -200,8 +203,14 @@ class RetrievalResult:
     documents_read: list[str]
     elapsed_ms: float
 
+    @property
+    def vector_error(self) -> str | None:
+        """벡터 조회(vector arm, grain 펼치기)의 첫 실패 사유, 없으면 None - `steps`에서 파생한다.
+        실패해도 실행기는 어휘 arm만으로 결과를 내므로, 이 값을 보지 않으면 어휘 단독 점수를 하이브리드로 착각한다."""
+        return next((s.detail["error"] for s in self.steps if s.source == SOURCE_VECTOR_SEARCH and s.detail.get("error")), None)
+
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {**asdict(self), "vector_error": self.vector_error}
 
 
 # --- SQL 리터럴 헬퍼 ------------------------------------------------------------
@@ -760,7 +769,7 @@ class _Run:
             return "no_candidates", ranked
         top_id, top_score = ranked[0]
         second = ranked[1][1] if len(ranked) > 1 else None
-        if top_score >= _ANCHOR_MIN_SCORE and (second is None or top_score - second >= _ANCHOR_MIN_GAP):
+        if top_score >= _ANCHOR_MIN_SCORE and (second is None or top_score - second >= _ANCHOR_MIN_GAP - _ANCHOR_GAP_EPSILON):
             self.anchor = top_id
             return "single_substring_match", ranked
         return ("ambiguous" if top_score >= _ANCHOR_MIN_SCORE else "weak_match"), ranked

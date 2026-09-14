@@ -202,6 +202,30 @@ async def test_document_lookup_single_substring_match_becomes_anchor_and_narrows
     assert "d2" in result.document_ids  # the ambiguous second title candidate still appears, below the anchor
 
 
+async def test_title_exact_match_keeps_the_anchor_when_the_second_candidate_is_at_the_token_tier_cap(monkeypatch):
+    # 1.0 - 0.8 은 부동소수점으로 0.2보다 작다 - 격차 비교에 여유가 없으면 anchor를 잃는다.
+    store = _FakeStore(title_hits={"report_v2.pdf": [_doc_hit("d1", 1.0), _doc_hit("d2", 0.8)]})
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("report_v2.pdf 에서 리스크 항목", store=store, now=_NOW)
+
+    lookup = next(s for s in result.steps if s.strategy == "document_lookup")
+    assert lookup.detail["anchor"] == "d1"
+    assert lookup.detail["anchor_reason"] == "single_substring_match"
+
+
+async def test_vector_failure_is_exposed_on_the_result(monkeypatch):
+    _patch_vector(monkeypatch, RuntimeError("embedder down"))
+
+    result = await retrieve("배포 롤백 절차", store=_FakeStore(chunk_hits={None: [_chunk_hit("d1", "c1")]}), now=_NOW)
+
+    assert result.document_ids == ["d1"]
+    assert "embedder down" in (result.vector_error or "")
+    assert result.to_dict()["vector_error"] == result.vector_error
+    ok = await retrieve("배포 롤백 절차", store=_FakeStore(), now=_NOW, strategies_override=["keyword_arm"])
+    assert ok.vector_error is None
+
+
 async def test_document_lookup_two_substring_matches_is_ambiguous_and_lists_both(monkeypatch):
     store = _FakeStore(title_hits={"AGENTS.md": [_doc_hit("d1", 1.0), _doc_hit("d2", 1.0)]})
     _patch_vector(monkeypatch, [])
@@ -1164,7 +1188,7 @@ async def test_result_to_dict_is_json_serializable_and_carries_the_contract_fiel
 
     assert set(payload) == {
         "query", "constraints", "strategies", "steps", "hits", "document_ids", "scores",
-        "predicted_count", "documents_read", "elapsed_ms",
+        "predicted_count", "documents_read", "elapsed_ms", "vector_error",
     }
     assert payload["document_ids"] == ["d1"]
     assert len(payload["scores"]) == len(payload["document_ids"])
