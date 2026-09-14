@@ -27,16 +27,23 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from knowledge_forge.search.constraints import _CODE_ID_RE, _QUOTED_RE
+
 FILE_SEARCH = "file_search"
 VECTOR_SEARCH = "vector_search"
 
-# A quoted phrase ("..."/'...'/「...」/『...』) is a strong signal the user
-# wants that exact substring, not a paraphrase of it.
-_QUOTED_RE = re.compile(r"[\"'「『].+?[\"'」』]")
-# id-like tokens: "ko-abc123", "PRJ-A", "ERR_404", "#1234" - the kind of
-# literal identifier file_search's substring match is good at and an
-# embedding is not (an id has no semantic meaning to be "close" to).
-_ID_LIKE_RE = re.compile(r"\b[A-Za-z]{2,}[-_][A-Za-z0-9]+\b|#\d+\b")
+# Quoted-phrase / code-id-like-token detection is shared with
+# `search/constraints.py` rather than kept as a second, drifting copy here -
+# reused as-is rather than duplicated (both cover the same "the user typed
+# something literal" surface forms: `_QUOTED_RE` for quoted phrases,
+# `_CODE_ID_RE` for "ko-abc123"/"PRJ-A"/"ERR_404"/"#1234"-shaped tokens).
+# `_CODE_ID_RE`'s boundaries are ASCII-only lookaround
+# (`(?<![\w가-힣])`/`(?![A-Za-z0-9_-])`), unlike a plain `\b` - Python's `\b`
+# treats Hangul as a word character, so `\b...\b` never closes before a
+# Korean particle ("ERR_404에서" has no `\w`/non-`\w` transition between "4"
+# and "에", both count as `\w`) and the old copy of this regex here missed
+# exactly that case (`has_exact_match_signal("ERR_404에서 뭐가 문제야")` was
+# False).
 # Document-name-shaped tokens the id regex above misses because they start
 # with a digit or mix in Hangul: "2025_SH_업무_보고서" (3+ pieces joined by
 # `_`/`-` - two pieces alone is too common in prose, e.g. a hyphenated
@@ -56,7 +63,7 @@ def has_exact_match_signal(query: str) -> bool:
     the same judgment."""
     return bool(
         _QUOTED_RE.search(query)
-        or _ID_LIKE_RE.search(query)
+        or _CODE_ID_RE.search(query)
         or _JOINED_NAME_RE.search(query)
         or _FILE_EXTENSION_RE.search(query)
     )
@@ -79,7 +86,15 @@ def route_query(query: str, available_sources: list[str]) -> RouteDecision:
     (`search/planner.py::plan_and_search` passes `["file_search"]` alone
     when no `PipelineStore` is configured) - this never recommends a source
     the caller doesn't have, and always returns at least one source (falling
-    back to whatever is available) rather than an empty list."""
+    back to whatever is available) rather than an empty list.
+
+    When both sources are available, every branch below runs both anyway -
+    the only real decisions this function makes are the 0/1-source edge
+    cases above. `sources`' order used to encode a "which source first"
+    preference, but no caller ever read it (`search/planner.py::
+    _execute_subquery` only checks `x in decision.sources`), so it was a
+    distinction without a difference - dropped in favor of a fixed order and
+    a `reason` that still says which heuristic fired, for logging/tests."""
     if not available_sources:
         raise ValueError("route_query() requires at least one available source")
     if len(available_sources) == 1:
@@ -89,14 +104,12 @@ def route_query(query: str, available_sources: list[str]) -> RouteDecision:
 
     stripped = query.strip()
     word_count = len(stripped.split())
+    both = [FILE_SEARCH, VECTOR_SEARCH]
 
     if has_exact_match_signal(stripped):
-        return RouteDecision(
-            sources=[FILE_SEARCH, VECTOR_SEARCH],
-            reason="따옴표/ID/파일명 형태의 정확 일치 신호 - file_search 우선, 보강용 vector_search 병행",
-        )
+        return RouteDecision(sources=both, reason="따옴표/ID/파일명 형태의 정확 일치 신호 - 두 소스 모두 병행")
     if word_count <= _SHORT_QUERY_WORD_COUNT:
-        return RouteDecision(sources=[FILE_SEARCH, VECTOR_SEARCH], reason="짧은 키워드성 질의 - 두 소스 모두 병행")
+        return RouteDecision(sources=both, reason="짧은 키워드성 질의 - 두 소스 모두 병행")
     if _QUESTION_WORD_RE.search(stripped) or stripped.endswith("?") or word_count > _LONG_QUERY_WORD_COUNT:
-        return RouteDecision(sources=[VECTOR_SEARCH, FILE_SEARCH], reason="자연어 질문 신호 - vector_search 우선, 보강용 file_search 병행")
-    return RouteDecision(sources=[FILE_SEARCH, VECTOR_SEARCH], reason="모호한 질의 - 두 소스 모두 병행(hybrid)")
+        return RouteDecision(sources=both, reason="자연어 질문 신호 - 두 소스 모두 병행")
+    return RouteDecision(sources=both, reason="모호한 질의 - 두 소스 모두 병행(hybrid)")

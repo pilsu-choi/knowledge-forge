@@ -31,16 +31,21 @@ def test_route_query_runs_both_sources_for_short_keyword_queries():
     assert decision.sources == [FILE_SEARCH, VECTOR_SEARCH]
 
 
-def test_route_query_prefers_vector_search_for_natural_language_questions():
+def test_route_query_runs_both_sources_for_natural_language_questions():
+    # Order carries no signal for any caller (`search/planner.py::_execute_subquery`
+    # only checks membership) - route_query() always returns both when both are
+    # available, so this only checks the reason names the right heuristic.
     decision = route_query("김철수가 참여한 프로젝트가 왜 실패했는지 이유를 설명해줘", [FILE_SEARCH, VECTOR_SEARCH])
 
-    assert decision.sources == [VECTOR_SEARCH, FILE_SEARCH]
+    assert decision.sources == [FILE_SEARCH, VECTOR_SEARCH]
+    assert "자연어 질문" in decision.reason
 
 
-def test_route_query_prefers_vector_search_for_question_mark_queries():
+def test_route_query_runs_both_sources_for_question_mark_queries():
     decision = route_query("이 문서 어디에 있어?", [FILE_SEARCH, VECTOR_SEARCH])
 
-    assert decision.sources == [VECTOR_SEARCH, FILE_SEARCH]
+    assert decision.sources == [FILE_SEARCH, VECTOR_SEARCH]
+    assert "자연어 질문" in decision.reason
 
 
 def test_route_query_runs_both_sources_when_ambiguous():
@@ -71,7 +76,7 @@ def test_has_exact_match_signal_recognizes_document_names(query):
 @pytest.mark.parametrize(
     "query",
     [
-        "업무-보고 정리",  # two joined pieces is ordinary prose (Latin pairs like "well-known" are _ID_LIKE_RE's call)
+        "업무-보고 정리",  # two joined pieces is ordinary prose (Latin pairs like "well-known" are _CODE_ID_RE's call)
         "프로젝트 진행 상황 정리",
         "김철수가 참여한 프로젝트가 왜 실패했는지 이유를 설명해줘",
         "pdf 파일로 저장하는 방법",  # the word, not an extension
@@ -86,3 +91,18 @@ def test_route_query_treats_a_document_name_in_a_question_as_an_exact_signal():
 
     assert decision.sources == [FILE_SEARCH, VECTOR_SEARCH]
     assert "파일명" in decision.reason
+
+
+def test_has_exact_match_signal_recognizes_code_id_before_a_korean_particle():
+    # `\b` never closes between two Hangul-adjacent code points (Python's `\b`
+    # treats Hangul as \w), so a plain `\b...\b` id regex fails right where a
+    # Korean particle immediately follows the id - `_CODE_ID_RE` (imported from
+    # `search/constraints.py`) uses ASCII-only lookaround instead and doesn't.
+    assert has_exact_match_signal("ERR_404에서 뭐가 문제야")
+
+
+def test_route_query_routes_a_code_id_before_a_korean_particle_as_exact_signal():
+    decision = route_query("ERR_404에서 뭐가 문제야", [FILE_SEARCH, VECTOR_SEARCH])
+
+    assert decision.sources == [FILE_SEARCH, VECTOR_SEARCH]
+    assert "정확 일치" in decision.reason
