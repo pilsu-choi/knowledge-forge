@@ -4,7 +4,7 @@
 정답 라벨은 kind와 grain에 따라 하나만 쓴다:
 
 - lookup + chunk: `evidence` [{document_id, quote}] - 청크 id가 아니라 인용문이라 재청킹 뒤에도 실행
-  시점에 "그 문서에서 quote를 담은 청크"로 다시 해석된다(`run.resolve_gold`).
+  시점에 "그 문서에서 quote를 담은 청크"로 다시 해석된다(`resolve_gold`).
 - lookup + knowledge_object: `knowledge_object_ids` - 재추출하면 id가 바뀌어 stale이 된다.
 - exhaustive: `predicate_sql`(정답 문서 집합을 내는 SELECT) + 생성 당시 결과 `document_ids`.
 - none: 라벨 없음(검색 결과가 비어야 정답).
@@ -109,3 +109,28 @@ async def corpus_fingerprint(store: PipelineStore) -> dict[str, Any]:
         else:
             fingerprint[name] = {"count": int(count), "hash": digest}
     return fingerprint
+
+
+async def resolve_gold(item: GoldenItem, grain: str, store: PipelineStore) -> tuple[set[str] | None, str | None]:
+    """(정답 id 집합, stale 사유). exhaustive는 문서 id, lookup은 grain id, none은 빈 집합."""
+    if item.kind == "none":
+        return set(), None
+    if item.kind == "exhaustive":
+        rows, _ = await store.execute_readonly_query(item.predicate_sql or "", ALL_ROWS)
+        current = {row[0] for row in rows}
+        return (current, None) if current == set(item.document_ids) else (None, "predicate_changed")
+    if grain == "knowledge_object":
+        ids = set(item.knowledge_object_ids)
+        rows, _ = await store.execute_readonly_query(
+            f"SELECT knowledge_object_id FROM knowledge_objects WHERE knowledge_object_id IN ({', '.join(map(_sql_literal, sorted(ids)))})",
+            ALL_ROWS,
+        )
+        return (ids, None) if ids and {row[0] for row in rows} == ids else (None, "knowledge_object_missing")
+    gold: set[str] = set()
+    for evidence in item.evidence:
+        chunks = await store.list_chunks_by_document(evidence.document_id)
+        matched = {chunk.chunk_id for chunk in chunks if quote_in(chunk.text, evidence.quote)}
+        if not matched:
+            return None, "quote_not_found"
+        gold |= matched
+    return (gold, None) if gold else (None, "no_labels")

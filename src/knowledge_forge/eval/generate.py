@@ -34,6 +34,7 @@ from knowledge_forge.eval.goldenset import (
     normalize_text,
     quote_in,
     ranked_ids,
+    resolve_gold,
 )
 from knowledge_forge.exceptions import EvalError
 from knowledge_forge.search.constraints import _extract_json_object
@@ -58,6 +59,7 @@ _SOURCE_LABELS = {"google_drive": "구글 드라이브", "gmail": "메일", "sla
 # --- 규칙 게이트 ---------------------------------------------------------------------
 # 한글 앞에서 `\b`가 경계로 안 잡히는 함정(검색 전략 세션 기록) 때문에 ASCII lookaround를 쓴다.
 _RAW_ID_RE = re.compile(r"(?<![A-Za-z0-9])(?:[CGDU](?=[A-Z0-9]*\d)[A-Z0-9]{8,12}|[0-9a-f]{16,})(?![A-Za-z0-9])")
+_DEICTIC_RE = re.compile(r"(?:^|\s)(?:이|그|해당|위|본)\s?(?:문서|프로젝트|파일|메일|회의|대화|자료|채널|스레드|보고서)")
 _WH_RE = re.compile(
     r"누가|누구|무엇|뭐|무슨|어떤|어떻게|어떠|언제|어디|왜|몇|얼마|어느|(?<![A-Za-z])(?:what|who|when|where|why|how|which)(?![A-Za-z])",
     re.IGNORECASE,
@@ -82,6 +84,8 @@ def rule_gate(query: str, source_text: str = "") -> str | None:
         return "too_short"
     if _RAW_ID_RE.search(q):
         return "raw_id"
+    if _DEICTIC_RE.search(q):
+        return "deictic"
     if "여부" in q or (not _WH_RE.search(q) and _YES_NO_RE.search(q)):
         return "yes_no"
     if source_text:
@@ -145,26 +149,28 @@ def _text(value: Any) -> str:
 # --- 샘플링 ---------------------------------------------------------------------------
 
 _CHUNK_SAMPLE_SQL = """
-SELECT c.chunk_id, c.document_id, s.source_type, 'title: ' || COALESCE(d.title, '') || E'\\n' || c.text
+SELECT c.chunk_id, c.document_id, s.source_type, 'title: ' || COALESCE(d.title, '') || E'\\n' || c.text, c.text
   FROM chunks c JOIN documents d ON d.document_id = c.document_id JOIN sources s ON s.source_id = d.source_id
  WHERE c.token_count >= {min_tokens}
  ORDER BY md5(c.chunk_id || {seed})
 """
 
 _KO_SAMPLE_SQL = """
+SELECT knowledge_object_id, document_id, source_type, text, text FROM (
 SELECT ko.knowledge_object_id, ko.document_id, s.source_type,
        'type: ' || ko.type || E'\\nsummary: ' || ko.summary || E'\\ncontent: ' || ko.content::text || E'\\nevidence:\\n' ||
        COALESCE((SELECT string_agg(c.text, E'\\n---\\n' ORDER BY c.sequence_index) FROM chunks c
-                  WHERE c.chunk_id IN (SELECT e->>'chunk_id' FROM jsonb_array_elements(ko.evidence) e)), '')
+                  WHERE c.chunk_id IN (SELECT e->>'chunk_id' FROM jsonb_array_elements(ko.evidence) e)), '') AS text,
+       md5(ko.knowledge_object_id || {seed}) AS shuffle
   FROM knowledge_objects ko JOIN sources s ON s.source_id = ko.source_id
  WHERE ko.type <> 'entity'
    AND NOT EXISTS (SELECT 1 FROM knowledge_objects n WHERE n.supersedes = ko.knowledge_object_id)
- ORDER BY md5(ko.knowledge_object_id || {seed})
+) ko ORDER BY shuffle
 """
 
 
 def stratify(rows: Sequence[tuple[Any, ...]], per_document: int = PER_DOCUMENT_CAP) -> list[tuple[Any, ...]]:
-    """(id, document_id, source_type, ...) 행을 source_type 라운드로빈 + 문서당 상한으로 편다.
+    """(id, document_id, source_type, 프롬프트 원문, 게이트 원문) 행을 source_type 라운드로빈 + 문서당 상한으로 편다.
     입력 순서(시드 셔플)는 각 source_type 안에서 유지된다."""
     by_type: dict[str, list[tuple[Any, ...]]] = {}
     for row in rows:
@@ -220,13 +226,15 @@ class _Generator:
         return stratify(await self._rows(sql))
 
     async def lookup(self, row: tuple[Any, ...]) -> GoldenItem | str:
-        target_id, document_id, _source_type, source_text = row[:4]
+        # 프롬프트에는 제목을 붙여 보이지만, 인용문·원문 복사 게이트는 청크 본문만 본다 - 제목에서 딴
+        # 인용문은 어느 청크에도 없어 생성 직후부터 stale이다.
+        target_id, document_id, _source_type, prompt_text, source_text = row[:5]
         chunk = self.grain == "chunk"
         schema = '{"query": "...", "answer": "...", "quote": "..."}' if chunk else '{"query": "...", "answer": "..."}'
         payload = await _ask_json(
             self.provider,
             _LOOKUP_SYSTEM.format(quote_rule=_QUOTE_RULE if chunk else "", schema=schema),
-            {"source": source_text},
+            {"source": prompt_text},
         )
         if payload is None:
             return "bad_llm_output"
@@ -264,8 +272,19 @@ class _Generator:
         항목은 버리지 않는다 - 그게 바로 평가가 잡아야 할 실패다."""
         result = await retrieve(item.query, store=self.store, use_llm_constraints=False, grain=self.grain)
         ranked = ranked_ids(result.hits, self.grain)[:EXPANSION_TOP]
-        if not ranked:
-            return item
+        if ranked:
+            reason = await self._judge_candidates(item, ranked)
+            if reason:
+                return reason
+        # 정답 수는 라벨 항목이 아니라 실행 시점에 해석될 grain 단위로 센다 - 짧고 흔한 인용문 하나가
+        # 청크 수십 개로 풀리면 recall@5가 구조적으로 무너진다.
+        gold, stale = await resolve_gold(item, self.grain, self.store)
+        if gold is None:
+            return stale or "no_labels"
+        return "anchorless" if len(gold) > MAX_POSITIVES else item
+
+    async def _judge_candidates(self, item: GoldenItem, ranked: list[str]) -> str | None:
+        """상위 후보 중 같은 답을 담았다고 LLM이 판정한 것을 `item` 정답에 더한다(거부 사유 또는 None)."""
         ids = ", ".join(_sql_literal(i) for i in ranked)
         if self.grain == "chunk":
             rows = await self._rows(f"SELECT chunk_id, document_id, text FROM chunks WHERE chunk_id IN ({ids})")
@@ -279,7 +298,7 @@ class _Generator:
             texts = {kid: (doc, text) for kid, doc, text in rows if kid not in item.knowledge_object_ids}
         candidates = [cid for cid in ranked if cid in texts]
         if not candidates:
-            return item
+            return None
         chunk = self.grain == "chunk"
         schema = '{"matches": [{"i": 0, "quote": "..."}]}' if chunk else '{"matches": [{"i": 0}]}'
         payload = await _ask_json(
@@ -306,9 +325,7 @@ class _Generator:
                     item.evidence.append(evidence)
             else:
                 return "positive_without_quote"
-        if len(item.evidence or item.knowledge_object_ids) > MAX_POSITIVES:
-            return "anchorless"
-        return item
+        return None
 
     # exhaustive -----------------------------------------------------------------------
 

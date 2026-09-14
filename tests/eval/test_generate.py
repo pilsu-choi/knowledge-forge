@@ -22,6 +22,7 @@ SOURCE = "2026년 3분기 NH농협은행 PF 에이전트 프로젝트는 9월 30
         ("문서 0123456789abcdef0123456789abcdef 의 작성자는 누구인가", "raw_id"),
         ("PF 에이전트 프로젝트가 운영에 배포되었나요?", "yes_no"),
         ("PF 에이전트 운영 배포 여부를 알려줘", "yes_no"),
+        ("이 프로젝트의 운영 배포 예정일은 언제인가요?", "deictic"),
         ("PF 프로젝트는 9월 30일에 운영 환경으로 배포하기로 결정했다는데 맞아", "copies_source"),
         ("NH농협은행 PF 에이전트의 운영 배포 예정일은 언제인가요?", None),
     ],
@@ -62,7 +63,10 @@ def _chunk_item():
 
 async def test_label_expansion_adds_judged_positive_with_its_quote(fakes, monkeypatch):
     _patch_retrieve(monkeypatch, [{"chunk_id": "c1", "document_id": "d1"}, {"chunk_id": "c2", "document_id": "d2"}, {"document_id": "d9"}])
-    store = fakes.FakeStore(sql={"FROM chunks WHERE chunk_id IN": [("c1", "d1", SOURCE), ("c2", "d2", "회의록: PF 배포는 9/30 운영 반영 예정")]})
+    store = fakes.FakeStore(
+        sql={"FROM chunks WHERE chunk_id IN": [("c1", "d1", SOURCE), ("c2", "d2", "회의록: PF 배포는 9/30 운영 반영 예정")]},
+        chunks={"d1": [("c1", SOURCE)], "d2": [("c2", "회의록: PF 배포는 9/30 운영 반영 예정")]},
+    )
     provider = fakes.ScriptedProvider({"matches": [{"i": 0, "quote": "9/30 운영 반영 예정"}]})
 
     item = await _Generator(store, provider, "chunk", 0, 4).expand_labels(_chunk_item())
@@ -74,7 +78,7 @@ async def test_label_expansion_adds_judged_positive_with_its_quote(fakes, monkey
 
 async def test_label_expansion_rejects_positive_whose_quote_is_not_in_the_candidate(fakes, monkeypatch):
     _patch_retrieve(monkeypatch, [{"chunk_id": "c2", "document_id": "d2"}])
-    store = fakes.FakeStore(sql={"FROM chunks WHERE chunk_id IN": [("c2", "d2", "회의록: PF 배포는 9/30")]})
+    store = fakes.FakeStore(sql={"FROM chunks WHERE chunk_id IN": [("c2", "d2", "회의록: PF 배포는 9/30")]}, chunks={"d1": [("c1", SOURCE)]})
 
     result = await _Generator(store, fakes.ScriptedProvider({"matches": [{"i": 0, "quote": "지어낸 구절"}]}), "chunk", 0, 4).expand_labels(_chunk_item())
 
@@ -95,9 +99,17 @@ async def test_label_expansion_keeps_item_when_retrieval_misses(fakes, monkeypat
     _patch_retrieve(monkeypatch, [])
     provider = fakes.ScriptedProvider()
 
-    item = await _Generator(fakes.FakeStore(), provider, "chunk", 0, 4).expand_labels(_chunk_item())
+    item = await _Generator(fakes.FakeStore(chunks={"d1": [("c1", SOURCE)]}), provider, "chunk", 0, 4).expand_labels(_chunk_item())
 
     assert isinstance(item, GoldenItem) and len(item.evidence) == 1 and provider.calls == []
+
+
+async def test_label_expansion_counts_resolved_chunks_not_evidence_entries(fakes, monkeypatch):
+    """One short quote that appears in six chunks of the same document is as anchorless as six positives."""
+    _patch_retrieve(monkeypatch, [])
+    store = fakes.FakeStore(chunks={"d1": [(f"c{i}", f"표 {i}행: 9월 30일에 운영 환경으로 배포") for i in range(6)]})
+
+    assert await _Generator(store, fakes.ScriptedProvider(), "chunk", 0, 4).expand_labels(_chunk_item()) == "anchorless"
 
 
 def _patch_vector(monkeypatch, score):

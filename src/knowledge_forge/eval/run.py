@@ -1,7 +1,7 @@
 """골든셋 실행 - 기본은 retrieval(LLM 0회), `e2e=True`면 에이전트 답변까지.
 
 채점 리스트는 골든셋 grain의 id를 가진 히트만(`goldenset.ranked_ids`). 정답 라벨은 실행 시점에 해석한다
-(`resolve_gold`): 인용문을 담은 청크가 사라졌거나, KO id가 없어졌거나, 술어 결과가 달라진 항목은 stale로
+(`goldenset.resolve_gold`): 인용문을 담은 청크가 사라졌거나, KO id가 없어졌거나, 술어 결과가 달라진 항목은 stale로
 빼고 보고한다. 결과는 항목별 랭킹·지표·검색 steps와 provenance(git, 랭킹 설정, 모델, 코퍼스 지문)를 담은 dict.
 """
 
@@ -26,9 +26,9 @@ from knowledge_forge.agent.tools import default_tools
 from knowledge_forge.chat_provider import AssistantTurn, ChatProvider, Message
 from knowledge_forge.config import settings
 from knowledge_forge.eval import gather_bounded
-from knowledge_forge.eval.goldenset import ALL_ROWS, GoldenItem, GoldenSet, corpus_fingerprint, quote_in, ranked_ids
+from knowledge_forge.eval.goldenset import GoldenItem, GoldenSet, corpus_fingerprint, ranked_ids, resolve_gold
 from knowledge_forge.search.constraints import _extract_json_object
-from knowledge_forge.search.retrieve import _sql_literal, retrieve
+from knowledge_forge.search.retrieve import retrieve
 from knowledge_forge.storage import PipelineStore
 
 RANKING_SETTINGS = (
@@ -49,32 +49,7 @@ _JUDGE_SYSTEM = """사내 검색 에이전트의 답변을 채점한다. 질문(
 다른 설명 없이 JSON 객체 하나만 출력: {"verdict": "correct|partial|wrong", "declined": true|false}"""
 
 
-# --- 라벨 해석 / 지표 ----------------------------------------------------------------
-
-
-async def resolve_gold(item: GoldenItem, grain: str, store: PipelineStore) -> tuple[set[str] | None, str | None]:
-    """(정답 id 집합, stale 사유). exhaustive는 문서 id, lookup은 grain id, none은 빈 집합."""
-    if item.kind == "none":
-        return set(), None
-    if item.kind == "exhaustive":
-        rows, _ = await store.execute_readonly_query(item.predicate_sql or "", ALL_ROWS)
-        current = {row[0] for row in rows}
-        return (current, None) if current == set(item.document_ids) else (None, "predicate_changed")
-    if grain == "knowledge_object":
-        ids = set(item.knowledge_object_ids)
-        rows, _ = await store.execute_readonly_query(
-            f"SELECT knowledge_object_id FROM knowledge_objects WHERE knowledge_object_id IN ({', '.join(map(_sql_literal, sorted(ids)))})",
-            ALL_ROWS,
-        )
-        return (ids, None) if ids and {row[0] for row in rows} == ids else (None, "knowledge_object_missing")
-    gold: set[str] = set()
-    for evidence in item.evidence:
-        chunks = await store.list_chunks_by_document(evidence.document_id)
-        matched = {chunk.chunk_id for chunk in chunks if quote_in(chunk.text, evidence.quote)}
-        if not matched:
-            return None, "quote_not_found"
-        gold |= matched
-    return (gold, None) if gold else (None, "no_labels")
+# --- 지표 ---------------------------------------------------------------------------
 
 
 def lookup_metrics(ranked: list[str], gold: set[str]) -> dict[str, float]:
