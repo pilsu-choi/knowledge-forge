@@ -91,6 +91,9 @@ n=300이어도 +0.03 이하 차이는 CI가 0을 포함할 수 있다.
 
 ## 알려진 한계
 
+- **chunk grain 점수는 문서 단위 히트에 구조적으로 눌린다.** 2026-09-14 스모크(lookup 7개)에서 5개는 채점 리스트가 비었다:
+  `metadata_filter`나 `document_lookup` anchor가 걸리면 retrieve 결과가 청크 id 없는 문서 히트 위주가 된다. 정답 문서를 1위로
+  찾고도 정답 청크가 리스트에 없어 0점인 항목도 있었다. 계획대로의 채점 규칙이며, 개선 여부는 S2에서 판단할 일이다.
 - **KO grain은 사실상 벡터 단독**이다. KO 어휘 검색 arm이 없어 lexical/keyword 히트는 전부 청크라 채점 리스트에서 빠진다.
 - KO grain은 KO 임베딩이 먼저 있어야 한다: `knowledge-forge embed --embedding-source knowledge_object`. 0건이면 `eval gen`이
   거부하고 `eval run`은 경고를 남긴다(2026-09-14 기준 KO 임베딩 0건).
