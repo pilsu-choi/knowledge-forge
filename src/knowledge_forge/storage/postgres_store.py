@@ -319,6 +319,27 @@ class PostgresStore:
             ),
         )
 
+    async def get_source_content_hash(self, source_id: str) -> str | None:
+        """`source_id`'s `content_hash` - but only if a `documents` row for it
+        already exists, so a single read answers `run_pipeline`'s "is this
+        item unchanged and already fully processed" check (see
+        `PipelineStore.get_source_content_hash`): a source that was collected
+        but never produced a document (parse failure, or a fresh source)
+        returns None here just like a source that has never been seen, and
+        both mean "do not skip - process it"."""
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT s.content_hash
+                FROM sources s
+                WHERE s.source_id = %s
+                  AND EXISTS (SELECT 1 FROM documents d WHERE d.source_id = s.source_id)
+                """,
+                (source_id,),
+            )
+            row = await cur.fetchone()
+        return row[0] if row else None
+
     async def list_sources(
         self, project_id: str | None = None, limit: int = 50, offset: int = 0
     ) -> list[Source]:

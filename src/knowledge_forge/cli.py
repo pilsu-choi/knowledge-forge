@@ -360,6 +360,7 @@ def reparse(
                 store=pipeline_store,
                 embedder=embedder,
                 embedding_source=embedding_source,
+                force=True,
             ):
                 documents += 1
                 objects += len(outcome.objects)

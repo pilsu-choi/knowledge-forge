@@ -89,6 +89,9 @@ class _FakeCursorStore:
     async def record_source(self, source, item):
         pass
 
+    async def get_source_content_hash(self, source_id):
+        return None  # nothing stored yet -> never skip
+
     async def record_document(self, document):
         pass
 

@@ -89,6 +89,7 @@ async def run_pipeline(
     until: datetime | None = None,
     embedder: EmbeddingProvider | None = None,
     embedding_source: str | None = None,
+    force: bool = False,
 ) -> AsyncIterator[ExtractionOutcome]:
     """Run the full pipeline over everything a Collector yields.
 
@@ -174,6 +175,18 @@ async def run_pipeline(
     command and collectors/base.py's `Collector.backfill_sync`). Everything
     downstream (storage, dedup, supersedes, OKF writing) runs exactly as for
     a normal sync - backfill is just a different RawItem source.
+
+    When `store` is given and `force` is false (the default), an item whose
+    `stable_id(source_type, uri)` already has a `documents` row with a
+    matching `content_hash` is unchanged since the last successful run and
+    is skipped entirely - no re-parse, re-chunk, LLM re-extraction, or
+    re-embedding, and no `ExtractionOutcome` is yielded for it (every
+    caller only counts outcomes/objects it receives, so this shrinks those
+    counts rather than miscounting them). The check runs before
+    `record_source()` so a skip truly writes nothing. `force=True` (what
+    `reparse`'s replay collector passes, see cli.py) bypasses the check -
+    replay's whole purpose is re-parsing unchanged bytes with newer parser
+    code.
     """
     reconstructor = context_reconstructor or default_reconstructor_for(collector.source_type)
     items = collector.backfill_sync(since, until) if since is not None else collector.sync(cursor)
@@ -196,6 +209,13 @@ async def run_pipeline(
 
         source = _make_source(collector, item, project_id)
         source_ref = SourceRef.from_source(source)
+
+        if store is not None and not force:
+            existing_hash = await store.get_source_content_hash(source.source_id)
+            if existing_hash is not None and existing_hash == source.content_hash:
+                logger.info("skipping unchanged source (content_hash matches an existing document): %s", item.uri)
+                continue
+
         if store is not None:
             await store.record_source(source, item)
 

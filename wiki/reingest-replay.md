@@ -322,3 +322,46 @@ A의 32건을 `--uri`로 하나씩 나열할 수도 있었다. 같은 선택을 
 전량 1,861회($5–15)는 쓰지 않는다. VLM이 실제로 값어치를 하는 건 **본문 0자인 스캔 3건**
 (`ASME B36.10-2022`, `WhaTap_AIOps_Presentation`, `Design.pdf`)뿐이고 약 500회 $2 내외다.
 A/B/C가 다 끝나고 측정이 안정된 뒤에 별도로 판단한다.
+
+## `fix/etl-quick`: 변경 없는 소스를 건너뛴다
+
+위 "후속 과제" 2번(vision factory 분기)과 3번(수집물 무결성)에 이어, `extract`/`/ingest`가
+매번 소스 전체를 다시 파싱·재추출·재임베딩하던 낭비를 고쳤다(`pipeline.py::run_pipeline`).
+
+`cli.py extract`(`_build_collector` → `LocalFileCollector(root=path)`)와 `ingest.py
+run_local_ingest`는 로컬 파일 소스에 커서가 없어 매번 `initial_sync()`로 디렉터리 전체를
+훑는다 - 그 자체는 의도된 설계다(로컬 트리는 원격 API처럼 변경분만 물어볼 방법이 없다).
+문제는 그 뒤였다: 훑어서 얻은 항목마다 내용이 바뀌었는지 전혀 확인하지 않고 매번 파싱 →
+청킹 → LLM 추출 → 임베딩까지 그대로 다시 돌렸다.
+
+이제 `store`가 주어지고 `force=False`(기본값)이면, `run_pipeline`은 `record_source()`를
+부르기 **전에** `store.get_source_content_hash(source_id)`로 한 번만 묻는다 - 이 메서드는
+`sources.content_hash`를 그냥 읽는 게 아니라 **그 소스에 대응하는 `documents` 행이 이미
+있을 때만** 값을 돌려준다(`PostgresStore.get_source_content_hash`, `sources`/`documents`
+조인 한 쿼리). 돌아온 값이 이번 `content_hash`와 같으면 그 항목은 파싱도, 저장도, 추출도,
+임베딩도 하지 않고 통째로 건너뛴다 - `ExtractionOutcome`도 yield하지 않는다(모든 호출부가
+outcome/object 개수만 세므로 건너뛴 만큼 개수가 줄 뿐 어긋나지 않는다). 소스가 아예 처음
+보이는 경우, 또는 소스 행은 있지만 과거 실행이 파싱에 실패해 `documents` 행을 못 만든 경우
+(위 "왜 필요했나" 절의 gdrive 1차 수집처럼)는 둘 다 `None`이 돌아와 건너뛰지 않는다 - 이
+구분이 이 메서드가 `content_hash`만이 아니라 문서 존재까지 같은 쿼리에서 보는 이유다.
+
+`force=True`는 이 검사를 완전히 건너뛴다. `reparse`(`RawBlobReplayCollector`)는 이 플래그를
+항상 켠 채로 `run_pipeline`을 부른다 - 재적재의 존재 이유 자체가 "바뀐 게 없는 바이트를 고쳐진
+파서로 다시 파싱하는 것"이라, 여기서 unchanged 검사가 걸리면 재적재가 통째로 무력화된다.
+`extract`/`backfill`은 기본값(`force=False`)을 그대로 쓴다.
+
+검사 순서가 중요하다: `record_source()`는 `ON CONFLICT DO UPDATE`라 건너뛰기 판단보다
+먼저 부르면 스킵 대상인데도 `sources.collected_at` 등을 다시 써버린다. 그래서 검사를
+`record_source()` **앞**으로 옮겼다 - 건너뛴 항목은 정말로 아무것도 쓰지 않는다.
+
+## gdrive 다운로드 무결성 검사
+
+위 "살리지 못한 것과 이유" 표의 "수집된 바이트가 xlsx가 아니라 Google Sheets HTML 페이지"
+사고가 재발하지 않도록, `collectors/saas/gdrive.py::_download_content`가 선언된 타입과
+매직 바이트를 대조한다 - zip 기반 OOXML(xlsx/docx/pptx/hwpx)은 `PK\x03\x04`, pdf는
+`%PDF`로 시작해야 하고, 바이너리 오피스/PDF 타입인데 `<!DOCTYPE html`/`<html`로 시작하면
+무조건 불일치로 본다. 불일치는 수집 실패로 기록되고(uri + 선언된 타입 + 감지된 헤드를 로그에
+남기고 그 항목을 건너뜀) 그 바이트는 저장되지 않는다 - `content_hash`가 잘못된 콘텐츠를
+정상 수집처럼 축복하던 문제(위 "확정된 원인" 절)를 수집 시점에서 막는다. 이건 재적재로
+고칠 수 있는 문제가 아니다(재수집이 필요하다는 점은 그대로다) - 여기서 막는 건 **다음번에
+같은 사고가 또 조용히 통과하는 것**이다.
