@@ -30,3 +30,7 @@ class AgentError(KnowledgeForgeError):
     """Raised when the agent runtime (harness) fails - a provider call that
     exhausted retries, or the tool-call loop hitting its iteration cap
     (see wiki/agent-runtime.md, agent/loop.py)."""
+
+
+class EvalError(KnowledgeForgeError):
+    """Evaluation precondition failures (missing grain embeddings, incomparable runs) - eval/*."""

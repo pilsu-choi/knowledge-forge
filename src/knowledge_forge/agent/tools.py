@@ -520,6 +520,7 @@ def _make_search_tool(
     *,
     provider: ChatProvider | None,
     project_id: str | None,
+    grain: str | None = None,
 ) -> ToolSpec:
     """`search`(통합 검색, `search/retrieve.py`) - 도구 세트가 공유하는 `_LazyPipelineStore`를
     쓴다(결함10). 개별 도구(document/lexical/vector/sql/read_document)를 모델이 고르는 대신
@@ -548,6 +549,7 @@ def _make_search_tool(
             provider=provider,
             project_id=project_id,
             limit=limit,
+            grain=grain,
         )
         payload = result.to_dict()
         wide = not _WIDE_STRATEGIES.isdisjoint(payload["strategies"])
@@ -795,6 +797,7 @@ def default_tools(
     system: str | None = None,
     *,
     include_delegate: bool = True,
+    grain: str | None = None,
 ) -> _ToolList:
     """도구 집합 조립. **검색 도구 표면은 `settings.agent_tool_surface`
     (`KF_AGENT_TOOL_SURFACE`, 기본 "minimal")가 정한다** - 나머지(파일시스템/
@@ -861,7 +864,8 @@ def default_tools(
     tools: list[ToolSpec] = []
     if lazy_store is not None:
         # 1순위 검색 도구를 목록 맨 앞에 둔다 - 도구 순서는 모델이 읽는 순서이기도 하다.
-        tools.append(_make_search_tool(lazy_store, provider=provider, project_id=project_id))
+        # `grain`은 평가 e2e(eval/run.py)만 넘긴다 - search 도구의 벡터 조회를 골든셋 grain으로 고정.
+        tools.append(_make_search_tool(lazy_store, provider=provider, project_id=project_id, grain=grain))
     if settings.agent_file_search_enabled and (not database_url or not minimal):
         tools.append(_make_file_search_tool())
     if lazy_store is not None:

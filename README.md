@@ -21,6 +21,7 @@ Collector → Context Reconstruction → Parser → Adaptive Chunker → Knowled
 - [환경 변수](#환경-변수)
 - [CLI 명령어](#cli-명령어)
 - [에이전트로 지식 베이스 검색하기](#에이전트로-지식-베이스-검색하기)
+  - [검색 평가](#검색-평가)
 - [Docker로 실행하기](#docker로-실행하기)
 - [프로젝트 구조](#프로젝트-구조)
 - [테스트](#테스트)
@@ -329,6 +330,21 @@ Map-Reduce, Temporal Search, Evidence Grounding, Feedback Loop) 관점에서 지
 있고 무엇이 설계만 있는지는 [`wiki/search-architecture.md`](wiki/search-architecture.md) 참고.
 
 전체 도구 계약, 시스템 프롬프트, 컨텍스트 압축 등 harness 설계는 [`wiki/agent-runtime.md`](wiki/agent-runtime.md), 임베딩 파이프라인은 [`wiki/embeddings.md`](wiki/embeddings.md) 참고.
+
+### 검색 평가
+
+골든셋을 자동으로 만들고 그 골든셋으로 검색 품질을 잰다. 골든셋은 생성할 때 기준 단위(`chunk` 또는 `knowledge_object`)를 정하고, 평가는 그 단위로만 검색하고 채점한다. 기본은 LLM 호출 없는 retrieval 지표이고, 에이전트 답변까지 채점하려면 `--e2e`를 켠다.
+
+```bash
+export OPENROUTER_API_KEY=...   # .env의 비-KF_ 키는 자동으로 읽히지 않는다
+uv run knowledge-forge embed --embedding-source knowledge_object      # KO 골든셋을 쓸 때만, 최초 1회
+uv run knowledge-forge eval gen --grain chunk --n 300                 # tests/eval/golden/에 골든셋 JSON
+uv run knowledge-forge eval run --golden tests/eval/golden/<version>.json --split dev
+uv run knowledge-forge eval run --golden tests/eval/golden/<version>.json --e2e
+uv run knowledge-forge eval compare out/eval/<A>.json out/eval/<B>.json
+```
+
+결과는 `out/eval/<run_id>.json`에 남는다. 게이트·지표 정의·한계는 [`wiki/evaluation.md`](wiki/evaluation.md) 참고.
 
 ## Docker로 실행하기
 
