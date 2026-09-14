@@ -15,8 +15,8 @@ from __future__ import annotations
 
 from knowledge_forge.config import settings
 
-_SYSTEM_PROMPT_TEMPLATE = """당신은 knowledge-forge의 OKF 지식 베이스를 검색하고, 필요하면 그 파일 트리를 직접
-읽고 쓰기도 하며, 하위 작업은 서브에이전트에게 위임할 수도 있는 에이전트다.
+_SYSTEM_PROMPT_TEMPLATE = """당신은 knowledge-forge의 OKF 지식 베이스를 검색하고, 하위 작업은 서브에이전트에게
+위임할 수도 있는 에이전트다.
 
 원칙:
 - 답하기 전 최소 1회 search(통합 검색)를 질문 원문 그대로 호출할 것 - 근거 없이 추측으로 답하지 말 것.
@@ -57,15 +57,7 @@ write_plan(계획) 도구 사용 원칙:
 - 한 번에 in_progress는 최대 하나. 어떤 단계를 시작할 때 그 단계를 in_progress로 바꾸고, 끝나면
   즉시 completed로 바꾼 뒤 다음 단계로 넘어갈 것. 작업이 끝나면 마지막 write_plan에서 모든 단계가
   completed여야 한다.
-
-read_file/write_file/edit_file/list_dir(파일시스템) 도구 사용 원칙:
-- 검색 결과는 스니펫일 뿐이다 - OKF 트리 파일의 전체 내용이 필요하면 그 결과의 path로 read_file을 호출할 것.
-- 이 도구들은 OKF 루트 트리 내부의 경로만 접근 가능하다 - 트리를 벗어나는 경로는 항상 거부된다.
-- 새 파일은 write_file로, 기존 파일의 일부만 고칠 때는 write_file로 전체를 다시 쓰지 말고 edit_file로
-  old_text를 유일하게 식별되는 문맥과 함께 지정할 것.
-- 사용자가 명시적으로 요청하지 않았다면 지식 베이스 파일을 함부로 쓰지 말 것 - 조사/답변이 목적이면
-  읽기만으로 충분하다.
-
+{filesystem_section}
 write_memory(기억) 도구 사용 원칙:
 - 이번 세션이 끝나도 다음 세션에서 참고할 가치가 있는 사실/결정만 적을 것 - 이번 턴 안에서만
   쓸모있는 중간 결과는 적지 말 것.
@@ -79,7 +71,7 @@ delegate_task(서브에이전트 위임) 도구 사용 원칙:
 - 서브에이전트는 완전히 새 대화로 시작하고, 위임할 때 준 task 설명 외에는 지금까지의 대화를 보지
   못한다 - 필요한 맥락(project_id, 지금까지 알아낸 것 등)을 task 문구에 충분히 포함시킬 것.
 - 서브에이전트가 어떤 도구를 몇 번 불렀는지는 보이지 않고 최종 요약만 돌아온다 - 그 요약을 그대로
-  신뢰하되, 이어서 검증이 필요하면 search/read_file로 직접 확인할 것.
+  신뢰하되, 이어서 검증이 필요하면 search/read_document로 직접 확인할 것.
 {project_hint}{memory_section}"""
 
 # `KF_AGENT_TOOL_SURFACE=full`에서만 프롬프트에 들어가는 블록 - "minimal"에서는
@@ -93,6 +85,18 @@ delegate_task(서브에이전트 위임) 도구 사용 원칙:
 # 같은 것을 가리켜야 한다"가 정확히 이것이다.
 _FILE_SEARCH_PRINCIPLE = """- search가 도구 목록에 없다면(Postgres 미구성 = OKF 파일 트리 전용 배포) file_search가 유일한 검색
   경로다 - 그 구성에서만 file_search를 1순위로 쓸 것.
+"""
+
+# `KF_OKF_DIR`이 있을 때만 들어가는 블록 - 없으면 `default_tools()`가 파일시스템
+# 도구 넷을 싣지 않으므로(호출해도 fs_service가 전부 거부한다) 지침도 같이 빠진다.
+_FILESYSTEM_SECTION = """
+read_file/write_file/edit_file/list_dir(파일시스템) 도구 사용 원칙:
+- 검색 결과는 스니펫일 뿐이다 - OKF 트리 파일의 전체 내용이 필요하면 그 결과의 path로 read_file을 호출할 것.
+- 이 도구들은 OKF 루트 트리 내부의 경로만 접근 가능하다 - 트리를 벗어나는 경로는 항상 거부된다.
+- 새 파일은 write_file로, 기존 파일의 일부만 고칠 때는 write_file로 전체를 다시 쓰지 말고 edit_file로
+  old_text를 유일하게 식별되는 문맥과 함께 지정할 것.
+- 사용자가 명시적으로 요청하지 않았다면 지식 베이스 파일을 함부로 쓰지 말 것 - 조사/답변이 목적이면
+  읽기만으로 충분하다.
 """
 
 _NARROW_TOOLS_SECTION = """
@@ -119,9 +123,11 @@ def build_system_prompt(project_id: str | None = None, memory: str | None = None
     memory_section = f"\n### 이전 세션 기억\n{memory.strip()}\n" if memory and memory.strip() else ""
     narrow_tools_section = _NARROW_TOOLS_SECTION if settings.agent_tool_surface == "full" else ""
     file_search_principle = _FILE_SEARCH_PRINCIPLE if settings.agent_file_search_enabled else ""
+    filesystem_section = _FILESYSTEM_SECTION if settings.okf_dir else ""
     return _SYSTEM_PROMPT_TEMPLATE.format(
         narrow_tools_section=narrow_tools_section,
         file_search_principle=file_search_principle,
+        filesystem_section=filesystem_section,
         project_hint=project_hint,
         memory_section=memory_section,
     )
