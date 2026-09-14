@@ -21,6 +21,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from knowledge_forge.chunking import AdaptiveChunker
 from knowledge_forge.collectors.base import Collector
 from knowledge_forge.collectors.local_file import LocalFileCollector
+from knowledge_forge.config import settings
 from knowledge_forge.extraction.factory import get_extractor
 from knowledge_forge.parsers.registry import default_registry
 from knowledge_forge.pipeline import run_pipeline
@@ -243,7 +244,7 @@ async def run_scheduled_sync(
     elif root is not None:
         raise ValueError("run_scheduled_sync() takes `root` or `collector`, not both.")
     registry = default_registry()
-    chunker = AdaptiveChunker(max_tokens_per_chunk=max_tokens)
+    chunker = AdaptiveChunker(max_tokens_per_chunk=max_tokens, min_tokens=settings.min_tokens_per_chunk)
     # model=None lets get_extractor() pick the active provider's own
     # default model instead of always defaulting to an Anthropic model id.
     extractor = get_extractor(model=model)

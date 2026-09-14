@@ -182,7 +182,7 @@ def extract(
         _ensure_authenticated()
     collector = _build_collector(source, path)
     registry = default_registry()
-    chunker = AdaptiveChunker(max_tokens_per_chunk=max_tokens)
+    chunker = AdaptiveChunker(max_tokens_per_chunk=max_tokens, min_tokens=settings.min_tokens_per_chunk)
     extractor = get_extractor(model=model) if extract_objects else None
     pipeline_store = _open_store() if store else None
     okf_writer = OKFWriter(okf_dir, project_id=project_id) if okf_dir else None
@@ -371,7 +371,7 @@ def reparse(
             async for outcome in run_pipeline(
                 collector,
                 default_registry(),
-                AdaptiveChunker(max_tokens_per_chunk=max_tokens),
+                AdaptiveChunker(max_tokens_per_chunk=max_tokens, min_tokens=settings.min_tokens_per_chunk),
                 extractor,
                 store=pipeline_store,
                 embedder=embedder,
@@ -445,7 +445,7 @@ def backfill(
 
     collector = _build_collector(source, path)
     registry = default_registry()
-    chunker = AdaptiveChunker(max_tokens_per_chunk=max_tokens)
+    chunker = AdaptiveChunker(max_tokens_per_chunk=max_tokens, min_tokens=settings.min_tokens_per_chunk)
     extractor = get_extractor(model=model)
     pipeline_store = _open_store() if store else None
     okf_writer = OKFWriter(okf_dir, project_id=project_id) if okf_dir else None

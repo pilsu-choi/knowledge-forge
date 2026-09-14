@@ -90,9 +90,10 @@
 - **Typed Knowledge Graph 고도화 (Phase 6, 옛 로드맵 5단계 4개 항목 모두 완료)**:
   - **다중 청크 근거**: `Extractor.extract()`가 청크 하나가 아니라 청크 묶음(`chunks:
     list[Chunk]`)을 받도록 바뀌었다 — `extraction/grouping.py::group_chunks()`가 한 문서의
-    청크들을 `KF_EXTRACTION_CHUNK_GROUP_SIZE`개씩(기본 1, 기존과 동일한 청크당 호출 1회)
-    순서대로 묶는다. 2 이상으로 올리면 인접한 여러 청크가 한 LLM 호출로 묶여
-    `KnowledgeObject.evidence`가 실제로 여러 청크를 가리키게 된다.
+    청크들을 누적 토큰 수가 `KF_EXTRACTION_GROUP_MAX_TOKENS`(기본 4000, `feature/chunk-merge`
+    에서 옛 개수 기준 `KF_EXTRACTION_CHUNK_GROUP_SIZE`를 대체 — 자세한 근거는
+    [`architecture.md`](architecture.md))를 넘지 않는 선까지 순서대로 묶는다. 여러 청크가
+    한 LLM 호출로 묶이면 `KnowledgeObject.evidence`가 실제로 여러 청크를 가리키게 된다.
   - **KnowledgeObject 간 유사도 기반 중복 제거/병합**: `dedup.py::merge_duplicates()`가 한
     문서 안에서(청크 그룹들에 걸쳐) 타입이 같고 텍스트가 유사한(기본
     `KF_DEDUP_SIMILARITY_THRESHOLD=0.9`, `difflib` 기반, `similarity.py`) 객체를 하나로
@@ -295,9 +296,9 @@ Knowledge가 나온다.
   연결되어 있지 않다 - OKF 전용으로 쓰려면 `OKFWriter` 쪽에도 "이 source_id의 기존
   객체를 읽어오는" 조회 경로가 필요하다.
 - **묶음(grouping)/병합(dedup)/유사도(supersedes) 임계값은 모두 설정 가능하지만 라이브
-  검증은 못함** — `KF_EXTRACTION_CHUNK_GROUP_SIZE`/`KF_DEDUP_SIMILARITY_THRESHOLD`/
+  검증은 못함** — `KF_EXTRACTION_GROUP_MAX_TOKENS`/`KF_DEDUP_SIMILARITY_THRESHOLD`/
   `KF_SUPERSEDES_SIMILARITY_THRESHOLD` 모두 유닛 테스트(mock 기반)로만 검증됨. 특히
-  `group_size > 1`일 때 실제 LLM이 여러 청크를 하나의 응답으로 잘 요약/추출하는지, 임계값
+  묶음이 여러 청크로 클 때 실제 LLM이 이를 하나의 응답으로 잘 요약/추출하는지, 임계값
   0.9/0.8이 실전 텍스트에 적절한지는 실제 API 키로 확인이 필요하다.
 
 ### 6단계 — 문서 전체 요약 (Document Summary) — 후순위, 미착수

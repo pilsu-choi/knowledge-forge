@@ -606,13 +606,39 @@ class PostgresStore:
             )
 
     async def list_knowledge_objects_by_source(self, source_id: str) -> list[KnowledgeObject]:
-        """Every KnowledgeObject previously extracted from this `source_id`
-        (across every prior document_id/content revision) - the candidate
-        pool extraction/versioning.py matches a re-extraction's new objects
-        against to auto-fill `supersedes`. Joins `sources` for
-        `source_type`/`uri` since `knowledge_objects` only stores the id
-        (see models/knowledge_object.py's DocumentRef/SourceRef note on why
-        those stay lightweight refs)."""
+        """The current "head" KnowledgeObjects for this `source_id` - the
+        candidate pool extraction/versioning.py matches a re-extraction's
+        new objects against to auto-fill `supersedes`.
+
+        Restricted to objects nothing else `supersedes` (the `NOT EXISTS`
+        below), rather than every KnowledgeObject ever extracted from this
+        source across every past revision. Two ways to define "the latest
+        prior revision" were on the table: (a) objects belonging to the
+        most recently *created* `documents` row for this source, or (b)
+        objects no other object supersedes. (a) is wrong here specifically
+        because of *when* this method is called: `run_pipeline` already
+        wrote the current run's `documents` row (`record_document`) before
+        it calls this to fetch *prior* objects, so "most recent document"
+        would resolve to the run's own new, not-yet-extracted document and
+        return nothing to match against - silently breaking every
+        supersedes link. (b) has no such race (it only looks at
+        `knowledge_objects` rows, which the current run hasn't written yet
+        at this point) and is also more robust to a document that changes
+        only partially between revisions: if revision N's re-extraction
+        doesn't happen to touch some object O from revision N-1 (O's claim
+        just didn't come up again), O has no successor, stays a "head", and
+        remains a match candidate for revision N+1 - restricting to "N-1's
+        document" would have silently dropped O from the pool the moment
+        N shipped, even though O was never actually superseded. This also
+        directly bounds the O(new x prior) similarity matching in
+        extraction/versioning.py::resolve_supersedes(): once a claim has
+        been re-extracted at all, its old versions drop out of the "head"
+        set for good, so the candidate pool tracks the number of still-live
+        claims rather than growing with the number of past revisions.
+
+        Joins `sources` for `source_type`/`uri` since `knowledge_objects`
+        only stores the id (see models/knowledge_object.py's DocumentRef/
+        SourceRef note on why those stay lightweight refs)."""
         async with self.conn.cursor() as cur:
             await cur.execute(
                 """
@@ -623,6 +649,10 @@ class PostgresStore:
                 FROM knowledge_objects ko
                 JOIN sources s ON s.source_id = ko.source_id
                 WHERE ko.source_id = %s
+                  AND NOT EXISTS (
+                      SELECT 1 FROM knowledge_objects newer
+                      WHERE newer.source_id = ko.source_id AND newer.supersedes = ko.knowledge_object_id
+                  )
                 """,
                 (source_id,),
             )
