@@ -214,6 +214,22 @@ async def test_title_exact_match_keeps_the_anchor_when_the_second_candidate_is_a
     assert lookup.detail["anchor_reason"] == "single_substring_match"
 
 
+async def test_each_identifier_is_its_own_ranked_list(monkeypatch):
+    # 이어 붙이면 둘째 식별자의 1위(d2)가 첫째 식별자의 히트 전부 뒤로 밀린다.
+    store = _FakeStore(
+        chunk_hits={
+            "ERR_ALPHA_1": [_chunk_hit("d1", "a1"), _chunk_hit("d3", "a3"), _chunk_hit("d4", "a4")],
+            "ERR_BETA_2": [_chunk_hit("d2", "b2")],
+        }
+    )
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve('"ERR_ALPHA_1" "ERR_BETA_2"', store=store, now=_NOW, strategies_override=["lexical"])
+
+    assert result.document_ids[:2] == ["d1", "d2"]
+    assert {tuple(h["retrieval_sources"]) for h in result.hits} == {("lexical_search#ERR_ALPHA_1",), ("lexical_search#ERR_BETA_2",)}
+
+
 async def test_vector_failure_is_exposed_on_the_result(monkeypatch):
     _patch_vector(monkeypatch, RuntimeError("embedder down"))
 

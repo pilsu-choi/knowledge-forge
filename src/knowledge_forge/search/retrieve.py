@@ -655,6 +655,12 @@ class _Run:
     def add_hits(self, source: str, hits: list[dict[str, Any]]) -> None:
         self.results_by_source.setdefault(source, []).extend(hits)
 
+    def add_per_query(self, source: str, per_query: list[tuple[str, list[dict[str, Any]]]]) -> None:
+        """질의마다 따로 순위 리스트로(`<source>#<질의>`) 넣는다 - 위 소스 이름 주석의 규칙. 이어 붙이면 뒤 질의의
+        1위가 앞 질의 꼴찌 뒤에 붙는다. `#semantic`, `_term_fallback`의 `#<term>`과 같은 관례."""
+        for query, hits in per_query:
+            self.add_hits(f"{source}#{query}", hits)
+
     def step(self, strategy: str, source: str, n_hits: int, **detail: Any) -> RetrievalStep:
         step = RetrievalStep(strategy=strategy, source=source, n_hits=n_hits, detail=detail)
         self.steps.append(step)
@@ -790,7 +796,7 @@ class _Run:
         )
         collected: list[dict[str, Any]] = [hit for hits in per_query for hit in hits]
         anchor_reason, ranked = self._claim_anchor(collected)
-        self.add_hits(SOURCE_DOCUMENT_SEARCH, collected)
+        self.add_per_query(SOURCE_DOCUMENT_SEARCH, list(zip(queries, per_query, strict=True)))
         self.step(
             STRATEGY_DOCUMENT_LOOKUP,
             SOURCE_DOCUMENT_SEARCH,
@@ -813,10 +819,12 @@ class _Run:
                 for term in terms
             )
         )
-        collected: list[dict[str, Any]] = [hit for hits in per_term for hit in hits]
-        collected, narrowing = self.narrow(collected)
-        self.add_hits(SOURCE_LEXICAL_SEARCH, collected)
-        self.step(STRATEGY_LEXICAL, SOURCE_LEXICAL_SEARCH, len(collected), terms=terms, anchor_narrowing=narrowing)
+        # 좁히기 판정은 전체 합으로(어느 term에도 anchor 히트가 없으면 전부 남긴다), 적용은 term별 리스트에.
+        _, narrowing = self.narrow([hit for hits in per_term for hit in hits])
+        if narrowing == "narrowed":
+            per_term = [[hit for hit in hits if hit.get("document_id") == self.anchor] for hits in per_term]
+        self.add_per_query(SOURCE_LEXICAL_SEARCH, list(zip(terms, per_term, strict=True)))
+        self.step(STRATEGY_LEXICAL, SOURCE_LEXICAL_SEARCH, sum(map(len, per_term)), terms=terms, anchor_narrowing=narrowing)
 
     async def metadata_filter(self) -> None:
         if not _has_metadata_predicate(self.c):
@@ -1152,7 +1160,7 @@ class _Run:
                 self.pinned.append(top)
             resolved.append({"target": target, "document_id": top, "via": via, "time_range": time_range.label if time_range else None})
             collected.extend(hits)
-        self.add_hits(SOURCE_DOCUMENT_SEARCH, collected)
+            self.add_hits(f"{via}#{target}", hits)
         self.step(STRATEGY_COMPARISON, SOURCE_DOCUMENT_SEARCH, len(collected), targets=resolved)
 
     async def multihop(self, provider: ChatProvider | None) -> None:
@@ -1173,19 +1181,18 @@ class _Run:
             logger.warning("plan_and_search failed, continuing without it: %s", exc)
             self.step(STRATEGY_MULTIHOP, SOURCE_PLAN_SEARCH, 0, error=f"{type(exc).__name__}: {exc}")
             return
-        hits: list[dict[str, Any]] = []
-        dropped = 0
+        total = dropped = 0
         for evidence in plan.get("evidence", []):
-            for hit in evidence.get("results", []):
-                if not hit.get("document_id"):
-                    dropped += 1
-                    continue
-                hits.append({**hit, "subquery_id": evidence.get("subquery_id")})
-        self.add_hits(SOURCE_PLAN_SEARCH, hits)
+            subquery_id = evidence.get("subquery_id")
+            hits = [{**hit, "subquery_id": subquery_id} for hit in evidence.get("results", []) if hit.get("document_id")]
+            dropped += len(evidence.get("results", [])) - len(hits)
+            total += len(hits)
+            # 하위 질의마다 따로 순위 리스트 - 서로 다른 질의의 순위를 한 리스트에 이어 붙이지 않는다(`add_per_query`).
+            self.add_hits(f"{SOURCE_PLAN_SEARCH}#{subquery_id}", hits)
         self.step(
             STRATEGY_MULTIHOP,
             SOURCE_PLAN_SEARCH,
-            len(hits),
+            total,
             subqueries=[sq.get("query") for sq in plan.get("subqueries", [])],
             dropped_without_document_id=dropped,
         )
