@@ -981,3 +981,12 @@ def test_adnominal_neun_after_ha_or_doe_is_not_a_topic_particle():
     assert c.semantic_query.split()[-3:] == ["테스트인가", "담당자", "누구인가"]
     c = extract_constraints_rules("김철수가 보낸 매출과 전문가 정확도 보고서는", now=NOW)
     assert c.authors == ["김철수"] and c.semantic_query == "매출 전문가 정확도 보고서"
+
+
+def test_a_symbol_right_before_an_identifier_stays_attached():
+    c = extract_constraints_rules("/aegis-email 명령어의 용도는 무엇인가요?", now=NOW)
+    assert c.identifiers == ["aegis-email"] and c.semantic_query == "/aegis-email 명령어 용도"
+    # 조사는 여전히 떨어지고, URL 경로 안의 식별자는 원래 모양으로 돌아온다
+    assert extract_constraints_rules("ERR_404에서 재시도", now=NOW).semantic_query == "ERR_404 재시도"
+    c = extract_constraints_rules("git.sparklingsoda.ai:8443/prepay-docs 접속 오류", now=NOW)
+    assert c.identifiers == ["prepay-docs"] and "8443/prepay-docs" in c.semantic_query

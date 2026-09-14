@@ -785,7 +785,9 @@ def extract_constraints_rules(query: str, *, now: datetime | None = None) -> Que
         if _PLAIN_COMPOUND_RE.fullmatch(m.group()):
             return m.group()
         id_slots.append(_strip_particle(m.group()))
-        return f" {chr(_ID_SLOT + len(id_slots) - 1)} "
+        # 앞은 붙인다 - 식별자 앞은 정규식상 한글·영숫자가 아니라 "/aegis-email"·"#proj_..."의 기호가
+        # 떨어져 남지 않는다. 뒤는 띄운다 - 붙은 조사를 따로 떼야 한다.
+        return f"{chr(_ID_SLOT + len(id_slots) - 1)} "
 
     def _restore_ids(text: str) -> str:
         return _ID_SLOT_RE.sub(lambda m: id_slots[ord(m.group()) - _ID_SLOT], text)
