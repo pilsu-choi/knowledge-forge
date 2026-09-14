@@ -386,6 +386,7 @@ src/knowledge_forge/
 ├── okf/                   # OKFWriter — 파일 기반 Knowledge Base (opt-in)
 ├── embedding/             # EmbeddingProvider ABC + OpenAIEmbeddingProvider (pgvector 임베딩, opt-in)
 ├── search/                # file_search/vector_search/sql_search + planner/router/rerank/temporal — agent 도구가 감싸는 검색 서비스 함수
+├── eval/                  # 검색 평가 — 골든셋 자동 생성(eval gen)·retrieval/e2e 채점(eval run)·A/B 비교(eval compare) (wiki/evaluation.md)
 ├── agent/                 # 모델 벤더 중립 Agent Runtime — knowledge-forge agent (wiki/agent-runtime.md)
 └── scheduling/             # APScheduler 기반 주기 실행
 
