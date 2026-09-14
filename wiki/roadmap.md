@@ -374,3 +374,12 @@ entity 필터/temporal join/graph 1-hop 조회 세 gap을 한 번에 메웠다(�
 **한 줄 정의(향후 아키텍처 문서화 시 재사용)**: "Multi-source SaaS 및 File 데이터를 수집하고,
 source별 semantic context를 복원한 뒤 adaptive chunking과 knowledge extraction을 수행하여
 Knowledge Base를 구축하는 ingestion pipeline."
+
+### 9단계 — 검색 평가 재구현 (2026-09-14)
+
+8단계에서 지운 평가를 작게 다시 만들었다(`src/knowledge_forge/eval/`, [`evaluation.md`](evaluation.md)).
+옛 구조와 다른 점: 유형 22개 → 정답 모양 3개(lookup/exhaustive/none), DB 테이블 → 결과 파일,
+골든셋 grain 고정(`chunk`/`knowledge_object`), 옛 골든셋 실패 유형마다 자동 게이트(앵커 없음·원문 되묻기·원시 id·라벨 누락·정답 없음).
+기본은 retrieval 지표, `--e2e`는 에이전트 답변 채점. `retrieve(grain=)`는 평가 전용이 아니라 grain 골든셋의 전제로 되살렸고,
+grain 미지정 검색은 `KF_EMBEDDING_SOURCE` grain 하나만 본다(개발 DB에 KO 임베딩 5,107건을 백필해 두 grain이 같이 적재된 뒤 생긴 혼합을 막음).
+

@@ -21,7 +21,7 @@ Grounding까지)을 레이어별로 정리한다. 실제 프로덕션 엔터프�
 | ⑥ Temporal Search (자연어 시간 표현 → 범위 필터 / Text-to-SQL) | **구현됨** — `search/temporal.py`(자연어→범위 필터)와 `search/sql.py`(Text-to-SQL, `sql_search` 도구)로 시간 범위와 속성값 조건을 SQL WHERE/JOIN 하나로 결합하는 temporal join까지 가능해졌다. 아래 절 참고 |
 | Query Routing 확장 (SQL/Web 소스) | **부분 구현** — SQL 소스는 `sql_search`로 추가됐다(단, `search/router.py::route_query`의 자동 라우팅 대상에는 아직 없음 - 모델이 직접 판단해서 호출). Web 소스는 여전히 미구현 |
 | Evidence Grounding / Citation | **약하게 구현** — 시스템 프롬프트가 path/knowledge_object_id 인용을 지시할 뿐, claim-level 매칭/인용 파이프라인은 없음 |
-| Search Evaluation / Feedback Loop | **미구현 — 재설계 예정 (2026-09-14 기존 구현 삭제)** — 로깅/LLM-judge 자동 평가/골든셋 IR 지표를 포함해 전면 삭제됐다. 재구현 인계 사항은 [`roadmap.md`](roadmap.md) 참고 |
+| Search Evaluation / Feedback Loop | **재구현됨 (2026-09-14)** — grain(`chunk`/`knowledge_object`)을 고정한 자동 생성 골든셋 + retrieval 지표(기본) + 에이전트 답변 채점(`--e2e` 옵션), 결과는 파일. 사람 피드백 로깅·온라인 groundedness gate는 없다 — [`evaluation.md`](evaluation.md) 참고 |
 | Iterative / Agentic Retrieval | **이미 구현됨**(암묵적 판단) — 아래 절 참고. 명시적 groundedness gate로 강화하는 안은 설계만 남아 있다(평가 하네스 자체는 재구현 예정) |
 
 ---
@@ -363,7 +363,7 @@ router가 필요한 곳은 **프로그램적으로 생성된**(모델 턴이 없
 "충분한가?"의 판단 자체는 여전히 모델의 암묵적 자기평가에 전적으로 의존한다 - 강제되는 검증
 단계는 없다. 답변 확정 직전에 claim-evidence 매칭으로 한 번 더 검증하는 명시적 groundedness
 gate는 설계안만 있었으나, 그 설계가 실려 있던 평가 서브시스템이 2026-09-14 전면 삭제됐다 -
-재구현 시 아래 Search Evaluation / Feedback Loop 절과 함께 다시 설계한다.
+2026-09-14 재구현한 평가([`evaluation.md`](evaluation.md))는 오프라인 채점만 하며, 이 gate는 여전히 없다.
 
 ## ③ Hybrid Retrieval — 부분 구현
 
@@ -778,12 +778,17 @@ WHERE e.content->>'name' = '유지희'
 claim을 추출해 evidence와 자동으로 매칭/인용하는 별도 단계(Claim extraction → Evidence matching
 → Citation)는 없다. 모델이 지시를 무시하면 인용 없는 답이 나올 수 있다.
 
-## Search Evaluation / Feedback Loop — 미구현, 재설계 예정 (2026-09-14 기존 구현 삭제)
+## Search Evaluation / Feedback Loop — 재구현됨 (2026-09-14)
 
-에이전트 턴 로깅(`search_log`/`search_feedback`), 사람 피드백(`/feedback`,
-`knowledge-forge feedback`), LLM-as-judge groundedness/citation 채점(`knowledge-forge eval`),
-골든셋 기반 Recall/Precision/MRR/NDCG IR 평가 하네스(`eval-ir`/`eval-gen`) 전체가 2026-09-14
-전면 삭제됐다 - 재구현부터 다시 설계한다. 인계 사항은 [`roadmap.md`](roadmap.md) 참고.
+옛 구현(로깅·피드백·LLM-judge·`eval-ir`/`eval-gen`)은 2026-09-14 전면 삭제했고 같은 날 작게 다시 만들었다.
+`knowledge-forge eval gen|run|compare` 세 명령, 모듈 4개(`src/knowledge_forge/eval/`), DB 테이블 없음.
+
+- 골든셋은 생성할 때 grain(`chunk` 또는 `knowledge_object`)을 정하고, 평가는 그 grain으로만 검색·채점한다
+  (`retrieve(grain=)`가 모든 벡터 조회를 그 임베딩으로 고정).
+- 기본은 retrieval 지표(LLM 비용 0), `--e2e`는 에이전트 루프 + 답변 judge.
+- 사람 피드백 로깅과 온라인 groundedness gate는 재구현 범위에 없다.
+
+설계·게이트·지표 정의는 [`evaluation.md`](evaluation.md).
 
 ## 왜 지금 여기서 멈추는가
 
