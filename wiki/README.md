@@ -38,6 +38,7 @@
 | [`search-architecture.md`](search-architecture.md) | 넓은 엔터프라이즈 RAG 아키텍처 레이어별 상태 — Query Planning/Routing/Reranking(RRF+cross-source dedup)/Temporal Search/Text-to-SQL(entity 필터+temporal join+graph 1-hop 대체)는 구현됨, Context Engineering 나머지/Map-Reduce/Evidence Grounding/Feedback Loop는 설계만·미구현, Iterative Retrieval은 이미 tool-calling 루프로 충족 |
 | [`query-types.md`](query-types.md) | 검색 유형 20종(Navigational/Temporal/Metadata/Exact/Aggregation/Negative/Comparison/...)별 "왜 유사도가 어려운가 / 필요한 전략 / `search/constraints.py`의 어떤 플래그가 잡는가 / 현재 상태" 표 |
 | [`search-evaluation.md`](search-evaluation.md) | Search Evaluation/Feedback Loop — 로깅(`search_log`/`search_feedback`, `EvalStore`)과 LLM-judge 기반 groundedness/citation 자동 평가(`evaluation/judge.py`, `knowledge-forge eval`/`feedback`)는 구현됨, 골드셋 필요한 Recall/Precision/MRR/NDCG와 온라인 groundedness gate(옵션)는 설계만 |
+| [`search-code-review-2026-09-14.md`](search-code-review-2026-09-14.md) | 검색 로직 코드 리뷰 — 결정론 파이프라인 결함(RRF 문서 단위 미합산, anchor의 전수 질의 붕괴, "작년 3분기"/"지난 4월" 시간 파싱, 마커 부분일치, "님" 포함 작성자)과 에이전트 경로 결함(`project_id` 덮어쓰기, 10건 절단, 깨진 인자 JSON), 추천 수정 순서. 미수정 |
 | [`okf.md`](okf.md) | `OKFWriter` — manifest.yaml + resources/objects/relations 파일 트리로 된 Knowledge Base, Postgres와 독립적인 opt-in 출력 |
 | [`ui.md`](ui.md) | `/ui` — React+Vite 기반 OKF 뷰어(마크다운+그래프). Tailwind+shadcn/ui 기반 Obsidian풍 비주얼, 디렉터리 구조, 알려진 CSS/타입 함정 |
 | [`scheduling.md`](scheduling.md) | `knowledge-forge schedule`의 tick/interval 모델, 실패 격리 |
