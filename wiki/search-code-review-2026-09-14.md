@@ -147,3 +147,87 @@
 
 골든셋이 평가 코드와 함께 삭제되는 중이라 지금은 1·2번의 효과를 잴 수 없다.
 평가를 재구현한 뒤에 진행하거나, 기존 git 이력(`403b16e`)을 임시 기준으로 쓴다.
+
+## 수정 내역 (fix/search-parsing)
+
+2026-09-14, `fix/search-parsing` 브랜치(base main `a9db6f9`)에서 이 리뷰가 가리킨 명백한
+파싱·도구 버그를 고쳤다. 커밋 `2eaf56e`(시간 파싱 + 마커), `2d69d49`(JSON 파싱 + 루프),
+`3f1a522`(agent 도구). 랭킹 구조(결함1·2, 문서 단위 RRF·anchor 붕괴)는 이번 범위가 아니다
+(계획서 S2).
+
+### 고쳐진 항목
+
+| 리뷰 항목 | 상태 | 비고 |
+|---|---|---|
+| ✔ 결함3 "작년 3분기"→올해 3분기 | 완전 수정 | `_supplemental_time_range`가 연도 문맥(작년/올해/지난해/재작년)을 먼저 잡고 그 안에서 분기/월을 해석(`temporal.py::resolve_within_year`) |
+| ✔ 결함4 "지난 4월"→최근 4개월 | 완전 수정 | `_RECENT_RE` 월 단위를 `개월\|달`로 한정, "지난 &lt;월&gt;"은 별도 규칙(`_LAST_BARE_MONTH_RE`)으로 가장 최근에 지나간 그 달로 해석 |
+| 결함5 마커/필러 낱말 중간 매치 | 완전 수정(7건 전부) | `_korean_eojeol_search`(왼쪽 어절 경계) + 앞쪽 일부로 잡히는 3건(전문가/도메인지식/대한민국)은 해당 마커에 부정 전방탐색 직접 부착 |
+| ✔ 결함6 "님" 흡수 | 완전 수정 | `_strip_honorific` |
+| 결함7 `_DOMAIN_RE`가 "socket.io" 흡수 | 완전 수정(트레이드오프 있음) | `_TLD_ALT`에서 "io" 제거 - 실제 io 메일 도메인이 코퍼스에 없다는 전제, 아래 "남겨둔 것" 참고 |
+| 결함10 날짜 경계 UTC 기준 | 완전 수정 | `temporal.py::local_date_start`가 모든 경계를 Asia/Seoul(KST, DST 없음)로 계산 후 UTC 변환 |
+| "Q1 2025"(분기가 연도 앞) | 완전 수정 | `_QUARTER_WITH_YEAR_RE`에 어순 반대 분기 추가 |
+| "지난해" 미인식 | 완전 수정 | `_LAST_YEAR_RE`에 추가 |
+| ✔ 에이전트 결함1 `project_id` 검증 없음 | 완전 수정(도구 4개) | search/vector_search/document_search/lexical_search 스키마에서 `project_id` 제거, 항상 세션 값 - `plan_search`는 문서화된 의도적 override라 그대로 둠(아래 참고) |
+| ✔ 에이전트 결함2 전수/개수 질의 10건 절단 | 완전 수정 | wide(exhaustive/negative/count) 질의는 `document_ids` 무절단, `hits`는 문서 단위로 자르고 총 글자 수 예산 하나 더 |
+| 도구 호출마다 `PipelineStore` 새로 열기 | 완전 수정 | `_LazyPipelineStore` - 도구 세트(`default_tools()` 호출 1회) 수명 동안 하나. `delegate_task`는 자기 몫을 직접 닫음. `run_query`/`AgentSession`(agent/runtime.py)의 종료 시점 close는 아직 안 걸림(아래 "남은 것") |
+| ✔ 에이전트 결함3 깨진 JSON이 루프를 죽임 | 완전 수정 | `openai_compatible.py`가 파싱 실패를 `INVALID_JSON_ARGUMENTS_KEY` 센티널로 바꾸고, `loop.py::_dispatch`가 그걸 걸러 도구 오류 결과로 |
+| 필수 인자 누락 메시지(`error: 'query'`) | 완전 수정 | `error: missing required argument 'query'` |
+
+### 애매한 경우에서 고른 행동 ("지난 12일")
+
+"지난 12일"은 "최근 12일"(기간)로 해석하지 않고 **그대로 둔다**(시간 필터 없음, 문자열은
+semantic_query에 남는다). 근거: 한국어에서 "지난 N일"은 거의 항상 "(어느 달의) N일"이라는
+날짜를 가리키지 "최근 N일간"을 뜻하지 않는다("최근 12일"은 자연스럽지만 "지난 12일"을
+기간으로 읽는 화자는 드물다) - 그런데 어느 달인지 확정할 근거가 텍스트에 없다. 날짜로
+해석(예: "이번/지난달의 12일")하는 옵션도 검토했지만, 그 추정이 틀렸을 때 좁게 걸리는
+시간 필터가 정답 문서를 조용히 빼는 게 필터를 안 거는 것보다 비용이 크다고 판단해 **미해석**
+쪽을 택했다(`temporal.py::_recent_amount`의 판단 - "최근"만 일 단위 수량의 기간 해석을
+허용하고 "지난"/"저번"+일 단위는 배제). "지난 12일" 자체가 실제 질의에서 흔한 패턴인지도
+불확실해 과적합 위험이 낮다고 봤다.
+
+### 남겨둔 것 / 트레이드오프
+
+- **"socket.io" 수정은 TLD 화이트리스트에서 "io" 전체를 뺀 것**이다(개별 질의 패치가
+  아니다) - "실제 .io 메일 발신 도메인이 코퍼스에 없다"는 가정에 기댄다. 이 가정이
+  틀리면(예: 누군가 `xxx@company.io`로 메일을 보냈으면) 그 발신 도메인 필터가 조용히
+  깨진다. 코퍼스 전수 확인은 안 함(범위 밖) - 재현 필요하면 `sources.metadata->>'participants'`
+  에서 `.io` 도메인 존재 여부를 확인할 것.
+- **`plan_search`의 `project_id` override는 그대로 뒀다.** 리뷰가 명시한 대상은
+  vector/document/lexical/sql_search 4개였고, `plan_search`는 스키마 설명("생략하면 세션
+  기본 project_id를 쓴다")과 기존 테스트(`test_default_tools_plan_search_query_project_id_overrides_default`)
+  가 override를 **의도된 기능**으로 못 박고 있어 범위 밖으로 판단했다. `search`/`vector_search`
+  등의 버그는 검증 없는 값이 세션 값을 **조용히** 이기는 것이었지, override 자체가 문제가
+  아니었다 - `plan_search`는 문서화돼 있다는 점이 다르다.
+- **`file_search`는 건드리지 않았다.** `project_id`가 스키마에 있지만 애초에 세션
+  기본값을 받지 않는 도구라(`default_tools()`가 `_make_file_search_tool()`에 `project_id`를
+  넘기지 않는다) "세션 값을 덮어쓴다"는 버그 형태 자체가 성립하지 않는다.
+- **`run_query`/`AgentSession`이 도구 세트의 `aclose()`를 아직 안 부른다** -
+  `agent/runtime.py`/`cli.py`는 이 fix의 소유 파일이 아니다(파일 소유권 표 참고).
+  CLI 한 번 실행에 한정된 프로세스라 지금도 안전하지만(프로세스 종료 시 OS가 소켓을
+  정리한다), 인터랙티브 REPL을 오래 켜 두는 시나리오나 같은 프로세스에서 세션을 여러
+  개 만드는 시나리오에는 `finally`로 `session._tools.aclose()`(또는 동등한 것)를 거는 한
+  줄짜리 후속 작업이 필요하다. `delegate_task`는 이 fix 안에서 자기 몫을 직접 닫으므로
+  영향 없음.
+- **랭킹 구조 결함(1·2번, RRF 문서 단위 병합·전수 질의 anchor 붕괴)은 이번 범위가
+  아니다** - 계획서(`drifting-puzzling-eagle.md`) S2, 다른 파일(`rerank.py`/`retrieve.py`)
+  소관.
+
+### 회귀 검증 레시피
+
+`uv run --extra dev --extra hwpx --extra xlsx --extra pptx --extra slack --extra google
+--extra notion --extra korean pytest tests/search tests/agent tests/test_cli.py -q` -
+402 passed / 18 skipped(스킵은 전부 `KF_TEST_DATABASE_URL` 필요한 실 DB 테스트, 이번
+세션에선 의도적으로 안 켬). `ruff check src tests`/`mypy src` 둘 다 통과.
+
+리뷰의 구체 probe 재현(before → after, `now`는 리뷰와 동일하게 2026-09-14 기준 사용):
+- "지난 4월 회의록" → `최근 4개월`(2026-05-01~) → `2026년 4월`(2026-04-01~05-01, KST)
+- "지난 오월 워크숍" → `최근 5개월` → `2026년 5월`
+- "지난 12일 지출" → `최근 12일` → 미해석(None)
+- "작년 3분기에 김민수가 보낸 메일" → `2026-07-01~2026-10-01` → `2025-07-01~2025-10-01`(KST)
+- "Q1 2025 보고서" → `2026년 Q1` → `2025년 Q1`
+- "체크리스트 문서" → `wants_exhaustive=True` → `False`
+- "전문가 의견" → `wants_whole_document=True` → `False`
+- "김철수님이 보낸 메일" → `authors=['김철수님']` → `authors=['김철수']`
+- "socket.io 연결 오류" → `participants=['socket.io']` → `participants=[]`
+- 깨진 JSON 도구 인자(Qwen 관측 형태) → `JSONDecodeError`로 `run_agent` 전체 죽음 → `error: invalid JSON arguments: ...` 도구 결과로 루프 생존
+- exhaustive 질의 130건 → `document_ids` 10~50개로 절단 → 130개 전부, `predicted_count`와 일치

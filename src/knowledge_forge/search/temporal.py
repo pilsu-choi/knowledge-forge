@@ -13,14 +13,17 @@ layer (entity extraction, conversation-aware "그 프로젝트는?" resolution,
 temporal *join* across KnowledgeObject types) stays out of scope, see
 wiki/search-architecture.md's "① Query Understanding"/"⑥ Temporal Search".
 
-All boundaries are computed in UTC (`datetime.now(timezone.utc)` by
-default) because every timestamp this system stores (`Source.collected_at`/
-`modified_at`, `KnowledgeObject.extracted_at`) is UTC - this keeps the
-filter's timezone assumption consistent with the data it filters, but does
-mean "오늘"/"어제" are UTC calendar days, not the caller's local calendar day
-(a real limitation for a caller far from UTC, e.g. KST is UTC+9 - "어제"
-near UTC midnight can be off by up to a day from that caller's intuition).
-Monday is the start of the week (ISO), matching common Korean convention.
+Every boundary this module returns is a UTC instant (the range is compared
+against `Source.modified_at`/`collected_at`, both UTC) - but every calendar
+*boundary calculation* ("자정", "이번 달 1일", "이번 분기 시작") happens in
+Asia/Seoul (KST, UTC+9, no DST) via `local_date_start`, not in UTC, then
+converts to UTC. "오늘"/"이번 달" are the caller's KST calendar day/month, not
+a UTC one - a fixed +9h offset (2026-09-14T03:00Z is already 2026-09-14 in
+KST but would still be 2026-09-13 for a caller further west) used to make
+"오늘" resolve to the wrong calendar day for a Korean caller up to a third of
+the time (any query sent between 00:00 and 09:00 KST). `now` itself is still
+accepted/returned as UTC (`datetime.now(timezone.utc)` by default) - only the
+*boundary arithmetic* moved to KST.
 
 The range this module produces is compared against the *source's* real-world
 timestamp (`Source.modified_at`, falling back to `collected_at`) by
@@ -37,6 +40,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+SEOUL_TZ = ZoneInfo("Asia/Seoul")
 
 
 @dataclass
@@ -101,17 +107,23 @@ _COUNT_WORD_ALT = "|".join(sorted(_RECENT_COUNT_WORDS, key=len, reverse=True))
 # "최근"/"지난" 뒤에 올 수 있는 수량 구절. `search/constraints.py`가 이 표면형을 재사용한다
 # (semantic_query에서 걷어내기 / "최근"을 latest 정렬 신호로 오독하지 않기) - 표기 목록이
 # 두 파일로 갈라지면 반드시 어긋나므로 여기 하나만 둔다.
+#
+# 월 단위는 일부러 "개월|달"만 받고 **bare "월"은 받지 않는다** - 받으면 "지난 4월"/"지난 오월"
+# 처럼 특정 달을 가리키는 표현이 "최근 4개월"/"최근 5개월"로 오독된다(실측: `now`=2026-09-14
+# 기준 "지난 4월 회의록" → `start=2026-05-01, label='최근 4개월'`). 특정 달 표현은
+# `_LAST_BARE_MONTH_RE`가 따로 받는다.
+_RECENT_MONTH_UNIT = r"개월|달"
 RECENT_QUANTITY_PATTERN = (
-    rf"(?:{_FUSED_ALT}|\d+\s*(?:개?월|달|주일?|일|년)|(?:{_COUNT_WORD_ALT})\s*(?:개?월|달|주일?|년))"
+    rf"(?:{_FUSED_ALT}|\d+\s*(?:{_RECENT_MONTH_UNIT}|주일?|일|년)|(?:{_COUNT_WORD_ALT})\s*(?:{_RECENT_MONTH_UNIT}|주일?|년))"
 )
 RECENT_SPAN_PATTERN = rf"(?:최근|지난|저번)\s*{RECENT_QUANTITY_PATTERN}"
 # "지난 일주일"도 받는다 - 달력 주("지난주", `_LAST_WEEK_RE`)와 달리 now 기준 롤링 구간이다.
 # "지난주"/"지난 달"은 수량 자리가 비어 이 패턴에 안 걸리고 기존 달력 경계 분기로 내려간다.
 _RECENT_RE = re.compile(
-    rf"(?:최근|지난|저번)\s*(?:"
+    rf"(?P<recent_marker>최근|지난|저번)\s*(?:"
     rf"(?P<fused>{_FUSED_ALT})"
-    rf"|(?P<num>\d+)\s*(?P<num_unit>개?월|달|주일?|일|년)"
-    rf"|(?P<word>{_COUNT_WORD_ALT})\s*(?P<word_unit>개?월|달|주일?|년)"
+    rf"|(?P<num>\d+)\s*(?P<num_unit>{_RECENT_MONTH_UNIT}|주일?|일|년)"
+    rf"|(?P<word>{_COUNT_WORD_ALT})\s*(?P<word_unit>{_RECENT_MONTH_UNIT}|주일?|년)"
     rf")"
 )
 # 연-월-일. **`_YEAR_MONTH_RE`보다 먼저** 봐야 한다 - 안 그러면 "2026년 8월 13일"이
@@ -126,11 +138,34 @@ _YEAR_MONTH_DAY_RE = re.compile(r"(\d{4})\s?년\s?(\d{1,2})\s?월\s?(\d{1,2})\s?
 # ISO 날짜. 앞뒤에 숫자가 더 붙으면(전화번호/버전 문자열) 날짜가 아니다.
 _ISO_DATE_RE = re.compile(r"(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)")
 _YEAR_MONTH_RE = re.compile(r"(\d{4})\s?년\s?(\d{1,2})\s?월")
-# Year-qualified quarter, tried before the bare form below so "2025 Q3"/
-# "2025년 3분기" keep their explicit year instead of defaulting to `now.year`.
-_QUARTER_WITH_YEAR_RE = re.compile(r"(\d{4})\s?(?:년)?\s*(?:[Qq](\d)|(\d)\s?분기)")
+# 연도 명시 분기. "2025년 Q3"/"2025 3분기"(연도가 앞)와 "Q1 2025"(분기가 앞) 둘 다 받는다 -
+# 실측: "Q1 2025 보고서"가 연도-먼저 패턴만 받던 옛 정규식에서 2026년 Q1(현재 연도)로 잘못
+# 해석됐다. 두 어순이 서로 다른 그룹 이름을 쓰는 이유: 파이썬 `re`는 명명 그룹 재사용을
+# 허용하지 않는다(`(?|...)` 분기 재설정도 없다).
+_QUARTER_WITH_YEAR_RE = re.compile(
+    r"(?:(?P<y1>\d{4})\s?(?:년)?\s*(?:[Qq](?P<q1a>\d)|(?P<q1b>\d)\s?분기))"
+    r"|(?:(?:[Qq](?P<q2a>\d)|(?P<q2b>\d)\s?분기)\s?(?P<y2>\d{4})\s?년?)"
+)
 _QUARTER_BARE_RE = re.compile(r"[Qq](\d)|(\d)\s?분기")
 _YEAR_ONLY_RE = re.compile(r"(\d{4})\s?년")
+# "지난 4월"/"지난 오월"처럼 연도 없이 달만 가리키는 표현 - 숫자(1~12월)와 한자어 수사 이름
+# (오월=5월 등) 둘 다 받는다. 11/12월의 두 글자 수사(십일/십이)는 지원하지 않는다 - "지난
+# 십일월"보다 "지난 11월"이 압도적으로 자연스러워 실익이 적다.
+_KO_MONTH_WORDS: dict[str, int] = {
+    "일": 1, "이": 2, "삼": 3, "사": 4, "오": 5, "유": 6, "칠": 7, "팔": 8, "구": 9, "시": 10,
+}
+_KO_MONTH_WORD_ALT = "|".join(sorted(_KO_MONTH_WORDS, key=len, reverse=True))
+# 연도 없는 "N월" 표현의 공유 몸통 - `search/constraints.py`의 semantic_query 스트리핑이
+# "지난"/"저번" 접두와 묶어 재사용한다(RECENT_QUANTITY_PATTERN과 같은 이유로 한 곳에만 둔다).
+BARE_MONTH_PATTERN = rf"(?:1[0-2]|0?[1-9])\s?월|(?:{_KO_MONTH_WORD_ALT})월"
+_LAST_BARE_MONTH_RE = re.compile(
+    rf"(?:지난|저번)\s?(?:(?P<num>1[0-2]|0?[1-9])\s?월|(?P<word>{_KO_MONTH_WORD_ALT})월)"
+)
+# `resolve_within_year`가 "올해 3월"처럼 접두 없이 연도 문맥 아래의 달을 찾을 때 쓴다 - 뒤에
+# 숫자가 더 붙으면(예: "3월 15일"의 "3월") 날짜의 일부이므로 여기서는 건드리지 않는다.
+_BARE_MONTH_ONLY_RE = re.compile(
+    rf"(?<!\d)(?:(?P<num>1[0-2]|0?[1-9])\s?월(?!\s?\d)|(?P<word>{_KO_MONTH_WORD_ALT})월)"
+)
 
 
 def _recent_amount(match: re.Match[str]) -> tuple[int, str] | None:
@@ -143,33 +178,78 @@ def _recent_amount(match: re.Match[str]) -> tuple[int, str] | None:
                 return count, unit
         return None
     if match.group("num") is not None:
-        return int(match.group("num")), _RECENT_UNIT_CANON[match.group("num_unit")]
-    return _RECENT_COUNT_WORDS[match.group("word")], _RECENT_UNIT_CANON[match.group("word_unit")]
+        count, unit = int(match.group("num")), _RECENT_UNIT_CANON[match.group("num_unit")]
+    else:
+        count, unit = _RECENT_COUNT_WORDS[match.group("word")], _RECENT_UNIT_CANON[match.group("word_unit")]
+    # "지난 12일"/"저번 3일"은 한국어에서 거의 항상 "그 달의 12일/3일"(날짜)을 가리키지, "최근
+    # 12일"과 달리 기간을 뜻하지 않는다 - 실측: "지난 12일" → 최근 12일(오독). 날짜 자체를 셈할
+    # 근거(해당 월의 1~12일 중 어느 달인지)가 없으므로 여기서는 해석하지 않고 그대로 둔다(다른
+    # 어떤 패턴도 못 잡으면 `parse_temporal_expression`은 None을 돌려준다 - 틀리게 좁히는 것보다
+    # 안전하다). 융합형("하루"/"이틀"/"며칠" 등)은 관용구라 마커와 무관하게 그대로 기간이다.
+    if unit == "일" and match.group("recent_marker") != "최근":
+        return None
+    return count, unit
+
+
+def local_date_start(now: datetime, year: int, month: int, day: int = 1) -> datetime:
+    """주어진 연-월-일의 자정을 서울시(KST, UTC+9, DST 없음) 기준으로 만들어 UTC로 돌려준다 -
+    이 모듈과 `search/constraints.py::_supplemental_time_range`가 만드는 모든 달력 경계가
+    거치는 단 하나의 통로(모듈 docstring 참고). `now`는 tzinfo만 빌려 쓴다."""
+    local = now.astimezone(SEOUL_TZ).replace(year=year, month=month, day=day, hour=0, minute=0, second=0, microsecond=0)
+    return local.astimezone(timezone.utc)
+
+
+def add_months(dt: datetime, months: int) -> datetime:
+    """`dt`가 가리키는 KST 달의 1일 자정에서 `months`만큼 이동한 달의 1일 자정(KST) - `day`는
+    입력과 무관하게 항상 1로 리셋된다(호출부는 전부 달의 시작/끝 경계를 구하려는 것이지 같은
+    날짜를 다른 달로 옮기려는 게 아니다)."""
+    local = dt.astimezone(SEOUL_TZ)
+    month_index = local.month - 1 + months
+    year = local.year + month_index // 12
+    month = month_index % 12 + 1
+    return local_date_start(dt, year, month)
 
 
 def _start_of_day(dt: datetime) -> datetime:
-    return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    local = dt.astimezone(SEOUL_TZ)
+    return local_date_start(dt, local.year, local.month, local.day)
 
 
 def _start_of_week(dt: datetime) -> datetime:
     day_start = _start_of_day(dt)
-    return day_start - timedelta(days=day_start.weekday())
+    weekday = day_start.astimezone(SEOUL_TZ).weekday()
+    return day_start - timedelta(days=weekday)
 
 
 def _start_of_month(dt: datetime) -> datetime:
-    return dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    local = dt.astimezone(SEOUL_TZ)
+    return local_date_start(dt, local.year, local.month)
 
 
 def _start_of_quarter(dt: datetime) -> datetime:
-    quarter_start_month = ((dt.month - 1) // 3) * 3 + 1
-    return dt.replace(month=quarter_start_month, day=1, hour=0, minute=0, second=0, microsecond=0)
+    local = dt.astimezone(SEOUL_TZ)
+    quarter_start_month = ((local.month - 1) // 3) * 3 + 1
+    return local_date_start(dt, local.year, quarter_start_month)
 
 
-def _add_months(dt: datetime, months: int) -> datetime:
-    month_index = dt.month - 1 + months
-    year = dt.year + month_index // 12
-    month = month_index % 12 + 1
-    return dt.replace(year=year, month=month, day=1, hour=0, minute=0, second=0, microsecond=0)
+def resolve_within_year(text: str, now: datetime, year: int) -> TimeRange | None:
+    """이미 확정된 연도 문맥(`year`) 아래에서 분기/월 표현을 찾아 그 연도의 분기/월 범위로
+    돌려준다 - `search/constraints.py::_supplemental_time_range`가 "작년"/"올해"/"재작년"/
+    "지난해" 같은 연도 단어를 먼저 잡은 뒤 이 함수를 부른다(그래야 "작년 3분기"의 bare 분기가
+    `parse_temporal_expression`의 현재-연도 기본값에 먼저 먹히지 않는다). 분기/월이 없으면
+    None - 호출자가 연도 전체 범위로 대신한다."""
+    m = _QUARTER_BARE_RE.search(text)
+    if m:
+        quarter = int(m.group(1) or m.group(2))
+        if 1 <= quarter <= 4:
+            start = local_date_start(now, year, (quarter - 1) * 3 + 1)
+            return TimeRange(start, add_months(start, 3), f"{year}년 Q{quarter}")
+    m = _BARE_MONTH_ONLY_RE.search(text)
+    if m:
+        month = int(m.group("num")) if m.group("num") else _KO_MONTH_WORDS[m.group("word")]
+        start = local_date_start(now, year, month)
+        return TimeRange(start, add_months(start, 1), f"{year}년 {month}월")
+    return None
 
 
 def parse_temporal_expression(text: str, now: datetime | None = None) -> TimeRange | None:
@@ -180,6 +260,7 @@ def parse_temporal_expression(text: str, now: datetime | None = None) -> TimeRan
     4-digit year) so a fully-qualified expression never gets swallowed by a
     looser pattern."""
     now = now or datetime.now(timezone.utc)
+    local_now = now.astimezone(SEOUL_TZ)
 
     # 하루짜리 범위가 가장 좁은 형태라 맨 앞이다. 연-월보다 뒤에 두면 절대 안 걸린다.
     for regex, label in ((_YEAR_MONTH_DAY_RE, "ko"), (_ISO_DATE_RE, "iso")):
@@ -188,7 +269,7 @@ def parse_temporal_expression(text: str, now: datetime | None = None) -> TimeRan
             continue
         year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
         try:
-            start = now.replace(year=year, month=month, day=day, hour=0, minute=0, second=0, microsecond=0)
+            start = local_date_start(now, year, month, day)
         except ValueError:
             # 2월 30일 같은 없는 날짜. 범위를 만들지 않고 더 느슨한 패턴에 넘긴다 -
             # 틀린 하루로 좁히는 것보다 한 달로 넓게 잡는 편이 낫다.
@@ -200,16 +281,26 @@ def parse_temporal_expression(text: str, now: datetime | None = None) -> TimeRan
     if m:
         year, month = int(m.group(1)), int(m.group(2))
         if 1 <= month <= 12:
-            start = now.replace(year=year, month=month, day=1, hour=0, minute=0, second=0, microsecond=0)
-            return TimeRange(start, _add_months(start, 1), f"{year}년 {month}월")
+            start = local_date_start(now, year, month)
+            return TimeRange(start, add_months(start, 1), f"{year}년 {month}월")
 
     m = _QUARTER_WITH_YEAR_RE.search(text)
     if m:
-        year = int(m.group(1))
-        quarter = int(m.group(2) or m.group(3))
+        year = int(m.group("y1") or m.group("y2"))
+        quarter = int(m.group("q1a") or m.group("q1b") or m.group("q2a") or m.group("q2b"))
         if 1 <= quarter <= 4:
-            start = now.replace(year=year, month=(quarter - 1) * 3 + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
-            return TimeRange(start, _add_months(start, 3), f"{year}년 Q{quarter}")
+            start = local_date_start(now, year, (quarter - 1) * 3 + 1)
+            return TimeRange(start, add_months(start, 3), f"{year}년 Q{quarter}")
+
+    m = _LAST_BARE_MONTH_RE.search(text)
+    if m:
+        month = int(m.group("num")) if m.group("num") else _KO_MONTH_WORDS[m.group("word")]
+        # "지난 4월"은 "가장 최근에 지나간 4월"이다 - 올해 4월이 이미 지났으면(지금이 9월이면)
+        # 올해, 아직 안 왔으면(지금이 2월이면) 작년. 실측: now=2026-09-14 기준
+        # "지난 4월 회의록" → 2026년 4월(이미 지난 4월이 올해에 있었으므로).
+        year = local_now.year if month < local_now.month else local_now.year - 1
+        start = local_date_start(now, year, month)
+        return TimeRange(start, add_months(start, 1), f"{year}년 {month}월")
 
     m = _RECENT_RE.search(text)
     amount = _recent_amount(m) if m else None
@@ -220,8 +311,8 @@ def parse_temporal_expression(text: str, now: datetime | None = None) -> TimeRan
         if unit == "주":
             return TimeRange(now - timedelta(weeks=count), None, f"최근 {count}주")
         if unit == "년":
-            return TimeRange(_add_months(_start_of_day(now), -12 * count), None, f"최근 {count}년")
-        return TimeRange(_add_months(_start_of_day(now), -count), None, f"최근 {count}개월")
+            return TimeRange(add_months(_start_of_day(now), -12 * count), None, f"최근 {count}년")
+        return TimeRange(add_months(_start_of_day(now), -count), None, f"최근 {count}개월")
 
     if _TODAY_RE.search(text):
         start = _start_of_day(now)
@@ -241,28 +332,28 @@ def parse_temporal_expression(text: str, now: datetime | None = None) -> TimeRan
         return TimeRange(start, start + timedelta(days=7), "이번주")
     if _LAST_MONTH_RE.search(text):
         this_month_start = _start_of_month(now)
-        return TimeRange(_add_months(this_month_start, -1), this_month_start, "지난달")
+        return TimeRange(add_months(this_month_start, -1), this_month_start, "지난달")
     if _THIS_MONTH_RE.search(text):
         start = _start_of_month(now)
-        return TimeRange(start, _add_months(start, 1), "이번달")
+        return TimeRange(start, add_months(start, 1), "이번달")
     if _LAST_QUARTER_RE.search(text):
         this_quarter_start = _start_of_quarter(now)
-        return TimeRange(_add_months(this_quarter_start, -3), this_quarter_start, "지난분기")
+        return TimeRange(add_months(this_quarter_start, -3), this_quarter_start, "지난분기")
     if _THIS_QUARTER_RE.search(text):
         start = _start_of_quarter(now)
-        return TimeRange(start, _add_months(start, 3), "이번분기")
+        return TimeRange(start, add_months(start, 3), "이번분기")
 
     m = _QUARTER_BARE_RE.search(text)
     if m:
         quarter = int(m.group(1) or m.group(2))
         if 1 <= quarter <= 4:
-            start = now.replace(month=(quarter - 1) * 3 + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
-            return TimeRange(start, _add_months(start, 3), f"{now.year}년 Q{quarter}")
+            start = local_date_start(now, local_now.year, (quarter - 1) * 3 + 1)
+            return TimeRange(start, add_months(start, 3), f"{local_now.year}년 Q{quarter}")
 
     m = _YEAR_ONLY_RE.search(text)
     if m:
         year = int(m.group(1))
-        start = now.replace(year=year, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-        return TimeRange(start, start.replace(year=year + 1), f"{year}년")
+        start = local_date_start(now, year, 1)
+        return TimeRange(start, local_date_start(now, year + 1, 1), f"{year}년")
 
     return None

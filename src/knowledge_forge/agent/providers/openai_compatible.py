@@ -11,10 +11,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from typing import Any
 
 import openai
 
 from knowledge_forge.agent.auth import OPENAI_COMPATIBLE_AGENT_CREDENTIAL_HINT_KO
+from knowledge_forge.agent.loop import INVALID_JSON_ARGUMENTS_KEY
 from knowledge_forge.agent.providers.base import AssistantTurn, ChatProvider, Message, StopReason, ToolCall, ToolSpec
 from knowledge_forge.config import settings
 from knowledge_forge.exceptions import AgentError
@@ -39,6 +41,22 @@ def _to_openai_tools(tools: list[ToolSpec]) -> list[dict]:
         {"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.input_schema}}
         for t in tools
     ]
+
+
+def _parse_tool_call_arguments(raw: str | None) -> dict[str, Any]:
+    """도구 호출 인자 JSON을 파싱한다 - 실패(또는 객체가 아닌 JSON)는 예외로 올려
+    `provider.send()` 전체를, 나아가 `run_agent`를 죽이는 대신 `INVALID_JSON_ARGUMENTS_KEY`
+    하나만 든 dict로 바꾼다. `agent/loop.py::_dispatch`가 핸들러를 부르기 전에 이 키를 보고
+    평범한 도구 오류 결과(`error: invalid JSON arguments: ...`)로 돌려 모델이 다시 시도하게
+    한다 - Qwen에서 관측된 깨진 JSON이 이 경로였다(`wiki/search-code-review-2026-09-14.md`
+    결함11)."""
+    try:
+        parsed = json.loads(raw or "{}")
+    except json.JSONDecodeError as exc:
+        return {INVALID_JSON_ARGUMENTS_KEY: str(exc)}
+    if not isinstance(parsed, dict):
+        return {INVALID_JSON_ARGUMENTS_KEY: f"expected a JSON object, got {type(parsed).__name__}"}
+    return parsed
 
 
 def _to_openai_messages(messages: list[Message], system: str) -> list[dict]:
@@ -107,7 +125,7 @@ class OpenAICompatibleChatProvider(ChatProvider):
         choice = response.choices[0]
         msg = choice.message
         tool_calls = [
-            ToolCall(id=tc.id, name=tc.function.name, arguments=json.loads(tc.function.arguments or "{}"))
+            ToolCall(id=tc.id, name=tc.function.name, arguments=_parse_tool_call_arguments(tc.function.arguments))
             for tc in (msg.tool_calls or [])
         ]
         stop_reason: StopReason
