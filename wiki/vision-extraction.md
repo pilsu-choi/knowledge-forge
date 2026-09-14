@@ -136,3 +136,57 @@ VLM 호출이 재시도까지 다 소진하고 실패하면:
 바꿀 수 있다(`claude-opus-5` 기본값, 대량 처리 시 `claude-sonnet-5`/`claude-haiku-4-5`로
 비용을 낮추는 것도 선택지 — [`dev-guide.md`](dev-guide.md)의 비용 레버 설명 참고). 후속
 최적화로 Batches API 전환은 [`roadmap.md`](roadmap.md)에 남겨둔다.
+
+## `fix/etl-quick`: `claude_agent_sdk` 아래 VLM이 조용히 전부 실패하던 문제
+
+`vision/factory.py::get_vision_extractor()`는 `KF_LLM_PROVIDER=openrouter`만 분기하고
+나머지(`anthropic`, `claude_agent_sdk` 포함)는 전부 `VisionExtractor`(Anthropic SDK 직접
+호출, `ANTHROPIC_API_KEY` 필요)로 떨어졌다. `KF_LLM_PROVIDER=claude_agent_sdk`로 돌리는
+머신(별도 API 키 없이 로그인된 `claude` CLI만 쓰는 구성 — [`llm-providers.md`](llm-providers.md)
+참고)에서는 모든 VLM 호출이 자격 증명 오류였고, `parsers/pdf.py` 등의 "표/이미지 단위 개별
+저하" 정책(위 "VLM 실패 시 개별 성능 저하" 절) 때문에 문서 파싱 자체는 안 죽고 경고 로그만
+남긴 채 조용히 규칙 기반/빈 결과로 넘어갔다 — 실측 869회 VLM 호출이 전부 이렇게 실패했다
+(`wiki/reingest-replay.md`의 "A 적재 완료" 절).
+
+**조사: `claude_agent_sdk`로 이미지를 보낼 수 있는가 — 가능하다.** 설치된 패키지
+(`claude_agent_sdk` 0.2.151)를 읽어 확인했다.
+
+- `query()`는 `prompt: str | AsyncIterable[dict]`를 받는다
+  (`claude_agent_sdk/query.py:12`). 문자열 프롬프트 경로는 `content`를 그 문자열 그대로
+  고정한다(`_internal/client.py:176-179`: `{"role": "user", "content": prompt}`) — 여기엔
+  이미지가 들어갈 자리가 없다. 기존 `extraction/claude_agent_sdk_extractor.py`는 정확히 이
+  경로(문자열 프롬프트)를 쓴다.
+- 반면 `AsyncIterable[dict]`("streaming input")로 주면, 각 dict가 검증 없이 그대로
+  CLI stdin에 JSON 한 줄로 쓰인다(`_internal/query.py:875`,
+  `stream_input`: `await self.transport.write(json.dumps(message) + "\n")`). 즉
+  `message["content"]`를 Anthropic 네이티브 이미지 블록 형태
+  (`{"type": "image", "source": {"type": "base64", "media_type": ..., "data": ...}}`)를
+  포함한 리스트로 넣어도 그대로 CLI에 전달된다 — CLI의 `stream-json` 입력 프로토콜이
+  Messages API를 얇게 감싼 것이라는 정황(패키지 내 다른 곳, `__init__.py:463`의 MCP
+  tool-result 변환기가 이미 `{"type": "image", ...}` 콘텐츠 블록을 알고 있다)과도 맞는다.
+
+**구현: `vision/claude_agent_sdk_extractor.py::ClaudeAgentSDKVisionExtractor`.**
+`extraction/claude_agent_sdk_extractor.py`와 같은 인증 모델(자격 증명 프리플라이트
+`CLAUDE_AGENT_SDK_CREDENTIAL_HINT_KO`, 재시도 `retry.py::claude_agent_sdk_retry`/
+`is_retryable_claude_agent_sdk_error`를 그대로 재사용, 복제하지 않음)을 쓰되, 이미지
+한 장짜리 단발 요청을 만드는 `AsyncIterable[dict]`를 직접 구성해 `query()`에 넘긴다.
+구조화 출력 스키마는 없다(표/설명은 자유 텍스트라) — `ResultMessage.structured_output`
+대신 `ResultMessage.result`(순수 텍스트)를 읽는다. `VisionExtractor`/
+`OpenRouterVisionExtractor`와 같은 세 메서드(`extract_table_markdown`/`describe_figure`/
+`transcribe_image`)를 제공해 파서 쪽은 무엇이 백엔드인지 몰라도 된다
+(`vision/factory.py::VisionExtractorLike`에 추가).
+
+모델은 `KF_CLAUDE_AGENT_SDK_VISION_MODEL`(기본값
+`claude-haiku-4-5-20251001`) — `KF_CLAUDE_AGENT_SDK_EXTRACTION_MODEL`과 별도 노브다
+(`openrouter_extraction_model`/`openrouter_vision_model`이 이미 분리돼 있는 것과 같은
+이유: 표/이미지 전사와 Knowledge Extraction은 다른 워크로드라 나중에 다른 모델을 쓰고
+싶어질 수 있다).
+
+라이브 검증은 안 됐다(이 항목 자체가 `ANTHROPIC_API_KEY`/`OPENROUTER_API_KEY` 없이
+VLM을 살리는 작업이라, 실제 `claude` CLI 서브프로세스로 이미지가 도착하는지는 아직
+확인되지 않았다 — 단위 테스트는 다른 두 provider와 동일하게 `query_fn`을 가짜 비동기
+제너레이터로 주입해 모킹한다, `tests/vision/test_claude_agent_sdk_extractor.py`).
+`extraction/claude_agent_sdk_extractor.py`의 "Claude Agent SDK 경로는 로그인된 `claude`
+CLI로 실제 라이브 검증되었다"(텍스트 전용 completion)와는 다른 상태 — 이미지 스트리밍
+입력 경로는 credentials가 있는 사람이 실제 표/이미지로 한 번 검증하고 이 절을 갱신해야
+한다.

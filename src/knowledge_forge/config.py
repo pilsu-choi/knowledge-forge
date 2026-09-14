@@ -90,6 +90,12 @@ class Settings(BaseSettings):
     # ANTHROPIC_API_KEY), so a machine that already has Claude Code logged
     # in needs no separate API key. See extraction/claude_agent_sdk_extractor.py.
     claude_agent_sdk_extraction_model: str = "claude-haiku-4-5-20251001"
+    # Separate knob from claude_agent_sdk_extraction_model, mirroring
+    # openrouter_extraction_model/openrouter_vision_model - same default
+    # today, but table/figure/image transcription and Knowledge Extraction
+    # are different workloads that may want different models later. See
+    # vision/claude_agent_sdk_extractor.py.
+    claude_agent_sdk_vision_model: str = "claude-haiku-4-5-20251001"
     # Only needed when `claude` isn't on PATH under that exact name.
     claude_agent_sdk_cli_path: str | None = None
 
