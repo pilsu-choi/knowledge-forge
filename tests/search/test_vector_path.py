@@ -332,8 +332,10 @@ async def test_a_different_models_vectors_never_enter_the_ranking(store, embedde
     )
 
     assert hits[0]["chunk_id"] == "test-vp-c1"
-    assert [h["chunk_id"] for h in hits] == ["test-vp-c1", "test-vp-c2", "test-vp-c3"]
-    assert hits[1]["score"] == pytest.approx(0.0, abs=1e-6)  # d2는 여전히 직교 - 다른 모델 행이 안 섞였다
+    # c2와 c3는 둘 다 질의와 직교(거리 동점)라 둘 사이 순서는 정해져 있지 않다 - 쿼리에 tiebreak를 넣으면
+    # 플래너가 HNSW를 버리므로 테스트가 순서를 묻지 않는다.
+    assert {h["chunk_id"] for h in hits[1:]} == {"test-vp-c2", "test-vp-c3"}
+    assert all(h["score"] == pytest.approx(0.0, abs=1e-6) for h in hits[1:])  # d2는 여전히 직교 - 다른 모델 행이 안 섞였다
     # 그 모델로 명시해서 물으면 그 행만 나온다.
     assert [h["chunk_id"] for h in other] == ["test-vp-c2"]
     assert other[0]["score"] == pytest.approx(1.0)
