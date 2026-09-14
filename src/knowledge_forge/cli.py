@@ -1,12 +1,20 @@
 import asyncio
 import json
 import sys
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
 import typer
 
-from knowledge_forge.agent.auth import agent_credential_hint_ko, has_resolvable_agent_credentials
+from knowledge_forge.agent.auth import (
+    OPENAI_COMPATIBLE_AGENT_CREDENTIAL_HINT_KO,
+    _has_openai_compatible_credentials,
+    agent_credential_hint_ko,
+    has_resolvable_agent_credentials,
+)
+from knowledge_forge.agent.providers.base import ChatProvider
+from knowledge_forge.agent.providers.factory import get_chat_provider
 from knowledge_forge.agent.runtime import AgentSession, run_query
 from knowledge_forge.chunking import AdaptiveChunker
 from knowledge_forge.collectors.base import Collector, ensure_utc
@@ -15,6 +23,12 @@ from knowledge_forge.collectors.replay import RawBlobReplayCollector, filter_row
 from knowledge_forge.collectors.saas.factory import SAAS_COLLECTOR_BUILDERS
 from knowledge_forge.config import settings
 from knowledge_forge.embedding.factory import get_embedding_provider
+from knowledge_forge.eval import DEFAULT_MODEL, DEFAULT_PROVIDER
+from knowledge_forge.eval.compare import compare_runs
+from knowledge_forge.eval.generate import generate_golden, target_mix
+from knowledge_forge.eval.goldenset import load_golden, save_golden
+from knowledge_forge.eval.run import run_eval
+from knowledge_forge.exceptions import EvalError
 from knowledge_forge.extraction.auth import credential_hint_ko, has_resolvable_credentials
 from knowledge_forge.extraction.factory import get_extractor
 from knowledge_forge.models.source import SourceType
@@ -33,6 +47,8 @@ from knowledge_forge.storage.replay_index import load_replay_rows
 app = typer.Typer(help="Knowledge Forge: Collector -> Parser -> Adaptive Chunker -> Knowledge Extraction.")
 db_app = typer.Typer(help="PostgreSQL storage schema management.")
 app.add_typer(db_app, name="db")
+eval_app = typer.Typer(help="검색 평가: grain 고정 골든셋 생성/실행/비교 (wiki/evaluation.md).")
+app.add_typer(eval_app, name="eval")
 
 
 def _ensure_authenticated() -> None:
@@ -1036,3 +1052,120 @@ def db_export_okf(
 
 if __name__ == "__main__":
     app()
+
+
+def _eval_database_url() -> str:
+    if not settings.database_url:
+        typer.echo("KF_DATABASE_URL이 설정되지 않았습니다 - eval은 Postgres가 필수입니다.", err=True)
+        raise typer.Exit(1)
+    return settings.database_url
+
+
+def _eval_chat_provider(provider: str, model: str) -> ChatProvider:
+    if provider == "openai_compatible" and not _has_openai_compatible_credentials():
+        # .env의 KF_ 접두사 없는 키는 settings가 읽지 않는다 - 셸에 export해야 한다.
+        typer.echo(OPENAI_COMPATIBLE_AGENT_CREDENTIAL_HINT_KO, err=True)
+        raise typer.Exit(1)
+    return get_chat_provider(provider=provider, model=model)
+
+
+@eval_app.command("gen")
+def eval_gen(
+    grain: str = typer.Option(..., "--grain", help="chunk 또는 knowledge_object - 골든셋에 박혀 run이 따른다."),
+    n: int = typer.Option(300, "--n", help="항목 수. lookup 70% / exhaustive 15% / none 15%."),
+    model: str = typer.Option(DEFAULT_MODEL, "--model"),
+    provider: str = typer.Option(DEFAULT_PROVIDER, "--provider", help="anthropic 또는 openai_compatible."),
+    out: Path | None = typer.Option(None, "--out", help="기본 tests/eval/golden/<version>.json."),
+    seed: int = typer.Option(0, "--seed", help="샘플링 순서 시드."),
+) -> None:
+    """골든셋 생성 - 샘플링, LLM 생성, 규칙·라벨 확장·none 게이트. 산출은 status=draft, 사람이 표본을 보고 approved로."""
+    if grain not in ("chunk", "knowledge_object"):
+        typer.echo(f"--grain은 chunk 또는 knowledge_object여야 합니다: {grain!r}", err=True)
+        raise typer.Exit(2)
+    database_url = _eval_database_url()
+    chat_provider = _eval_chat_provider(provider, model)
+
+    async def _run() -> tuple:
+        async with PipelineStore(database_url, settings.data_dir) as store:
+            return await generate_golden(store, chat_provider, grain=grain, n=n, seed=seed)  # type: ignore[arg-type]
+
+    try:
+        golden, rejects = asyncio.run(_run())
+    except EvalError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None
+    path = out or Path("tests/eval/golden") / f"{golden.version}.json"
+    save_golden(golden, path)
+    counts = Counter(item.kind for item in golden.items)
+    target = target_mix(n)
+    typer.echo(f"{path}: {len(golden.items)}개 (grain={grain})")
+    for kind in ("lookup", "exhaustive", "none"):
+        typer.echo(f"  {kind:<10} {counts[kind]:>4} / 목표 {target[kind]}")
+    typer.echo("거부: " + (", ".join(f"{reason}={count}" for reason, count in rejects.most_common()) or "없음"))
+
+
+@eval_app.command("run")
+def eval_run(
+    golden_path: Path = typer.Option(..., "--golden", help="골든셋 JSON."),
+    split: str | None = typer.Option(None, "--split", help="dev 또는 test. 생략하면 전체."),
+    e2e: bool = typer.Option(False, "--e2e", help="에이전트 답변까지 실행하고 judge로 채점."),
+    model: str = typer.Option(DEFAULT_MODEL, "--model", help="e2e 에이전트·judge / --llm-constraints 모델."),
+    provider: str = typer.Option(DEFAULT_PROVIDER, "--provider"),
+    concurrency: int = typer.Option(4, "--concurrency"),
+    llm_constraints: bool = typer.Option(False, "--llm-constraints", help="retrieval에서 LLM 제약 보강 + multihop을 켠다(기본 꺼짐, 결정론)."),
+) -> None:
+    """골든셋 실행 - 결과 전체는 out/eval/<run_id>.json, 화면에는 kind별 요약."""
+    database_url = _eval_database_url()
+    golden = load_golden(golden_path)
+    use_llm = e2e or llm_constraints
+    chat_provider = _eval_chat_provider(provider, model) if use_llm else None
+
+    async def _run() -> dict:
+        async with PipelineStore(database_url, settings.data_dir) as store:
+            return await run_eval(
+                golden,
+                store,
+                split=split,
+                e2e=e2e,
+                provider=chat_provider,
+                llm_constraints=llm_constraints,
+                concurrency=concurrency,
+                models={"provider": provider, "model": model} if use_llm else {},
+            )
+
+    report = asyncio.run(_run())
+    path = Path("out/eval") / f"{report['run_id']}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    typer.echo(f"{path}  (grain={golden.grain}, mode={report['mode']}, git={report['provenance']['git']})")
+    for kind, stats in report["summary"].items():
+        typer.echo(f"  {kind:<10} " + "  ".join(f"{k}={v:.3f}" if isinstance(v, float) else f"{k}={v}" for k, v in stats.items()))
+    stale = [f"{r['id']}({r['stale_reason']})" for r in report["items"] if r["status"] == "stale"]
+    if stale:
+        typer.echo("stale: " + ", ".join(stale), err=True)
+    for warning in report["warnings"]:
+        typer.echo(f"경고: {warning}", err=True)
+
+
+@eval_app.command("compare")
+def eval_compare(
+    run_a: Path = typer.Argument(..., help="기준 실행 결과 JSON."),
+    run_b: Path = typer.Argument(..., help="비교 실행 결과 JSON (delta = B - A)."),
+    metric: str = typer.Option("ndcg@10", "--metric", help="hit@1, recall@5, mrr, ndcg@10, recall, precision, none_correct, score, answer_correct 등."),
+) -> None:
+    """질의별 paired delta + bootstrap 95% CI(시드 고정) + 승/패/무."""
+    try:
+        result = compare_runs(json.loads(run_a.read_text(encoding="utf-8")), json.loads(run_b.read_text(encoding="utf-8")), metric)
+    except EvalError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from None
+    low, high = result["ci95"]
+    typer.echo(
+        f"{metric}: A {result['mean_a']:.4f} -> B {result['mean_b']:.4f}  delta {result['delta']:+.4f}  "
+        f"95% CI [{low:+.4f}, {high:+.4f}]  n={result['n']}"
+    )
+    typer.echo(f"승 {result['wins']} / 패 {result['losses']} / 무 {result['ties']}")
+    for change in result["changed"][:10]:
+        typer.echo(f"  {change['id']:<16} {change['a']:.3f} -> {change['b']:.3f} ({change['delta']:+.3f})")
+    for warning in result["warnings"]:
+        typer.echo(f"경고: {warning}", err=True)
