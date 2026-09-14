@@ -357,11 +357,20 @@ outcome/object 개수만 세므로 건너뛴 만큼 개수가 줄 뿐 어긋나�
 ## gdrive 다운로드 무결성 검사
 
 위 "살리지 못한 것과 이유" 표의 "수집된 바이트가 xlsx가 아니라 Google Sheets HTML 페이지"
-사고가 재발하지 않도록, `collectors/saas/gdrive.py::_download_content`가 선언된 타입과
-매직 바이트를 대조한다 - zip 기반 OOXML(xlsx/docx/pptx/hwpx)은 `PK\x03\x04`, pdf는
-`%PDF`로 시작해야 하고, 바이너리 오피스/PDF 타입인데 `<!DOCTYPE html`/`<html`로 시작하면
-무조건 불일치로 본다. 불일치는 수집 실패로 기록되고(uri + 선언된 타입 + 감지된 헤드를 로그에
-남기고 그 항목을 건너뜀) 그 바이트는 저장되지 않는다 - `content_hash`가 잘못된 콘텐츠를
-정상 수집처럼 축복하던 문제(위 "확정된 원인" 절)를 수집 시점에서 막는다. 이건 재적재로
-고칠 수 있는 문제가 아니다(재수집이 필요하다는 점은 그대로다) - 여기서 막는 건 **다음번에
-같은 사고가 또 조용히 통과하는 것**이다.
+사고가 재발하지 않도록, `collectors/saas/gdrive.py::_download_content`가 `get_media()`로
+받은 원본 바이트를 파일 이름의 확장자가 요구하는 매직 바이트와 대조한다
+(`_check_download_integrity`) - zip 기반 OOXML(`.xlsx`/`.docx`/`.pptx`/`.hwpx`)은
+`PK\x03\x04`, `.pdf`는 `%PDF`로 시작해야 한다. 검사는 **확장자 키**다(Drive의 `mimeType`
+필드가 아니라) - hwpx처럼 Drive가 안정적으로 인식하는 mime이 없는 포맷도 있고, 어차피
+`parsers/registry.py`도 확장자로 파서를 고르므로 "이 파일이 뭐라고 주장하는가"의 기준을
+그쪽과 맞췄다. Google Workspace 네이티브 파일의 `export_media()` 결과(`text/plain`/
+`text/csv`)는 원본 이름의 확장자와 무관하게 의도적으로 다른 포맷이라 이 검사를 타지
+않는다 - `get_media()` 분기에서만 건다.
+
+불일치가 나면 `DownloadIntegrityError`를 던지고, `_raw_item_for_file`이 그걸 잡아 로그에
+`uri` + 선언된 확장자 + 감지된 헤드(첫 32바이트)를 `logger.error`로 남긴 뒤 `None`을
+돌려준다 - `initial_sync`/`incremental_sync` 양쪽 다 폴더를 건너뛰던 것과 같은 자리에서
+`None`이면 `yield`하지 않는다. 그 바이트는 `RawItem`으로 만들어지지 않으므로
+`content_hash`가 잘못된 콘텐츠를 정상 수집처럼 축복하는 일(위 "확정된 원인" 절)이 수집
+시점에서 막힌다. 이건 재적재로 고칠 수 있는 문제가 아니다(재수집이 필요하다는 점은
+그대로다) - 여기서 막는 건 **다음번에 같은 사고가 또 조용히 통과하는 것**이다.
