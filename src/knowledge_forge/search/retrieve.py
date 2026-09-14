@@ -97,6 +97,9 @@ SOURCE_DOCUMENT_LINKS = "document_links"
 # 링크 응집도는 후보 생성 단계가 아니라 병합 **뒤**에 얹는 재정렬이라 `suggest_strategies`가
 # 고를 대상이 아니고, `strategies_override`로 켜고 끄는 대상도 아니다.
 STRATEGY_LINK_COHESION = "link_cohesion"
+# `_Run.expand_to_grain`의 steps 이름이자 펼친 히트의 `retrieval_sources` 값. 링크 응집도와 같은 이유로
+# 라우팅되는 전략이 아니다 - 호출자가 grain을 명시했을 때만 도는 후처리다.
+STRATEGY_GRAIN_EXPANSION = "grain_expansion"
 
 # exhaustive/negative/count에서 "전부"를 대신하는 상한 - top-k 절단은 없애되 한 질의가 테이블
 # 전체를 끌어오지는 못하게(`search/sql.py::DEFAULT_MAX_ROWS`와 같은 200).
@@ -125,6 +128,10 @@ _ARM_STRONG_DOCUMENTS = 2
 _WHOLE_DOCUMENT_TOP_N = 2
 _WHOLE_DOCUMENT_MAX_CHARS = 50_000
 _HIT_SUMMARY_CHARS = 500
+# grain 펼치기(`_Run.expand_to_grain`)에서 grain 히트가 없는 문서 하나당 채울 청크/KO 수. 1이면 정답 단위가
+# 그 문서의 최고 유사도 단위가 아닐 때 놓치고, 크면 뒤 문서의 단위를 채점 리스트 아래로 민다 - 잠정값.
+_GRAIN_EXPANSION_PER_DOCUMENT = 3
+_GRAIN_ID_KEY = {"chunk": "chunk_id", "knowledge_object": "knowledge_object_id"}
 # comparison 대상별로 실을 문서 수 - "대상별 최상위 문서"를 하나만 고르면 제목 조회의 tie에서
 # 정답이 2위로 밀렸을 때 비교 자체가 무너지므로 약간 여유를 둔다.
 _COMPARISON_PER_TARGET = 2
@@ -605,9 +612,11 @@ class _Run:
         now: datetime,
         limit: int,
         grain: str | None = None,
+        expand_grain: bool = False,
     ) -> None:
         self.store = store
         self.grain = grain
+        self.expand_grain = expand_grain
         self.c = constraints
         self.strategies = strategies
         self.project_id = project_id
@@ -1372,6 +1381,68 @@ class _Run:
         # 본문 청크를 문서 순서대로 앞에, 같은 청크를 가리키던 검색 히트는 중복이라 뺀다.
         return chunk_hits + [hit for hit in hits if hit.get("chunk_id") not in read_chunk_ids]
 
+    async def expand_to_grain(self, hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """최종 랭킹에서 grain 히트(`chunk_id`/`knowledge_object_id`)가 하나도 없는 문서마다 그 문서 안의
+        grain 단위를 질의 임베딩 유사도 순으로 `_GRAIN_EXPANSION_PER_DOCUMENT`개 골라 **그 문서의 첫 히트
+        바로 뒤에** 끼운다. 문서 순서(`document_ids`)는 바뀌지 않는다.
+
+        왜: 제목·필터 히트는 문서 id만 싣고, anchor 좁히기는 다른 문서의 벡터 히트를 지운다. 그래서 grain
+        채점(청크/KO id를 가진 히트만 센다)에서는 정답 문서를 1위로 찾고도 채점 리스트가 빈다(2026-09-14
+        평가 스모크: 제목 anchor 28건 + 벡터 0건 → 빈 리스트). 이미 고른 문서 안에서만 고르므로 후보
+        집합은 넓히지 않는다 - 새 문서를 데려오지 않는다.
+
+        `vector_min_score` 하한은 걸지 않는다 - 문서는 이미 다른 신호로 랭킹에 들었고, 여기서는 "그 문서의
+        어느 단위인가"만 고른다. 질의 임베딩은 vector arm이 쓴 `semantic_query`를 그대로 써서 캐시
+        (`embedding/cache.py`)에서 받는다. semantic_query가 비면 원문 질의로 한 번 임베딩한다 - 첫 문서를
+        먼저 기다리는 이유가 그것이다(동시에 던지면 캐시 miss가 문서 수만큼 임베딩을 부른다)."""
+        assert self.grain is not None
+        key = _GRAIN_ID_KEY[self.grain]
+        covered = {hit["document_id"] for hit in hits if hit.get(key)}
+        ranked, _ = _dedupe_documents(hits)
+        missing = [d for d in ranked if d not in covered]
+        if not missing:
+            return hits
+        query = self.c.semantic_query or self.c.query
+
+        def _fetch(document_id: str) -> Coroutine[Any, Any, tuple[list[dict[str, Any]], BaseException | None]]:
+            return _capture_exception(
+                vector_search(
+                    query,
+                    self.store,
+                    project_id=self.project_id,
+                    limit=_GRAIN_EXPANSION_PER_DOCUMENT,
+                    target_kind=self.grain,
+                    document_ids=[document_id],
+                )
+            )
+
+        first = await _fetch(missing[0])
+        results = [first, *await asyncio.gather(*(_fetch(d) for d in missing[1:]))]
+        units: dict[str, list[dict[str, Any]]] = {}
+        error: str | None = None
+        for document_id, (found, exc) in zip(missing, results, strict=True):
+            if exc is not None:
+                error = error or f"{type(exc).__name__}: {exc}"
+            elif found:
+                units[document_id] = [{**unit, "retrieval_sources": [STRATEGY_GRAIN_EXPANSION]} for unit in found]
+        if error is not None:
+            logger.warning("grain expansion failed for some documents: %s", error)
+        expanded: list[dict[str, Any]] = []
+        for hit in hits:
+            expanded.append(hit)
+            expanded.extend(units.pop(hit["document_id"], []))
+        self.step(
+            STRATEGY_GRAIN_EXPANSION,
+            SOURCE_VECTOR_SEARCH,
+            len(expanded) - len(hits),
+            grain=self.grain,
+            query=query,
+            documents_without_grain_hit=len(missing),
+            per_document=_GRAIN_EXPANSION_PER_DOCUMENT,
+            error=error,
+        )
+        return expanded
+
     async def count(self, document_ids: list[str]) -> None:
         via = "document_ids"
         sql: str | None = None
@@ -1422,9 +1493,14 @@ async def retrieve(
       `"knowledge_object"`면 모든 벡터 조회(vector arm, multihop planner)를 그 grain의 임베딩으로만
       좁힌다 - `KF_EMBEDDING_SOURCE`와 무관하게 이 값이 이긴다. grain 골든셋 평가의 전제다
       (wiki/evaluation.md "grain").
+      **명시한 grain만** 최종 랭킹의 문서 단위 히트를 그 grain 단위로 펼친다(`_Run.expand_to_grain`) -
+      grain 채점은 청크/KO id가 있는 히트만 보기 때문이다. None이면 설정 grain으로 벡터를 좁히기만 하고
+      펼치지 않는다: 제품 경로(에이전트 search 도구의 기본값, API)는 문서 단위 히트로 충분하고, 문서당
+      벡터 조회가 더 붙는 비용을 낼 이유가 없다. "명시했는가"는 인자가 None인지로만 가른다.
     """
     if grain not in (None, "chunk", "knowledge_object"):
         raise ValueError(f"unknown grain: {grain!r}")
+    expand_grain = grain is not None
     # 두 grain 임베딩이 같이 적재된 DB에서 섞어 보면 같은 문서가 청크와 KO로 랭킹에 두 번 오른다
     # (wiki/embeddings.md "한 실행에 한 grain"). 그래서 지정이 없으면 적재 설정을 따른다.
     grain = grain or settings.embedding_source
@@ -1444,6 +1520,7 @@ async def retrieve(
         now=now,
         limit=limit,
         grain=grain,
+        expand_grain=expand_grain,
     )
 
     # 후보 생성 - document_lookup이 먼저다(anchor가 뒤 전략을 좁힌다).
@@ -1477,6 +1554,9 @@ async def retrieve(
         keep = set(document_ids[:limit])
         hits = [hit for hit in hits if hit["document_id"] in keep]
         document_ids, scores = document_ids[:limit], scores[:limit]
+    # 절단 뒤라 최종 문서만 펼친다. 문서 순서와 scores는 펼치기 전 값 그대로다(같은 문서 안에 단위를 끼울 뿐).
+    if run.expand_grain:
+        hits = await run.expand_to_grain(hits)
     for hit in hits:
         hit.setdefault("score", 0.0)
         hit.setdefault("target_kind", "document")

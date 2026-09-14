@@ -1091,6 +1091,7 @@ class PostgresStore:
         since: datetime | None = None,
         until: datetime | None = None,
         target_kind: str | None = None,
+        document_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Nearest-neighbor search over `knowledge_object_embeddings`' HNSW
         index (wiki/agent-search.md's vector_search) - `ORDER BY embedding
@@ -1132,7 +1133,12 @@ class PostgresStore:
         reading the tool result) doesn't need to branch on grain; `type` is
         the KO type or the literal 'chunk'. `content_at` (the same COALESCE
         used for filtering) is included so a caller can see which timestamp
-        the filter actually matched against."""
+        the filter actually matched against.
+
+        `document_ids` restricts the search to those documents' rows - used
+        to pick a ranked document's best grain units (search/retrieve.py's
+        grain expansion). With it the planner uses `idx_koe_document_id` and
+        sorts the few matching rows exactly (measured 1 ms), not the HNSW scan."""
         vector = Vector(embedding)
         async with self._read_conn() as conn, conn.cursor() as cur:
             await cur.execute(
@@ -1153,6 +1159,7 @@ class PostgresStore:
                   AND (%s::text IS NULL OR ko.type = %s)
                   AND (%s::timestamptz IS NULL OR COALESCE(s.modified_at, s.collected_at) >= %s)
                   AND (%s::timestamptz IS NULL OR COALESCE(s.modified_at, s.collected_at) < %s)
+                  AND (%s::text[] IS NULL OR e.document_id = ANY(%s))
                 ORDER BY e.embedding <=> %s
                 LIMIT %s
                 """,
@@ -1170,6 +1177,8 @@ class PostgresStore:
                     since,
                     until,
                     until,
+                    document_ids,
+                    document_ids,
                     vector,
                     limit,
                 ),

@@ -132,6 +132,7 @@ hits(각 hit에 document_id/target_kind/score 필수), document_ids(hits에서 �
 | `exhaustive`/`negative` | 소스별 limit을 200으로, 최종 컷오프 없음 | 부재 판정은 LLM 몫 - 실행기는 후보만 |
 | `count` | `predicted_count` = 최종 문서 수. 필터 단독 결과면 같은 WHERE로 `SELECT COUNT(*)` | count도 exhaustive 수집을 함의 |
 | `whole_document` | anchor(없으면 상위 2개 문서)를 `read_document`로 읽어 `documents_read`에, 청크를 문서 순서대로 히트 맨 앞에 | 같은 청크를 가리키던 검색 히트는 중복이라 제거 |
+| (grain 펼치기) | 호출자가 `grain`을 **명시**했을 때만. limit 절단 뒤 grain 히트(`chunk_id`/`knowledge_object_id`)가 없는 문서마다 `vector_search(document_ids=[문서])`로 그 문서의 grain 단위 3개를 질의 유사도 순으로 골라 문서의 첫 히트 바로 뒤에 끼움. step `grain_expansion` | 2026-09-14. 제목·필터 히트는 문서 id만 싣고 anchor 좁히기가 벡터 히트를 지워서, 정답 문서를 1위로 찾고도 grain 채점 리스트가 비었다(평가 스모크). 문서 순서·`scores`는 그대로, 새 문서는 안 데려옴, `vector_min_score` 하한 없음(문서는 이미 뽑혔다). `grain=None`(설정 grain)은 펼치지 않는다 - 제품 경로는 문서 단위 히트로 충분하고 문서당 조회 비용을 낼 이유가 없다. 문서 id 필터는 btree + 정확 정렬이라 1ms |
 
 **어휘 arm (`keyword_arm`)**:
 

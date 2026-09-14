@@ -157,14 +157,16 @@ class PipelineStore:
         since: datetime | None = None,
         until: datetime | None = None,
         target_kind: str | None = None,
+        document_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """`search/service.py::vector_search`'s single entry point into
         storage - mirrors `record_embeddings`' role of being the one place
         the caller needs, rather than reaching into `PostgresStore` directly.
         `target_kind` (None = both grains) narrows to 'knowledge_object' or
-        'chunk' rows, see `PostgresStore.search_by_embedding`."""
+        'chunk' rows and `document_ids` to those documents, see
+        `PostgresStore.search_by_embedding`."""
         return await self._db.search_by_embedding(
-            embedding, embedding_model, project_id, type, limit, since, until, target_kind
+            embedding, embedding_model, project_id, type, limit, since, until, target_kind, document_ids
         )
 
     async def embedding_coverage(self, embedding_model: str, project_id: str | None = None) -> dict[str, Any]:

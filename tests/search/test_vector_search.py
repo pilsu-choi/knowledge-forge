@@ -26,6 +26,7 @@ class _FakeStore:
         since=None,
         until=None,
         target_kind=None,
+        document_ids=None,
     ):
         self.calls.append((embedding, embedding_model, project_id, type, limit, since, until))
         self.target_kinds = getattr(self, "target_kinds", []) + [target_kind]

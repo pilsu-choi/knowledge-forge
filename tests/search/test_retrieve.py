@@ -142,7 +142,11 @@ class _FakeStore:
 
 
 def _patch_vector(monkeypatch, hits: list[dict] | Exception, calls: list | None = None):
-    async def _fake_vector_search(query, store, project_id=None, type=None, limit=10, embedding_model=None, since=None, until=None, target_kind=None):
+    async def _fake_vector_search(
+        query, store, project_id=None, type=None, limit=10, embedding_model=None, since=None, until=None, target_kind=None, document_ids=None
+    ):
+        if document_ids is not None:
+            return []  # grain expansion lookup - tests that care patch their own fake
         if calls is not None:
             calls.append((query, limit, since, until))
         if isinstance(hits, Exception):
@@ -150,6 +154,19 @@ def _patch_vector(monkeypatch, hits: list[dict] | Exception, calls: list | None 
         return [dict(h) for h in hits]
 
     monkeypatch.setattr(retrieve_module, "vector_search", _fake_vector_search)
+
+
+def _patch_grain_vector(monkeypatch, arm_hits: list[dict], units: dict[str, list[dict]], calls: list):
+    """Vector fake that answers the arm call with `arm_hits` and a per-document
+    grain-expansion call (`document_ids=[d]`) with `units[d]`."""
+
+    async def _fake(query, store, project_id=None, type=None, limit=10, embedding_model=None, since=None, until=None, target_kind=None, document_ids=None):
+        calls.append({"query": query, "target_kind": target_kind, "document_ids": document_ids, "limit": limit})
+        if document_ids is None:
+            return [dict(h) for h in arm_hits]
+        return [dict(h) for h in units.get(document_ids[0], [])]
+
+    monkeypatch.setattr(retrieve_module, "vector_search", _fake)
 
 
 def _filter_row(document_id: str, content_at: datetime) -> tuple:
@@ -195,6 +212,85 @@ async def test_document_lookup_two_substring_matches_is_ambiguous_and_lists_both
     assert lookup.detail["anchor"] is None
     assert lookup.detail["anchor_reason"] == "ambiguous"
     assert result.document_ids == ["d1", "d2"]
+
+
+# --- grain expansion -------------------------------------------------------------
+
+
+def _ko_hit(document_id: str, ko_id: str, score: float = 0.5) -> dict:
+    return {"target_kind": "knowledge_object", "knowledge_object_id": ko_id, "chunk_id": None, "document_id": document_id, "score": score}
+
+
+async def test_explicit_chunk_grain_fills_a_title_only_document_with_its_best_chunks_at_its_rank(monkeypatch):
+    store = _FakeStore(title_hits={"report_v2.pdf": [_doc_hit("d1", 1.0)]})
+    calls: list = []
+    _patch_grain_vector(monkeypatch, [], {"d1": [_chunk_hit("d1", "c1a", 0.4), _chunk_hit("d1", "c1b", 0.3)]}, calls)
+
+    result = await retrieve("report_v2.pdf 에서 리스크 항목", store=store, now=_NOW, grain="chunk")
+
+    # d1 is ranked by its title hit alone - no chunk id to score before expansion
+    assert result.document_ids == ["d1"]
+    assert [h.get("chunk_id") for h in result.hits if h.get("chunk_id")] == ["c1a", "c1b"]
+    expansion = [c for c in calls if c["document_ids"] is not None]
+    assert expansion == [{"query": result.constraints["semantic_query"], "target_kind": "chunk", "document_ids": ["d1"], "limit": 3}]
+    step = next(s for s in result.steps if s.strategy == "grain_expansion")
+    assert step.n_hits == 2 and step.detail["documents_without_grain_hit"] == 1
+    assert result.hits[1]["retrieval_sources"] == ["grain_expansion"]
+
+
+async def test_expansion_places_units_after_the_documents_first_hit_and_skips_covered_documents(monkeypatch):
+    store = _FakeStore(
+        filter_rows=[_filter_row("d1", datetime(2026, 8, 3, tzinfo=timezone.utc)), _filter_row("d2", datetime(2026, 8, 2, tzinfo=timezone.utc))],
+    )
+    calls: list = []
+    _patch_grain_vector(monkeypatch, [], {"d1": [_chunk_hit("d1", "c1")], "d2": [_chunk_hit("d2", "c2")]}, calls)
+
+    result = await retrieve("작년 8월에 김민수가 보낸 메일", store=store, now=_NOW, grain="chunk", strategies_override=["metadata_filter"])
+
+    assert result.document_ids == ["d1", "d2"]
+    assert [h["document_id"] for h in result.hits] == ["d1", "d1", "d2", "d2"]
+    assert [h.get("chunk_id") for h in result.hits] == [None, "c1", None, "c2"]
+
+
+async def test_grain_from_settings_does_not_expand(monkeypatch):
+    store = _FakeStore(title_hits={"report_v2.pdf": [_doc_hit("d1", 1.0)]})
+    calls: list = []
+    _patch_grain_vector(monkeypatch, [], {"d1": [_chunk_hit("d1", "c1")]}, calls)
+
+    result = await retrieve("report_v2.pdf 에서 리스크 항목", store=store, now=_NOW)
+
+    assert all(c["document_ids"] is None for c in calls)
+    assert not any(s.strategy == "grain_expansion" for s in result.steps)
+    assert not any(h.get("chunk_id") for h in result.hits)
+
+
+async def test_ko_grain_expands_documents_that_only_have_chunk_hits(monkeypatch):
+    store = _FakeStore(chunk_hits={None: [_chunk_hit("d1", "c1"), _chunk_hit("d2", "c2")]})
+    calls: list = []
+    _patch_grain_vector(monkeypatch, [_ko_hit("d2", "ko2", 0.9)], {"d1": [_ko_hit("d1", "ko1")]}, calls)
+
+    result = await retrieve("배포 롤백 절차", store=store, now=_NOW, grain="knowledge_object")
+
+    expanded = [c["document_ids"] for c in calls if c["document_ids"] is not None]
+    assert expanded == [["d1"]]  # d2 already has a KO hit
+    assert {h.get("knowledge_object_id") for h in result.hits} >= {"ko1", "ko2"}
+
+
+async def test_grain_expansion_failure_is_recorded_not_raised(monkeypatch):
+    store = _FakeStore(title_hits={"report_v2.pdf": [_doc_hit("d1", 1.0)]})
+
+    async def _fake(query, store, document_ids=None, **kwargs):
+        if document_ids is not None:
+            raise RuntimeError("embedder down")
+        return []
+
+    monkeypatch.setattr(retrieve_module, "vector_search", _fake)
+
+    result = await retrieve("report_v2.pdf 에서 리스크 항목", store=store, now=_NOW, grain="chunk")
+
+    assert result.document_ids == ["d1"]
+    step = next(s for s in result.steps if s.strategy == "grain_expansion")
+    assert step.n_hits == 0 and "embedder down" in step.detail["error"]
 
 
 # --- metadata_filter --------------------------------------------------------------

@@ -239,6 +239,7 @@ async def vector_search(
     since: datetime | None = None,
     until: datetime | None = None,
     target_kind: str | None = None,
+    document_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """`knowledge_object_embeddings`의 HNSW 인덱스를 실제로 읽는 첫 소비자
     (wiki/agent-search.md의 vector_search 계약) - `file_search`가 강한 정확한
@@ -249,7 +250,8 @@ async def vector_search(
     KnowledgeObject 기반") 조회하도록 좁힐 수 있다 - 에이전트 도구는 생략해서 둘을 한 랭킹에서
     경쟁시키고, 한 grain만 따로 봐야 할 때만 명시한다.
     모든 히트에 `target_kind`/`document_id`/`knowledge_object_id`/`chunk_id`가 실린다(후자 둘 중
-    하나는 None) - 두 grain이 공유하는 식별자는 `document_id`다.
+    하나는 None) - 두 grain이 공유하는 식별자는 `document_id`다. `document_ids`를 주면 그 문서들의
+    행만 본다(`search/retrieve.py`의 grain 펼치기가 이미 랭킹된 문서의 청크/KO를 고를 때).
 
     `query`를 요청 시점에 `get_embedding_provider(embedding_model)`로 임베딩한
     뒤 `store.search_by_embedding()`(HNSW `<=>` ORDER BY)으로 조회한다 -
@@ -302,6 +304,7 @@ async def vector_search(
         since=since,
         until=until,
         target_kind=target_kind,
+        document_ids=document_ids,
     )
 
 
