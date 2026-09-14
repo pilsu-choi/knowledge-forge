@@ -58,6 +58,7 @@ from knowledge_forge.search.constraints import (
     STRATEGY_VECTOR,
     STRATEGY_WHOLE_DOCUMENT,
     QueryConstraints,
+    _resolve_time_range,
     extract_constraints,
     extract_constraints_rules,
     keyword_terms,
@@ -67,7 +68,6 @@ from knowledge_forge.search.document import read_document
 from knowledge_forge.search.planner import plan_and_search
 from knowledge_forge.search.rerank import DEFAULT_RRF_K, merge_and_rerank
 from knowledge_forge.search.service import document_search, lexical_search, vector_search
-from knowledge_forge.search.temporal import parse_temporal_expression
 
 if TYPE_CHECKING:
     from knowledge_forge.storage.store import PipelineStore
@@ -121,6 +121,9 @@ _MAX_FALLBACK_TERMS = 10
 # 2위와 이만큼 벌어져야 한다. 2위도 1.0이면("AGENTS.md" vs "agents-skills-AGENTS.md") ambiguous.
 _ANCHOR_MIN_SCORE = 1.0
 _ANCHOR_MIN_GAP = 0.2
+# 격차 비교의 부동소수점 여유 - `1.0 - 0.8`은 0.19999999999999996이라 여유 없이 비교하면 2위가 토큰 tier
+# 상한(`title_match._SUBSET_AMBIGUOUS_SCORE` 0.8)일 때 제목 정확 일치가 anchor를 잃는다.
+_ANCHOR_GAP_EPSILON = 1e-9
 # `keyword_arm`이 term 단위 fallback(`_term_fallback`)으로 내려가는 기준 - 질의 문자열 통째로
 # 건 두 조회(제목+본문)가 **서로 다른 문서를 이만큼도 못 물어왔으면** 그건 랭킹이 아니라 우연
 # 한 건이다. 문서 수로 세는 이유와 값이 2인 이유는 `keyword_arm` 안의 주석에.
@@ -200,8 +203,14 @@ class RetrievalResult:
     documents_read: list[str]
     elapsed_ms: float
 
+    @property
+    def vector_error(self) -> str | None:
+        """벡터 조회(vector arm, grain 펼치기)의 첫 실패 사유, 없으면 None - `steps`에서 파생한다.
+        실패해도 실행기는 어휘 arm만으로 결과를 내므로, 이 값을 보지 않으면 어휘 단독 점수를 하이브리드로 착각한다."""
+        return next((s.detail["error"] for s in self.steps if s.source == SOURCE_VECTOR_SEARCH and s.detail.get("error")), None)
+
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {**asdict(self), "vector_error": self.vector_error}
 
 
 # --- SQL 리터럴 헬퍼 ------------------------------------------------------------
@@ -646,6 +655,12 @@ class _Run:
     def add_hits(self, source: str, hits: list[dict[str, Any]]) -> None:
         self.results_by_source.setdefault(source, []).extend(hits)
 
+    def add_per_query(self, source: str, per_query: list[tuple[str, list[dict[str, Any]]]]) -> None:
+        """질의마다 따로 순위 리스트로(`<source>#<질의>`) 넣는다 - 위 소스 이름 주석의 규칙. 이어 붙이면 뒤 질의의
+        1위가 앞 질의 꼴찌 뒤에 붙는다. `#semantic`, `_term_fallback`의 `#<term>`과 같은 관례."""
+        for query, hits in per_query:
+            self.add_hits(f"{source}#{query}", hits)
+
     def step(self, strategy: str, source: str, n_hits: int, **detail: Any) -> RetrievalStep:
         step = RetrievalStep(strategy=strategy, source=source, n_hits=n_hits, detail=detail)
         self.steps.append(step)
@@ -760,7 +775,7 @@ class _Run:
             return "no_candidates", ranked
         top_id, top_score = ranked[0]
         second = ranked[1][1] if len(ranked) > 1 else None
-        if top_score >= _ANCHOR_MIN_SCORE and (second is None or top_score - second >= _ANCHOR_MIN_GAP):
+        if top_score >= _ANCHOR_MIN_SCORE and (second is None or top_score - second >= _ANCHOR_MIN_GAP - _ANCHOR_GAP_EPSILON):
             self.anchor = top_id
             return "single_substring_match", ranked
         return ("ambiguous" if top_score >= _ANCHOR_MIN_SCORE else "weak_match"), ranked
@@ -781,7 +796,7 @@ class _Run:
         )
         collected: list[dict[str, Any]] = [hit for hits in per_query for hit in hits]
         anchor_reason, ranked = self._claim_anchor(collected)
-        self.add_hits(SOURCE_DOCUMENT_SEARCH, collected)
+        self.add_per_query(SOURCE_DOCUMENT_SEARCH, list(zip(queries, per_query, strict=True)))
         self.step(
             STRATEGY_DOCUMENT_LOOKUP,
             SOURCE_DOCUMENT_SEARCH,
@@ -804,10 +819,12 @@ class _Run:
                 for term in terms
             )
         )
-        collected: list[dict[str, Any]] = [hit for hits in per_term for hit in hits]
-        collected, narrowing = self.narrow(collected)
-        self.add_hits(SOURCE_LEXICAL_SEARCH, collected)
-        self.step(STRATEGY_LEXICAL, SOURCE_LEXICAL_SEARCH, len(collected), terms=terms, anchor_narrowing=narrowing)
+        # 좁히기 판정은 전체 합으로(어느 term에도 anchor 히트가 없으면 전부 남긴다), 적용은 term별 리스트에.
+        _, narrowing = self.narrow([hit for hits in per_term for hit in hits])
+        if narrowing == "narrowed":
+            per_term = [[hit for hit in hits if hit.get("document_id") == self.anchor] for hits in per_term]
+        self.add_per_query(SOURCE_LEXICAL_SEARCH, list(zip(terms, per_term, strict=True)))
+        self.step(STRATEGY_LEXICAL, SOURCE_LEXICAL_SEARCH, sum(map(len, per_term)), terms=terms, anchor_narrowing=narrowing)
 
     async def metadata_filter(self) -> None:
         if not _has_metadata_predicate(self.c):
@@ -1106,7 +1123,10 @@ class _Run:
         collected: list[dict[str, Any]] = []
         resolved: list[dict[str, Any]] = []
         targets = list(self.c.comparison_targets)
-        ranges = [parse_temporal_expression(target, now=self.now) for target in targets]
+        # 연도 문맥 보정까지 받는 `_resolve_time_range`를 쓴다 - `parse_temporal_expression`
+        # 하나만 쓰면 "작년" 같은 연도 단어가 있는 대상("작년 매출")의 bare 분기/월이 `self.now`의
+        # 연도로 잘못 해석된다(`search/planner.py::_execute_subquery`와 같은 이유).
+        ranges = [_resolve_time_range(target, self.now) for target in targets]
         # 대상별 제목 조회를 한꺼번에 던진다. 본문 폴백은 제목 조회가 빈손인 대상만 도는
         # 2단계라 겹칠 수 없으므로 그대로 순차로 둔다(대개 0~1개다). `pinned` 순서는 아래
         # 루프가 대상 순서대로 돌기 때문에 그대로 유지된다 - 그 순서가 최종 랭킹의 고정
@@ -1140,7 +1160,7 @@ class _Run:
                 self.pinned.append(top)
             resolved.append({"target": target, "document_id": top, "via": via, "time_range": time_range.label if time_range else None})
             collected.extend(hits)
-        self.add_hits(SOURCE_DOCUMENT_SEARCH, collected)
+            self.add_hits(f"{via}#{target}", hits)
         self.step(STRATEGY_COMPARISON, SOURCE_DOCUMENT_SEARCH, len(collected), targets=resolved)
 
     async def multihop(self, provider: ChatProvider | None) -> None:
@@ -1155,24 +1175,24 @@ class _Run:
                 project_id=self.project_id,
                 limit_per_subquery=self.limit,
                 target_kind=self.grain,
+                now=self.now,
             )
         except Exception as exc:  # noqa: BLE001 - planner 실패가 나머지 전략 결과를 버리게 하면 안 된다
             logger.warning("plan_and_search failed, continuing without it: %s", exc)
             self.step(STRATEGY_MULTIHOP, SOURCE_PLAN_SEARCH, 0, error=f"{type(exc).__name__}: {exc}")
             return
-        hits: list[dict[str, Any]] = []
-        dropped = 0
+        total = dropped = 0
         for evidence in plan.get("evidence", []):
-            for hit in evidence.get("results", []):
-                if not hit.get("document_id"):
-                    dropped += 1
-                    continue
-                hits.append({**hit, "subquery_id": evidence.get("subquery_id")})
-        self.add_hits(SOURCE_PLAN_SEARCH, hits)
+            subquery_id = evidence.get("subquery_id")
+            hits = [{**hit, "subquery_id": subquery_id} for hit in evidence.get("results", []) if hit.get("document_id")]
+            dropped += len(evidence.get("results", [])) - len(hits)
+            total += len(hits)
+            # 하위 질의마다 따로 순위 리스트 - 서로 다른 질의의 순위를 한 리스트에 이어 붙이지 않는다(`add_per_query`).
+            self.add_hits(f"{SOURCE_PLAN_SEARCH}#{subquery_id}", hits)
         self.step(
             STRATEGY_MULTIHOP,
             SOURCE_PLAN_SEARCH,
-            len(hits),
+            total,
             subqueries=[sq.get("query") for sq in plan.get("subqueries", [])],
             dropped_without_document_id=dropped,
         )

@@ -38,17 +38,34 @@ run에는 grain 인자가 없고 골든셋 파일의 값을 따른다.
 | 12자 미만 | `too_short` | 앵커 없는 짧은 질의 |
 | 이 문서/해당 프로젝트 같은 지시어 | `deictic` | 원문을 본 사람만 아는 "이 프로젝트" 질의 |
 | 인용문이 원문에 없음(구두점만 바뀐 경우 원문 구절로 고정) | `quote_not_in_source` | 해석 불가능한 라벨 |
-| **라벨 확장**: 같은 grain `retrieve()` 상위 8개 후보를 LLM이 "같은 답을 담는가" 이진 판정, 담으면 정답에 추가 | `positive_without_quote`, `anchorless`(정답 5개 초과) | 다른 문서에도 같은 답이 있는데 한 곳만 정답으로 둬서 맞힌 검색을 틀렸다고 채점 |
+| **라벨 확장**: `retrieve()`(전체 파이프라인) + `vector_search`(벡터 단독) + chunk grain이면 `lexical_search`(어휘 단독), 세 arm 상위를 라운드로빈으로 섞어 최대 8개 후보를 LLM이 "같은 답을 담는가" 이진 판정, 담으면 정답에 추가 | `positive_without_quote`, `anchorless`(정답 5개 초과) | 다른 문서에도 같은 답이 있는데 한 곳만 정답으로 둬서 맞힌 검색을 틀렸다고 채점 |
 | 같은 content_hash 문서의 동일 인용문은 판정 없이 추가 | - | 복제 수집본 |
 | exhaustive 정답은 LLM이 아니라 SQL 술어(구글 드라이브 확장자, 슬랙 채널, 소스+월(Asia/Seoul), 소스), 문서 2~50건 | - | LLM이 지어낸 "전부" 정답 |
 | none: 핵심 term 문서빈도 0 **그리고** 같은 grain 벡터 최고 유사도 < `KF_VECTOR_MIN_SCORE` | `none_term_in_corpus`, `none_vector_too_similar` | 실제로는 코퍼스에 있는 "없는 주제" |
 
 검색이 원래 정답을 못 찾아도 항목은 버리지 않는다. 그게 평가가 잡아야 할 실패다.
 
+**라벨 확장 풀링 편향(2026-09-15 수정)**: 후보를 `retrieve()` 상위 8개에서만 뽑으면, 그 파이프라인이
+놓친 정답 청크는 다른 arm(순수 벡터·순수 어휘)이 찾아도 영영 오답으로 채점된다 - A/B가 라벨을 만들 때
+쓴 파이프라인 쪽에 구조적으로 유리해진다(`wiki/search-quality-review-2026-09-15.md` 3.1). 지금은
+세 arm의 상위를 `generate.py::pool_candidate_ids`로 라운드로빈 병합·중복 제거한 뒤 같은 판정 함수
+(`_judge_candidates`)로 넘긴다 - 총 후보 수(`EXPANSION_TOP`=8)는 그대로라 LLM 비용은 비슷하다. KO
+grain은 `lexical_search`가 청크 히트만 내놓아 채점에 참여하지 못하므로 그 arm을 아예 건너뛴다.
+
 샘플링: chunk grain은 `token_count >= 80` 청크, KO grain은 entity가 아니고 대체(supersedes)되지 않은 KO(summary·content와
 evidence 청크 원문을 함께 보여줌). 둘 다 시드 고정 셔플 → source_type 라운드로빈 → 문서당 2개.
-구성 기본 300 = lookup 210 / exhaustive 45 / none 45(`--n`에 비례), kind마다 dev/test 번갈아. 산출은 `status: draft`이고,
+구성 기본 300 = lookup 210 / exhaustive 45 / none 45(`--n`에 비례). 산출은 `status: draft`이고,
 사람이 20~30개를 훑고 `approved`로 바꾼다.
+
+**dev/test 분할(2026-09-15 수정)**: `generate.py::split_key`(lookup은 `document_id`, exhaustive는 정답
+문서 중 가장 앞선 id, none은 질의 자체) → `split_for`(sha256 첫 바이트의 홀짝)로 정한다. 문서당 최대 2개인
+lookup이 항상 같은 쪽에 떨어져, dev로 튜닝한 결과가 test로 새지 않는다. 이전에는 kind별 생성 순서의 홀짝
+(`i % 2`)으로 나눠 같은 문서의 lookup 두 개가 dev/test에 걸쳐 새는 문제가 있었다
+(`wiki/search-quality-review-2026-09-15.md` 3.4). **v1(`chunk-v1.json`/`knowledge_object-v1.json`)은
+옛 홀짝 분할 그대로다** - 다시 쓰지 않았다. 두 파일 모두 `split`이 항목에 이미 박혀 있어 필드 자체에서
+재계산할 수는 있지만(각 항목의 `document_id`/`evidence[0].document_id`/`document_ids`/`query`에
+`split_for(split_key(item))`을 다시 적용), 과거 run과의 비교가 깨지므로 적용하지 않았다. 다음에 `eval gen`으로
+새로 만드는 골든셋부터 새 분할을 쓴다.
 
 ## 실행 방법
 
@@ -69,6 +86,12 @@ provenance는 git 커밋(더러우면 `-dirty.<sha256(git diff HEAD + 추적 안
 `term_coverage_ratio`, `term_coverage_min`, `term_rare_df_max`, `latest_relevance_pool`, `embedding_model/source/provider`),
 모델명이다. 코퍼스 지문은 문서(id:content_hash:title 해시), 청크 id 해시, KO id 해시, 활성 임베딩 모델의 grain별 임베딩 수다.
 
+골든셋 자체의 `corpus`에도 생성 시점 값 하나가 더 있다: `corpus.none_gate.vector_min_score` - none 항목을
+채택할 때 쓴 `KF_VECTOR_MIN_SCORE`(2026-09-15 추가, `dict[str, Any]`라 이 키가 없는 v1 파일도 그대로
+로드된다). none 정답 여부(`run.py::score_item`)는 채점 리스트가 비었는지만 보고 이 값을 다시 보지 않지만,
+게이트 자체가 이 값에 묶여 있어서 하한을 올리기만 해도 none_correct가 오른다 - 검색 품질이 아니라 그
+때 쓴 임계값을 기록해 두는 것으로, 근본 해결은 아니다(`wiki/search-quality-review-2026-09-15.md` 3.2).
+
 ## 지표
 
 | kind | 지표 | 정의 |
@@ -79,21 +102,49 @@ provenance는 git 커밋(더러우면 `-dirty.<sha256(git diff HEAD + 추적 안
 | | ndcg@10 | 이진 관련도, IDCG는 min(정답 수, 10)개 기준 |
 | exhaustive | recall, precision | 채점 리스트를 문서로 올린 집합 vs 술어 결과(컷오프 없음) |
 | none | none_correct | 채점 리스트가 비었으면 1 |
-| 공통 | score | 대표 지표: lookup ndcg@10 / exhaustive recall / none none_correct |
+| 항목별 | score | 대표 지표: lookup ndcg@10 / exhaustive recall / none none_correct |
 | e2e | answer_correct, declined, latency_ms, llm_calls, tool_calls | judge `{"verdict": correct/partial/wrong, "declined": bool}`. none 항목은 declined가 곧 정답 |
 
-요약은 kind별 평균과 n, overall(n, stale, error, 모든 항목에 있는 지표 평균).
+요약(`run.py::summarize`)은 kind별 평균 + n, 그리고 `overall`은 **n/stale/error만**이다(2026-09-15 수정).
+이전에는 `overall`에도 모든 항목에 있는 지표(사실상 `score`뿐)의 평균을 넣었는데, 그건 lookup ndcg@10 /
+exhaustive recall / none none_correct라는 서로 다른 척도를 평균 낸 것이라 골든셋의 kind 비율(210/45/45)이
+바뀌면 검색 품질과 무관하게 값이 움직인다(`wiki/search-quality-review-2026-09-15.md` 3.3). 비교는 항상
+kind별 표로 본다 - `knowledge-forge eval run`은 이미 `summary`의 각 키(kind마다 + overall)를 한 줄씩 찍는다.
 e2e 채점 리스트는 search 도구 결과를 **호출 순서**(디스패치 시점에 자리를 잡음, 동시 도구 호출의 완료 순서가 아님)로 이어 붙인 것이다.
 
 compare는 두 실행 모두 ok인 항목끼리 짝지어 delta(B−A) 평균, 시드 고정 bootstrap 95% CI(1만 회), 승/패/무를 낸다.
 골든셋 버전이나 문서 지문이 다르면 거부하고, 청크·KO·임베딩 지문만 다르면 경고한다(재청킹·임베딩 교체 A/B가 그 경우).
-n=300이어도 +0.03 이하 차이는 CI가 0을 포함할 수 있다.
+**두 run의 `provenance.settings`가 다르면(`vector_min_score` 포함) 경고한다(2026-09-15 추가)** - none 게이트와
+채점이 둘 다 그 값에 기대므로, 그럴 때 none_correct(그리고 다른 지표) delta는 검색 품질이 아니라 설정 차이를
+잰 것일 수 있다. n=300이어도 +0.03 이하 차이는 CI가 0을 포함할 수 있다.
+
+## 2026-09-15 평가 편향 수정
+
+`wiki/search-quality-review-2026-09-15.md` 3장("평가")이 지적한 네 가지. 코드는 `src/knowledge_forge/eval/`,
+테스트는 `tests/eval/`(golden JSON 제외).
+
+1. **라벨 확장 풀링 편향** - `generate.py::expand_labels`가 `retrieve()` 상위 8개에서만 후보를 뽑아, 그
+   파이프라인이 놓친 정답이 영구히 오답으로 채점됐다. `_candidate_pool`이 `retrieve()` + `vector_search`
+   + (chunk grain만) `lexical_search` 세 arm을 `pool_candidate_ids`로 라운드로빈 병합해 판정한다.
+2. **none 게이트가 튜닝 값에 묶임** - 생성 게이트(`_Generator.none`)는 `KF_VECTOR_MIN_SCORE`로 채택 여부를
+   정하고 채점(`run.py::score_item`)은 "채점 리스트가 비었나"만 본다. 근본 해결은 아니지만, 골든셋
+   `corpus.none_gate.vector_min_score`에 생성 시 값을 남기고, `eval compare`가 두 run의
+   `provenance.settings`(특히 이 값)가 다르면 경고하게 했다 - none_correct delta가 임계값 차이 때문일
+   수 있음을 표시한다.
+3. **overall이 이종 지표를 평균** - `run.py::summarize`의 `overall`이 lookup ndcg@10 / exhaustive recall /
+   none none_correct를 전부 `score`로 묶어 평균 냈다. `overall`은 이제 n/stale/error만 담고, 지표는
+   kind별 표로만 본다(CLI가 이미 `summary`의 각 키를 한 줄씩 찍는다).
+4. **dev/test 번호 짝홀 누수** - 문서당 lookup이 최대 2개인데 생성 순서 홀짝으로 나누면 같은 문서가
+   dev/test 양쪽에 들어갈 수 있었다. `split_key`(lookup: `document_id`, exhaustive: 정답 문서 중 최소 id,
+   none: 질의) + `split_for`(sha256 홀짝)로 문서 단위 안정 해시 분할로 바꿨다. **`chunk-v1.json`/
+   `knowledge_object-v1.json`은 여전히 옛 분할**이다(다시 쓰지 않음 - 과거 run과의 비교 보존).
 
 ## 알려진 한계
 
-- **chunk grain 점수는 문서 단위 히트에 구조적으로 눌린다.** 2026-09-14 스모크(lookup 7개)에서 5개는 채점 리스트가 비었다:
-  `metadata_filter`나 `document_lookup` anchor가 걸리면 retrieve 결과가 청크 id 없는 문서 히트 위주가 된다. 정답 문서를 1위로
-  찾고도 정답 청크가 리스트에 없어 0점인 항목도 있었다. 계획대로의 채점 규칙이며, 개선 여부는 S2에서 판단할 일이다.
+- **chunk grain 점수는 문서 단위 히트에 구조적으로 눌린다(grain id 없는 히트는 0점).** 2026-09-14
+  스모크(lookup 7개)에서 5개는 채점 리스트가 비었다: `metadata_filter`나 `document_lookup` anchor가
+  걸리면 retrieve 결과가 청크 id 없는 문서 히트 위주가 된다. 정답 문서를 1위로 찾고도 정답 청크가
+  리스트에 없어 0점인 항목도 있었다. 계획대로의 채점 규칙이며, 개선 여부는 S2에서 판단할 일이다.
 - **KO grain은 사실상 벡터 단독**이다. KO 어휘 검색 arm이 없어 lexical/keyword 히트는 전부 청크라 채점 리스트에서 빠진다.
 - KO grain은 KO 임베딩이 먼저 있어야 한다: `knowledge-forge embed --embedding-source knowledge_object`. 0건이면 `eval gen`이
   거부하고 `eval run`은 경고를 남긴다. 개발 DB는 2026-09-14에 5,107건을 백필했다(chunk 2,856 / knowledge_object 5,107, `openai/text-embedding-3-small`).
@@ -101,6 +152,12 @@ n=300이어도 +0.03 이하 차이는 CI가 0을 포함할 수 있다.
 - none 게이트의 term 문서빈도는 청크 본문 ILIKE 기준(`retrieve.py::_term_document_frequency_sql` 재사용)이라 제목에만 있는 단어는 못 본다.
 - e2e의 `delegate_task` 자식 에이전트는 grain 없이 검색하고, 그 검색 결과는 채점 리스트에 들어가지 않는다.
 - 합성 질의는 여전히 "메일 테스트" 같은 빈약한 원문에서 약한 질의를 만든다. 사람 스팟체크가 필요하다.
+- 2026-09-15 품질 조사([`search-quality-review-2026-09-15.md`](search-quality-review-2026-09-15.md) "3. 평가")가 짚은
+  라벨 풀링 편향, none의 `vector_min_score` 결합, overall 이종 지표 평균, 짝홀 dev/test 누수는 아래 "2026-09-15 평가 편향 수정"에서 고쳤다.
+- **스코프 밖(다음 세션)**: judge 보정(사람 라벨과의 일치율을 잰 적이 없음), exhaustive stale 판정이
+  너무 엄격함(술어 결과가 문서 하나만 달라져도 항목 전체가 stale), exhaustive 질의 자연스러움(검색
+  품질보다 `constraints` 규칙 적중을 재는 경향), grain id 없는 히트가 0점 처리되는 것 자체(위 첫 항목 -
+  채점 규칙을 바꾸는 건 이번 수정 범위가 아니다).
 
 ## 골든셋 v1과 기준 점수 (2026-09-14)
 
@@ -114,9 +171,11 @@ n=300이어도 +0.03 이하 차이는 CI가 0을 포함할 수 있다.
 - exhaustive가 목표 45에 못 미친 이유: 2~50문서 크기의 SQL 술어 후보가 26개뿐이었다. 코퍼스가 커지면 다시 생성한다.
 - 거부 사유 상위: none 항목의 term이 코퍼스에 있음(chunk 102 / KO 142), none 벡터 유사도 초과(40 / 68), 원시 id(KO 44), 앵커 없음(chunk 18).
 
-main 코드(`7160f0d`) 기준점, 전체 split, LLM 0회:
+main 코드(`7160f0d`) 기준점, 전체 split, LLM 0회. **`overall` 열은 그 시점의 정의(이종 지표 평균, 위
+"2026-09-15 평가 편향 수정" 3번 참고)로 낸 값이라 지금의 `summarize()`는 이 열을 더 이상 내지 않는다 -
+당시 기록 그대로 남겨 둔다.**
 
-| 골든셋 | overall | lookup ndcg@10 | hit@1 | recall@5 | exhaustive recall | none_correct | 질의당 p50 |
+| 골든셋 | overall(구 정의) | lookup ndcg@10 | hit@1 | recall@5 | exhaustive recall | none_correct | 질의당 p50 |
 |---|---|---|---|---|---|---|---|
 | chunk-v1 | 0.422 | 0.474 | 0.381 | 0.502 | 0.042 | 0.400 | 1.1초 |
 | knowledge_object-v1 | 0.388 | 0.446 | 0.314 | 0.463 | 0.013 | 0.333 | 1.4초 |

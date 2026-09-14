@@ -12,7 +12,7 @@ import pytest
 from knowledge_forge.agent.providers.base import ToolSpec
 from knowledge_forge.eval import run
 from knowledge_forge.eval.goldenset import Evidence, GoldenItem, GoldenSet, resolve_gold
-from knowledge_forge.eval.run import lookup_metrics, run_eval, score_item
+from knowledge_forge.eval.run import lookup_metrics, run_eval, score_item, summarize
 
 QUOTE = "운영 환경 배포는 9월 30일"
 
@@ -81,6 +81,26 @@ def test_exhaustive_lifts_grain_hits_to_documents_and_none_needs_empty_list():
     none = GoldenItem(id="n", query="q" * 12, kind="none", split="dev")
     assert score_item(none, [{"document_id": "d7"}], "chunk", set())[1]["none_correct"] == 1.0
     assert score_item(none, hits, "chunk", set())[1]["none_correct"] == 0.0
+
+
+def test_summarize_overall_does_not_average_heterogeneous_kind_metrics():
+    """`overall`이 lookup ndcg@10 / exhaustive recall / none none_correct를 같은 `score`로 섞어 평균
+    내면, kind 비율이 바뀔 때마다 검색 품질과 무관하게 값이 바뀐다(wiki/search-quality-review-
+    2026-09-15.md 3.3). overall은 n/stale/error만 담고, 지표는 kind별로만 본다."""
+    records = [
+        {"status": "ok", "kind": "lookup", "metrics": {"ndcg@10": 1.0, "score": 1.0, "hit@1": 1.0, "mrr": 1.0, "recall@5": 1.0}},
+        {"status": "ok", "kind": "exhaustive", "metrics": {"recall": 0.0, "precision": 0.0, "score": 0.0}},
+        {"status": "ok", "kind": "none", "metrics": {"none_correct": 0.0, "score": 0.0}},
+        {"status": "stale", "kind": "lookup"},
+        {"status": "error", "kind": "lookup"},
+    ]
+
+    summary = summarize(records)
+
+    assert summary["overall"] == {"n": 3, "stale": 1, "error": 1}
+    assert summary["lookup"]["score"] == 1.0
+    assert summary["exhaustive"]["score"] == 0.0
+    assert summary["none"]["score"] == 0.0
 
 
 def _golden(items, fingerprint) -> GoldenSet:

@@ -72,6 +72,14 @@ def test_merge_and_rerank_drops_the_per_hit_retrieval_source_tag():
     assert result[0]["retrieval_sources"] == ["file_search"]
 
 
+def test_merge_and_rerank_counts_a_hit_once_per_list():
+    # c1 twice in one list must not outvote c2, which two lists agree on
+    result = merge_and_rerank({"a": [{"chunk_id": "c1"}, {"chunk_id": "c2"}, {"chunk_id": "c1"}], "b": [{"chunk_id": "c2"}]})
+
+    assert [hit["chunk_id"] for hit in result] == ["c2", "c1"]
+    assert result[1]["rerank_score"] == 1.0 / (DEFAULT_RRF_K + 1)
+
+
 def test_merge_and_rerank_empty_input_returns_empty_list():
     assert merge_and_rerank({}) == []
 

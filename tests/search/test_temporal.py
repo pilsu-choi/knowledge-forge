@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from knowledge_forge.search.temporal import parse_temporal_expression
+from knowledge_forge.search.temporal import parse_temporal_expression, resolve_within_year
 
 # Friday 2026-09-04 06:30 UTC (= 15:30 KST, same calendar day - deliberately
 # NOT near the UTC/KST day boundary) so every test is deterministic and the
@@ -290,3 +290,29 @@ def test_today_boundary_is_computed_in_seoul_time_not_utc():
     assert result is not None
     assert result.start == datetime(2026, 9, 13, 15, 0, tzinfo=timezone.utc)
     assert result.end == datetime(2026, 9, 14, 15, 0, tzinfo=timezone.utc)
+
+
+# --- resolve_within_year: 한자어 달 이름의 동음이의 오탐 (리뷰 #7) --------------------
+
+
+def test_resolve_within_year_ignores_the_carryover_noun_ambiguous_with_february():
+    """"이월"은 "2월"(한자어 수사 "이"+"월")과 회계 용어 "이월"(carry-over)의 완전한
+    동음이의어라, 접두("지난"/"저번") 없이 문장 아무 데서나 찾으면 "예산 이월" 같은 문구를
+    2월로 오독한다(실측: `wiki/search-quality-review-2026-09-15.md` 1.질의해석 #3).
+    `resolve_within_year`는 이제 이 자리에서 숫자형("3월")만 받고 한자어 수사 단독형은
+    받지 않는다 - 접두가 붙은 형태는 여전히 `_LAST_BARE_MONTH_RE`(다른 테스트)가 받는다."""
+    result = resolve_within_year("예산 이월 내역", NOW, 2025)
+    assert result is None
+
+
+def test_resolve_within_year_still_resolves_a_numeric_bare_month():
+    result = resolve_within_year("3월 보고서", NOW, 2025)
+    assert result is not None
+    assert (result.start, result.end) == (_kst(2025, 3, 1), _kst(2025, 4, 1))
+    assert result.label == "2025년 3월"
+
+
+def test_resolve_within_year_still_resolves_a_bare_quarter():
+    result = resolve_within_year("3분기 매출", NOW, 2025)
+    assert result is not None
+    assert result.label == "2025년 Q3"

@@ -81,6 +81,10 @@ def score_item(item: GoldenItem, hits: list[dict[str, Any]], grain: str, gold: s
 
 
 def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """kind별 평균은 그 kind 안에서는 의미가 있지만(같은 지표), `overall`에 kind를 넘어 평균 낼 수
+    있는 지표는 사실상 `score`뿐이고 그건 lookup ndcg@10 / exhaustive recall / none_correct라는
+    서로 다른 척도를 섞는 것이다(kind 비율이 바뀌면 값도 바뀐다, wiki/search-quality-review-
+    2026-09-15.md 3.3). 그래서 `overall`은 n/stale/error만 담고, 지표 비교는 kind별 표로 본다."""
     ok = [r for r in records if r["status"] == "ok"]
     summary: dict[str, Any] = {}
     for kind in ("lookup", "exhaustive", "none"):
@@ -88,12 +92,10 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
         if group:
             keys = sorted({key for metrics in group for key in metrics})
             summary[kind] = {"n": len(group), **{k: mean(m[k] for m in group if k in m) for k in keys}}
-    shared = set.intersection(*(set(r["metrics"]) for r in ok)) if ok else set()
     summary["overall"] = {
         "n": len(ok),
         "stale": sum(r["status"] == "stale" for r in records),
         "error": sum(r["status"] == "error" for r in records),
-        **{k: mean(r["metrics"][k] for r in ok) for k in sorted(shared)},
     }
     return summary
 

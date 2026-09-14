@@ -202,6 +202,46 @@ async def test_document_lookup_single_substring_match_becomes_anchor_and_narrows
     assert "d2" in result.document_ids  # the ambiguous second title candidate still appears, below the anchor
 
 
+async def test_title_exact_match_keeps_the_anchor_when_the_second_candidate_is_at_the_token_tier_cap(monkeypatch):
+    # 1.0 - 0.8 은 부동소수점으로 0.2보다 작다 - 격차 비교에 여유가 없으면 anchor를 잃는다.
+    store = _FakeStore(title_hits={"report_v2.pdf": [_doc_hit("d1", 1.0), _doc_hit("d2", 0.8)]})
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("report_v2.pdf 에서 리스크 항목", store=store, now=_NOW)
+
+    lookup = next(s for s in result.steps if s.strategy == "document_lookup")
+    assert lookup.detail["anchor"] == "d1"
+    assert lookup.detail["anchor_reason"] == "single_substring_match"
+
+
+async def test_each_identifier_is_its_own_ranked_list(monkeypatch):
+    # 이어 붙이면 둘째 식별자의 1위(d2)가 첫째 식별자의 히트 전부 뒤로 밀린다.
+    store = _FakeStore(
+        chunk_hits={
+            "ERR_ALPHA_1": [_chunk_hit("d1", "a1"), _chunk_hit("d3", "a3"), _chunk_hit("d4", "a4")],
+            "ERR_BETA_2": [_chunk_hit("d2", "b2")],
+        }
+    )
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve('"ERR_ALPHA_1" "ERR_BETA_2"', store=store, now=_NOW, strategies_override=["lexical"])
+
+    assert result.document_ids[:2] == ["d1", "d2"]
+    assert {tuple(h["retrieval_sources"]) for h in result.hits} == {("lexical_search#ERR_ALPHA_1",), ("lexical_search#ERR_BETA_2",)}
+
+
+async def test_vector_failure_is_exposed_on_the_result(monkeypatch):
+    _patch_vector(monkeypatch, RuntimeError("embedder down"))
+
+    result = await retrieve("배포 롤백 절차", store=_FakeStore(chunk_hits={None: [_chunk_hit("d1", "c1")]}), now=_NOW)
+
+    assert result.document_ids == ["d1"]
+    assert "embedder down" in (result.vector_error or "")
+    assert result.to_dict()["vector_error"] == result.vector_error
+    ok = await retrieve("배포 롤백 절차", store=_FakeStore(), now=_NOW, strategies_override=["keyword_arm"])
+    assert ok.vector_error is None
+
+
 async def test_document_lookup_two_substring_matches_is_ambiguous_and_lists_both(monkeypatch):
     store = _FakeStore(title_hits={"AGENTS.md": [_doc_hit("d1", 1.0), _doc_hit("d2", 1.0)]})
     _patch_vector(monkeypatch, [])
@@ -1078,7 +1118,9 @@ async def test_multihop_joins_planner_evidence_and_drops_hits_without_document_i
     _patch_vector(monkeypatch, [])
     captured = {}
 
-    async def _fake_plan_and_search(query, provider, *, store=None, project_id=None, limit_per_subquery=5, target_kind=None):
+    async def _fake_plan_and_search(
+        query, provider, *, store=None, project_id=None, limit_per_subquery=5, target_kind=None, now=None
+    ):
         captured.update(query=query, provider=provider, limit=limit_per_subquery)
         return {
             "subqueries": [{"id": 1, "query": "q1", "depends_on": []}],
@@ -1162,7 +1204,7 @@ async def test_result_to_dict_is_json_serializable_and_carries_the_contract_fiel
 
     assert set(payload) == {
         "query", "constraints", "strategies", "steps", "hits", "document_ids", "scores",
-        "predicted_count", "documents_read", "elapsed_ms",
+        "predicted_count", "documents_read", "elapsed_ms", "vector_error",
     }
     assert payload["document_ids"] == ["d1"]
     assert len(payload["scores"]) == len(payload["document_ids"])

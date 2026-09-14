@@ -74,7 +74,6 @@ def merge_and_rerank(results_by_source: dict[str, list[dict[str, Any]]], k: int 
     for source, hits in results_by_source.items():
         for rank, hit in enumerate(hits, start=1):
             key = _identity_key(source, hit)
-            scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank)
             if key not in merged:
                 merged[key] = {field: value for field, value in hit.items() if field != "retrieval_source"}
                 sources_seen[key] = []
@@ -82,8 +81,10 @@ def merge_and_rerank(results_by_source: dict[str, list[dict[str, Any]]], k: int 
                 for field, value in hit.items():
                     if field != "retrieval_source":
                         merged[key].setdefault(field, value)
+            # 한 리스트는 한 히트에 한 표 - 같은 히트가 리스트 안에 두 번 있으면 첫(최고) 순위만 센다.
             if source not in sources_seen[key]:
                 sources_seen[key].append(source)
+                scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank)
 
     fused = []
     for key, hit in merged.items():

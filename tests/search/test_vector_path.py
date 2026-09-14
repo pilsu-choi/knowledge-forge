@@ -391,7 +391,8 @@ async def test_vector_hit_survives_rrf_next_to_a_lexical_only_hit(store):
 
 
 def store_hits(result, source: str) -> list[dict]:
-    return [h for h in result.hits if source in h.get("retrieval_sources", [])]
+    """소스 계열(`#` 앞 이름)로 거른다 - 질의·term별 리스트는 `lexical_search#<질의>`처럼 이름이 갈린다."""
+    return [h for h in result.hits if any(s.split("#")[0] == source for s in h.get("retrieval_sources", []))]
 
 
 async def test_keyword_arm_runs_alongside_vector_once_embeddings_exist(store):
