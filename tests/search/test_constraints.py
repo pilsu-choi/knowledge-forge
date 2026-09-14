@@ -990,3 +990,15 @@ def test_a_symbol_right_before_an_identifier_stays_attached():
     assert extract_constraints_rules("ERR_404에서 재시도", now=NOW).semantic_query == "ERR_404 재시도"
     c = extract_constraints_rules("git.sparklingsoda.ai:8443/prepay-docs 접속 오류", now=NOW)
     assert c.identifiers == ["prepay-docs"] and "8443/prepay-docs" in c.semantic_query
+
+
+def test_year_word_with_month_and_day_narrows_to_that_day():
+    for query, span, label in (
+        ("올해 5월 15일 회의록", (_kst(2026, 5, 15), _kst(2026, 5, 16)), "2026년 5월 15일"),
+        ("작년 3월 회의록", (_kst(2025, 3, 1), _kst(2025, 4, 1)), "2025년 3월"),
+        ("올해 5월", (_kst(2026, 5, 1), _kst(2026, 6, 1)), "2026년 5월"),
+        ("올해 계획서", (_kst(2026, 1, 1), _kst(2027, 1, 1)), "올해"),
+    ):
+        c = extract_constraints_rules(query, now=_REVIEW_NOW)
+        assert c.time_range is not None, query
+        assert ((c.time_range.start, c.time_range.end), c.time_range.label) == (span, label), query
