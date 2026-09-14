@@ -990,6 +990,9 @@ def test_a_symbol_right_before_an_identifier_stays_attached():
     assert extract_constraints_rules("ERR_404에서 재시도", now=NOW).semantic_query == "ERR_404 재시도"
     c = extract_constraints_rules("git.sparklingsoda.ai:8443/prepay-docs 접속 오류", now=NOW)
     assert c.identifiers == ["prepay-docs"] and "8443/prepay-docs" in c.semantic_query
+    # 긴 연결 토큰 안의 식별자 앞 "-"는 term에 붙어 남지 않는다
+    c = extract_constraints_rules("#proj_2026-038-f_nh농협은행_당발송금usd-중계-ai-agent의 문서", now=NOW)
+    assert not [t for t in keyword_terms(c) if t[0] in "-_" or t[-1] in "-_"]
 
 
 def test_year_word_with_month_and_day_narrows_to_that_day():

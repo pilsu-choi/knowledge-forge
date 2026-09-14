@@ -1080,7 +1080,8 @@ def keyword_terms(constraints: QueryConstraints, *, max_terms: int = 10) -> list
     seen: set[str] = set()
     for token in raw:
         # `_clean_semantic_query`와 같은 조사 규칙 - "논의"의 "의"를 떼면 1글자만 남는다.
-        term = _strip_word_particle(token.strip()).strip(".")
+        # 가장자리 연결 기호도 뗀다 - "…중계-ai-agent"처럼 긴 토큰 안의 식별자 앞 "-"가 붙어 남는다.
+        term = _strip_word_particle(token.strip()).strip("._-")
         key = term.casefold()
         # 1글자 term은 거의 모든 청크에 걸려 랭킹 신호가 없다.
         if len(term) < 2 or key in _TERM_NOISE or key in seen or _PREDICATE_END_RE.search(term):
