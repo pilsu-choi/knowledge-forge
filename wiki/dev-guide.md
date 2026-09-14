@@ -55,9 +55,10 @@ export할 필요 없이 `.env`에 값을 채워 넣으면 된다. 템플릿은 [
 | `KF_MAX_CONCURRENT_LLM_REQUESTS` | `5` | Extractor/VisionExtractor 인스턴스마다 동시에 진행 가능한 LLM 요청 수 상한(`asyncio.Semaphore`). 한 문서의 여러 청크·표·이미지는 이 한도 안에서 동시 처리된다 |
 | `KF_DATABASE_URL` | (없음, 저장 비활성) | Source/Document/Chunk/KnowledgeObject를 저장할 PostgreSQL DSN. [`storage.md`](storage.md) 참고 |
 | `KF_DATA_DIR` | `./data` | 원본 바이트를 저장하는 디스크 blob 스토어 루트 |
-| `KF_LLM_PROVIDER` | `anthropic` | `anthropic` 또는 `openrouter` — Knowledge Extraction/Vision 추출 백엔드 선택. [`llm-providers.md`](llm-providers.md) 참고 |
+| `KF_LLM_PROVIDER` | `anthropic` | `anthropic`, `openrouter`, `claude_agent_sdk` 중 하나 — Knowledge Extraction/Vision 추출 백엔드 선택. [`llm-providers.md`](llm-providers.md) 참고 |
 | `KF_OPENROUTER_EXTRACTION_MODEL` | `anthropic/claude-haiku-4.5` | `KF_LLM_PROVIDER=openrouter`일 때 Knowledge Extraction 모델 슬러그 |
 | `KF_OPENROUTER_VISION_MODEL` | `anthropic/claude-haiku-4.5` | `KF_LLM_PROVIDER=openrouter`일 때 Vision 추출 모델 슬러그 |
+| `KF_CLAUDE_AGENT_SDK_VISION_MODEL` | `claude-haiku-4-5-20251001` | `KF_LLM_PROVIDER=claude_agent_sdk`일 때 Vision 추출 모델. 이미지 입력은 SDK 스트리밍 입력으로 보내며 실호출 검증 전이다([`vision-extraction.md`](vision-extraction.md)) |
 | `KF_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API 엔드포인트 |
 | `OPENROUTER_API_KEY` | (없음) | OpenRouter API 키(`KF_` 접두사 아님, `ANTHROPIC_API_KEY`처럼 `Settings`에 중복 저장하지 않음) |
 

@@ -180,9 +180,10 @@ uv sync --extra xlsx --extra pptx --extra hwpx --extra slack --extra google --ex
 | `KF_MAX_CONCURRENT_LLM_REQUESTS` | `5` | Extractor/VisionExtractor 인스턴스당 동시 LLM 요청 수 상한 |
 | `KF_DATABASE_URL` | (없음) | PostgreSQL DSN — 없으면 저장 없이 출력만 생성 |
 | `KF_DATA_DIR` | `./data` | 원본 바이트를 저장하는 디스크 blob 스토어 루트 |
-| `KF_LLM_PROVIDER` | `anthropic` | `anthropic` \| `openrouter` — Extraction/Vision 백엔드 선택 |
+| `KF_LLM_PROVIDER` | `anthropic` | `anthropic` \| `openrouter` \| `claude_agent_sdk` — Extraction/Vision 백엔드 선택(`claude_agent_sdk`는 API 키 없이 로컬 `claude` 로그인 사용) |
 | `KF_OPENROUTER_EXTRACTION_MODEL` | `anthropic/claude-haiku-4.5` | OpenRouter 사용 시 Extraction 모델 슬러그 |
 | `KF_OPENROUTER_VISION_MODEL` | `anthropic/claude-haiku-4.5` | OpenRouter 사용 시 Vision 모델 슬러그 |
+| `KF_CLAUDE_AGENT_SDK_VISION_MODEL` | `claude-haiku-4-5-20251001` | `claude_agent_sdk` 사용 시 Vision 모델 |
 | `KF_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API 엔드포인트 |
 | `OPENROUTER_API_KEY` | (없음) | OpenRouter API 키 |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` | (없음) | Anthropic 자격 증명 (SDK가 자동 탐색) |
@@ -243,7 +244,7 @@ uv run knowledge-forge extract <path> [--max-tokens 4000] [--model claude-opus-5
 
 - `<path>`: 단일 파일 또는 디렉토리(재귀 순회).
 - `--output` 생략 시 stdout에 JSONL(한 줄에 KnowledgeObject 하나) 출력, `--pretty`는 들여쓴 JSON 배열.
-- `--store`(기본값): `KF_DATABASE_URL`이 있으면 Postgres+디스크에 저장.
+- `--store`(기본값): `KF_DATABASE_URL`이 있으면 Postgres+디스크에 저장. 저장된 content_hash와 같고 문서가 이미 있는 파일은 파싱·추출·임베딩을 건너뛴다(강제로 다시 처리하려면 `reparse`).
 - `--okf-dir`: 파일 기반 Knowledge Base(`manifest.yaml` + `resources/`/`objects/`/`relations/`)도 함께 기록.
 
 ### 주기 실행
