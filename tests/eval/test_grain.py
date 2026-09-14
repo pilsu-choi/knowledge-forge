@@ -57,7 +57,7 @@ async def test_multihop_planner_receives_grain(monkeypatch, fakes):
     _capture_vector(monkeypatch)
     seen: dict = {}
 
-    async def _fake_plan(query, provider, *, store=None, project_id=None, limit_per_subquery=10, target_kind=None):
+    async def _fake_plan(query, provider, *, store=None, project_id=None, limit_per_subquery=10, target_kind=None, now=None):
         seen["target_kind"] = target_kind
         return {"subqueries": [], "evidence": []}
 
