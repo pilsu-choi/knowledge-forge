@@ -64,15 +64,13 @@ class XlsxParser(Parser):
     async def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
         try:
             elements: list[DocumentElement] = []
-            workbook = openpyxl.load_workbook(io.BytesIO(item.content), data_only=True)
-            # A second load (data_only=False) is the only way openpyxl
-            # exposes a cell's original formula string - `workbook` above
-            # gives the cached computed value instead, which is what
-            # `rows` needs for rendering/search.
-            formula_workbook = openpyxl.load_workbook(io.BytesIO(item.content), data_only=False)
+            # openpyxl is synchronous CPU work - off the event loop (pipeline.py parses documents concurrently).
+            workbook = await asyncio.to_thread(openpyxl.load_workbook, io.BytesIO(item.content), data_only=True)
+            formula_grids = await asyncio.to_thread(_build_formula_grids, item.content, workbook)
             for sheet in workbook.worksheets:
-                formula_sheet = formula_workbook[sheet.title]
-                elements.extend(self._parse_sheet(sheet, formula_sheet, item.uri, len(elements)))
+                elements.extend(
+                    await asyncio.to_thread(self._parse_sheet, sheet, formula_grids[sheet.title], item.uri, len(elements))
+                )
                 elements.extend(await self._convert_images(sheet, item.uri, len(elements)))
         except Exception as exc:  # noqa: BLE001 - surfaced as a typed parsing error
             raise ParsingError(f"Failed to parse xlsx '{item.uri}': {exc}") from exc
@@ -84,10 +82,9 @@ class XlsxParser(Parser):
         )
 
     def _parse_sheet(
-        self, sheet: Worksheet, formula_sheet: Worksheet, uri: str, start_index: int
+        self, sheet: Worksheet, formula_values: list[list[object]], uri: str, start_index: int
     ) -> list[DocumentElement]:
         values, bold = _build_grid(sheet)
-        formula_values = _build_formula_grid(formula_sheet)
 
         elements: list[DocumentElement] = []
         caption_used = False
@@ -158,14 +155,37 @@ def _build_grid(sheet: Worksheet) -> tuple[list[list[str]], list[list[bool]]]:
     return values, bold
 
 
-def _build_formula_grid(sheet: Worksheet) -> list[list[object]]:
-    """Raw cell values from a data_only=False load: a formula cell's value
-    is its formula string (e.g. "=SUM(B5:B6)"); a merge's non-top-left
-    cells and cells with no formula come through as None/a literal.
+def _build_formula_grids(content: bytes, workbook: openpyxl.Workbook) -> dict[str, list[list[object]]]:
+    """Per sheet title, the raw cell values a data_only=False load gives: a
+    formula cell's value is its formula string (e.g. "=SUM(B5:B6)"), other
+    cells their literal. `workbook` (data_only=True) only keeps the cached
+    computed value, which is what `rows` needs for rendering/search - and
+    openpyxl has no single load that keeps both.
+
+    Read with a read-only (streaming) load instead of a second full one: it
+    builds no cell objects or styles, measured 4.48s -> 1.10s over the dev
+    DB's 23 xlsx blobs with identical Documents (wiki/reingest-replay.md).
+    A full load blanks every merged cell except the top-left one; a
+    streaming load doesn't, so that is replayed from `workbook`'s merges.
+    Grids are sized to `workbook`'s own sheet dimensions.
     """
-    return [
-        [sheet.cell(r, c).value for c in range(1, sheet.max_column + 1)] for r in range(1, sheet.max_row + 1)
-    ]
+    formula_workbook = openpyxl.load_workbook(io.BytesIO(content), data_only=False, read_only=True)
+    try:
+        grids: dict[str, list[list[object]]] = {}
+        for sheet in workbook.worksheets:
+            rows = formula_workbook[sheet.title].iter_rows(
+                max_row=sheet.max_row, max_col=sheet.max_column, values_only=True
+            )
+            grid = [list(row) for row in rows]
+            for merged_range in sheet.merged_cells.ranges:
+                for r in range(merged_range.min_row, merged_range.max_row + 1):
+                    for c in range(merged_range.min_col, merged_range.max_col + 1):
+                        if (r, c) != (merged_range.min_row, merged_range.min_col):
+                            grid[r - 1][c - 1] = None
+            grids[sheet.title] = grid
+        return grids
+    finally:
+        formula_workbook.close()
 
 
 def _split_blocks(values: list[list[str]]) -> list[list[int]]:
