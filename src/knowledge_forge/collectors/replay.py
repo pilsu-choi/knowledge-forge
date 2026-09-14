@@ -62,6 +62,19 @@ class RawBlobReplayCollector(Collector):
     # `Collector.source_type` as class state - every use is a read off an
     # instance.
     source_type: SourceType  # type: ignore[misc]
+    # Every row this collector replays came from `sources`, which only ever
+    # holds already-reconstructed items for slack/gmail (run_pipeline runs
+    # the ContextReconstructor *before* `_make_source`/`record_source`, so a
+    # raw per-message/per-email item never becomes a `sources` row on its
+    # own - see context/slack.py and context/gmail.py). Re-running that same
+    # reconstructor over a replayed episode/thread is not idempotent: Slack's
+    # needs a per-message `ts` the merged metadata doesn't carry (KeyError),
+    # and Gmail's re-wraps the already-merged text with a new "From: ..."
+    # header, changing content_hash - and therefore document_id - out from
+    # under an unchanged source. pipeline.py checks this flag to skip
+    # reconstruction entirely for replay, so a replayed document's uri and
+    # content_hash (and hence document_id) match the original run's exactly.
+    already_reconstructed = True
 
     def __init__(self, rows: list[ReplayRow], source_type: SourceType):
         self.source_type = source_type

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from knowledge_forge.chunking.base import Chunker
 from knowledge_forge.collectors.base import Collector, RawItem
 from knowledge_forge.config import settings
-from knowledge_forge.context.base import ContextReconstructor
+from knowledge_forge.context.base import ContextReconstructor, NoopReconstructor
 from knowledge_forge.context.registry import default_reconstructor_for
 from knowledge_forge.dedup import merge_duplicates
 from knowledge_forge.document_links import apply_version_metadata
@@ -142,7 +142,10 @@ async def run_pipeline(
     item stream into semantically complete units (see knowledge_forge.context)
     - a Slack message or Gmail email in isolation is often incomplete.
     Defaults to `default_reconstructor_for(collector.source_type)`, which is
-    a no-op for File/Notion/Google Drive sources. A reconstructor can also
+    a no-op for File/Notion/Google Drive sources - or to a `NoopReconstructor`
+    outright when `collector.already_reconstructed` is set (collectors/
+    replay.py), since a replayed item is already the reconstructor's output.
+    A reconstructor can also
     annotate a RawItem's `metadata["links"]` with edges to earlier-yielded
     items in the same run (see context/slack.py) - `_resolve_links()` turns
     those into `Link` records once both endpoints' Source/Document exist,
@@ -188,7 +191,15 @@ async def run_pipeline(
     replay's whole purpose is re-parsing unchanged bytes with newer parser
     code.
     """
-    reconstructor = context_reconstructor or default_reconstructor_for(collector.source_type)
+    # collector.already_reconstructed (collectors/base.py) means every item
+    # this collector yields is already the semantic unit a reconstructor
+    # would build (collectors/replay.py: replayed episodes/threads) -
+    # running e.g. SlackConversationReconstructor over one again is not
+    # idempotent (see that flag's docstring), so it is skipped entirely
+    # rather than defaulted to.
+    reconstructor = context_reconstructor or (
+        NoopReconstructor() if collector.already_reconstructed else default_reconstructor_for(collector.source_type)
+    )
     items = collector.backfill_sync(since, until) if since is not None else collector.sync(cursor)
     embedding_source = embedding_source or settings.embedding_source
     if embedding_source not in ("knowledge_object", "chunk"):
