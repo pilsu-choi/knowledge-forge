@@ -1,4 +1,4 @@
-"""`retrieve(grain=...)` narrows every vector lookup to one embedding grain; None keeps today's behavior."""
+"""`retrieve(grain=...)` narrows every vector lookup to one embedding grain; None follows KF_EMBEDDING_SOURCE (never mixes grains)."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from knowledge_forge.config import settings
 from knowledge_forge.search import retrieve as retrieve_module
 from knowledge_forge.search.retrieve import retrieve
 
@@ -29,7 +30,16 @@ async def test_vector_arm_passes_grain_as_target_kind(monkeypatch, fakes, grain)
 
     await retrieve("배포 일정 조율 과정", store=fakes.FakeStore(), now=_NOW, grain=grain, strategies_override=["vector"])
 
-    assert kinds == [grain]
+    assert kinds == [grain or settings.embedding_source]
+
+
+async def test_grain_none_follows_the_embedding_source_setting(monkeypatch, fakes):
+    kinds = _capture_vector(monkeypatch)
+    monkeypatch.setattr(settings, "embedding_source", "chunk")
+
+    await retrieve("배포 일정 조율 과정", store=fakes.FakeStore(), now=_NOW, strategies_override=["vector"])
+
+    assert kinds == ["chunk"]
 
 
 async def test_grain_none_matches_omitting_the_argument(monkeypatch, fakes):

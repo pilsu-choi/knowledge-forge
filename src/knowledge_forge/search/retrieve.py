@@ -1418,13 +1418,16 @@ async def retrieve(
       `["vector"]`가 진짜 순수 벡터 baseline이다. v0 ndcg@10 실측(76질의, --no-llm):
       기본 라우팅 0.893 / `vector,keyword_arm` 0.736 / `keyword_arm` 단독 0.663 /
       `vector` 단독 0.477 - 어휘 arm 없는 벡터는 하이브리드의 절반 조금 넘는 수준이다.
-    - `grain`: None이면 벡터 조회가 두 grain을 한 랭킹에서 경쟁시킨다(현행). `"chunk"`/
+    - `grain`: None이면 `KF_EMBEDDING_SOURCE`의 grain 하나만 본다(두 grain이 같이 적재돼 있어도 섞지 않음). `"chunk"`/
       `"knowledge_object"`면 모든 벡터 조회(vector arm, multihop planner)를 그 grain의 임베딩으로만
       좁힌다 - `KF_EMBEDDING_SOURCE`와 무관하게 이 값이 이긴다. grain 골든셋 평가의 전제다
       (wiki/evaluation.md "grain").
     """
     if grain not in (None, "chunk", "knowledge_object"):
         raise ValueError(f"unknown grain: {grain!r}")
+    # 두 grain 임베딩이 같이 적재된 DB에서 섞어 보면 같은 문서가 청크와 KO로 랭킹에 두 번 오른다
+    # (wiki/embeddings.md "한 실행에 한 grain"). 그래서 지정이 없으면 적재 설정을 따른다.
+    grain = grain or settings.embedding_source
     started = time.perf_counter()
     now = now or datetime.now(timezone.utc)
     if provider is not None and use_llm_constraints:

@@ -17,7 +17,7 @@ provenance가 반복해서 문제였다. 이번에는 **실패 유형마다 자�
 run에는 grain 인자가 없고 골든셋 파일의 값을 따른다.
 
 - 검색: `retrieve(..., grain=...)`가 모든 벡터 조회(vector arm, multihop planner)를 그 grain 임베딩으로 좁힌다.
-  `KF_EMBEDDING_SOURCE`와 무관하게 grain이 이긴다. `grain=None`(기본)은 기존 동작 그대로.
+  `KF_EMBEDDING_SOURCE`와 무관하게 grain이 이긴다. `grain=None`(기본)은 `KF_EMBEDDING_SOURCE`의 grain 하나만 본다. 2026-09-14 KO 임베딩을 백필해 두 grain이 같이 적재되자, 섞어 보면 같은 문서가 청크와 KO로 두 번 오르므로 기본값을 설정 grain으로 고정했다.
 - 채점 리스트: 히트 중 그 grain의 id(`chunk_id` / `knowledge_object_id`)를 가진 것만 순서대로(중복 제거).
   제목·필터 히트는 순위 결정에는 참여하지만 grain id가 없어 채점 리스트에서 빠진다.
 - 정답 라벨
@@ -96,7 +96,7 @@ n=300이어도 +0.03 이하 차이는 CI가 0을 포함할 수 있다.
   찾고도 정답 청크가 리스트에 없어 0점인 항목도 있었다. 계획대로의 채점 규칙이며, 개선 여부는 S2에서 판단할 일이다.
 - **KO grain은 사실상 벡터 단독**이다. KO 어휘 검색 arm이 없어 lexical/keyword 히트는 전부 청크라 채점 리스트에서 빠진다.
 - KO grain은 KO 임베딩이 먼저 있어야 한다: `knowledge-forge embed --embedding-source knowledge_object`. 0건이면 `eval gen`이
-  거부하고 `eval run`은 경고를 남긴다(2026-09-14 기준 KO 임베딩 0건).
+  거부하고 `eval run`은 경고를 남긴다. 개발 DB는 2026-09-14에 5,107건을 백필했다(chunk 2,856 / knowledge_object 5,107, `openai/text-embedding-3-small`).
 - `OPENROUTER_API_KEY`는 셸에 export해야 한다. settings는 `.env`의 `KF_` 접두사 키만 읽는다.
 - none 게이트의 term 문서빈도는 청크 본문 ILIKE 기준(`retrieve.py::_term_document_frequency_sql` 재사용)이라 제목에만 있는 단어는 못 본다.
 - e2e의 `delegate_task` 자식 에이전트는 grain 없이 검색하고, 그 검색 결과는 채점 리스트에 들어가지 않는다.
