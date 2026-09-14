@@ -64,7 +64,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         self._semaphore = asyncio.Semaphore(max_concurrency or settings.max_concurrent_llm_requests)
         self._expected_dimensions = expected_dimensions or settings.embedding_dimensions
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         vectors = await self._call_with_retry(texts)
         ensure_one_vector_per_text(vectors, texts, self._model)
         ensure_expected_dimensions(vectors, self._model, self._expected_dimensions)

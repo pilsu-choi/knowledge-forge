@@ -100,10 +100,13 @@ async def run_pipeline(
     chunk groups are merged into one outcome before yielding (see the dedup/
     supersedes paragraph below).
 
-    Items a Parser doesn't support (UnsupportedFormatError/NotImplementedError)
-    or that fail extraction (KnowledgeExtractionError) are logged and skipped
-    rather than aborting the whole run - one bad file shouldn't block the rest
-    of a batch.
+    Items a Parser doesn't support (UnsupportedFormatError/NotImplementedError),
+    that fail extraction (KnowledgeExtractionError), or whose embedding call
+    fails (e.g. a provider rejecting an oversized request) are logged and
+    skipped rather than aborting the whole run - one bad file shouldn't block
+    the rest of a batch. An embedding failure only skips that document's
+    embedding step; its Document/Chunks (already written by the time
+    embedding runs) are kept.
 
     When `store` is given, each stage's artifact is persisted as it is
     produced (raw bytes + Source to disk/Postgres, then Document, then
@@ -262,7 +265,12 @@ async def run_pipeline(
             await store.record_chunks(chunks)
             if embed_chunks:
                 assert embedder is not None
-                await store.record_chunk_embeddings(chunks, source.project_id, embedder, settings.embedding_model)
+                try:
+                    await store.record_chunk_embeddings(
+                        chunks, source.project_id, embedder, settings.embedding_model
+                    )
+                except Exception as exc:  # noqa: BLE001 - one document's embedding failure must not abort the run
+                    logger.error("failed to embed chunks for %s, skipping embedding: %s", document.document_id, exc)
 
         if extractor is None:
             yield ExtractionOutcome(objects=[], relations=[])
@@ -313,7 +321,14 @@ async def run_pipeline(
                 await store.record_relations(merged_outcome.relations)
                 if embed_objects:
                     assert embedder is not None
-                    await store.record_embeddings(merged_outcome.objects, embedder, settings.embedding_model)
+                    try:
+                        await store.record_embeddings(merged_outcome.objects, embedder, settings.embedding_model)
+                    except Exception as exc:  # noqa: BLE001 - one document's embedding failure must not abort the run
+                        logger.error(
+                            "failed to embed knowledge objects for %s, skipping embedding: %s",
+                            document.document_id,
+                            exc,
+                        )
             if okf_writer is not None:
                 okf_writer.write_objects(merged_outcome.objects)
                 okf_writer.write_relations(merged_outcome.relations, source.project_id)

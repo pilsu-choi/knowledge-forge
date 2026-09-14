@@ -1,8 +1,71 @@
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Literal
 
+from knowledge_forge.chunking.tokenizer import count_tokens
+
+logger = logging.getLogger(__name__)
+
 EmbeddingTargetKind = Literal["knowledge_object", "chunk"]
+
+# Conservative request-shape limits shared by every provider - reparse hit
+# OpenRouter's "maximum request size is 300000 tokens per request" 400 by
+# sending an entire document's chunks (a large PDF: thousands of them) in
+# one `embed()` call (storage/store.py's `record_chunk_embeddings`/
+# `record_embeddings` never split). 250k leaves headroom for cl100k_base
+# (this repo's tokenizer, see chunking/tokenizer.py) undercounting a
+# provider's own tokenizer, which is only ever approximate across vendors.
+# 8,191 matches OpenAI's per-input limit for the text-embedding-3-* family;
+# 2,048 matches its per-request item cap - both apply beyond OpenAI too
+# since OpenRouter's own limits are unpublished and these are strictly the
+# tighter of the two known ceilings.
+_MAX_TOKENS_PER_ITEM = 8191
+_MAX_TOKENS_PER_REQUEST = 250_000
+_MAX_ITEMS_PER_REQUEST = 2048
+
+
+def _batch_by_budget(
+    texts: list[str],
+    max_tokens_per_item: int = _MAX_TOKENS_PER_ITEM,
+    max_tokens_per_request: int = _MAX_TOKENS_PER_REQUEST,
+    max_items_per_request: int = _MAX_ITEMS_PER_REQUEST,
+) -> list[list[str]]:
+    """Groups `texts` into request-sized batches so `EmbeddingProvider.embed()`
+    never asks a provider for more than it accepts in one call. Greedy and
+    order-preserving (texts stay in their original order, just split into
+    consecutive runs) - callers zip the returned vectors back against their
+    inputs positionally, so reordering would silently mis-attach an
+    embedding to the wrong Chunk/KnowledgeObject.
+
+    A single text whose own token count already exceeds `max_tokens_per_item`
+    is not split or truncated (nothing here knows how to shorten someone
+    else's text without changing what gets embedded) - it is still sent,
+    alone, as its own one-item batch, so the *provider* decides whether that
+    one input is too large rather than being silently dropped here.
+    """
+    batches: list[list[str]] = []
+    current: list[str] = []
+    current_tokens = 0
+    for text in texts:
+        tokens = count_tokens(text)
+        if tokens > max_tokens_per_item:
+            logger.warning(
+                "one embedding input is %d tokens, over the %d-token per-input budget - the provider may reject it",
+                tokens,
+                max_tokens_per_item,
+            )
+        would_overflow = current and (
+            current_tokens + tokens > max_tokens_per_request or len(current) >= max_items_per_request
+        )
+        if would_overflow:
+            batches.append(current)
+            current, current_tokens = [], 0
+        current.append(text)
+        current_tokens += tokens
+    if current:
+        batches.append(current)
+    return batches
 
 
 @dataclass
@@ -66,10 +129,31 @@ class EmbeddingProvider(ABC):
     chunks) is both cheaper and faster than one call per object, mirroring
     why Extractor.extract() takes a bundle of Chunks instead of a single
     Chunk.
+
+    `embed()` itself is concrete and final here on purpose: it splits
+    `texts` into `_batch_by_budget()`-sized requests and hands each to
+    `_embed_batch()` (what a subclass implements), so no caller - and no
+    subclass - has to re-derive a safe request size. Before this split
+    existed, `storage/store.py`'s `record_chunk_embeddings`/
+    `record_embeddings` sent an entire document's chunks in one call, which
+    is what produced OpenRouter's "maximum request size is 300000 tokens per
+    request" 400 on a large `reparse` (wiki/reingest-replay.md).
     """
 
-    @abstractmethod
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Returns one embedding vector per input text, in the same order as
-        `texts` (same length too - every input gets a vector back)."""
+        `texts` (same length too - every input gets a vector back), no
+        matter how many requests it took to fetch them."""
+        if not texts:
+            return []
+        vectors: list[list[float]] = []
+        for batch in _batch_by_budget(texts):
+            vectors.extend(await self._embed_batch(batch))
+        return vectors
+
+    @abstractmethod
+    async def _embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """One provider request's worth of `texts` - already within this
+        module's request-size budget. Same contract as `embed()` (one vector
+        per text, same order) for exactly this one batch."""
         ...
