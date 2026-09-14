@@ -640,6 +640,8 @@ def _particle_fits(stem: str, particle: str) -> bool:
       있는 "문" 뒤라 조사가 아니고(조사라면 "이"), "효과"의 "과"는 받침 없는 "효" 뒤라 아니다.
     - 한글 1음절 어간은 조사 앞말로 보지 않는다("결과"의 "결").
     - "회의"의 "의": 받침 규칙이 없는 조사라 회의록 코퍼스의 핵심어("주간회의")만 예외로 둔다.
+    - "하"/"되" 뒤 "는"은 관형형 어미다("해당하는", "진행되는") - 그 끝의 명사("부하는")보다
+      동사 활용이 압도적으로 흔하다.
     - 라틴/숫자 뒤("README를")는 발음을 몰라 허용한다."""
     word = stem.split()[-1] if stem.strip() else ""
     last = word[-1:]
@@ -647,7 +649,7 @@ def _particle_fits(stem: str, particle: str) -> bool:
         return False
     if not "가" <= last <= "힣":
         return True
-    if len(word) == 1 and len(particle) == 1:
+    if (len(word) == 1 and len(particle) == 1) or (particle == "는" and last in "하되"):
         return False
     has_final = (ord(last) - 0xAC00) % 28
     if particle in _AFTER_FINAL:

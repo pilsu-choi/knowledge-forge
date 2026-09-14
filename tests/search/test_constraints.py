@@ -964,3 +964,20 @@ def test_keyword_terms_drop_question_endings_and_function_words():
     assert keyword_terms(extract_constraints_rules("issues with Redis cluster", now=NOW)) == ["issues", "Redis", "cluster"]
     assert keyword_terms(extract_constraints_rules("배포가 몇 개월 걸렸나", now=NOW)) == ["배포", "개월"]
     assert keyword_terms(extract_constraints_rules("액세스 요청한 사람이 누구인가", now=NOW)) == ["액세스", "요청한", "사람"]
+
+
+# --- 파싱 잔여 결함 (wiki/search-quality-review-2026-09-15.md "잔여 결함 수정") -----------------
+
+
+def test_adnominal_neun_after_ha_or_doe_is_not_a_topic_particle():
+    for query, word in (
+        ("지문 등록이 진행되는 날짜", "진행되는"),
+        ("AEGIS에 자동으로 적재되는 메일 주소", "적재되는"),
+        ("2번 Gate에 해당하는 모듈", "해당하는"),
+    ):
+        assert word in extract_constraints_rules(query, now=NOW).semantic_query.split(), query
+    # 받침 규칙으로 이미 막히는 의문 어미와, 실제 조사는 그대로
+    c = extract_constraints_rules("메일 테스트란 무슨 테스트인가 담당자는 누구인가", now=NOW)
+    assert c.semantic_query.split()[-3:] == ["테스트인가", "담당자", "누구인가"]
+    c = extract_constraints_rules("김철수가 보낸 매출과 전문가 정확도 보고서는", now=NOW)
+    assert c.authors == ["김철수"] and c.semantic_query == "매출 전문가 정확도 보고서"
