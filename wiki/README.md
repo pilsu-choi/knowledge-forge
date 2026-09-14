@@ -15,7 +15,7 @@
 | 문서 | 내용 |
 |---|---|
 | [`saas-connectors.md`](saas-connectors.md) | Slack/Gmail/GoogleDrive/Notion 커넥터 — 인증 클라이언트 주입 설계, 초기/증분 동기화, 삭제 감지 방식 |
-| [`reingest-replay.md`](reingest-replay.md) | `knowledge-forge reparse` — 이미 디스크에 있는 원본 바이트를 재수집 없이 다시 파싱하기. GDrive 239건 미적재 사건의 원인·복구 결과·남은 후속 과제 |
+| [`reingest-replay.md`](reingest-replay.md) | `knowledge-forge reparse` — 이미 디스크에 있는 원본 바이트를 재수집 없이 다시 파싱하기. GDrive 239건 미적재 사건, 재생 소스의 재구성 생략(슬랙 KeyError·Gmail 문서 중복 수정), 임베딩 요청 토큰 예산 분할, 재적재 시 문서 청크 집합 교체, 변경 없는 소스 건너뛰기, 처리량 실측(2026-09-14) |
 | [`context-reconstruction.md`](context-reconstruction.md) | Slack 대화 세그멘테이션·Gmail 스레드 병합 — RawItem 하나가 항상 하나의 의미 단위는 아니라는 문제와 해법 |
 
 ## 파싱 · 청킹 · 추출
@@ -24,7 +24,7 @@
 |---|---|
 | [`parsers.md`](parsers.md) | 포맷별(PDF/DOCX/XLSX/PPTX/HWPX/HTML/Image/Markdown/TXT) 지원 현황, 라이브러리, 라이선스 근거 |
 | [`vision-extraction.md`](vision-extraction.md) | 표/이미지/차트를 VLM으로 처리하는 하이브리드 파싱 설계 — 왜 "항상 VLM"인지, bbox 중복 제거, 실패 시 성능 저하 |
-| [`adaptive-chunking.md`](adaptive-chunking.md) | Document→Chapter→Section→...→Line 구조 기반 청킹 알고리즘, "최대 semantic unit 유지" 원칙 |
+| [`adaptive-chunking.md`](adaptive-chunking.md) | Document→Chapter→Section→...→Line 구조 기반 청킹 알고리즘, "최대 semantic unit 유지" 원칙, 표 행 분할 O(n) 누적, 작은 형제 청크 병합(`KF_MIN_TOKENS_PER_CHUNK`)과 복제 DB A/B 실측 |
 | [`llm-providers.md`](llm-providers.md) | Knowledge Extraction/Vision의 LLM Provider 추상화 — Anthropic(기본) ↔ OpenRouter(대체) 전환 |
 
 ## 저장 · 운영
@@ -35,7 +35,7 @@
 | [`embeddings.md`](embeddings.md) | `KnowledgeObject` 또는 원시 `Chunk`를 pgvector에 임베딩하는 파이프라인 — `EmbeddingProvider` 추상화, `KF_EMBEDDING_SOURCE`(청크 기반 vs KO 기반, `--no-extract`), `knowledge_object_embeddings` 스키마(`target_kind`/`document_id`), `--embed`/`knowledge-forge embed`, staleness 미자동화 |
 | [`agent-search.md`](agent-search.md) | 에이전트 검색 설계 — pgvector/임베딩과 `vector_search`/`plan_search`/`sql_search`(Query Planning+Routing+Text-to-SQL) agent 도구(구현됨), `POST /search/vector` HTTP 엔드포인트/`depth>1` 그래프 확장/MCP 서버/검색 skill(설계만, 미구현) |
 | [`agent-runtime.md`](agent-runtime.md) | 모델 벤더 중립 Agent Runtime(harness) — `file_search`/`vector_search`/`sql_search`/`plan_search`/FileSystem/Memory/SubAgents 도구를 실제로 쥐고 도는 `knowledge-forge agent` CLI(구현됨), 자체 `ChatProvider` 추상화(Anthropic 네이티브 + OpenAI-호환) |
-| [`search-architecture.md`](search-architecture.md) | 넓은 엔터프라이즈 RAG 아키텍처 레이어별 상태 — Query Planning/Routing/Reranking(RRF+cross-source dedup)/Temporal Search/Text-to-SQL(entity 필터+temporal join+graph 1-hop 대체)는 구현됨, Context Engineering 나머지/Map-Reduce/Evidence Grounding/Feedback Loop는 설계만·미구현, Iterative Retrieval은 이미 tool-calling 루프로 충족 |
+| [`search-architecture.md`](search-architecture.md) | 넓은 엔터프라이즈 RAG 아키텍처 레이어별 상태 — Query Planning/Routing/Reranking/Temporal Search/Text-to-SQL 구현 현황, Retrieval Plan 실행기 규칙, 어휘 검색 SQL의 trigram 인덱스 활용(2026-09-14), 랭킹 구조 수정 7건 A/B와 채택 결과, 평가 재구현 연결 |
 | [`evaluation.md`](evaluation.md) | 검색 평가(2026-09-14 재구현) — grain(chunk/KO) 고정 골든셋 자동 생성(`eval gen`)과 자동 게이트, retrieval 지표(기본)·에이전트 답변 채점(`--e2e`), paired bootstrap 비교(`eval compare`) |
 | [`query-types.md`](query-types.md) | 검색 유형 20종(Navigational/Temporal/Metadata/Exact/Aggregation/Negative/Comparison/...)별 "왜 유사도가 어려운가 / 필요한 전략 / `search/constraints.py`의 어떤 플래그가 잡는가 / 현재 상태" 표 |
 | [`okf.md`](okf.md) | `OKFWriter` — manifest.yaml + resources/objects/relations 파일 트리로 된 Knowledge Base, Postgres와 독립적인 opt-in 출력 |
