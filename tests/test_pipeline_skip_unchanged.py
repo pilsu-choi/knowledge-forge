@@ -45,7 +45,7 @@ class _FakeUnchangedStore:
         self.calls.append("link_document")
         return []
 
-    async def record_chunks(self, chunks):
+    async def record_chunks(self, document_id, chunks):
         self.calls.append("record_chunks")
 
     async def record_knowledge_objects(self, objects):

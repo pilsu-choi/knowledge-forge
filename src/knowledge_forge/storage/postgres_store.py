@@ -51,7 +51,7 @@ _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 # `read_file` the resource for the full text once it has picked a hit.
 _CHUNK_HIT_SUMMARY_CHARS = 500
 
-# 읽기 전용 검색 경로(`_read_conn`)가 쓰는 커넥션 풀 크기.
+# 읽기 전용 검색 경로(`_pooled_conn`)가 쓰는 커넥션 풀 크기.
 #
 # 왜 풀이 필요한가: psycopg3의 async 커넥션은 커넥션 하나에 대한 동시 실행을 내부 락으로
 # 직렬화한다. 그래서 `search/retrieve.py`의 arm들을 asyncio.gather로 겹쳐도 커넥션이
@@ -64,7 +64,7 @@ _CHUNK_HIT_SUMMARY_CHARS = 500
 #
 # min 4인 이유: 풀이 필요할 때만 늘어나면 첫 버스트가 커넥션 하나를 놓고 줄을 선다
 # (실측: 같은 gather 5회가 min=1이면 93ms, min=4면 57ms). 풀 자체가 **첫 검색 때** 열리므로
-# (아래 `_read_conn` 참고) 검색을 한 번도 안 하는 소비자(적재 파이프라인, 워커, 스케줄러)는
+# (아래 `_pooled_conn` 참고) 검색을 한 번도 안 하는 소비자(적재 파이프라인, 워커, 스케줄러)는
 # 이 4개를 아예 열지 않는다.
 _READ_POOL_MIN_SIZE = 4
 _READ_POOL_MAX_SIZE = 8
@@ -80,7 +80,7 @@ class PostgresStore:
         # that one method serializes on this lock. Everything else on the
         # store runs in autocommit and needs no lock.
         self._tx_lock = asyncio.Lock()
-        # 읽기 전용 검색용 풀. `connect()`가 아니라 첫 검색 때 만들어진다(`_read_conn`).
+        # 읽기 전용 검색용 풀. `connect()`가 아니라 첫 검색 때 만들어진다(`_pooled_conn`).
         self._read_pool: AsyncConnectionPool | None = None
         self._read_pool_lock = asyncio.Lock()
 
@@ -155,15 +155,17 @@ class PostgresStore:
             logger.warning("hnsw.iterative_scan is unavailable - filtered vector search may lose hits")
 
     @asynccontextmanager
-    async def _read_conn(self) -> AsyncIterator[psycopg.AsyncConnection]:
-        """읽기 전용 검색 한 건이 쓸 커넥션을 빌려준다 - 풀에서 하나, 풀을 못 열면
+    async def _pooled_conn(self) -> AsyncIterator[psycopg.AsyncConnection]:
+        """커넥션 하나를 이 호출 전용으로 빌려준다 - 풀에서 하나, 풀을 못 열면
         기존의 공유 커넥션.
 
         검색 메서드(`search_by_embedding` / `search_documents_by_title` /
-        `search_chunks_lexical` / `execute_readonly_query`)만 이걸 쓴다. 쓰기 경로는 전부
-        `self.conn` 그대로다 - upsert/트랜잭션이 어느 커넥션에서 도는지가 의미를 갖는
-        곳이고, 거기서 동시성을 늘려 얻을 것도 없기 때문이다(파이프라인은 문서 단위로
-        순차 실행된다).
+        `search_chunks_lexical` / `execute_readonly_query`)와, 여러 문장을 한 트랜잭션으로
+        묶어야 하는 `save_chunks(document_id=...)`가 이걸 쓴다. 나머지 쓰기는 단일 문장
+        autocommit이라 공유 커넥션 `self.conn`에서 돈다 - psycopg가 문장 단위로 직렬화하므로
+        문서 여러 개가 동시에 써도 안전하다. 반대로 공유 커넥션에서 트랜잭션을 열면 동시에 도는
+        다른 코루틴의 문장이 그 트랜잭션에 섞이므로, 트랜잭션은 반드시 여기서 빌린 커넥션에서
+        연다(풀 폴백 시에는 그 보장이 없다 - 폴백은 풀을 열 수 없는 비정상 상황용이다).
 
         풀은 `connect()`가 아니라 여기서 지연 생성한다. 이유 두 가지:
         (1) 검색을 하지 않는 소비자(적재 CLI, Celery 워커, 스케줄러)가 쓰지도 않을
@@ -453,7 +455,7 @@ class PostgresStore:
             source=SourceRef(source_id=row[5], source_type=row[6], uri=row[7], project_id=row[8]),
         )
 
-    async def save_chunks(self, chunks: list[Chunk]) -> None:
+    async def save_chunks(self, chunks: list[Chunk], *, document_id: str | None = None) -> None:
         """청크 본문은 NFC로 정규화된 채로 들어온다(`chunking/adaptive.py::AdaptiveChunker.chunk`가
         `text_normalize.py::to_nfc`를 적용해서 만든다) - 여기서 다시 정규화하지 않는다. 이걸
         DB 쓰기 시점이 아니라 청커 출력 시점에 거는 이유: `chunks.text`는
@@ -464,7 +466,17 @@ class PostgresStore:
         원본인 `documents.elements`는 그대로 두고 청커 출력에서만 정규화한다 - 청크는
         `element_ids`로 엘리먼트를 참조하지 문자열로 맞대보지 않으므로 둘이 달라도 깨지는
         곳이 없다. `token_count`는 재계산하지 않는다: NFC 합성은 코드포인트 수만 줄일 뿐이고,
-        토큰 수는 어차피 청킹 시점의 근사치다."""
+        토큰 수는 어차피 청킹 시점의 근사치다.
+
+        `document_id`를 주면 `chunks`가 그 문서의 **청크 집합 전체**라는 뜻이다: 그 문서의 기존
+        청크 중 `chunks`에 없는 것과 그 청크-grain 임베딩 행을 upsert와 같은 트랜잭션에서 지운다
+        (`chunks`가 비면 문서의 청크가 전부 지워진다). 파서·청커가 바뀌어 같은 `document_id`가 더
+        적은 청크로 다시 나오면(작은 형제 병합, VLM 실패로 사라진 표 등) 예전 청크가 검색에 계속
+        걸리던 구멍을 막는다(wiki/reingest-replay.md "재적재 시 문서의 청크 집합 교체").
+        `knowledge_objects.evidence`/`relations.evidence`의 chunk_id는 FK가 아닌 JSON 참조라
+        지워진 청크를 가리킨 채 남을 수 있다 - 그걸 역참조하는 읽기 경로는 없다.
+        트랜잭션은 풀에서 빌린 전용 커넥션에서 연다(`_pooled_conn`) - 공유 커넥션에서 열면
+        동시에 도는 다른 문서의 autocommit 문장이 그 트랜잭션에 섞인다(pipeline.py 문서 간 동시성)."""
         now = datetime.now(timezone.utc)
         rows: list[tuple[Any, ...]] = [
             (
@@ -484,9 +496,17 @@ class PostgresStore:
             )
             for chunk in chunks
         ]
-        if not rows:
+        if document_id is None and not rows:
             return
-        async with self.conn.cursor() as cur:
+        async with self._pooled_conn() as conn, conn.transaction(), conn.cursor() as cur:
+            if document_id is not None:
+                stale = "SELECT chunk_id FROM chunks WHERE document_id = %(doc)s AND NOT chunk_id = ANY(%(keep)s)"
+                params = {"doc": document_id, "keep": [chunk.chunk_id for chunk in chunks]}
+                # 임베딩 FK(chunk_id -> chunks)가 있어 임베딩 행을 먼저 지운다.
+                await cur.execute(f"DELETE FROM knowledge_object_embeddings WHERE chunk_id IN ({stale})", params)
+                await cur.execute(f"DELETE FROM chunks WHERE chunk_id IN ({stale})", params)
+            if not rows:
+                return
             await cur.executemany(
                 """
                 INSERT INTO chunks (chunk_id, document_id, source_id, hierarchy_level,
@@ -1140,7 +1160,7 @@ class PostgresStore:
         grain expansion). With it the planner uses `idx_koe_document_id` and
         sorts the few matching rows exactly (measured 1 ms), not the HNSW scan."""
         vector = Vector(embedding)
-        async with self._read_conn() as conn, conn.cursor() as cur:
+        async with self._pooled_conn() as conn, conn.cursor() as cur:
             await cur.execute(
                 """
                 SELECT e.target_kind, e.knowledge_object_id, e.chunk_id, e.document_id,
@@ -1247,15 +1267,15 @@ class PostgresStore:
 
     @asynccontextmanager
     async def _read_transaction(self, *settings: str) -> AsyncIterator[psycopg.AsyncCursor]:
-        """`_read_conn` 위에 `READ ONLY` + 무조건 롤백 트랜잭션을 열고 커서를 준다.
+        """`_pooled_conn` 위에 `READ ONLY` + 무조건 롤백 트랜잭션을 열고 커서를 준다.
         `settings`는 그 트랜잭션에만 걸리는 `SET LOCAL` 문(상수 문자열만 - 파라미터 없이
         한 번에 보낸다)이다.
 
         `_tx_lock`은 **공유 커넥션 하나를 쓸 때만** 필요하다. 풀에서 빌린 커넥션은
         이 호출이 반납할 때까지 이 호출 전용이라 BEGIN/ROLLBACK이 겹칠 수가 없고,
         거기에 전역 락을 걸면 풀을 넣은 이유(질의 여러 개를 겹치는 것)가 그대로
-        사라진다. `_read_conn`이 공유 커넥션으로 폴백했을 때만 예전처럼 직렬화한다."""
-        async with self._read_conn() as conn:
+        사라진다. `_pooled_conn`이 공유 커넥션으로 폴백했을 때만 예전처럼 직렬화한다."""
+        async with self._pooled_conn() as conn:
             guard: Any = self._tx_lock if conn is self._conn else nullcontext()
             async with guard, conn.transaction(force_rollback=True), conn.cursor() as cur:
                 await cur.execute("; ".join(["SET TRANSACTION READ ONLY", *settings]))

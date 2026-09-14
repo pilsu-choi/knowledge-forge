@@ -1,4 +1,4 @@
-"""`PostgresStore`의 읽기 전용 커넥션 풀(`_read_conn`) 검증 - KF_TEST_DATABASE_URL이
+"""`PostgresStore`의 읽기 전용 커넥션 풀(`_pooled_conn`) 검증 - KF_TEST_DATABASE_URL이
 없으면 스킵(다른 storage 테스트와 같은 규약).
 
 왜 이 파일이 있나: 풀을 넣으면서 가장 깨지기 쉬운 지점이 **세션 GUC**다.
@@ -30,7 +30,7 @@ async def test_every_pooled_connection_gets_the_ann_scan_guc():
 
         values: list[str] = []
         async with AsyncExitStack() as stack:
-            conns = [await stack.enter_async_context(store._read_conn()) for _ in range(_READ_POOL_MIN_SIZE)]
+            conns = [await stack.enter_async_context(store._pooled_conn()) for _ in range(_READ_POOL_MIN_SIZE)]
             assert len({id(c) for c in conns}) == _READ_POOL_MIN_SIZE, "서로 다른 커넥션이어야 한다"
             for conn in conns:
                 cur = await conn.execute("SHOW hnsw.iterative_scan")
@@ -49,7 +49,7 @@ async def test_pooled_reads_actually_overlap():
         assert await store._ensure_read_pool() is not None
 
         async def _sleep() -> None:
-            async with store._read_conn() as conn:
+            async with store._pooled_conn() as conn:
                 await conn.execute("SELECT pg_sleep(0.3)")
 
         loop = asyncio.get_running_loop()

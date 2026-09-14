@@ -49,8 +49,9 @@ class PipelineStore:
         `PostgresStore.get_source_content_hash`."""
         return await self._db.get_source_content_hash(source_id)
 
-    async def record_chunks(self, chunks: list[Chunk]) -> None:
-        await self._db.save_chunks(chunks)
+    async def record_chunks(self, document_id: str, chunks: list[Chunk]) -> None:
+        """`chunks` replaces `document_id`'s whole chunk set - see `PostgresStore.save_chunks`."""
+        await self._db.save_chunks(chunks, document_id=document_id)
 
     async def record_knowledge_objects(self, objects: list[KnowledgeObject]) -> None:
         await self._db.save_knowledge_objects(objects)

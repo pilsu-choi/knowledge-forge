@@ -52,7 +52,7 @@ class _RecordingStore:
     async def link_document(self, source, document):
         return []
 
-    async def record_chunks(self, chunks):
+    async def record_chunks(self, document_id, chunks):
         self.chunks_recorded.extend(c.chunk_id for c in chunks)
 
     async def record_chunk_embeddings(self, chunks, project_id, embedder, embedding_model):

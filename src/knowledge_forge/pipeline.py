@@ -262,7 +262,7 @@ async def run_pipeline(
 
         chunks = chunker.chunk(document)
         if store is not None:
-            await store.record_chunks(chunks)
+            await store.record_chunks(document.document_id, chunks)
             if embed_chunks:
                 assert embedder is not None
                 try:
