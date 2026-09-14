@@ -1,0 +1,4390 @@
+{
+  "version": "knowledge_object-202609141324",
+  "grain": "knowledge_object",
+  "created_at": "2026-09-14T13:24:19.910242Z",
+  "corpus": {
+    "embeddings": {
+      "chunk": 2856,
+      "knowledge_object": 5107
+    },
+    "documents": {
+      "count": 358,
+      "hash": "08f2cb90cc70cbf8917bdf62f7c48ee4"
+    },
+    "chunks": {
+      "count": 2856,
+      "hash": "a37204b3f178e1e380d50262023d2b30"
+    },
+    "knowledge_objects": {
+      "count": 5107,
+      "hash": "15d9308938be564eb7d9b4b1ee702dce"
+    }
+  },
+  "items": [
+    {
+      "id": "lookup-000",
+      "query": "risk-agent API를 수정할 때 어떤 요소들을 검토해야 하나요?",
+      "answer": "API contract 변경 후 dashboard proxy/type과 e2e 영향도를 함께 검토해야 합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "dd120e8acf0867da937186177c98b835",
+        "131ce742a4104d0d74a534065aecf184"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-001",
+      "query": "2026-024 프로젝트에서 이형기가 요청한 외주인원 세나의 역할은 무엇인가요?",
+      "answer": "이형기는 외주인원 세나에게 투입관리 원장에 대한 요청을 하였습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "b4d1077a4e97f983306f34047e9a8991",
+        "c926a49e1c23553f5fef7eb996d9e600"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-002",
+      "query": "문서에서 언급된 전화번호는 무엇인가요?",
+      "answer": "054-285-2881입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "287a44d42efaf73eb837555b9d77a191",
+        "59df317b845c0c77ffca8dbb4131fddf",
+        "51a8ba208c37c3791aa86f4af18a8e43",
+        "0fe32852b0a50c2274852b1a787e27e2",
+        "6feea62d0723dee6fcc02c784ed8075e"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-003",
+      "query": "프로젝트의 소스 디렉토리는 어떤 구조로 되어 있나요?",
+      "answer": "프로젝트는 src/api, src/domain, src/adapters, 및 tests 디렉토리로 구성되어 있습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "b2047503a647ceb909aaa6c426457aab",
+        "385f3ffdaf87f51b398cd321e64c0a2c",
+        "bbdbd5bbaf1f24a0e90e486479bab817",
+        "428161c126677332462a9e1e1dd27335"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-004",
+      "query": "한화손해보험 차세대 가입설계 구축 사업의 Slack 채널 연결 일정은 어떻게 되나요?",
+      "answer": "Slack 채널 연결 작업은 이미 완료되었습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "2c73e940f5aa696780d62c9f13447b4f"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-005",
+      "query": "최주영 책임 연구원이 속한 팀의 이름은 무엇인가요?",
+      "answer": "Core Tech 자산화팀입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "41989f6e009d3c2ae612e32dead44f82",
+        "990468331b1f184f783ea84cba8b9cfc",
+        "2f1e74434fc3a7bc938032fb7a3de881",
+        "f7e20c2cfdf6ba4e189e93e186af9013"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-006",
+      "query": "개발 인수인계에 대한 문서에서는 어떤 내용을 다루고 있나요?",
+      "answer": "개발 인수인계의 주제를 나타내는 섹션 헤더가 포함되어 있습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "8d9739317c6d4d742f8882e16541b13e",
+        "0b019313556b331ca0140bf8b4f85f74"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-007",
+      "query": "3차 인터뷰에 필요한 체크리스트 파일은 어떻게 받을 수 있나요?",
+      "answer": "체크리스트 파일은 Slack 대화에서 전달되었습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "50fd357abe4ed456d963f2f36762db8e",
+        "c543dfd89b7c1cdf6a14d9e0e70bca8d",
+        "ba6a352223ea9cae76be396f00e09884",
+        "381f42e6968c16481f10f170bcd0243c",
+        "fcfa143b8679fcaf2bf4408c1e270419"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-008",
+      "query": "섹션 1-2에서 언급된 메일의 종류는 무엇인가요?",
+      "answer": "대표메일과 리스크 관리 메일이다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "f28f200d50977792f02556ec73bb3b3b"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-009",
+      "query": "원인 불명 실패가 발생했을 때 어떤 절차를 따라야 하나요?",
+      "answer": "원인 불명 실패 시 development-workflow에서 codex-reviewer로의 순서를 적용해야 합니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "f26f2b947b51bb383ca324753c0269d5"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-010",
+      "query": "프로젝트 상태를 어떻게 변경하나요?",
+      "answer": "Slack 메시지 입력창에 /인텔을 입력하고 프로젝트 상태 변경을 선택하면 됩니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "7974659372bc299176d75f5b4a65f0c3",
+        "9bfa4cf6a38d07433b8372d7337f0a9e",
+        "e8965f7924b98792743a6d6cbc9f774c",
+        "212c1614c2fc9ddb9a33dc0e33728c23"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-011",
+      "query": "애자일소다 프로젝트의 문서 소유자가 누구인지 알려주세요.",
+      "answer": "문서 소유자는 정현정입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "46d1594e7991a9f9c3364063f4ec0f06"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-012",
+      "query": "대시보드 UI를 수정할 때 먼저 어떤 파일을 확인해야 하나요?",
+      "answer": "대시보드 UI 작업 전 반드시 design-dashboard-uiux.md, mockups/risk-dashboard.html, design-system.md, design-tokens.css 및 globals.css 파일을 확인해야 합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "08186b284653153779e60a34bb436257",
+        "3fe98dd656bae53171e6d8c13e863119"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-013",
+      "query": "보안서약서에 포함해야 하는 내용은 무엇인가요?",
+      "answer": "본 사업 및 향후 본사업에 대한 정보 누설 및 영업 활용 금지조항이 포함되어야 합니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "47d1974a38d7245624cc1f340105fd5a"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-014",
+      "query": "공식 Gmail 앱이 제공하는 메일 사용 경험은 어떤 기기에서 가장 좋나요?",
+      "answer": "공식 Gmail 앱은 스마트폰과 태블릿에서 가장 완벽한 메일 사용 경험을 제공합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "a0f934490b63997bfe6fd266ec950b5f"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-015",
+      "query": "ProjectIntel의 인수인계 패키지에 어떤 파일들이 포함되어야 하나요?",
+      "answer": "Drive 패키지는 인수인계 미팅 deck, 통합 handover runbook, 파일 묶음 manifest, env template, 작업 규칙, 검증 명령 지도를 포함해야 합니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "5705da5b406ed1a2adca8410fb37dfb2"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-016",
+      "query": "OA 업무도우미 과제의 2차 인터뷰에서 어떤 개발 환경이 결정되지 않았나요?",
+      "answer": "내부 개발과 외부 개발이 확정되지 못했습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "d67f892b4056bd4461b877994a2c8a65"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-017",
+      "query": "ProjectIntel 통합 인수인계 가이드의 문서 상태는 어떻게 되나요?",
+      "answer": "문서의 상태는 '활성(active)'이며, 운영 목적으로 현재 유효합니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "828d236b89a4bcd9979f3285618561ed"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-018",
+      "query": "ProjectIntel Codex에서 inactive agent 비교 시 어떤 기준이 적용되나요?",
+      "answer": "inactive agent 비교에서는 차이가 없어야 한다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "4072ca4623d228ca2c7bef26063097ad"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-019",
+      "query": "ProjectIntel에서 구현 중 설계와 문서/API contract의 영향을 무시했을 때 어떻게 되는가?",
+      "answer": "이 경우 작업이 완료로 간주되지 않는다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "2d7bc2f859f2fa03959179cb46d6e493"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-020",
+      "query": "농협은행의 당발송금 중계 AI Agent 프로젝트에서 메일 수집을 위해 어떤 주소를 참조에 포함해야 하나?",
+      "answer": "projectintel+PRJ-3514109283B8A009D419@agilesoda.ai를 참조에 포함해야 합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "e9040b9238b35aa821451350aabb067b",
+        "e01e49db1f2433ff3a6f083df7c9eba0"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-021",
+      "query": "2026년 10월 20일부터 Google Cloud 콘솔에 접근하기 위해 필요한 인증 방식은 무엇인가요?",
+      "answer": "2단계 인증(2-Step Verification, 2SV)입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "aff1c09df0c252e848f681304e436df5"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-022",
+      "query": "큰 구현이나 여러 모듈 변경 작업이 어떤 경로를 따라야 하는지 알려주세요.",
+      "answer": "codex-planner -> system-design -> development-workflow -> codex-reviewer 경로를 따른다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "86c95e92a1b389dd8ae5777b57a66e2d"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-023",
+      "query": "최필수가 '메일 테스트'라는 메시지를 보낸 날짜와 시간을 알려주세요.",
+      "answer": "2026년 8월 28일 오후 1시 31분 46초입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "cc403ea974afdd6889416f56090a83e2"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-024",
+      "query": "ProjectIntel의 Drive 패키지에는 어떤 파일들이 포함되어 있나요?",
+      "answer": "Drive 패키지에는 projectintel-development-handover.pptx, projectintel-handover-guide.md, projectintel-handover-file-bundle.md, .env.example, .env.jobs.example, .env.readiness.example, AGENTS.md, agents-skills-AGENTS.md, codex-README.md, Makefile, README_ProjectIntel_Dev_Handover.md 파일이 포함되어 있습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "dc3211260fd7e5b028bb24794e79ba4c"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-025",
+      "query": "미래에셋생명보험 차세대 시스템 구축 프로젝트에 포함된 AI와 관련된 용역은 무엇인가요?",
+      "answer": "AI OCR 고도화 용역입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "c0479eba3c6ea8c7acd32fc7c4ba4642",
+        "ca339449d0e2d93994dbdecb049f0f2f",
+        "253012b85e15ecdf3a1a3a4b2e505bef"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-026",
+      "query": "ProjectIntel 개발 핸드오버 패키지에 포함된 문서 목록은 무엇인가요?",
+      "answer": "개발 핸드오버 프레젠테이션, 핸드오버 가이드, 파일 번들 문서, 환경 설정 예제, Agent 정의 및 Codex 문서, Makefile이 포함된다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "aa1447f6c94ca54c73d973da8e91d3dd"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-027",
+      "query": "메일 시스템 테스트는 언제 진행되었나요?",
+      "answer": "2026년 8월 28일에 진행되었습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "6aa16ed2bd4d3d5f909dbc8854808b93"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-028",
+      "query": "완료된 항목에 이모지를 어떻게 표시해야 하나요?",
+      "answer": "완료된 항목에 이모지를 표시하여 상황을 정리하고 확인해야 합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "407370bc71f294d69584d55960da4ed8"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-029",
+      "query": "ProjectIntel의 스킬 산출물에서 제외해야 하는 민감 데이터 항목은 무엇인가요?",
+      "answer": "민감 가능 데이터, Slack token, API key, 고객사 원문, 회사 코드, 로그, .env, .secrets/가 포함된다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "3681f6ea2419b2a7a30040817abdb11d"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-030",
+      "query": "고객사 피드백 반영 작업의 담당자는 누구인가요?",
+      "answer": "현재 담당자가 미지정 상태입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "5783c1b5fcdbd06f47fdb8aab3083e49",
+        "43191180ecf470a51833ab6370705dfe",
+        "67d605406e8b4c407eb5c115c82c6a34",
+        "abfd2b7bca6168965770bb639db5ebf2"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-031",
+      "query": "JT 플랫폼 개발환경에 포함된 Python 패키지는 무엇인가요?",
+      "answer": "aiofiles, aiohttp, fastapi, langchain, pandas, numpy 등 다양한 라이브러리가 포함되어 있습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "98d86bb10d8a1c920851c1379c1df18c"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-032",
+      "query": "DB손해보험 PoC에 관련된 약관 추출 및 정액 산출의 주요 개선 항목은 무엇인가요?",
+      "answer": "주요 개선 항목으로는 row 정합성, 버전 관리, 근거 추적, 수동 수정 리스크 등이 있다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "de8bd6c34659f74fc9e3c2a6c9fc0399"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-033",
+      "query": "LLM as a Judge 관련 정보를 인터뷰에서 확인해야 하는 이유는 무엇인가요?",
+      "answer": "해당 내용은 과제 파악에 도움을 주기 위한 것이며 확정된 정보가 아니기 때문에 인터뷰에서 여쭤보는 것이 좋습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "f2de4f0f0a9fd60889e49807b16c0458"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-034",
+      "query": "2026년 8월 28일에 최필수로부터 발송된 메시지의 제목은 무엇인가요?",
+      "answer": "'메일 테스트'입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "b1daf446dfdb8fabc612103ceea13dd5",
+        "71aee2b225935ec00503490a097f063c"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-035",
+      "query": "세아제강의 제조가부 AI 프로젝트 상태는 현재 어떻게 되나요?",
+      "answer": "상태가 수행중으로 변경되었습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "786d11484ad3bf4b74c5dd5709a1981c"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-036",
+      "query": "jwshin@agilesoda.ai가 요청한 문서의 이름은 무엇인가요?",
+      "answer": "프로젝트 투입 관리_세아제강_세아제강 제조가부 본 프로젝트.xlsx입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "9835d1b49519e0e0b533bceeb6215020"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-037",
+      "query": "JT 플랫폼 개발환경에 포함된 패키지 목록을 누구에게 전달하나요?",
+      "answer": "패키지 목록은 박범진 수석에게 전달됩니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "3a69fba27c4c978d47fd5436bab4d17a"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-038",
+      "query": "키스텝 프로젝트와 관련해서 온라인 영상 링크를 어떻게 처리하나요?",
+      "answer": "온라인 영상 링크는 포함되어야 하고, 영상 파일은 수집 항목에서 제외됩니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "32580e682bfaee1951f3f870f0351abd",
+        "c8f2bec1bf79b47357c92b06213a2dbf"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-039",
+      "query": "구글 클라우드 콘솔에 접근하기 위해 의무적으로 적용되는 2단계 인증의 시작 날짜는 언제인가요?",
+      "answer": "2026년 10월 20일부터 구글 클라우드 콘솔에 접근하기 위해 2단계 인증이 필수로 적용됩니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "c5fa86e6cff98ef4f75efa18aa8df207",
+        "4336e10793e5dbabd0d2e54c0e3a3cda",
+        "81aee5b74a290620cab732a1e24933ff",
+        "77a663b29e89a229cca8564a6d31a79f"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-040",
+      "query": "박경민 수석이 입사할 때 어떤 URL에 접근할 수 있을까요?",
+      "answer": "박경민 수석이 입사하면 특정 URL에 접근할 수 있도록 권한이 부여됩니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "04035523fd7b2b0b3208d59f391fcc93"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-041",
+      "query": "고객사가 산출물을 언제보다 빨리 받기를 원하는지?",
+      "answer": "고객사는 산출물을 약 2주 앞당겨 받기를 희망하고 있다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "85b76e175f3b4b0993af985035d54a76"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-042",
+      "query": "ProjectIntel의 이름이 변경된 이유는 무엇인가요?",
+      "answer": "이름이 밋밋하다는 이유로 '게보린'으로 변경되었습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "fb0ba2fc0a476633ec9a6204914958a9"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-043",
+      "query": "사용자가 프로젝트 투입 관리 문서에 액세스를 요청한 날짜는 언제인가요?",
+      "answer": "2026년 8월 18일입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "b4c966433b5f7a8ca2c1cefac7109c16"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-044",
+      "query": "프로젝트 채널 연결 작업은 어떤 시스템에 대해 수행되었나요?",
+      "answer": "AI OCR 시스템 고도화 프로젝트 용역 위탁 2차에 대해 수행되었습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "655ce612f90ead491468889269a59892"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-045",
+      "query": "DB손해보험 PoC 산출물과 개선안은 언제 전달되었나요?",
+      "answer": "2026년 6월 23일에 전달되었다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "e2f89a4848607daf7f6b418b5a8ff8f6"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-046",
+      "query": "키스텝 프로젝트의 데이터 수집 항목에 어떤 링크가 포함되나요?",
+      "answer": "유투브 링크와 같은 동영상 플랫폼 링크가 데이터 수집 항목에 포함되기로 결정되었습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "c8f2bec1bf79b47357c92b06213a2dbf"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-047",
+      "query": "'00_양식' 폴더의 새로운 소유자는 누구인가요?",
+      "answer": "(시안)장수현에서 수신자에게 이전되었다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "4836fb58c8d64946f7b89511592f6299"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-048",
+      "query": "risk-agent-blue 컨테이너의 상태가 무엇이었고 이로 인해 어떤 문제가 발생했는가?",
+      "answer": "risk-agent-blue 컨테이너는 unhealthy 상태였고, Caddy가 죽은 컨테이너로 트래픽을 보낼 위험이 있어 502 에러가 의심됐다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "48d24ce433938516419ef939e864f838"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-049",
+      "query": "정액보험금 산출 로직 오류를 수정하기로 결정한 이유는 무엇인가요?",
+      "answer": "정액보험금 산출 로직 오류의 원인을 명확히 하고 수정하기로 결정했다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "958cc0783ab63440bfd1e4b383a2a897"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-050",
+      "query": "조직도를 복구하기 위해 어떤 파일을 GDrive에 올려야 하나요?",
+      "answer": "이전 조직도.xlsx를 GDrive에 올려야 합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "728bba269cd72e4bb79a076004c9729c"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-051",
+      "query": "현대모비스 구매 원가 AI 모델 개발 프로젝트의 Slack 채널은 무엇인가요?",
+      "answer": "<#C0BGYGQFSKD>",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "7d26656bd1ea162cbe4af5bea7ed2cf1",
+        "eea615ea63a59a8a1d1c88196f3ff4af"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-052",
+      "query": "프로젝트 투입 관리 2026-031에서 소유자가 어떤 권한을 갖는지 알고 싶어.",
+      "answer": "소유자는 공유 설정을 변경할 수 있습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "9a0d0e9170a9200a7a8e85aae36abcc4",
+        "e016e310a1f798ea46ba62921dba1b5b"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-053",
+      "query": "Gmail에서 라벨의 역할은 무엇인가요?",
+      "answer": "Gmail에서 라벨은 폴더와 비슷한 역할을 하며, 하나의 이메일에 여러 개의 라벨을 추가할 수 있습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "652fe741a2341f8fe0731942ae4d920a"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-054",
+      "query": "클로드 구독 신청 시 다른 팀의 플랜에 요청하는 것이 왜 금지된 건가요?",
+      "answer": "혼선이 발생할 수 있기 때문입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "549a35b5ac1d8c571acfc5c289cdf546"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-055",
+      "query": "AgentX 1팀의 Google Drive 폴더에 액세스 요청한 사람은 누구인가?",
+      "answer": "mshwang@agilesoda.ai입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "b6b10d3ecc156965426f0f6fbcdc1fd8",
+        "33b4424a5efbf56c5c7f09bce29e072c",
+        "7457fb59ea869bfbe6857cf4b5054ec8"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-056",
+      "query": "텍스트 계열 파일을 통해 자동으로 할 일을 추출하는 시스템의 기능은 무엇인가요?",
+      "answer": "텍스트 계열 파일만 자동으로 할 일을 추출합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "6600b1a1882a0907537cdaabb943b8a8",
+        "2f54d8ea38662b25994398a271b66692"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-057",
+      "query": "수정된 로직의 확인 후 '과다산출 원인 및 수정결과'를 누구에게 보고해야 하나요?",
+      "answer": "최상은에게 전달해야 합니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "db7eae209040c459737488c843a8feed"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-058",
+      "query": "프로젝트 이름이나 개념에 대한 우려가 언급된 Slack 대화는 어떤 내용인가요?",
+      "answer": "대화에서는 프로젝트 이름이나 개념이 명확하지 않다는 우려가 표현되었습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "7445b62ea60b31752b1459dd0a21bd71"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-059",
+      "query": "Google Drive에서 '00_양식'의 소유자가 된 경우 어떤 권리가 생기나요?",
+      "answer": "소유자는 해당 항목의 공유 설정을 변경할 수 있습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "93910f8c9f858f2fced251c2a7ac76b2",
+        "16a11e2ce5328c9a19c55a05055328e5"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-060",
+      "query": "2026-022 프로젝트의 새로운 담당자가 누구인지 알고 싶어.",
+      "answer": "새로운 담당자는 노철균입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "b18ec5f32aa7474b02d64b6b5a5e02c0",
+        "62f3da33f9ba35f11e9ce21bab85a1f2"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-061",
+      "query": "최필수가 '메일 테스트'라는 메시지를 보낸 날짜와 시간은 언제인가요?",
+      "answer": "2026년 8월 28일 오후 1시 31분입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "3d7c3823d896667f1ea694449808dd4a"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-062",
+      "query": "각 과제별로 담당자를 초대하기 위한 방법은 무엇인가요?",
+      "answer": "각 채널에 담당 개발자들을 초대하고, 각 과제별로 담당자를 초대해야 합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "91ca5b20e30d02e6dd6c0666c0ecf541",
+        "f6f30451763aba7ded76341d22dd2469",
+        "5dbc2e4bcf6f45873ae4bb136afeada0",
+        "104bb58e11a583a46a32208922943524"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-063",
+      "query": "애자일소다 프로젝트 문서에 yshan@agilesoda.ai를 어떤 권한으로 추가해야 하나요?",
+      "answer": "yshan@agilesoda.ai 사용자를 공동작업자 또는 뷰어로 추가해야 합니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "fc42b16c2338b37d575338c009529f64",
+        "5469485a5230f78a5c3e5ea37a466fa0",
+        "d399595da875bff97abee1894df02c27"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-064",
+      "query": "risk-agent의 상태를 확인하기 위한 명령어는 무엇인가요?",
+      "answer": "docker ps -a | grep risk-agent 명령을 사용해야 합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "302b103102b02d341a50212512703416"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-065",
+      "query": "메일 테스트 스레드는 어떤 목적으로 사용하는 건가요?",
+      "answer": "메일 테스트 스레드는 이메일 시스템이나 기능을 테스트하기 위한 목적에 사용됩니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "6ac55db6ffaa4fb4a65017731dfbeffb",
+        "a020c1cdd4f19ac16c6d51aed096724a",
+        "941fa300c2fd527fdf36e805fc6d7a5a"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-066",
+      "query": "투입 관리 Excel 파일에 어떤 항목을 입력해야 하나요?",
+      "answer": "PM/PL, 투입자명 또는 TBD, 역할/등급, 월별 계획 MM, 시작월/종료월, 비고/근거 링크를 입력해야 합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "0d891678220356beb969469b59c20cc8",
+        "b5a636ef7d98e0b66217fdf4dee1f56e"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-067",
+      "query": "2026년 8월 28일 오후 몇 시에 응답 메시지가 발송되었나요?",
+      "answer": "오후 1시 54분에 발송되었습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "597c5f795ce914eeb6b9334d9575bf1d",
+        "95225b35788ac2b149d872c3ad2a5b2f"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-068",
+      "query": "마케팅허브 팀의 3차 인터뷰 문서 요청이 언제 이루어졌나요?",
+      "answer": "마케팅허브 팀은 3차 인터뷰 전에 문서를 요청했습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "9fee40f131247e4de325ddff2438941c",
+        "7823f1e6481988da771983e2c2dab382",
+        "41d3b7ed6aa6c4827cb10b4d222128dd",
+        "bf493925e87685777968a4b1d40d1ae5"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-069",
+      "query": "2단계 인증을 설정하기 위해 필요한 조치가 무엇인지 알려주세요.",
+      "answer": "Google Cloud 조직을 사용하는 경우 2026년 10월 20일까지 security.google.com에서 계정에 2단계 인증을 사용 설정해야 합니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "14222cdc23dd157ae4ee6bd20b9cb1c9",
+        "81aee5b74a290620cab732a1e24933ff",
+        "77a663b29e89a229cca8564a6d31a79f"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-070",
+      "query": "jopark@agilesoda.ai가 요청한 문서는 무엇인가요?",
+      "answer": "애자일소다_사업실적 관리.xlsx입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "a69f8c52c7921b3b4cd2ac4b325cb638"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-071",
+      "query": "농협은행에 납품된 애자일소다 솔루션의 주요 구성요소는 무엇인가요?",
+      "answer": "자사 AI-OCR 분류 Agent와 자사 AI-OCR 추출 Agent로 구성되어 있습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "4d8e7ea923cadfb34e0276a972d3e310"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-072",
+      "query": "MLOps 플랫폼의 보안 취약점 패치 작업을 위해 요구되는 권한은 무엇인가요?",
+      "answer": "루트 권한이 필요합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "8295a460cffdb807f2ec06d04c0999a1"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-073",
+      "query": "미래에셋생명 AI OCR 시스템 고도화 프로젝트의 원장 등록 상태는 어때?",
+      "answer": "등록/확인이 완료되었다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "5a486dc337abaa2a00bd4bec638a9a3c"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-074",
+      "query": "세아제강 제조가부 프로젝트 엑셀 문서에 대해 누가 쓰기 권한을 요청했나요?",
+      "answer": "ehpark@agilesoda.ai가 요청했습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "21237434f26b9f3bebd1bafaf58f73bb"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-075",
+      "query": "기업e금융 One-Stop AI Agent 프로젝트에서 로그/모니터링 대시보드 점검의 마감일은 언제인가요?",
+      "answer": "2026-09-03",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "39432fd8f2e08aaac51a483526e57e0c",
+        "da5458cbab86181e21a5ad5bd2de6ac9"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-076",
+      "query": "2026년 8월 7일에 gwchoi@agilesoda.ai가 요청한 문서의 이름은 무엇인가요?",
+      "answer": "프로젝트 투입 관리_2026-012_현대모비스.xlsx입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "0ca5624613c17eb758a7116efa50241d"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-077",
+      "query": "AI Agent 기반 프로젝트에서 데이터 정합성 점검의 마감일은 언제인가?",
+      "answer": "2026-09-01",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "0fab0e5263b60abdaff7eced7294e863",
+        "4e5787eb5a5efbcc9a9c383f1e6d8adf"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-078",
+      "query": "최필수가 2026년 8월 28일에 발송한 메시지 내용은 무엇인가요?",
+      "answer": "메시지 내용은 \"123123123123\"입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "7fdaccf9eee0fc141f37f191291994a5",
+        "4fab4455747945a8f64e6098b505d2e0"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-079",
+      "query": "NH농협타워에서 카드키를 받으려면 어떤 절차를 따라야 하나요?",
+      "answer": "명함을 전달한 후 안내센터에서 카드키를 받을 수 있습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "05d3fe9b8a78f753070cae39eeebab49",
+        "7f6c0e9b87f22c537d53498c6d27eede",
+        "bb2e616f6ec4daa3302da0ff87933676"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-080",
+      "query": "애자일소다 솔루션이 납품된 고객사는 어디인가요?",
+      "answer": "농협은행입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "af3fa7c0c16d55882e6b173562eec089",
+        "d5296155a1038fdaa931227a93bc6995",
+        "4d8e7ea923cadfb34e0276a972d3e310"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-081",
+      "query": "프로젝트 투입 관리_2026-031 파일의 소유자가 되는 과정은 어떻게 되나요?",
+      "answer": "파일의 소유자가 되는 과정은 공유 설정을 통해 소유권이 이전되는 방식으로 진행됩니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "8a41d86bb06929a406069f4062d52bed",
+        "e016e310a1f798ea46ba62921dba1b5b"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-082",
+      "query": "농협 MVP 인력에게 전달될 명함에 어떤 메일을 적기로 결정되었나요?",
+      "answer": "개인메일로 적기로 결정되었습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "6d8d0018512009aa8b71e09fe1f3b674"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-083",
+      "query": "Google Workspace 학습 센터에서 제공하는 것이 무엇인가요?",
+      "answer": "Gmail 가이드, 팁, 및 Outlook에서의 전환을 위한 도움말을 제공합니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "a9c7aaa2bc8395e2fa60ba49d807a584",
+        "1a7dc060e277f5649019592ba6ee36be"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-084",
+      "query": "농협으로부터 어떤 추가정보를 수집해야 하나요?",
+      "answer": "농협으로부터 응답 항목 관련 추가정보를 수집해야 합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "8c75f1a0120fd36fff08ed042d046fec",
+        "10864cfa9338acfff6b986fe12cd5236",
+        "9f158ec6ebe68449262e743a2ae15c2a"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-085",
+      "query": "애자일소다의 보안 취약점 패치 일정은 언제로 조정되었나요?",
+      "answer": "보안 취약점 오픈소스 패치 일정은 9월 18일에서 정보보호심의위원회 개최 전으로 앞당겨 완료하기로 결정되었습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "d44ecd650eed9080e47551d7541e8e19"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-086",
+      "query": "클로드 팀 구독의 결재 상황은 어떻게 되나요?",
+      "answer": "현재 클로드 팀 구독은 내부 결재 중입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "587f9615857ec6e66ab94597907a9a80"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-087",
+      "query": "최필수가 보낸 '메일 테스트' 메시지는 언제 발송되었나요?",
+      "answer": "2026년 8월 28일 오후 1시 37분 19초에 발송되었습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "c988c92975d329fd9b46a016bbc671d1"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-088",
+      "query": "AEGIS-Agent와 상호작용하기 위한 방법은 무엇인가요?",
+      "answer": "@AEGIS-Agent 질문 또는 /aegis-mail 명령어를 사용하여 상호작용할 수 있습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "5e9135cc20540df1684ee49405c7a577"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-089",
+      "query": "삼성 E&A 프로젝트의 소유권 이전 후 문서는 어디에 표시되나요?",
+      "answer": "문서는 사용자의 Google Drive에 표시됩니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "72f4e8f6f917019658886f884c75ed71"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-090",
+      "query": "메일 테스트 메시지가 발송된 날짜와 시간은 언제인가요?",
+      "answer": "2026년 8월 28일 오후 1시 31분입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "4ea679cd4f6590cb81297c7fd0a537fc",
+        "f4e26f1b24828bf5f951db039bf12a51"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-091",
+      "query": "요주의인물 필터링 자동화 프로젝트의 Slack 채널 이름은 무엇인가요?",
+      "answer": "C0BTANA5HJ6",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "5a1104e84c7f5ab451faf10499567a52",
+        "0e7c137fe71e7f04c6b2b2e0b42111b6"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-092",
+      "query": "프로젝트 투입 관리_2025-023 문서에 접근하려는 사람은 누구인가?",
+      "answer": "leeyj@agilesoda.ai입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "4d347522c7b5417713adfa6f0a093674"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-093",
+      "query": "투자자산 매매내역 자동작성 에이전트 프로젝트의 주간 계획은 무엇인지?",
+      "answer": "이번 주에는 투자자산 매매내역 자동작성 에이전트 프로젝트에 대한 주간 계획을 수립한다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "b63e16af74f74e0f58b582ad9cd843a2"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-094",
+      "query": "농협과의 MVP 개발 과정에서 응답에 포함해야 할 항목들은 무엇인가요?",
+      "answer": "응답에 반드시 포함해야 할 항목들은 테스트 시나리오, wiki 문서, 파일업로드 문서, 지식검색에 사용할 데이터 등이 있습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "152ebc027c1d0359f61025f084815e48",
+        "f63c54aa282a9fa4bf82220833c0e78e",
+        "314ef8a4e29a833243725e48d46c375b",
+        "10864cfa9338acfff6b986fe12cd5236"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-095",
+      "query": "Google Cloud의 제품이나 계정 관련 중요 변경사항이 무엇인지 알 수 있나요?",
+      "answer": "중요 변경사항에 대한 구체적인 내용은 메일에 포함되어 있지 않습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "8f8696a1827c1a85dc61c93e15807156"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-096",
+      "query": "Caddy가 비정상 상태의 컨테이너에 트래픽을 보내는 이유는 무엇인가?",
+      "answer": "Caddy가 죽은 컨테이너로 트래픽을 송신하고 있어 502 에러가 발생할 수 있다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "bd6817f0b0bccee958b3cb25225e0c48",
+        "5c9ebf56f322e8a2be6244044edaa6af",
+        "cb7dcb786bb6b90e315be564da0eed19",
+        "ee55db075be35ac0c9cb8f37c7ddcde7",
+        "48d24ce433938516419ef939e864f838"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-097",
+      "query": "애자일소다 프로젝트에서 문서 소유자가 해야 할 작업은 어떤 것인가요?",
+      "answer": "문서 소유자는 제공된 링크를 클릭하여 baeksy@agilesoda.ai를 공동작업자 또는 뷰어로 추가해야 한다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "6f7afeb5ad3a77bac4072a8fa1006559"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-098",
+      "query": "참가팀에게 답변 제출 기한은 언제인가요?",
+      "answer": "참가팀은 내일 오전 11시까지 답변을 제공해야 합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "6abce2028b177cf47c5dfa883c50a267"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-099",
+      "query": "OA 업무도우미 AGENT 과제에서 외부개발 결정을 누구에게 전달했나요?",
+      "answer": "AX 전략부에 전달했습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "bd819b62ba136a8a33753b2e032843ff",
+        "b4b03c4fdcac5a4e9edbab2c8feb056d"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-100",
+      "query": "AI OCR 도입 프로젝트가 연결된 슬랙 채널은 무엇인가요?",
+      "answer": "C0BM4AZLCEB입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "97e60ee7245ca57c7254c8933c967a00"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-101",
+      "query": "16번 프로젝트에서 담당하는 인력이 프론트엔드와 백엔드 중 어느 쪽에 속하는지 알고 싶어하는 이유는 무엇인가요?",
+      "answer": "현업이 수행하는 인력의 프로필에 대한 궁금증 때문입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "566e2ffe651cd84841d70982818f4b7d",
+        "402721a475a592a8d1a26cd6e285f770"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-102",
+      "query": "배포 브랜치를 기반으로 새로 생성할 브랜치의 이름은 무엇인가요?",
+      "answer": "develop 브랜치입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "816376020ada0cc8faf89c68b803b373"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-103",
+      "query": "2026년 8월 28일에 발송된 메시지의 내용은 무엇인가요?",
+      "answer": "'1231231231213'이라는 메시지가 발송되었다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "82efa3a8a6ce0ad1ea9fcd9eb4359046"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-104",
+      "query": "FOS01 프로젝트에서 응답으로 위치 정보를 받고 있는지 확인하는 방법은 무엇인가요?",
+      "answer": "인터뷰를 통해 위치 정보가 오는지 여부를 확인해야 합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "255021a1c869a23d8d809470efe4d40e"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-105",
+      "query": "2026년 8월 28일 오후 2시 13분에 어떤 메시지가 발송되었나요?",
+      "answer": "'123123123123'라는 세 번째 메시지가 발송되었습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "60d61040526aac9415addce6d12fc7b8",
+        "23bed3eca76785969a79a8bf553a97b7"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-106",
+      "query": "2026년 8월 28일에 최필수가 보낸 두 번째 메시지는 어떤 내용인가요?",
+      "answer": "'ㅎㅇㅎㅇ'입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "6db1f604076e074af0e77b16e0e1cd25",
+        "4be2b262d94697942def6a41057b0bd4"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-107",
+      "query": "세아제강 프로젝트 문서에 대한 접근 권한을 어떻게 추가하나요?",
+      "answer": "문서 소유자가 제공된 링크를 클릭하여 pogoory@agilesoda.ai를 협업자 또는 뷰어로 추가해야 합니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "85c925d1d22286641c7886eb74d0e415",
+        "e016e310a1f798ea46ba62921dba1b5b"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-108",
+      "query": "프로젝트 투입 관리 문서에서 ehpark@agilesoda.ai에게 어떤 역할로 액세스 권한을 부여해야 하나?",
+      "answer": "문서 소유자는 ehpark@agilesoda.ai를 공동작업자 또는 뷰어로 추가해야 합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "5469485a5230f78a5c3e5ea37a466fa0"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-109",
+      "query": "3차 인터뷰 체크리스트 파일은 어디서 받을 수 있나요?",
+      "answer": "3차 인터뷰 체크리스트 파일은 Slack 대화에서 공유되었습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "c543dfd89b7c1cdf6a14d9e0e70bca8d",
+        "fcfa143b8679fcaf2bf4408c1e270419",
+        "381f42e6968c16481f10f170bcd0243c",
+        "50fd357abe4ed456d963f2f36762db8e"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-110",
+      "query": "세아제강 제조가부 프로젝트의 파일 소유자는 누구에게 접근 권한을 줘야 하나요?",
+      "answer": "ehpark@agilesoda.ai에게 접근 권한을 제공해야 합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "e016e310a1f798ea46ba62921dba1b5b",
+        "d6a19476cde61cadaea6bf800106421c"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-111",
+      "query": "jwshin@agilesoda.ai가 액세스를 요청한 문서는 무엇인가요?",
+      "answer": "프로젝트 투입 관리_세아제강_세아제강 제조가부 본 프로젝트.xlsx입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "fe5743929cadaa4e35763d4de9e5871f"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-112",
+      "query": "메시지 '메일 테스트'가 발송된 정확한 날짜와 시간은 언제인가요?",
+      "answer": "2026년 8월 28일 오후 1시 31분 56초입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "f4e26f1b24828bf5f951db039bf12a51"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-113",
+      "query": "애자일소다에서 출입 지문 등록은 언제 진행되나요?",
+      "answer": "내일 오전 9시에 진행됩니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "9a221489828e961700924f539036097e",
+        "dbcfe9b925b90a5e0f163a7cfec154c8"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-114",
+      "query": "프로젝트 투입 관리_2025-023 문서의 소유자가 해야 할 작업은 무엇인가요?",
+      "answer": "문서 소유자는 제공된 링크를 클릭하고 leeyj@agilesoda.ai를 협력자 또는 뷰어로 추가해야 합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "21aa6cd0ae87d9cda872de8074961d5b",
+        "5469485a5230f78a5c3e5ea37a466fa0"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-115",
+      "query": "농협은행 카드 업무를 통해 구현하는 AI Agent 금융 업무 처리모델 프로젝트의 처음 할 일은 무엇인가요?",
+      "answer": "첫 번째 할 일은 투입인력 관리표에 투입자 이름을 입력하는 것입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "bad843576923ac5dba2694510371dfce"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-116",
+      "query": "세아제강 제조가부 프로젝트에 누가 쓰기 권한을 요청했나요?",
+      "answer": "jwshin@agilesoda.ai가 쓰기 권한을 요청했습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "851ab295d7b11f0ded8ba397acc5e5ed"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-117",
+      "query": "risk-agent 상태가 어떻게 되었는지 확인할 수 있는 대화 내용이 무엇인가요?",
+      "answer": "risk-agent가 복구되었으며 현재 실행 중이고 건강 상태가 양호하다고 확인되었습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "70f3a6538d6e51a40e4ea68dfb4b0c79"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-118",
+      "query": "메일 테스트란 어떤 목적으로 진행되는 테스트인가?",
+      "answer": "메일 테스트는 이메일 시스템의 기능을 확인하기 위해 수행되는 테스트 활동이다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "941fa300c2fd527fdf36e805fc6d7a5a",
+        "a020c1cdd4f19ac16c6d51aed096724a"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-119",
+      "query": "현대모비스와 관련된 문서에 접근 권한을 주려면 어떻게 해야 하나요?",
+      "answer": "문서 소유자는 제공된 링크를 클릭하여 gwchoi@agilesoda.ai를 협력자 또는 뷰어로 추가해야 합니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "652925234163aceead85bf45508d039b"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-120",
+      "query": "proj_2026-038_nh농협은행_mvp의 이전 이름은 무엇이었나요?",
+      "answer": "이전 이름은 proj_2025-038_nh농협은행_mvp입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "53f84813326f9d5d0f0994ba1eb1ccf1"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-121",
+      "query": "프로젝트 메일을 자동으로 수집하려면 어떤 CC 주소를 사용해야 하나요?",
+      "answer": "projectintel+PRJ-0100B7B46CAD7A57D6D2@agilesoda.ai를 CC에 넣어야 합니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "5de6ec37cb655ad63d2594ce0ab68698"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-122",
+      "query": "농협은행 프로젝트에 필요한 문서 소유자 권한을 누구에게 요청했나요?",
+      "answer": "sgchoi@agilesoda.ai에게 요청했습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "d8d8029f8e5f872523574d1ed529597f"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-123",
+      "query": "swson@agilesoda.ai가 요청한 문서의 이름은 무엇인가?",
+      "answer": "프로젝트 투입 관리_2026-024_광주은행이다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "3fff9ba39a66802b07ce64e5f3e28ba0"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-124",
+      "query": "농협은행 카드 상품 추천 서비스 프로젝트에서 상태 변경 방법은 무엇인가요?",
+      "answer": "상태 변경은 메시지 입력창에 /인텔 입력 후 프로젝트 상태 변경을 선택하여 수행합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "75df908762a9f72708d5b96fd366095b"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-125",
+      "query": "애자일소다_사업실적 관리.xlsx 문서에 jopark@agilesoda.ai를 어떻게 추가하나요?",
+      "answer": "문서 소유자가 제공된 링크를 클릭하여 jopark@agilesoda.ai를 공동작업자 또는 뷰어로 추가해야 합니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "7bfc333e7a88ed1963f7f75bc40a2d4b"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-126",
+      "query": "공유된 Notion 문서가 아직 확정되지 않은 이유는 무엇인가요?",
+      "answer": "공유된 Notion 문서는 작업 중인 상태이기 때문입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "9a77c09da26328c74d275778e57b9509"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-127",
+      "query": "PRJ-2026-022 문서의 소유자는 누구인가요?",
+      "answer": "문서의 소유자는 노철균입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "d98ec865b0d449ef486c50c11aa728be"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-128",
+      "query": "백상이(패트릭)가 애자일소다(프로젝트_인텔) 폴더에 액세스를 요청한 날짜는 언제인가요?",
+      "answer": "2026년 8월 19일입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "cb871c2ac8b3eb2c8e0d16129811fbc1"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-129",
+      "query": "투입관리 원장을 업데이트해야 하는 이유는 무엇인가요?",
+      "answer": "실제 투입 데이터가 비어 있으면 인력 여력을 파악할 수 없고, 신규 제안 대응 및 프로젝트 인력 배치를 정확하게 판단하기 어려워지기 때문입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "d30f1527057a8a83cf9360f2b682af3e",
+        "6a37e81991e65882f9b709e38bcfecaa",
+        "b216183bfe29c59ce56d8dcde9e39985",
+        "07618d908944ec0b43fbdb7cfaf48e20"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-130",
+      "query": "2026년 8월 20일에 피터가 요청한 문서의 제목은 무엇인가요?",
+      "answer": "'프로젝트 투입 관리_2026-032_동양생명_AI OCR 도입.xlsx'",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "3a2631a481ae295d47dbfbbc5427b391"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-131",
+      "query": "최필수가 보낸 메시지의 내용은 무엇인가요?",
+      "answer": "'123123123123123'입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "4fab4455747945a8f64e6098b505d2e0"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-132",
+      "query": "프로젝트 담당 PM이 실제 투입 MM을 기입해야 하는 기한은 언제인가요?",
+      "answer": "9월 8일(화)까지입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "d282c6058dc35a7a41be0fe0db79dbfc",
+        "f0a30a514bce0b270cace744f60ec029"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-133",
+      "query": "AI Agent 공모 3차 인터뷰에 필요한 자료는 어떤 파일들인가요?",
+      "answer": "요구사항 설계서(한글)와 API 문서(Excel 형식)가 포함됩니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "9b95d906f0c635c0cd9d9a6448127294"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-134",
+      "query": "농협은행 MVP 프로젝트의 현재 상태는 무엇인가요?",
+      "answer": "수행중으로 변경되었습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "1ca9559459aeacb5b58e435132152514",
+        "9bbece46fda8c4cfc5e117158cfe18f1"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-135",
+      "query": "최필수가 회신한 메시지는 무엇인가요?",
+      "answer": "'ㅎㅇㅎㅇ'입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "394fc197044733aa99b3b2c4ff355fb7",
+        "eaf7ab804a51e6d8a0cf4be86595da1e",
+        "c6d8f1fb1e5349f9b02b524fba15b5a4"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-136",
+      "query": "애자일소다에서 출입등록 문제를 해결하기 위해 어떻게 요청해야 하나요?",
+      "answer": "출입등록이 안 된 사용자는 확인 요청을 스레드에 남겨야 합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "0578023674d52ad0ae8436a3f37fe9a3",
+        "1bd4d1ed472218751a76b67524dcdad8"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-137",
+      "query": "누가 AgentX 2팀 폴더에 액세스 권한을 요청했나요?",
+      "answer": "kmlee@agilesoda.ai가 요청했습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "214dde4b9e5529ddeb77e1cda03d0ea7",
+        "f5c1bd20a60e66fff4b944923cc19e4b"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-138",
+      "query": "최필수가 보낸 메시지의 발송일은 언제인가?",
+      "answer": "2026년 8월 28일 15:31:55 +0900",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "32773119041a4ef7d9c3fbe5611e99e8"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-139",
+      "query": "slkim@agilesoda.ai가 요청한 문서의 이름은 무엇인가요?",
+      "answer": "프로젝트 투입 관리_2026-024_광주은행입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "c6a0db1d082c83a0a4792f2bca49c2d9"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-140",
+      "query": "risk-agent 서비스의 상태가 언제 정상으로 돌아왔나요?",
+      "answer": "risk-agent 서비스는 정상 상태인 running=true, health=healthy로 확인되었습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "22d7232347d73b0e6acd44ecf8d13f85"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-141",
+      "query": "세아제강 프로젝트에 대한 스프레드시트의 writer 권한 요청자는 누구인가?",
+      "answer": "pogoory@agilesoda.ai입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "532e09534e8ffa3ded712491e561c44f",
+        "6098a8e845bef72317b39727f4cc5502"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-142",
+      "query": "mvp_app과 mvp_ui 저장소의 용도는 무엇인가요?",
+      "answer": "mvp_app은 애플리케이션 개발을 위한 저장소이고, mvp_ui는 사용자 인터페이스 개발을 위한 저장소입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "86bb36a83bdd92184d6e3c37f7590320",
+        "20003d753a7d669b35482313d0c2a058"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-143",
+      "query": "AgentX 1팀 문서의 소유자가 누구인지 알고 싶어요.",
+      "answer": "문서의 소유자에 대한 정보는 원문에 포함되어 있지 않습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "91dd8d150e29d06a42679e8dc2fd8c3c"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-144",
+      "query": "MVP에서 PDF 다중 업로드는 어떤 역할을 하나요?",
+      "answer": "MVP의 필수 기능으로 결정되었으며, 여러 PDF를 한 번에 업로드할 수 있어야 합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "f9e12565e0c64f636d1ebd20dd8868e4"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-145",
+      "query": "프로젝트 메일에서 어떤 참조 주소를 사용해야 수집이 자동으로 이루어지죠?",
+      "answer": "projectintel+PRJ-78399233D1145F006B96@agilesoda.ai를 참조(cc)에 넣어야 합니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "a98e906be5c54d2610252283961f7efe"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-146",
+      "query": "세아제강 프로젝트 채널 연결 작업의 원장 반영은 어떻게 되나요?",
+      "answer": "세아제강 프로젝트 채널 연결 작업의 원장 반영은 등록 및 확인이 완료되었습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "10b0e6e8f2c3d90a67cec0d74b56dda8"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-147",
+      "query": "2026-022 프로젝트의 액세스 요청자가 원하는 권한 수준은 무엇인가요?",
+      "answer": "요청자는 writer(작성자) 역할을 원하고 있습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "694c0b46a2971bd0fc3398992d91806d"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-148",
+      "query": "최슬기는 sgchoi@agilesoda.ai를 어떤 역할로 추가해야 하나요?",
+      "answer": "최슬기는 sgchoi@agilesoda.ai를 협업자 또는 뷰어로 추가해야 합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "9fe31f4e983543a5eeb7d4259b253d2c"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-149",
+      "query": "DN솔루션즈의 전사 문서 지식자산화 구축 프로젝트의 현재 상태는 무엇인가요?",
+      "answer": "수행중입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "969ca3bea806865982c0d98853b8a3ce"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-150",
+      "query": "메일 테스트에서 언급된 참조번호는 무엇인가요?",
+      "answer": "참조번호는 1231241입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "3386e2fb20dafccf989f4a20120f18f8",
+        "75ec51d7296f0bc5c8d01a5a1d7d3f34"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-151",
+      "query": "농협은행 AI Agent 기반 요주의인물 필터링 자동화 프로젝트의 초기 작업은 무엇인가요?",
+      "answer": "투입인력 관리표에 투입자 이름을 입력하고, RFP·SoW·회의록·산출물 최신 링크를 공유하며, 프로젝트 대시보드에서 현황과 리스크를 확인하는 것입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "a71bd02e626ea1662a1568e3531ca5ac",
+        "22553d7629ec7fbd780c143b41313e16"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-152",
+      "query": "신한라이프 프로젝트 투입 관리의 소유권은 언제 이전되었나요?",
+      "answer": "2026년 8월 12일에 소유권이 이전되었습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "7e501e322c68859d2d83a4a42833b1a4",
+        "96c9406184fa4e430c4125ac0092667a",
+        "cc96b8d8b3f8bca52611b0d59de66e3b"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-153",
+      "query": "이민주가 요청한 권한은 무엇에 대한 건가요?",
+      "answer": "이민주가 요청한 권한은 '프로젝트 투입 관리_2026-032_동양생명_AI OCR 도입.xlsx'에 대한 쓰기 권한입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "f29bea625d332815cd8b93ca15b36c7c"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-154",
+      "query": "최필수가 메일 테스트 메시지를 보낸 날짜와 시간은 언제인가요?",
+      "answer": "2026년 8월 28일 10:34:27 +0900입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "71aee2b225935ec00503490a097f063c"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-155",
+      "query": "3차 인터뷰 체크리스트와 관련하여 피드백은 어떻게 제출해야 하나요?",
+      "answer": "인터뷰 전에 필요한 수정 사항이 있으면 피드백을 제공하면 됩니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "693b57a92024c3abb7d72059076f8285",
+        "daba7fa0368d599bd62206a8589c8823",
+        "82578905a6354ed6be1dfbc5cd06ad13"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-156",
+      "query": "2026년 8월 28일에 최필수가 보낸 메일 내용은 무엇인가요?",
+      "answer": "'ㅎㅇㅎㅇ'이라는 회신이 발송되었습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "18b067f0d0c0709d4f482aeb51dbc726"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-157",
+      "query": "안민균이 어떤 회사에서 어떤 직책을 맡고 있나요?",
+      "answer": "(주)애자일소다의 경영지원실 책임이다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "306d765a3b23b91214087fb2e497deff",
+        "55d1b07deb5307c6ad6f8ffa73189b82"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-158",
+      "query": "최필수가 'Gmail 메일 테스트' 스레드에서 보낸 메시지의 제목은 무엇인가요?",
+      "answer": "'메일 테스트'입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "813d0322a479afa76228871f9c93f8aa"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-159",
+      "query": "워크플로우 PPT의 몇 번째 슬라이드에서 POP 코드의 위치를 확인할 수 있나요?",
+      "answer": "3번째 슬라이드에서 확인할 수 있습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "f207d4b7c8b990a6869bbaadaa266f62"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-160",
+      "query": "ehpark@agilesoda.ai가 요청한 문서의 제목은 무엇인가요?",
+      "answer": "'프로젝트 투입 관리_세아제강_세아제강 제조가부 본 프로젝트.xlsx'입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "b39d2afaf964d30691ab22712c22713f"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-161",
+      "query": "농협은행 프로젝트 투입 관리 문서의 소유자는 ds.chkang@gmail.com에게 어떤 역할을 부여해야 하나요?",
+      "answer": "문서 소유자는 ds.chkang@gmail.com을 협력자 또는 뷰어로 추가해야 합니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "8c27a6e548ed1170dc7db1ad3e50a339"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-162",
+      "query": "프로젝트 PRJ-2026-022의 채널 연결 작업에서 누가 실행했나요?",
+      "answer": "실행자는 U0BBCPVEHF0입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "56c48946e09ef214e8ab8e878ad1f143",
+        "1dcf9544e6143d20079bf28f90fe8da5"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-163",
+      "query": "최필수가 회신 메시지를 보낸 날짜와 시간은 언제인가요?",
+      "answer": "2026년 8월 28일 오후 2시 14분입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "3135639b24b5e13837e4816fe9a1ec52"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-164",
+      "query": "/aegis-email 명령어의 용도는 무엇인가요?",
+      "answer": "이 명령어는 이메일을 AEGIS Knowledge에 연결하고 수집하거나 이메일 기반 작업을 조회할 때 사용됩니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "58e0cc3b7213eb07b0753614da35024a"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-165",
+      "query": "농협은행 투자자산 매매내역 자동작성 에이전트와 관련된 Slack 채널 이름이 무엇으로 변경되었나요?",
+      "answer": "채널 이름이 proj_2026-038-c_nh농협은행_투자자산-매매내역-자동작성-에이전트로 변경되었습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "7d2e2c5a3f639c631514f4f37dcd683d"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-166",
+      "query": "3차 인터뷰에서 외부 개발 과제로 어떤 것들이 화면 초안을 준비해야 하나요?",
+      "answer": "1, 3, 5, 8번 과제가 화면 초안을 준비해야 합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "f3a3c9520c939e57a4a947a26df9ab8c",
+        "d63b29cc16764c12254dc82686c9903e"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-167",
+      "query": "프로젝트 투입 관리의 문서 소유자는 누구인가요?",
+      "answer": "문서 소유자는 이민주입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "d399595da875bff97abee1894df02c27"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-168",
+      "query": "AEGIS 프로젝트에서 지식관리를 위해 어떤 시스템을 사용하고 있나요?",
+      "answer": "AEGIS는 OKF 기반의 지식관리 시스템을 사용하고 있습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "45a49162bb1a3d97b9aa6e2930f40819"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-169",
+      "query": "AgentX 1팀 폴더에 대한 액세스를 요청한 사용자는 누구인가요?",
+      "answer": "mshwang@agilesoda.ai입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "7457fb59ea869bfbe6857cf4b5054ec8",
+        "33b4424a5efbf56c5c7f09bce29e072c",
+        "b6b10d3ecc156965426f0f6fbcdc1fd8"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-170",
+      "query": "어떤 질문이 현업들이 프로젝트 인력의 프로필에 대해 할 수 있을까요?",
+      "answer": "현업들이 프로젝트 수행 인력의 프론트 또는 백엔드 역할에 대해 궁금해할 수 있습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "402721a475a592a8d1a26cd6e285f770",
+        "566e2ffe651cd84841d70982818f4b7d"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-171",
+      "query": "애자일소다(프로젝트_인텔) 폴더의 접근 요청은 언제 이루어졌나요?",
+      "answer": "2026년 8월 27일에 이루어졌습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "266762a90005558b55036ce49675bb45"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-172",
+      "query": "AEGIS 프로젝트의 지식 관리 시스템의 주요 목적은 무엇인가요?",
+      "answer": "AEGIS 프로젝트의 주요 목적은 OKF 기반의 지식 관리 시스템을 구축하는 것입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "05541ccdf9e2b7620635de87a6543db5",
+        "45a49162bb1a3d97b9aa6e2930f40819"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-173",
+      "query": "PRJ-2025-023 프로젝트의 원장 반영은 어떻게 되었나요?",
+      "answer": "해당 작업의 원장 반영은 등록과 확인이 완료되었습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "9da0ec3721da50bfb52638361291236e"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-174",
+      "query": "oa-assistant Git 리포지토리가 어떤 경로에 있나요?",
+      "answer": "oa-assistant Git 리포지토리는 git.sparklingsoda.ai:8443/nhbank/apps/ 경로에 위치합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "1adf31204a887c9fd316036307f742b3"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-175",
+      "query": "브랜치 삭제가 작업에 미치는 영향은 어떤가요?",
+      "answer": "브랜치 삭제는 작업에 영향을 주지 않는 것으로 확인되었습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "a8cd66dd98f2a3b6834b0af4512cbe27"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-176",
+      "query": "내일 회의에서는 어떤 내용을 테크팀이 보여줄 예정인가요?",
+      "answer": "테크팀이 미리 개발해둔 내용을 보여줄 예정이다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "09e750fd807194c8e9057a48407d54d8",
+        "1e1a6cec8372ab3e0acd2bffe56e97ff",
+        "806231e874246c4b5734cab412cf4ec5"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-177",
+      "query": "Slack 채널에서 공유된 선불 문서의 URL은 무엇인가요?",
+      "answer": "https://prepay-docs.168-107-13-173.sslip.io/",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "26cc72263ad122bf236bfb35b5e8c7b2"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-178",
+      "query": "개발환경이 어떻게 변경되었나요?",
+      "answer": "참가팀의 요청으로 내부에서 외부로 변경되었다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "4cb8cd43d648e8c34553f715fdf18588",
+        "3225efd904ca84b0b9d49eb25b2e8a3c"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-179",
+      "query": "노션 문서 파일 관련해서 어떤 내용이 전달되었나요?",
+      "answer": "노션 문서 파일을 전달한다는 내용입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "101946d9d9924f7dc176ff27e9fa5a5f"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-180",
+      "query": "16번 과제에 배치될 개발자는 어떤 유형인가요?",
+      "answer": "16번 과제에는 풀스택 개발자가 투입될 예정입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "8eec991ba35d623490d874100aa27c67",
+        "f5bbaf24ace5c1d7f40b4bd4316f24b2"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-181",
+      "query": "농협은행의 마케팅허브 메시지 AI Agent 구축 프로젝트에서 프로젝트 상태를 어떻게 변경하나요?",
+      "answer": "상태 변경은 메시지 입력창에 '/인텔'을 입력한 후 '프로젝트 상태 변경'을 선택하여 할 수 있습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "dac0b8f81bf649c9ceca4c80d5ecc1f8"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-182",
+      "query": "애자일소다에서 오후 1시 미팅은 어느 층의 대회의실에서 열리나요?",
+      "answer": "3층 대회의실에서 열립니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "f5e6c0dfa8df1e163af109eced1a148c",
+        "63eeb2435a08e12c05723458312d91be"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-183",
+      "query": "3차 인터뷰 체크리스트에 대해 어떤 피드백을 제공해야 하나요?",
+      "answer": "인터뷰 실시 전까지 체크리스트에 수정이 필요한 내용이 있다면 피드백을 제공해야 합니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "7b713b385460ea0be92164c63c966de7",
+        "daba7fa0368d599bd62206a8589c8823"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-184",
+      "query": "애자일소다의 지문 등록 추가 일정은 언제인가요?",
+      "answer": "10시 15분에 3층 입구에서 추가 등록이 진행됩니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "dbcfe9b925b90a5e0f163a7cfec154c8",
+        "4a4f5c49a6bee56d2c0f512965076f18",
+        "694c6c51b797f5b8ccfbdd20c17efb66",
+        "576c50022228844d4deead0b8017cda7"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-185",
+      "query": "6팀이 MVP 채널에 어떻게 접근할 수 있는지 알고 싶어요.",
+      "answer": "6팀은 MVP 채널에 접근할 수 있습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "d091377f2a915f507ef8f5d42794c6cd",
+        "07f84e3921bb5bb365d2111817397538"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-186",
+      "query": "서울주택도시개발공사 프로젝트의 채널 연결 작업의 현재 상태는 무엇인가요?",
+      "answer": "준비 상태입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "be620009de64e9383ac9e297c159329d"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-187",
+      "query": "최근 Slack 채널에 누가 다시 참여했나요?",
+      "answer": "대부분의 사용자들이 다시 채널에 참여했습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "06bcb2cb3b6eec1ac47fbe95676d748b"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-188",
+      "query": "박준석 과장에게 전달된 3차 인터뷰 스케줄은 무엇인가요?",
+      "answer": "3차 인터뷰 스케줄은 구글 시트에 업데이트되어 있다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "b84b2efd3c999d01176bb3ea0ff509dd"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-189",
+      "query": "PF 팀 현업 인터뷰 일정이 언제로 연기되었나요?",
+      "answer": "9월 8일로 연기되었습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "2cdf4558e19420a967c217b4c2605b05",
+        "f69bcf434f48f4ea3162c93c7c191e9c",
+        "bd5de2c01cf2423d98c6f401f8e753e9"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-190",
+      "query": "aml-watchlist 애플리케이션의 Git 저장소 링크가 공유된 슬랙 채널은 어디인가?",
+      "answer": "#C0BTANA5HJ6",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "6748389c531ce21601f2a9b4ca42779b"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-191",
+      "query": "농협은행 PF AI Agent 프로젝트에서 처음 해야 할 일은 무엇인가요?",
+      "answer": "투입인력 관리표에 투입자 이름을 입력하고, RFP·SoW·회의록·산출물 최신 링크를 채널에 공유하는 것이 처음 해야 할 일입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "0dc6661cbca3ab00f0e355170e5bf2d0"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-192",
+      "query": "PF AI Agent 프로젝트에서 AI의 역할은 무엇이며, 담당자는 어떤 방식으로 AI의 결과물을 다루게 되나요?",
+      "answer": "PF AI Agent 프로젝트에서 AI는 여신 심사나 약정 확정을 단독으로 수행하지 않고, 담당자가 AI 산출물을 검토, 수정 및 확정하는 역할을 합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "2cb1ab9ae43d9c80a429aa8535c30ef9"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-193",
+      "query": "인력 배분은 어떤 기준에 따라 이루어지나요?",
+      "answer": "인력 배분은 각 과제 수행에 필요한 프로필에 따라 이루어진다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "9a5447516e6170f6a612e2b64cdbb1b8"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-194",
+      "query": "농협은행의 '기업e금융 One-Stop AI Agent' 프로젝트에 참여하는 팀 멤버는 누구인가요?",
+      "answer": "팀 멤버는 U0BBCPVEHF0, U0BCK9BGURF, U0BCRQGGCVC, U0BDNDBHWLV입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "ed3e8880e59b445d4ca5b562876f2e21",
+        "d835bc22819f0c2113f252a0963c2102",
+        "ad74f85d1abed3cc7dc59f1e5f8b18b6",
+        "bad843576923ac5dba2694510371dfce"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-195",
+      "query": "회의실과 참석자 확인은 언제까지 해야 하나요?",
+      "answer": "인수인계 회의 시간에 맞춰 확인해야 합니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "d0afb7f41f4a62c002caae42e60a807a"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-196",
+      "query": "인수인계 회의는 오늘 몇 시에 시작되나요?",
+      "answer": "오늘 15시에 시작됩니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "bea942762ff4a97076a71274944845a8"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-197",
+      "query": "다음 할당된 작업 B에 대한 연계된 작업은 무엇인가요?",
+      "answer": "연계된 작업은 C와 D입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "9ca1ec4c68ef8ba3f5914cfed46ede1f",
+        "bbb869c8b007e78d1dffc4ebbe07b3e9",
+        "3c3a3b5958230e4fc5151894e6103932",
+        "2686a055ff2a037665b3f3e7ae414409"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-198",
+      "query": "intel.agilesoda.ai에 접속하려면 어떤 계정으로 로그인해야 하나요?",
+      "answer": "구글 계정으로 로그인해야 합니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "8e65b1a5a910009b54f579a5ce80b6c5",
+        "a4a2bf9f15a33310de2f11381368b5eb"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-199",
+      "query": "대시보드 컨테이너의 상태를 확인하는 명령어는 무엇인가요?",
+      "answer": "docker ps -a | grep dashboard 명령을 사용합니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "7ed6da6e88cb718520c8e1cd42ee3f48"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-200",
+      "query": "세아제강 제조가부 프로젝트와 연결된 Slack 채널의 이름은 무엇인가요?",
+      "answer": "C0BFASHFVNE입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "4a2ac6c5aa661252a62f12b81c6e233e"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-201",
+      "query": "테이블 변환 프로세스에서 몇 개의 열을 가진 테이블을 몇 개의 열로 변환하나요?",
+      "answer": "7개 열의 테이블을 5개 열의 테이블로 변환한다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "b3a8660b0a735479c70a0be8832a7d6a",
+        "373da0024f1aae560cf41f05631cc6d7"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-202",
+      "query": "프로젝트 'PRJ-2026-022'의 작업 결과 상태는 무엇인가요?",
+      "answer": "작업 결과 상태는 completed이다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "41ce46b23e31474359ca37e9c641dcd9",
+        "ad308a70be022aba5e3bd209060ded4f",
+        "be620009de64e9383ac9e297c159329d"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-203",
+      "query": "AEGIS에 자동으로 적재되는 메일 주소는 무엇인가요?",
+      "answer": "aegis+2026-038-b@agilesoda.ai입니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "d843f2a58d43734b108a1e8177738348",
+        "11e91f6196ccff049a2fb731169f67fc",
+        "9f295fb9ed422b47e41f3a5aaab6af26"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-204",
+      "query": "ProjectIntel과 관련된 작업 결과가 원장에 어떻게 반영되었는지 알려줄 수 있나요?",
+      "answer": "모든 실행 결과가 원장에 반영되었습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "36e898c9bb89e0de40121d8a0a71c9e4"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-205",
+      "query": "프로젝트 요구사항 회의는 몇 시에 진행되나요?",
+      "answer": "오후 4시에 진행됩니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "c4a67caa506d1eb41496213d7d08d68d",
+        "4ca7d2dbdac544be4a88c5cc5de656a5"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-206",
+      "query": "농협은행 카드 업무와 관련된 프로젝트 대시보드에서 어떤 정보를 확인할 수 있나요?",
+      "answer": "프로젝트 대시보드에서 현재 현황과 리스크를 확인할 수 있습니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "678212a24e24241f9c4da0df74ecb05d",
+        "97f9deb186a80b3a6eb14d6dd725f048",
+        "f0c767574eb34ab595146f072f1aec9b",
+        "e9e8d26bb079ca85ccc0cfe67a733776",
+        "fad781ff9b585c291dad0909aa167023"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-207",
+      "query": "베르가가 6팀 인원들을 어떤 채널에 초대한다고 했나요?",
+      "answer": "필요한 채널에 초대하기로 했습니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "9562ffb79b8f2141c836141b28039f6a"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-208",
+      "query": "Slack 설정을 본인이름으로 해야 하는 채널은 어떤 채널인가요?",
+      "answer": "해당 채널은 C0BSW8Y2AD9입니다.",
+      "kind": "lookup",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "2236da5218832a8b3b8f0a7262104835"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "lookup-209",
+      "query": "농협은행 PF AI Agent 프로젝트에서 상태 변경을 하려면 어떻게 해야 하나요?",
+      "answer": "상태 변경은 메시지 입력창에 /인텔 입력 후 프로젝트 상태 변경을 선택해야 합니다.",
+      "kind": "lookup",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [
+        "212c1614c2fc9ddb9a33dc0e33728c23"
+      ],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "exhaustive-000",
+      "query": "구글 드라이브에서 pptx 파일을 전부 조회해 주세요.",
+      "answer": "조건 {\"source\": \"google_drive\", \"file_extension\": \"pptx\"}에 해당하는 문서 12건",
+      "kind": "exhaustive",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'google_drive' AND lower(d.title) LIKE '%.pptx' ORDER BY 1",
+      "document_ids": [
+        "19fb888e6b59287d25c56ab8c87bdd79",
+        "3b9932c9290887eeb8c263a6ecbb2873",
+        "43d3dd43e76bef7553ae6a803bfa8ac3",
+        "53ceb1786cd82119ce6353713e0fd457",
+        "57074ae606235cb09b4fa054f90de12f",
+        "5e6a5ca86364a039617d327649416fef",
+        "7f30ecf41ccd666f24c00b463f875774",
+        "a7c0472375303cc0210131083610fd23",
+        "b17d925afb0fd16c2d6ee75ac50666f3",
+        "d7a8b2ff3aee5c46b61cab89566f9781",
+        "d7d6731a220bb65ba65b91e9cda14c3a",
+        "f31074cfc590e08ff47cb267130066d2"
+      ]
+    },
+    {
+      "id": "exhaustive-001",
+      "query": "전수 조회해주세요. 슬랙 채널 #proj_2026-038-b_nh농협은행_pf-ai-agent의 모든 문서를 찾아주세요.",
+      "answer": "조건 {\"source\": \"slack\", \"channel\": \"#proj_2026-038-b_nh농협은행_pf-ai-agent\"}에 해당하는 문서 19건",
+      "kind": "exhaustive",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'slack' AND s.metadata->>'channel_name' = 'proj_2026-038-b_nh농협은행_pf-ai-agent' ORDER BY 1",
+      "document_ids": [
+        "02ec0049459196fcd729cdadee986438",
+        "1014c27eaa469ccd0d2ffd005d93ff31",
+        "22b17a6b3c32a845b8bf0a814d52cd3f",
+        "42d3fdccdb6f5ce6564adff8cf6cb50d",
+        "4e2a31a248ca237cbf4f1ab05560add2",
+        "5016b9a9df5769e8730492d375ed4c65",
+        "59d878b50bd68c7ecae4af3ebe047e5a",
+        "5c564c9129a0d1a0e699ddfac66b6e3a",
+        "5e7596f418e2297b41f087ca674c91b9",
+        "7b825db0221a165b2a615aa4e4d8f673",
+        "826f69c1ccf2833404791a108372992b",
+        "94978c7112344e3a760722935073a870",
+        "a1613fe0d347ea510016f80d684eea9e",
+        "a86f5aff3077b3917b466f4751f33f08",
+        "b491e384ccf90cb150be48e8e3bf709e",
+        "b594d8c5465d0295dc0ed459b5d73f52",
+        "df63b805caeb4048ed3ab610c81f1534",
+        "f4bc9c0e458f522563e82db81fca6ad5",
+        "fa3b08747f79188f82b75760e07c6e4b"
+      ]
+    },
+    {
+      "id": "exhaustive-002",
+      "query": "메일에서 2026년 6월에 해당하는 문서를 전부 찾아 주세요.",
+      "answer": "조건 {\"source\": \"gmail\", \"period\": \"2026-06\"}에 해당하는 문서 3건",
+      "kind": "exhaustive",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'gmail' AND date_trunc('month', COALESCE(s.modified_at, s.collected_at) AT TIME ZONE 'Asia/Seoul') = '2026-06-01'::timestamp ORDER BY 1",
+      "document_ids": [
+        "261283784ebb1289f0cdd9e323824dfd",
+        "34f773fe28fe2895437070fb060bfc11",
+        "c7639fe9ce1285d96baf1c5ecbea1014"
+      ]
+    },
+    {
+      "id": "exhaustive-003",
+      "query": "구글 드라이브에서 csv 파일을 전부 찾아 줘.",
+      "answer": "조건 {\"source\": \"google_drive\", \"file_extension\": \"csv\"}에 해당하는 문서 3건",
+      "kind": "exhaustive",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'google_drive' AND lower(d.title) LIKE '%.csv' ORDER BY 1",
+      "document_ids": [
+        "532892a8f1879d5201b83ef8cde656be",
+        "79c56ab8294d815d18cde4405ea725f0",
+        "dfe729d9f6ec8850c9817403364299e9"
+      ]
+    },
+    {
+      "id": "exhaustive-004",
+      "query": "슬랙 채널 #proj_2026-038-j_nh농협은행_카드-업무를-통한-ai-agent-금융업무-처리모델-구현의 모든 문서를 전수 조회해 주세요.",
+      "answer": "조건 {\"source\": \"slack\", \"channel\": \"#proj_2026-038-j_nh농협은행_카드-업무를-통한-ai-agent-금융업무-처리모델-구현\"}에 해당하는 문서 11건",
+      "kind": "exhaustive",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'slack' AND s.metadata->>'channel_name' = 'proj_2026-038-j_nh농협은행_카드-업무를-통한-ai-agent-금융업무-처리모델-구현' ORDER BY 1",
+      "document_ids": [
+        "08c1c7fc24b0109a8e5f699c91520380",
+        "1b2abe9a2eb7ea78351ae3d66f384f29",
+        "1d9b561be2adb3378ce78b26a13d2e80",
+        "2df9e0005849db83b1fe1b2228c65949",
+        "2ebeda6e2d8dff3e67839b2ead05c914",
+        "2facc998a8d19e483355341e988e96a0",
+        "313b9acbcb1dc274a9a1eb5bae7484f9",
+        "9fc919c1a7e2cd13939dc250c69d915f",
+        "b6c6cc9b9aeba89d68504b2ec682db76",
+        "c499001e6a9ff4ee27c3675c35889f59",
+        "c957ccf04365220dcf7d0993f88e3e5a"
+      ]
+    },
+    {
+      "id": "exhaustive-005",
+      "query": "메일에서 2026년 8월에 해당하는 문서를 모두 찾아 줘.",
+      "answer": "조건 {\"source\": \"gmail\", \"period\": \"2026-08\"}에 해당하는 문서 48건",
+      "kind": "exhaustive",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'gmail' AND date_trunc('month', COALESCE(s.modified_at, s.collected_at) AT TIME ZONE 'Asia/Seoul') = '2026-08-01'::timestamp ORDER BY 1",
+      "document_ids": [
+        "051f674ee355d570e2f98289e0b9fbdd",
+        "06fc2da74e167c33ec7429c1f93623ca",
+        "0aa332babacb94a022e4126aca887a87",
+        "156dea7aab1fee827c11c1401e895625",
+        "208773b4f9e89420ceb96d99adedd2c8",
+        "20eed42c0bcccc29ca846e7eca1a51c3",
+        "229e3a10ce4bb79b7b3b848afed5f6ac",
+        "26ea0e1e9f3f75bc28f773afbf62a1d5",
+        "3077ce784acd2f253e4c9f24dac4f88e",
+        "3186028ff8a7409173c050530751f42b",
+        "37588771659d7df82f8e7053a3ff939e",
+        "39a2e737e04091e78034a451e958cfa3",
+        "3af1873d1cee9a91f0c143e6163004dd",
+        "410852b07001b87f56a3b1f23e73ab58",
+        "41845682f3817c919bc7e87fa5006099",
+        "42ea2e410aa94cfb4f953894cd0318b6",
+        "51a30b62bc27cadef15b3a4350b91482",
+        "52a817c144938f65d94065c83f76989c",
+        "52ef2a4ed1d8b7c6310bef2309192502",
+        "559e1e106b7eaa09daf74607f16ebaa0",
+        "59ed0c5079f6e74186ad52ae2e2db57d",
+        "61b8f05d50437089856feb79e0d2cd92",
+        "68c6807142ca37f2c26e8ea270737cbd",
+        "79fe691e99bdf69f56039ba58556d58d",
+        "7b51f2edc5ad64de17c92d9c3141329c",
+        "85387207196f7bafa0ab3a5f0c85dc5b",
+        "8a125263470985d7bdecfc747f6abc42",
+        "8a555c3d69e3dae5ca9d859f293d72e1",
+        "8f3ac6822a1526e4f34170a7e3adecf3",
+        "8f5149e92de9b7673ddebec6b506cb01",
+        "932d00b6a48855e02cf7cea57c6b898c",
+        "9565cb093d088e5cb019a995828533d2",
+        "a0f9aed895639d285a8dd8d52c5dd260",
+        "a6b3da22aa87055c20893d720ccc7ab0",
+        "b48c7ec18a1336f961f73153e698e408",
+        "b5580b99bea8835a142576d89631dc57",
+        "cb81e73b8a8ef978580460013272b20c",
+        "d1d4e0f2f3a9be0a9bc9b5dbe653655f",
+        "d2194f9e088db2661250ef18805fa9cd",
+        "d401dcb7d9e9af0c2f16cb4d8b5a0e09",
+        "d570fc2fe6caea1da4ec2a0666dda670",
+        "dec1da6157172d7d8206882c61617ee8",
+        "e3531cb3ea6228b702248858037113e6",
+        "e558a6c8dbcaac78be0496e25e5ac5a3",
+        "f0c13a0c82a1385b47b7256e178da52d",
+        "f49f045eff880860cee45a131b5b56ef",
+        "f769581dbce0d65e2094663ec6076dfa",
+        "fd87499d8ea661a5fbc7ad5d29453468"
+      ]
+    },
+    {
+      "id": "exhaustive-006",
+      "query": "구글 드라이브에 있는 모든 .md 파일을 전수 조회해 주세요.",
+      "answer": "조건 {\"source\": \"google_drive\", \"file_extension\": \"md\"}에 해당하는 문서 19건",
+      "kind": "exhaustive",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'google_drive' AND lower(d.title) LIKE '%.md' ORDER BY 1",
+      "document_ids": [
+        "037e64a74be1fa40684070313973242e",
+        "1b140b300bf0ed395420f4fc6e0c779d",
+        "1c061e8dede58633acfdf77f41009462",
+        "1e551c7fc23dfe1dee6059a13962d561",
+        "217be20f362fae5df813e8054b92474f",
+        "24b6d60f082fb1edabe4f044873e2ad0",
+        "2fd084f9819ac42f0c1ed1d8edb15e60",
+        "4d81d723d811dba6e13b79b1a0d06ad3",
+        "51ef8401f10b68b13161b85751d0bc0f",
+        "5d4041d05983754cd569facf1a1f2677",
+        "607631f943ca8e24faa783b9800a6d63",
+        "7f8a0f65abdac88af1b8130db961428a",
+        "b121a7c6609c914c564f3c9647c00bb9",
+        "bf7bce017723cadd694848c725d77375",
+        "c1dadd318aefb5a57397d04a4107f012",
+        "dc47d7f7302682c52da6ac6aa5aa3b4c",
+        "e6ff135541f9414bd711d2179f81023f",
+        "eb41c306a7359b09d2c96684ecb4347d",
+        "ebaecf69906e4f3503b89fc30b890c45"
+      ]
+    },
+    {
+      "id": "exhaustive-007",
+      "query": "슬랙 채널 #project-intel-개발자에 있는 모든 문서를 전수 조회해 주세요.",
+      "answer": "조건 {\"source\": \"slack\", \"channel\": \"#project-intel-개발자\"}에 해당하는 문서 31건",
+      "kind": "exhaustive",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'slack' AND s.metadata->>'channel_name' = 'project-intel-개발자' ORDER BY 1",
+      "document_ids": [
+        "0d8059e03a497ba2d1a375880b262efb",
+        "0ffca0ee499d1f2586ff9684e4215c79",
+        "1834cdb3f134b69bf435fe9296420b89",
+        "2d6e99fc13d545766fae11265027db29",
+        "30c56ccef8e7918a588698e60d08335d",
+        "32919336a8c3c5d3436a1968fa3b6ed5",
+        "43a8bf49ea4c825f7fea6dd049236b30",
+        "4643e0fa5678704f488ac9c04d922281",
+        "4644be15eda3bee9223cd1708b4519fa",
+        "475a66299a30a4e36a744215c498c5cc",
+        "4964de261d6fbaaa5d1da5c412e5b891",
+        "49b8275b3088ebbb54fd1d8bfc239a4d",
+        "4e6d7dc4f16cf6726e90fd1c942a1f22",
+        "668d59e736649154b1823af13ec1d5d5",
+        "6852a12628e6d92b6c208e7de934e081",
+        "6a75128cc793f19c655d6ed30c557815",
+        "7d80d325da608d771b05144315c8be13",
+        "805487acf49619183fd5389dee5f0e85",
+        "9f024a2daea5c47dd4edfd1d9d6a6567",
+        "adf8abb680b44d8c23e1580811334a35",
+        "ae7f87244c310e1513d5776bac90a15c",
+        "aef1239e9b3efc2fe78a84f3ce8a340c",
+        "b22c82e6563abc1d375db577c554d8ad",
+        "c173f9c2d218ddb8ed46fdeb32d94968",
+        "c502cf57283f478662fa47172713a9f0",
+        "ca7a68822b93ffced2df744bde1a8011",
+        "ce33880d30e10ce1f41ba312f7bfdc6b",
+        "d806dfe6bf727ad707c59a26a8c7e29f",
+        "e231f3e66929a30d9b091e020a8a9d60",
+        "e307e68addf3a281b095ec42e5b8f4b8",
+        "ef945fff099a3a3e6094dc67489827aa"
+      ]
+    },
+    {
+      "id": "exhaustive-008",
+      "query": "슬랙 채널에서 2026년 7월에 해당하는 모든 문서를 찾아주세요.",
+      "answer": "조건 {\"source\": \"slack\", \"period\": \"2026-07\"}에 해당하는 문서 7건",
+      "kind": "exhaustive",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'slack' AND date_trunc('month', COALESCE(s.modified_at, s.collected_at) AT TIME ZONE 'Asia/Seoul') = '2026-07-01'::timestamp ORDER BY 1",
+      "document_ids": [
+        "1834cdb3f134b69bf435fe9296420b89",
+        "30c56ccef8e7918a588698e60d08335d",
+        "32919336a8c3c5d3436a1968fa3b6ed5",
+        "4644be15eda3bee9223cd1708b4519fa",
+        "4964de261d6fbaaa5d1da5c412e5b891",
+        "4e6d7dc4f16cf6726e90fd1c942a1f22",
+        "b22c82e6563abc1d375db577c554d8ad"
+      ]
+    },
+    {
+      "id": "exhaustive-009",
+      "query": "구글 드라이브에 있는 모든 pdf 문서를 찾아 줘.",
+      "answer": "조건 {\"source\": \"google_drive\", \"file_extension\": \"pdf\"}에 해당하는 문서 5건",
+      "kind": "exhaustive",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'google_drive' AND lower(d.title) LIKE '%.pdf' ORDER BY 1",
+      "document_ids": [
+        "27f23ad2c78e7b8e4ff7acef5163ad1d",
+        "51e608c6cf945f9e5dfcc2b579c7ba40",
+        "6bd61532e21e06f96f6887568e6358bc",
+        "9f0fd42e2b5c0f79f504d9a659b7fe9c",
+        "ab038635f71cee3eea2dc96a6f481975"
+      ]
+    },
+    {
+      "id": "exhaustive-010",
+      "query": "슬랙 채널 #proj_2026-038-e_nh농협은행_oa-업무-도우미-agent의 모든 문서를 전수 조회해 달라.",
+      "answer": "조건 {\"source\": \"slack\", \"channel\": \"#proj_2026-038-e_nh농협은행_oa-업무-도우미-agent\"}에 해당하는 문서 13건",
+      "kind": "exhaustive",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'slack' AND s.metadata->>'channel_name' = 'proj_2026-038-e_nh농협은행_oa-업무-도우미-agent' ORDER BY 1",
+      "document_ids": [
+        "178c5014aed8a3231fd11630480f1fb8",
+        "21a68d7d58be6dd798819737e47db38c",
+        "4288e9626e00845ed54253beee78d091",
+        "54baf459cac458e22923ba3a4b1245f5",
+        "56fb126c00c71755f8bedc2cd8270d7c",
+        "78f36c2143895e4b34cda9b59dd664f3",
+        "7cc1e1e3976daca7b75f2c6de6f40df0",
+        "7e1d87a533e96cbc29e9d8e32eb331cb",
+        "a7bf09b27add693fd94d1f91401a2464",
+        "ace1f73cc46e641902a7d54f71acfedd",
+        "f165510ea3a431d211dae07bd01af9db",
+        "fbc2ee076c4a7aec3af60b10befaf0a3",
+        "fc62c85989c0dccf1a176095de4fa4ca"
+      ]
+    },
+    {
+      "id": "exhaustive-011",
+      "query": "구글 드라이브에서 2026년 7월에 해당하는 문서를 전부 찾아 주세요.",
+      "answer": "조건 {\"source\": \"google_drive\", \"period\": \"2026-07\"}에 해당하는 문서 33건",
+      "kind": "exhaustive",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'google_drive' AND date_trunc('month', COALESCE(s.modified_at, s.collected_at) AT TIME ZONE 'Asia/Seoul') = '2026-07-01'::timestamp ORDER BY 1",
+      "document_ids": [
+        "037e64a74be1fa40684070313973242e",
+        "05c8f33970ae3f1119cfc6e17886b75f",
+        "07ba0bc22dc2d58d1e9a45732998375e",
+        "1abafd4988bdeb69b049418b476616ff",
+        "1e551c7fc23dfe1dee6059a13962d561",
+        "217be20f362fae5df813e8054b92474f",
+        "24b6d60f082fb1edabe4f044873e2ad0",
+        "27f23ad2c78e7b8e4ff7acef5163ad1d",
+        "2fd084f9819ac42f0c1ed1d8edb15e60",
+        "365bd4aabbec4f8af25577fad9dc354a",
+        "4d81d723d811dba6e13b79b1a0d06ad3",
+        "5044b014184ccc13e85d0353a9c81f95",
+        "51ef8401f10b68b13161b85751d0bc0f",
+        "532892a8f1879d5201b83ef8cde656be",
+        "598ff6822f9454e17a56439a74197940",
+        "5e6a5ca86364a039617d327649416fef",
+        "67f060345e812caaf3e7a8305ca50618",
+        "6bd61532e21e06f96f6887568e6358bc",
+        "79c56ab8294d815d18cde4405ea725f0",
+        "7f30ecf41ccd666f24c00b463f875774",
+        "7f8a0f65abdac88af1b8130db961428a",
+        "807393654feb64629f124176a455f5c2",
+        "9976562089a06f0ad6ca5b03b379ecbc",
+        "9ab8948989144994bfe5bd9c2d76b79b",
+        "9f0fd42e2b5c0f79f504d9a659b7fe9c",
+        "a97e55ee0299cf49c1e1a83fb6387298",
+        "ba4e3d4a33e22bbac0296f2487f5a11c",
+        "d7d6731a220bb65ba65b91e9cda14c3a",
+        "dc47d7f7302682c52da6ac6aa5aa3b4c",
+        "dfe729d9f6ec8850c9817403364299e9",
+        "e0e8a8273daa800ec3941596784dd1cd",
+        "eb41c306a7359b09d2c96684ecb4347d",
+        "ee0339f350d6db7989616fa406c12549"
+      ]
+    },
+    {
+      "id": "exhaustive-012",
+      "query": "구글 드라이브에서 html 파일을 전수 조회해 주세요.",
+      "answer": "조건 {\"source\": \"google_drive\", \"file_extension\": \"html\"}에 해당하는 문서 26건",
+      "kind": "exhaustive",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'google_drive' AND lower(d.title) LIKE '%.html' ORDER BY 1",
+      "document_ids": [
+        "0c836769cc7c6e01c842a7f30ebe767b",
+        "15420f85540716b4a2cbd8fb69af03a1",
+        "16a4948a5a0cae44e405adabda415cd3",
+        "1aab373c4cd6a768635891ed4d460a9f",
+        "1abafd4988bdeb69b049418b476616ff",
+        "29a7a8dc11c3b9b9f888be45570f3d16",
+        "355c1da5512ad150340994f10f447483",
+        "3854c875d316b146adb5e6d99e186bc9",
+        "4bc1dbf1012e04493bed1ab6295f34e3",
+        "4c3817d634a7b2b1bf1d15c0c98c5721",
+        "4ccff7d96734515fd0dec8730e0dd672",
+        "518445699018b38099d309fd19d60057",
+        "581f2aea344c6cc1f8a18c6bbc6a3949",
+        "620f9458df03049d0201d2999eda6262",
+        "64aadbaf1159165e337e7fa0907e9ad6",
+        "79cf6d79d07e0c72d38d03c5f04d9e98",
+        "7c253dea051f0c6f63a39e915dec8ae1",
+        "7e1c7444a5523ff485d76e5b57e6def0",
+        "915bedd3ea46e2998c28dea9c41be34e",
+        "9ab8948989144994bfe5bd9c2d76b79b",
+        "a4dac250bbbce501535050e95b69136c",
+        "aec6f0dc9e4d586db1cf449a936c747a",
+        "b435c50fde47a07a66bce25bfa941588",
+        "c98a3e8cc90de5b13fa3fa3a20ceff1b",
+        "dca04f158bea178a7041a603886ea51e",
+        "dcc4f18d897fefd15f5c5682bd589fd4"
+      ]
+    },
+    {
+      "id": "exhaustive-013",
+      "query": "슬랙 채널 #proj_2026-038-f_nh농협은행_당발송금usd-중계-ai-agent의 모든 문서를 찾아주세요.",
+      "answer": "조건 {\"source\": \"slack\", \"channel\": \"#proj_2026-038-f_nh농협은행_당발송금usd-중계-ai-agent\"}에 해당하는 문서 13건",
+      "kind": "exhaustive",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'slack' AND s.metadata->>'channel_name' = 'proj_2026-038-f_nh농협은행_당발송금usd-중계-ai-agent' ORDER BY 1",
+      "document_ids": [
+        "00647c026c1a32f8e2a7bbe1b16917ca",
+        "0b00836e15fc7a3a1864fe2b466c3d1a",
+        "22b5dbc118937421e353dea0d7dcba54",
+        "417283e02910ce4c305ddb785444a2a9",
+        "6b08582aa3e1f0d9885190a6d2886041",
+        "76a16be76007e3c558f040df4a688ef9",
+        "83e4b023896dd162809b75c6cfce4476",
+        "84deb2757ca46e945ee179394a69fac2",
+        "a477724400d22a12faadb0a435f98617",
+        "d0bd7c4c1b30b8218741b8660b3dd0b8",
+        "df24c8cd100c24fb7507deedf4d139fa",
+        "e03e306a9b26d61ea709fa7601b284f0",
+        "e691d39151a380da59bf9331db3b2583"
+      ]
+    },
+    {
+      "id": "exhaustive-014",
+      "query": "구글 드라이브에서 2026년 9월에 해당하는 모든 문서를 전수 조회해 주세요.",
+      "answer": "조건 {\"source\": \"google_drive\", \"period\": \"2026-09\"}에 해당하는 문서 11건",
+      "kind": "exhaustive",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'google_drive' AND date_trunc('month', COALESCE(s.modified_at, s.collected_at) AT TIME ZONE 'Asia/Seoul') = '2026-09-01'::timestamp ORDER BY 1",
+      "document_ids": [
+        "08affe7136869162e620d74b669d0b5f",
+        "3b9932c9290887eeb8c263a6ecbb2873",
+        "53f566425cb81587d6c326548529f512",
+        "5d4041d05983754cd569facf1a1f2677",
+        "607631f943ca8e24faa783b9800a6d63",
+        "7e1c7444a5523ff485d76e5b57e6def0",
+        "a7c0472375303cc0210131083610fd23",
+        "b435c50fde47a07a66bce25bfa941588",
+        "d95ecb9cc372c95b0579abf93449c629",
+        "dcc4f18d897fefd15f5c5682bd589fd4",
+        "e16a70a53bc6daa7fb644cf0c98adc98"
+      ]
+    },
+    {
+      "id": "exhaustive-015",
+      "query": "구글 드라이브에 있는 모든 xlsx 파일을 전부 조회해 주세요.",
+      "answer": "조건 {\"source\": \"google_drive\", \"file_extension\": \"xlsx\"}에 해당하는 문서 21건",
+      "kind": "exhaustive",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'google_drive' AND lower(d.title) LIKE '%.xlsx' ORDER BY 1",
+      "document_ids": [
+        "05c8f33970ae3f1119cfc6e17886b75f",
+        "07ba0bc22dc2d58d1e9a45732998375e",
+        "0b8d0b2acd5709ae442705082421019b",
+        "1fe342280d526995ad742bf6a2864323",
+        "324948b1d19c7ed74b0c26e5893b7e6b",
+        "5044b014184ccc13e85d0353a9c81f95",
+        "53f566425cb81587d6c326548529f512",
+        "598ff6822f9454e17a56439a74197940",
+        "6bf2a92993407057d1902b8933df16db",
+        "77f4b8e34ad9bdfe5aef77a73ad19c03",
+        "807393654feb64629f124176a455f5c2",
+        "874d20021b097110e9770def74d735b1",
+        "8afa1c60cda6bade627765e79761fe1d",
+        "9976562089a06f0ad6ca5b03b379ecbc",
+        "9e4229ec258f48a7a02d49124cd03fe1",
+        "ba4e3d4a33e22bbac0296f2487f5a11c",
+        "c2f5ef99645a7c3987ba0b2b0b8b9717",
+        "d95ecb9cc372c95b0579abf93449c629",
+        "e0e8a8273daa800ec3941596784dd1cd",
+        "e66bf4063a3c414a31cdfdd4f685485d",
+        "f90d4de82fe0d4eaffabd8b9fc2be11b"
+      ]
+    },
+    {
+      "id": "exhaustive-016",
+      "query": "전수 조회 슬랙 채널 #proj_2026-038-d_nh농협은행_ai-agent-기반--요주의인물-필터링-자동의 문서를 모두 찾아 주세요.",
+      "answer": "조건 {\"source\": \"slack\", \"channel\": \"#proj_2026-038-d_nh농협은행_ai-agent-기반--요주의인물-필터링-자동\"}에 해당하는 문서 12건",
+      "kind": "exhaustive",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'slack' AND s.metadata->>'channel_name' = 'proj_2026-038-d_nh농협은행_ai-agent-기반--요주의인물-필터링-자동' ORDER BY 1",
+      "document_ids": [
+        "0cc0220c7765c6a12f222e859d301e1d",
+        "23f5b535346fac3a811242285cf34c16",
+        "2e8a4ca2fa6cff30ead5ea2c7e62f16a",
+        "3314e265323ef12d77127f0b15d49b17",
+        "9e28acfe95f7c67a79e5bea66f7cabc5",
+        "a3474efea80422e85e9063fc6da31d09",
+        "a908124b60a11273613c607da667f8ed",
+        "b6a8386b2d652797fea5b7d7b873366a",
+        "cbdeb860f369ad0581d8f9ca6b19f5a2",
+        "e4cb40bf68414a22d227fa4617ae54e9",
+        "e6a0c905e6afb9a06084667b1eae0069",
+        "f9b8901dfdf4a8b5ada80f82f5955439"
+      ]
+    },
+    {
+      "id": "exhaustive-017",
+      "query": "메일에서 2026년 7월에 해당하는 문서를 모두 찾아 주세요.",
+      "answer": "조건 {\"source\": \"gmail\", \"period\": \"2026-07\"}에 해당하는 문서 4건",
+      "kind": "exhaustive",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'gmail' AND date_trunc('month', COALESCE(s.modified_at, s.collected_at) AT TIME ZONE 'Asia/Seoul') = '2026-07-01'::timestamp ORDER BY 1",
+      "document_ids": [
+        "0ffe1dbac033d0ef7a63156325593961",
+        "53a294163a2f30f3cd28d5802772af1b",
+        "6d113e6af5b505c384723fad9bf6e296",
+        "8595924b0c65a36faa8bc93fba311a92"
+      ]
+    },
+    {
+      "id": "exhaustive-018",
+      "query": "구글 드라이브에서 docx 파일을 전수 조회해 주세요.",
+      "answer": "조건 {\"source\": \"google_drive\", \"file_extension\": \"docx\"}에 해당하는 문서 16건",
+      "kind": "exhaustive",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'google_drive' AND lower(d.title) LIKE '%.docx' ORDER BY 1",
+      "document_ids": [
+        "08affe7136869162e620d74b669d0b5f",
+        "3056ffefa5f1e850c483036c59208b9d",
+        "365bd4aabbec4f8af25577fad9dc354a",
+        "4f7b27f2d2b2d11dd96e40e199ef1717",
+        "542aa0dffed7a149ed9f35e5795be4a7",
+        "665b5c33aad3295bbb26418f410086e2",
+        "67f060345e812caaf3e7a8305ca50618",
+        "89e24063f76ec1669a079766a2aefaff",
+        "8ce2154fcc832e7f639ab5b25eddca06",
+        "8f63bff883d4eacfb21abaa5961dde35",
+        "a07fae9eadd5bd25f07867c22fef8d33",
+        "a97e55ee0299cf49c1e1a83fb6387298",
+        "e0af8bd1fe9e9e74a89dec0eaeb41c5b",
+        "e16a70a53bc6daa7fb644cf0c98adc98",
+        "ee0339f350d6db7989616fa406c12549",
+        "f1c9214147ef5736d4936a9163398f35"
+      ]
+    },
+    {
+      "id": "exhaustive-019",
+      "query": "슬랙 채널 '#proj_2026-038-c_nh농협은행_투자자산-매매내역-자동작성-에이전트'의 전수 조회를 요청합니다.",
+      "answer": "조건 {\"source\": \"slack\", \"channel\": \"#proj_2026-038-c_nh농협은행_투자자산-매매내역-자동작성-에이전트\"}에 해당하는 문서 13건",
+      "kind": "exhaustive",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'slack' AND s.metadata->>'channel_name' = 'proj_2026-038-c_nh농협은행_투자자산-매매내역-자동작성-에이전트' ORDER BY 1",
+      "document_ids": [
+        "034afb5c4c68f3e75e2846a7fd5a25fd",
+        "0c0c88ee6a15cdbf14e010dc207f0fe3",
+        "12e20c54c72da05a010f451841ef6a57",
+        "2268c6f5a5ee7f119b35050a1404e56e",
+        "49a726913b3b30274a8a39fb08366720",
+        "4d23bd36cc8b2d8b07b226eda6994863",
+        "5b95bc99d49297154f7b2a33c385c0fc",
+        "739885806e81a1c2482acb06e96af018",
+        "ae90a162a35a92c32d0ec4b8786e2514",
+        "c4900b85233313f97e042665c299009e",
+        "ed926ad484a7506648eb2f8e6b78611b",
+        "ee9ae56f70267a49f041b8f0958af88a",
+        "f2394cc4cc66fae9cafc2a7e96ba403a"
+      ]
+    },
+    {
+      "id": "exhaustive-020",
+      "query": "메일로 2026년 9월에 해당하는 모든 문서를 찾아주세요.",
+      "answer": "조건 {\"source\": \"gmail\", \"period\": \"2026-09\"}에 해당하는 문서 4건",
+      "kind": "exhaustive",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'gmail' AND date_trunc('month', COALESCE(s.modified_at, s.collected_at) AT TIME ZONE 'Asia/Seoul') = '2026-09-01'::timestamp ORDER BY 1",
+      "document_ids": [
+        "0c8fedb0ebe38afaa3fb8eb27acf6c29",
+        "51e3061f23e75a93802a49e3bd8dd0d7",
+        "a981d6bea776f2c3742c61cd03344f94",
+        "c681a6c460a6bf5519a6730b55ee0670"
+      ]
+    },
+    {
+      "id": "exhaustive-021",
+      "query": "슬랙 채널 #proj_2026-038-0_nh농협은행_mvp의 모든 문서를 전수 조회해 주세요.",
+      "answer": "조건 {\"source\": \"slack\", \"channel\": \"#proj_2026-038-0_nh농협은행_mvp\"}에 해당하는 문서 35건",
+      "kind": "exhaustive",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'slack' AND s.metadata->>'channel_name' = 'proj_2026-038-0_nh농협은행_mvp' ORDER BY 1",
+      "document_ids": [
+        "068826714460ff0314938ae349659c65",
+        "13ef703880de7ca186701a7781f6de40",
+        "13fd1efb30db57e5b1c2b2bb13358ea2",
+        "241ee6e6ce15f41dcb0be0c8191d8fc7",
+        "2efa3bebfbd85fcaf4ac31e0dbe845b9",
+        "398e3ab741a0ff5277ab2b29c57d7b5b",
+        "4b83ffc408553e4174cb64c4bf0493c7",
+        "4e4647538f8598293415b3d4ba49e8b7",
+        "4fdb0658140b46f57def0ef15227bf90",
+        "500d78c78836127ed2ff2a43e08b259e",
+        "54e9f0ab7fd9f1028966b876b3103eca",
+        "5b81f347dd0f8cfb9b04c1d5eb06aa8d",
+        "5fe63f026de2817ad1d9f3e5ca7c70fe",
+        "640bbec3ebc7ad779734a65383e0995d",
+        "66d16fc3f83fdd99cc147dcfe37d92dc",
+        "6e94773bce421cef10fba49d6c8be68e",
+        "7b18fafd17a5d002d3d2873e790cfab4",
+        "83a905e7d8b12476b65709a9ba0fd0de",
+        "8ab619d00ec7b3391c7e69317054f035",
+        "8ce8922955b9f7aa9018aa7c2f79c53a",
+        "90d85ab27a456dbe6e6e49cff8538bf3",
+        "969047bffcf1abd444fab3004bc096d5",
+        "972f9820fff36230ca89ca95ad21dec5",
+        "a4c95fcff18fc87cadc4b8842157c90e",
+        "accda39d727abafc7db973d34be8d95d",
+        "b2bf00362f83d38f5a109e8957f6a206",
+        "b3a676a4a41c6799e645bc931280398c",
+        "d99c67331cd22203aeea2e5197779b1c",
+        "dbacd56b6883506346a294a67256a46a",
+        "dc03c77410499836495307844b265e75",
+        "eba2e8b0b34a6f9593851c5eeb6b766a",
+        "f106c6d91e65bf09934a774a66a63fd7",
+        "f52d4d8c34d59cc2dba07a77a9305a7b",
+        "f6a3038be4b5ac5ab91fbb1c51f34346",
+        "fbc5c206f33ee05ccb044ab11f19048b"
+      ]
+    },
+    {
+      "id": "exhaustive-022",
+      "query": "슬랙 채널 #proj_2026-038-i_nh농협은행_카드-상품-추천-서비스에 해당하는 모든 문서를 전수조회 해주세요.",
+      "answer": "조건 {\"source\": \"slack\", \"channel\": \"#proj_2026-038-i_nh농협은행_카드-상품-추천-서비스\"}에 해당하는 문서 14건",
+      "kind": "exhaustive",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'slack' AND s.metadata->>'channel_name' = 'proj_2026-038-i_nh농협은행_카드-상품-추천-서비스' ORDER BY 1",
+      "document_ids": [
+        "307645c230ac3ec66ff1205f1fe9626e",
+        "33510317e182176ba280b34a1c62b217",
+        "4021d7a69619feba333df400254ab1b8",
+        "4bb05f0add8741b21fb6ca36cd0c4f39",
+        "4d39b3e2e031a0abd33d841716f56253",
+        "505ea1f020748ac7883b2afe06552223",
+        "578d99e807fbd47cd9aaf97964732f8b",
+        "5e05cc1f9aca30d39b6c81f38e9cef04",
+        "75bf827b45e305595e9d5f16d47a5ebb",
+        "a1f59f257ffbac5f00c620a1572e9b60",
+        "a2c6340ee018d43bca3b7e68a22866f4",
+        "a9578b4310c175b6d86dee8118ed3e0c",
+        "c4a010896dec5b7e8dbb85dafd073748",
+        "e91d2f336d914def92f937e6884c6f83"
+      ]
+    },
+    {
+      "id": "exhaustive-023",
+      "query": "슬랙 채널 #proj_2026-038-h_nh농협은행_여신-사고-제로에 해당하는 모든 문서를 전수 조회해 주세요.",
+      "answer": "조건 {\"source\": \"slack\", \"channel\": \"#proj_2026-038-h_nh농협은행_여신-사고-제로\"}에 해당하는 문서 14건",
+      "kind": "exhaustive",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'slack' AND s.metadata->>'channel_name' = 'proj_2026-038-h_nh농협은행_여신-사고-제로' ORDER BY 1",
+      "document_ids": [
+        "0cb23775501a489875bc059dbdb4f653",
+        "225b20addfeabea2698e59158aab08cd",
+        "2442cb66c594eae743c2db1272661188",
+        "36ac636af4f7a4a12a34d4bfa281cbf9",
+        "3fb620f5f625dee63ab0ba2b0e1a6a14",
+        "4ef4bd439450c9c818ca1b02a169ed59",
+        "70a428433a9c1014d39ce1851e9fded9",
+        "72e1c7f3dcf1c8a5bdf49c0cac65558a",
+        "792e190ae7be743b732388ae72365b81",
+        "80a626d253f599929c25771c59df19c4",
+        "8a69575a5eb64c6cad84a78ce31a940d",
+        "9d48de489a274c5c5a09287594391d4a",
+        "d2e01e8e2bfc7a361b2e17a5e5ae5cf2",
+        "fae09eb293e9f7b528bbcbf0a712a685"
+      ]
+    },
+    {
+      "id": "exhaustive-024",
+      "query": "슬랙 채널 #proj_2026-038-g_nh농협은행_기업e금융-one-stop-ai-agent의 모든 문서를 조회해 주세요.",
+      "answer": "조건 {\"source\": \"slack\", \"channel\": \"#proj_2026-038-g_nh농협은행_기업e금융-one-stop-ai-agent\"}에 해당하는 문서 11건",
+      "kind": "exhaustive",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'slack' AND s.metadata->>'channel_name' = 'proj_2026-038-g_nh농협은행_기업e금융-one-stop-ai-agent' ORDER BY 1",
+      "document_ids": [
+        "0e4a4ea5b4e4beada4278deb140a8402",
+        "20fb331ecab70c1de8f6ed6742627d31",
+        "28ed8caebd3a6e4bdafb306c80c32df2",
+        "353074db776d84830ed68a0f5e2288cd",
+        "35fb955722021d488a65b6471fa943fb",
+        "76a42ecf4b4e2fc1f0064c1265d75eeb",
+        "9d07c01a2ddf5848bfbc6f637cbfaf19",
+        "a8f42c83a95f1f5500d7e212f5cda560",
+        "b3d2780c002a0fa7669ccb5e0e6f7fd1",
+        "e33a4818fa1bd8e5c808d5c294be848d",
+        "eb52d845acb2bbe854d11657037fafbb"
+      ]
+    },
+    {
+      "id": "exhaustive-025",
+      "query": "전수 조회를 요청합니다. 슬랙 채널 #proj_2026-038-a_nh농협은행_마케팅허브-메시지-ai-agent-구축의 모든 문서를 찾아주세요.",
+      "answer": "조건 {\"source\": \"slack\", \"channel\": \"#proj_2026-038-a_nh농협은행_마케팅허브-메시지-ai-agent-구축\"}에 해당하는 문서 11건",
+      "kind": "exhaustive",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": "SELECT d.document_id FROM documents d JOIN sources s ON s.source_id = d.source_id WHERE s.source_type = 'slack' AND s.metadata->>'channel_name' = 'proj_2026-038-a_nh농협은행_마케팅허브-메시지-ai-agent-구축' ORDER BY 1",
+      "document_ids": [
+        "108ee61a0c988f4b769755245f1bc70b",
+        "1cd956c7b0a8317d464b1734541070a2",
+        "42f455524e02e2eb1bedde92da3a347f",
+        "6022fe6e9ca7aad5a00070fcb501f6c5",
+        "71d3ac23422d5db0474af489fe76d5bf",
+        "88450528a89483ccab92660ca8713894",
+        "887ec4d5e8f207bf0f50dd528bd4630d",
+        "a394f949857d1fe66f7c6806b12f99c2",
+        "a8095d6e17fecc16b66b3e578241a1f4",
+        "c0adc2f20f7dd934c5c8aff84842d729",
+        "c86d6ad35ac2a47f262519b3caceadca"
+      ]
+    },
+    {
+      "id": "none-000",
+      "query": "회사 내에서 사용하는 인사 관리 시스템에 대한 기능은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-001",
+      "query": "우리 회사의 새로운 비대면 금융 서비스에 대한 정책은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-002",
+      "query": "회사에서 사용하는 교육 관리 시스템의 절차는 어떻게 되나요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-003",
+      "query": "우리 회사의 내부 교육 프로그램에 대한 절차가 어떻게 되나요?",
+      "answer": "",
+      "kind": "none",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-004",
+      "query": "우리 회사의 새로운 고객 관리 시스템에 대한 특징은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-005",
+      "query": "우리 회사의 새로운 전자 대출 시스템은 어떤 기능을 가지고 있나요?",
+      "answer": "",
+      "kind": "none",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-006",
+      "query": "회사가 도입한 새로운 고객 서비스 관리 시스템의 기능은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-007",
+      "query": "회사에서 사용하는 비용 정산 시스템의 규정은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-008",
+      "query": "회사의 고객 통합 관리 시스템에 대해 어떤 기능이 제공되나요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-009",
+      "query": "회사의 인사 평가 시스템에 대한 세부 기준은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-010",
+      "query": "회사가 도입한 새로운 재무 리포팅 자동화 시스템의 작동 방식은 어떻게 되나요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-011",
+      "query": "회사가 도입한 최신 고객 맞춤형 서비스 플랫폼의 핵심 기능은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-012",
+      "query": "회사가 도입한 새로운 사이버 보안 시스템의 주요 기능은 어떤 것들이 있나요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-013",
+      "query": "우리 회사의 최신 디지털 서명 시스템은 어떤 규정을 따르나요?",
+      "answer": "",
+      "kind": "none",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-014",
+      "query": "회사가 도입한 최신 전자 서명 시스템의 절차는 어떻게 되나요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-015",
+      "query": "우리 회사의 최신 고객 분석 도구의 특징은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-016",
+      "query": "우리 회사의 새로운 데이터 시각화 툴에 대한 사용 지침은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-017",
+      "query": "회사가 도입한 소셜 미디어 관리 시스템의 기능은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-018",
+      "query": "회사의 최신 데이터 처리 플랫폼에 대한 규정은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-019",
+      "query": "우리 회사의 고객 투자 관리 시스템에서 제공하는 보고서 형식은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-020",
+      "query": "회사의 최신 고객 경험 관리 시스템의 특징은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-021",
+      "query": "우리 회사의 직무 기초 교육 프로그램은 어떤 내용으로 구성되어 있나요?",
+      "answer": "",
+      "kind": "none",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-022",
+      "query": "회사에서 사용하는 비즈니스 인텔리전스(BI) 시스템의 핵심 활용 사례는 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-023",
+      "query": "회사가 도입한 새로운 자산 관리 시스템의 절차는 어떻게 되나요?",
+      "answer": "",
+      "kind": "none",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-024",
+      "query": "회사가 도입한 새로운 직원 복지 제도는 어떤 내용으로 이루어져 있나요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-025",
+      "query": "회사가 최근 도입한 비즈니스 전략 분석 도구에 대한 평가 기준은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-026",
+      "query": "회사에서 시행하는 외부 감사 프로세스는 어떻게 구성되어 있나요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-027",
+      "query": "회사가 도입한 새로운 고객 리워드 프로그램의 상세 내용은 어떤 것인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-028",
+      "query": "회사에서 사용하는 고객 데이터 분석 도구의 최신 버전은 어떤 개선사항이 있나요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-029",
+      "query": "회사가 최근 도입한 새로운 고객 온boarding 프로그램의 절차는 어떻게 되나요?",
+      "answer": "",
+      "kind": "none",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-030",
+      "query": "회사가 사용하고 있는 생산관리 시스템의 특징은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-031",
+      "query": "회사가 도입한 새로운 내부 커뮤니케이션 도구의 기능은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-032",
+      "query": "회사에서 진행 중인 새로운 고객 지원 시스템의 특징은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-033",
+      "query": "회사가 도입한 최신 고객 사전 등록 시스템에 대한 세부 사항은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-034",
+      "query": "회사가 도입한 신속결제 시스템의 주요 이점은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-035",
+      "query": "우리 회사의 새로운 고객 분류 시스템에 대한 구체적인 운영 규칙은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-036",
+      "query": "회사가 새롭게 도입한 전자 인보이스 시스템은 어떤 방식으로 운영되나요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-037",
+      "query": "회사가 새로 도입한 온라인 교육 플랫폼의 주요 기능은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-038",
+      "query": "우리 회사의 신입사원 온boarding 절차는 어떻게 되나요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-039",
+      "query": "회사가 새롭게 도입한 재무 보고 자동화 시스템의 구체적인 기능은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-040",
+      "query": "회사가 최근 도입한 고객 맞춤형 금융 서비스의 운영 방법은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-041",
+      "query": "회사가 새로 도입한 외부 데이터 통합 시스템의 원리는 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-042",
+      "query": "회사가 새롭게 도입한 고급 분석 툴의 활용 방안은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-043",
+      "query": "회사에서 운영하는 전자 결제 시스템의 보안 규정은 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "test",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    },
+    {
+      "id": "none-044",
+      "query": "회사가 최근 도입한 고객 관리 시스템의 구성 요소는 무엇인가요?",
+      "answer": "",
+      "kind": "none",
+      "split": "dev",
+      "status": "draft",
+      "evidence": [],
+      "knowledge_object_ids": [],
+      "predicate_sql": null,
+      "document_ids": []
+    }
+  ]
+}

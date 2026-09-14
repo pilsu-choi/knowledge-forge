@@ -101,3 +101,26 @@ n=300이어도 +0.03 이하 차이는 CI가 0을 포함할 수 있다.
 - none 게이트의 term 문서빈도는 청크 본문 ILIKE 기준(`retrieve.py::_term_document_frequency_sql` 재사용)이라 제목에만 있는 단어는 못 본다.
 - e2e의 `delegate_task` 자식 에이전트는 grain 없이 검색하고, 그 검색 결과는 채점 리스트에 들어가지 않는다.
 - 합성 질의는 여전히 "메일 테스트" 같은 빈약한 원문에서 약한 질의를 만든다. 사람 스팟체크가 필요하다.
+
+## 골든셋 v1과 기준 점수 (2026-09-14)
+
+`eval gen --n 300 --seed 20260914`, `openai/gpt-4o-mini`로 두 벌을 만들었다. 둘 다 281개다.
+
+| 골든셋 | lookup | exhaustive | none | 정답 문서 수(lookup) |
+|---|---|---|---|---|
+| `chunk-v1.json` | 210 | 26 | 45 | 190개 문서, 문서당 최대 2 |
+| `knowledge_object-v1.json` | 210 | 26 | 45 | — |
+
+- exhaustive가 목표 45에 못 미친 이유: 2~50문서 크기의 SQL 술어 후보가 26개뿐이었다. 코퍼스가 커지면 다시 생성한다.
+- 거부 사유 상위: none 항목의 term이 코퍼스에 있음(chunk 102 / KO 142), none 벡터 유사도 초과(40 / 68), 원시 id(KO 44), 앵커 없음(chunk 18).
+
+main 코드(`7160f0d`) 기준점, 전체 split, LLM 0회:
+
+| 골든셋 | overall | lookup ndcg@10 | hit@1 | recall@5 | exhaustive recall | none_correct | 질의당 p50 |
+|---|---|---|---|---|---|---|---|
+| chunk-v1 | 0.422 | 0.474 | 0.381 | 0.502 | 0.042 | 0.400 | 1.1초 |
+| knowledge_object-v1 | 0.388 | 0.446 | 0.314 | 0.463 | 0.013 | 0.333 | 1.4초 |
+
+- lookup 채점 리스트가 빈 항목이 chunk 31건, KO 30건이다. 제목·필터 히트는 문서 단위라 grain id가 없어서다(검색 개선 S2의 "grain 펼치기"가 겨냥).
+- exhaustive recall이 거의 0인 것도 같은 원인이다. 필터가 찾은 문서가 grain 채점 리스트에 들어가지 않는다.
+- none_correct가 낮은 이유: 채점 리스트가 0건이어야 정답인데 어휘 arm이 무언가를 물어온다.
