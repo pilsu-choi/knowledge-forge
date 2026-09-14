@@ -99,3 +99,47 @@ async def test_authentication_error_is_wrapped_with_credential_hint():
 
     with pytest.raises(AgentError):
         await provider.send([Message(role="user", content="hi")], [], "sys")
+
+
+def _raw_tool_call(id_: str, name: str, arguments: str):
+    """`_tool_call`과 달리 인자를 dict가 아니라 이미 JSON 문자열로 넣어 그대로(깨져도)
+    싣는다 - Qwen에서 관측된 깨진 JSON을 재현하기 위한 것."""
+    return SimpleNamespace(id=id_, function=SimpleNamespace(name=name, arguments=arguments))
+
+
+async def test_malformed_json_arguments_become_an_error_sentinel_instead_of_raising():
+    """결함11(`wiki/search-code-review-2026-09-14.md`): 무방비 `json.loads`가 Qwen의 깨진
+    JSON에서 `JSONDecodeError`를 올려 `provider.send()`를(나아가 `run_agent`를) 죽였다.
+    이제 예외 대신 `agent/loop.py::INVALID_JSON_ARGUMENTS_KEY` 하나만 든 인자를 돌려줘
+    루프가 살아남는다."""
+    from knowledge_forge.agent.loop import INVALID_JSON_ARGUMENTS_KEY
+
+    client = _FakeClient(
+        [
+            _completion(
+                None,
+                tool_calls=[_raw_tool_call("call_1", "search", "{query: not valid json")],
+                finish_reason="tool_calls",
+            )
+        ]
+    )
+    provider = OpenAICompatibleChatProvider(client=client)
+
+    turn = await provider.send([Message(role="user", content="hi")], [_tool()], "sys")
+
+    assert turn.tool_calls[0].id == "call_1"
+    assert turn.tool_calls[0].name == "search"
+    assert INVALID_JSON_ARGUMENTS_KEY in turn.tool_calls[0].arguments
+
+
+async def test_non_object_json_arguments_also_become_an_error_sentinel():
+    from knowledge_forge.agent.loop import INVALID_JSON_ARGUMENTS_KEY
+
+    client = _FakeClient(
+        [_completion(None, tool_calls=[_raw_tool_call("call_1", "search", "[1, 2, 3]")], finish_reason="tool_calls")]
+    )
+    provider = OpenAICompatibleChatProvider(client=client)
+
+    turn = await provider.send([Message(role="user", content="hi")], [_tool()], "sys")
+
+    assert INVALID_JSON_ARGUMENTS_KEY in turn.tool_calls[0].arguments

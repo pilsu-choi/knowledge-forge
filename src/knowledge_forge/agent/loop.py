@@ -37,10 +37,24 @@ import asyncio
 import json
 import logging
 
-from knowledge_forge.agent.compaction import compact_messages
-from knowledge_forge.agent.providers.base import AssistantTurn, ChatProvider, Message, ToolCall, ToolSpec
-from knowledge_forge.config import settings
-from knowledge_forge.exceptions import AgentError
+# `agent/providers/openai_compatible.py`가 도구 호출 인자 JSON 파싱에 실패했을 때, 예외를
+# 올려 `run_agent` 전체를 죽이는 대신 `ToolCall.arguments`에 이 키 하나만 든 dict를 담아
+# 돌려준다 - `_dispatch`가 핸들러를 부르기 전에 여기서 걸러 평범한 도구 오류 결과로 바꾼다
+# (`wiki/search-code-review-2026-09-14.md` 결함11). `ToolCall`/`ChatProvider` 계약
+# (`chat_provider.py`, 이 fix의 소유 파일이 아니다)을 넓히지 않고 루프 한 곳에서만 아는 내부
+# 신호로 두려고 상수를 여기 둔다. **아래 다른 import보다 먼저 정의해야 한다** -
+# `openai_compatible.py`가 이 상수를 가져가려고 이 모듈을 import하는데, 그게
+# `agent.compaction` -> `agent.providers` -> `agent.providers.factory` ->
+# `agent.providers.openai_compatible`로 이어지는 순환의 한가운데(이 모듈 자신이 아직 로드
+# 중인 시점)에서 일어나므로, 그 시점까지 이 이름이 이미 존재해야 한다.
+INVALID_JSON_ARGUMENTS_KEY = "__invalid_json_arguments__"
+
+# noqa: E402 - 위 상수가 아래 import들 *앞*에 있어야 하는 이유는 바로 위 주석 참고(순환
+# import 중 부분 초기화된 이 모듈에서 이름을 먼저 찾을 수 있어야 한다).
+from knowledge_forge.agent.compaction import compact_messages  # noqa: E402
+from knowledge_forge.agent.providers.base import AssistantTurn, ChatProvider, Message, ToolCall, ToolSpec  # noqa: E402
+from knowledge_forge.config import settings  # noqa: E402
+from knowledge_forge.exceptions import AgentError  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +71,7 @@ _TOOL_BUDGET_EXHAUSTED_NOTE = (
 
 _TRUNCATED_ANSWER_NOTE = "\n\n[잘림: 모델의 max_tokens 한도에 걸려 답변이 중간에서 끊겼다 - 위 내용은 미완성이다.]"
 
+
 def _wrap_untrusted(tool_name: str, result: object) -> str:
     """Tool output is untrusted content (it can come straight from an
     indexed document, which could contain a prompt-injection attempt) - this
@@ -67,11 +82,18 @@ def _wrap_untrusted(tool_name: str, result: object) -> str:
 
 
 async def _dispatch(call: ToolCall, tools_by_name: dict[str, ToolSpec]) -> str:
+    if INVALID_JSON_ARGUMENTS_KEY in call.arguments:
+        reason = call.arguments[INVALID_JSON_ARGUMENTS_KEY]
+        return _wrap_untrusted(call.name, f"error: invalid JSON arguments: {reason}")
     spec = tools_by_name.get(call.name)
     if spec is None:
         return _wrap_untrusted(call.name, f"error: unknown tool '{call.name}'")
     try:
         result = await spec.handler(call.arguments)
+    except KeyError as exc:
+        # `args["query"]`처럼 필수 인자가 빠지면 `str(exc)`가 `"'query'"`뿐이라 모델이 뭘
+        # 고쳐야 하는지 못 읽는다 - 한 줄로 뜻을 붙인다.
+        return _wrap_untrusted(call.name, f"error: missing required argument {exc}")
     except Exception as exc:  # noqa: BLE001 - a tool failure becomes a tool result the model can react to, not a crash
         logger.warning("tool %s failed: %s", call.name, exc)
         return _wrap_untrusted(call.name, f"error: {exc}")
