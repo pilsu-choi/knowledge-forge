@@ -17,6 +17,7 @@ from knowledge_forge.chunking.tokenizer import count_tokens, decode, encode
 from knowledge_forge.ids import stable_id
 from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.document import Document
+from knowledge_forge.text_normalize import to_nfc
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,16 @@ class AdaptiveChunker(Chunker):
                     # to point at yet. Reserved for a future multi-resolution
                     # chunk store.
                     parent_chunk_id=None,
-                    text=item.text,
+                    # NFC-normalized here (not just at DB-write time, see
+                    # storage/postgres_store.py::save_chunks) so every
+                    # in-memory consumer of Chunk.text - Knowledge Extraction
+                    # prompts, record_chunk_embeddings - sees the same
+                    # canonical form the DB row ends up with, not raw
+                    # (possibly NFD, e.g. macOS/Drive-sourced) parser output.
+                    # token_count is computed on the pre-normalization text
+                    # (NFC composition only ever reduces codepoint count, and
+                    # this was already just a chunking-time approximation).
+                    text=to_nfc(item.text),
                     token_count=item.token_count if item.token_count is not None else count_tokens(item.text),
                     element_ids=item.element_ids,
                     page_range=page_range,

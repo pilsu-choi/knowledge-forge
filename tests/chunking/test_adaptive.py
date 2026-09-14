@@ -1,3 +1,5 @@
+import unicodedata
+
 from knowledge_forge.chunking import AdaptiveChunker
 from knowledge_forge.chunking.tokenizer import count_tokens
 from knowledge_forge.models import Document, Heading, ListElement, SourceRef, SourceType, TableElement, TextBlock
@@ -5,6 +7,27 @@ from knowledge_forge.models import Document, Heading, ListElement, SourceRef, So
 
 def make_source_ref() -> SourceRef:
     return SourceRef(source_id="s1", source_type=SourceType.LOCAL_FILE, uri="file:///x")
+
+
+def test_chunk_text_is_nfc_normalized_even_when_the_source_element_is_nfd():
+    """macOS/Google Drive-sourced text can arrive NFD (Korean jamo
+    decomposed) - the chunker (not just the DB write, see
+    storage/postgres_store.py::save_chunks) normalizes to NFC so every
+    in-memory consumer (Knowledge Extraction prompts, chunk embeddings)
+    sees the same canonical form the DB row ends up with."""
+    nfd_text = unicodedata.normalize("NFD", "프로젝트 관리 문서입니다.")
+    assert nfd_text != "프로젝트 관리 문서입니다."  # sanity: decomposition actually changed the bytes
+    doc = Document(
+        document_id="doc-nfd",
+        source=make_source_ref(),
+        elements=[TextBlock(element_id="t1", text=nfd_text)],
+    )
+
+    chunks = AdaptiveChunker(max_tokens_per_chunk=4000).chunk(doc)
+
+    assert len(chunks) == 1
+    assert chunks[0].text == unicodedata.normalize("NFC", nfd_text)
+    assert unicodedata.normalize("NFC", chunks[0].text) == chunks[0].text
 
 
 def test_small_document_stays_as_a_single_chunk():

@@ -454,12 +454,16 @@ class PostgresStore:
         )
 
     async def save_chunks(self, chunks: list[Chunk]) -> None:
-        """청크 본문은 NFC로 정규화해서 저장한다(`text_normalize.py`) - `chunks.text`는
-        `search_chunks_lexical`의 ILIKE/trigram 대상이라, macOS·Drive 유래 NFD 파일명이
-        본문에 인용돼 들어오면 NFC 질의로는 구조적으로 못 맞는다. 파서 출력 원본인
-        `documents.elements`는 그대로 두고 여기서만 정규화한다 - 청크는 `element_ids`로
-        엘리먼트를 참조하지 문자열로 맞대보지 않으므로 둘이 달라도 깨지는 곳이 없다.
-        `token_count`는 재계산하지 않는다: NFC 합성은 코드포인트 수만 줄일 뿐이고,
+        """청크 본문은 NFC로 정규화된 채로 들어온다(`chunking/adaptive.py::AdaptiveChunker.chunk`가
+        `text_normalize.py::to_nfc`를 적용해서 만든다) - 여기서 다시 정규화하지 않는다. 이걸
+        DB 쓰기 시점이 아니라 청커 출력 시점에 거는 이유: `chunks.text`는
+        `search_chunks_lexical`의 ILIKE/trigram 대상이면서(macOS·Drive 유래 NFD 파일명이
+        본문에 인용돼 들어오면 NFC 질의로는 구조적으로 못 맞는다) **Knowledge Extraction
+        프롬프트와 `record_chunk_embeddings`에도 그대로 들어가는 메모리 상의 문자열**이라,
+        DB 행에만 정규화를 걸면 그 두 소비자는 여전히 정규화 안 된 텍스트를 본다. 파서 출력
+        원본인 `documents.elements`는 그대로 두고 청커 출력에서만 정규화한다 - 청크는
+        `element_ids`로 엘리먼트를 참조하지 문자열로 맞대보지 않으므로 둘이 달라도 깨지는
+        곳이 없다. `token_count`는 재계산하지 않는다: NFC 합성은 코드포인트 수만 줄일 뿐이고,
         토큰 수는 어차피 청킹 시점의 근사치다."""
         now = datetime.now(timezone.utc)
         rows: list[tuple[Any, ...]] = [
@@ -470,7 +474,7 @@ class PostgresStore:
                 chunk.hierarchy_level.value,
                 chunk.sequence_index,
                 chunk.parent_chunk_id,
-                to_nfc(chunk.text),
+                chunk.text,
                 chunk.token_count,
                 Jsonb(chunk.element_ids),
                 chunk.page_range[0] if chunk.page_range else None,

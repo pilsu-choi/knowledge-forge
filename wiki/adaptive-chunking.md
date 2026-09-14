@@ -201,3 +201,21 @@ Knowledge Forge는 의도적으로 오버랩을 두지 않는다 — 구조 기�
 **완전히 동일**했다 - 즉 "정상적인" 표 내용에서는 그룹이 그대로고, 최악의 경우에도 안전성
 불변식(모든 행이 정확히 한 번씩만 나타난다, 단일 행이 이미 예산을 넘는 경우를 빼면 예산을
 지킨다)은 깨지지 않는다.
+
+## `fix/etl-quick`: NFC 정규화 시점을 청커 출력으로 앞당김
+
+지금까지 NFC 정규화(`text_normalize.py::to_nfc`)는 `PostgresStore.save_chunks`가 DB 행에
+쓸 때만 걸려 있었다 - `chunks.text` 컬럼은 NFC인데, `AdaptiveChunker.chunk()`가 돌려주는
+메모리 상의 `Chunk.text`(파이프라인이 Knowledge Extraction 프롬프트와
+`record_chunk_embeddings`에 바로 넘기는 그 값)는 파서가 만든 원본 그대로(macOS/Google
+Drive 유래라면 NFD일 수 있음)였다. 즉 DB에 저장된 텍스트와 LLM/임베딩이 실제로 본 텍스트가
+서로 다른 정규화 형태일 수 있었다.
+
+이제 `AdaptiveChunker.chunk()`가 `Chunk`를 만드는 바로 그 지점에서 `to_nfc()`를 적용한다 -
+`token_count`는 정규화 전 텍스트로 계산한 채 그대로 둔다(NFC 합성은 코드포인트 수만 줄이고,
+애초에 청킹 시점의 근사치라 재계산할 가치가 없다는 기존 방침 유지). `save_chunks`는 이제
+받은 `chunk.text`를 그대로 쓴다 - 두 곳에서 같은 정규화를 중복으로 걸 이유가 없다.
+
+`documents.elements`(파서 원본)와 `documents.title`(별도 경로인
+`storage/document_title.py::_clean`이 이미 `to_nfc`를 건다)은 이번 변경과 무관하다 - 전자는
+의도적으로 원본을 보존하고, 후자는 이미 적재 시점에 정규화되고 있었다.
