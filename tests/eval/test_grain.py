@@ -16,7 +16,9 @@ _NOW = datetime(2026, 9, 14, tzinfo=timezone.utc)
 def _capture_vector(monkeypatch) -> list:
     kinds: list = []
 
-    async def _fake(query, store, project_id=None, type=None, limit=10, embedding_model=None, since=None, until=None, target_kind=None):
+    async def _fake(query, store, project_id=None, type=None, limit=10, embedding_model=None, since=None, until=None, target_kind=None, document_ids=None):
+        if document_ids is not None:  # grain expansion lookup, not the vector arm
+            return []
         kinds.append(target_kind)
         return [{"target_kind": "chunk", "chunk_id": "c1", "document_id": "d1", "knowledge_object_id": None, "score": 0.9}]
 

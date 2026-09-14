@@ -866,6 +866,10 @@ async def test_search_by_embedding_mixes_grains_by_default_and_narrows_on_target
     # A KO `type` filter can only ever match KO rows, so it implicitly drops chunk hits.
     typed = await store.search_by_embedding(vector_a, "test-model", None, "entity", 10)
     assert [r["knowledge_object_id"] for r in typed] == [ko_id]
+    # `document_ids` scopes the search to those documents (grain expansion in search/retrieve.py).
+    in_doc = await store.search_by_embedding(vector_a, "test-model", None, None, 10, document_ids=[doc.document_id])
+    assert len(in_doc) == 2
+    assert await store.search_by_embedding(vector_a, "test-model", None, None, 10, document_ids=["missing"]) == []
 
 
 async def test_init_schema_migrates_the_pre_chunk_embeddings_table_in_place():
