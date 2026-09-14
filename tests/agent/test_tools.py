@@ -8,14 +8,12 @@ from knowledge_forge.agent.tools import default_tools
 from knowledge_forge.config import settings
 
 # 검색 도구 표면(`KF_AGENT_TOOL_SURFACE`)과 무관하게 항상 같은, 검색이 아닌 도구들.
+# 파일시스템 도구는 `KF_OKF_DIR`이 있을 때만 앞에 붙는다(`_FILESYSTEM_TOOL_NAMES`).
 _EXPECTED_BASE_TOOL_NAMES = [
-    "read_file",
-    "write_file",
-    "edit_file",
-    "list_dir",
     "write_memory",
     "write_plan",
 ]
+_FILESYSTEM_TOOL_NAMES = ["read_file", "write_file", "edit_file", "list_dir"]
 
 
 @pytest.fixture(autouse=True)
@@ -42,6 +40,18 @@ def _file_search_off_by_default(monkeypatch):
     끄고 있다 - 위 두 fixture와 같은 이유로 여기서도 문서화된 기본값에 고정한다.
     이 도구를 실제로 확인하는 테스트는 `_enable_file_search`로 되돌린다."""
     monkeypatch.setattr(settings, "agent_file_search_enabled", False)
+
+
+@pytest.fixture(autouse=True)
+def _no_okf_dir(monkeypatch):
+    """파일시스템 도구는 `KF_OKF_DIR`이 있을 때만 실린다 - 개발자 로컬 `.env`에 그 값이
+    있으면 목록 단언이 흔들리므로 없음에 고정한다. 도구를 실제로 확인하는 테스트는
+    `_set_okf_dir`로 되돌린다."""
+    monkeypatch.setattr(settings, "okf_dir", None)
+
+
+def _set_okf_dir(monkeypatch):
+    monkeypatch.setattr(settings, "okf_dir", "/tmp/okf")
 
 
 def _full_surface(monkeypatch):
@@ -144,6 +154,7 @@ async def test_default_tools_read_file_forwards_to_fs_service(monkeypatch):
         return {"path": path, "content": "hi"}
 
     monkeypatch.setattr("knowledge_forge.agent.tools.read_file", _fake_read_file)
+    _set_okf_dir(monkeypatch)
 
     tool = next(t for t in default_tools() if t.name == "read_file")
     result = await tool.handler({"path": "default/note.md"})
@@ -160,6 +171,7 @@ async def test_default_tools_write_file_forwards_to_fs_service(monkeypatch):
         return {"path": path, "bytes_written": len(content)}
 
     monkeypatch.setattr("knowledge_forge.agent.tools.write_file", _fake_write_file)
+    _set_okf_dir(monkeypatch)
 
     tool = next(t for t in default_tools() if t.name == "write_file")
     await tool.handler({"path": "default/new.md", "content": "hello"})
@@ -175,6 +187,7 @@ async def test_default_tools_edit_file_forwards_to_fs_service(monkeypatch):
         return {"path": path, "replaced": True}
 
     monkeypatch.setattr("knowledge_forge.agent.tools.edit_file", _fake_edit_file)
+    _set_okf_dir(monkeypatch)
 
     tool = next(t for t in default_tools() if t.name == "edit_file")
     await tool.handler({"path": "default/note.md", "old_text": "a", "new_text": "b"})
@@ -190,11 +203,31 @@ async def test_default_tools_list_dir_defaults_to_empty_path(monkeypatch):
         return []
 
     monkeypatch.setattr("knowledge_forge.agent.tools.list_dir", _fake_list_dir)
+    _set_okf_dir(monkeypatch)
 
     tool = next(t for t in default_tools() if t.name == "list_dir")
     await tool.handler({})
 
     assert captured == {"path": ""}
+
+
+async def test_filesystem_tools_are_omitted_without_okf_dir(monkeypatch):
+    """`KF_OKF_DIR`이 없으면 네 파일시스템 도구는 호출해도 fs_service가 전부 거부한다 -
+    목록에 남으면 모델이 그걸 불러 턴을 버린다. DB가 있는 기본 배포(에이전트 평가 구성)에서
+    빠지는지를 못 박는다."""
+    monkeypatch.setattr(settings, "database_url", "postgresql://kf:kf@localhost/kf")
+
+    names = [t.name for t in default_tools(provider=_FakeProvider())]
+
+    assert not set(_FILESYSTEM_TOOL_NAMES) & set(names)
+
+
+async def test_filesystem_tools_are_included_when_okf_dir_is_set(monkeypatch):
+    _set_okf_dir(monkeypatch)
+
+    tools = default_tools(provider=_FakeProvider())
+
+    assert [t.name for t in tools] == _FILESYSTEM_TOOL_NAMES + _EXPECTED_BASE_TOOL_NAMES
 
 
 async def test_default_tools_write_memory_is_scoped_to_project_id(monkeypatch):

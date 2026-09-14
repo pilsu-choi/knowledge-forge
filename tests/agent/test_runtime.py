@@ -5,11 +5,9 @@ from knowledge_forge.agent.providers.base import AssistantTurn, ChatProvider, Me
 from knowledge_forge.agent.runtime import AgentSession
 from knowledge_forge.config import settings
 
+# 파일시스템 도구(read_file/write_file/edit_file/list_dir)는 `KF_OKF_DIR`이 있을 때만
+# 실린다 - 아래 fixture가 그 값을 없음에 고정하므로 이 목록에 없다.
 _EXPECTED_NON_SEARCH_TOOL_NAMES = [
-    "read_file",
-    "write_file",
-    "edit_file",
-    "list_dir",
     "write_memory",
     "write_plan",
     "delegate_task",
@@ -21,6 +19,7 @@ def _default_tool_surface(monkeypatch):
     """개발자 로컬 `.env`의 `KF_AGENT_TOOL_SURFACE`에 이 파일의 단언이 끌려가지
     않게 기본값에 고정한다(tests/agent/test_tools.py와 같은 이유)."""
     monkeypatch.setattr(settings, "agent_tool_surface", "minimal")
+    monkeypatch.setattr(settings, "okf_dir", None)
 
 
 class _FakeProvider(ChatProvider):
@@ -93,6 +92,17 @@ def test_session_wires_up_the_default_search_tool_surface(monkeypatch):
         "read_document",
         "sql_search",
     ] + _EXPECTED_NON_SEARCH_TOOL_NAMES
+
+
+def test_system_prompt_filesystem_guidance_follows_okf_dir(monkeypatch):
+    """파일시스템 도구 지침은 도구 목록과 같은 조건(`KF_OKF_DIR`)을 탄다 - 목록에 없는
+    read_file을 쓰라는 문단이 남으면 모델이 없는 도구를 부르려 헛돈다."""
+    assert "read_file" not in build_system_prompt()
+    assert "list_dir" not in build_system_prompt()
+
+    monkeypatch.setattr(settings, "okf_dir", "/tmp/okf")
+
+    assert "read_file/write_file/edit_file/list_dir(파일시스템) 도구 사용 원칙" in build_system_prompt()
 
 
 def test_system_prompt_leads_with_search_and_matches_the_tool_surface(monkeypatch):

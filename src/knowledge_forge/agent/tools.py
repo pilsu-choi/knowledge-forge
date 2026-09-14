@@ -790,32 +790,41 @@ def default_tools(
             tools.append(_make_lexical_search_tool(database_url))
     if provider is not None and not minimal:
         tools.append(_make_plan_search_tool(provider=provider, database_url=database_url, project_id=project_id))
+    if settings.okf_dir:
+        # 파일시스템 도구는 `KF_OKF_DIR`이 있을 때만 싣는다. 없으면 네 도구 모두
+        # fs_service가 "OKF 루트가 설정되어 있지 않습니다"로 거부하는데, 목록에 남아
+        # 있으면 모델이 그걸 불러 턴 하나를 버린다(에이전트 평가 첫 실측에서 list_dir로
+        # 실제로 일어났다). file_search를 끈 것과 같은 이유 - 죽은 도구는 표면에서 뺀다.
+        tools.extend(
+            [
+                ToolSpec(
+                    name="read_file",
+                    description="OKF 루트 트리 내부의 파일 전체 내용을 읽는다. 검색 결과는 스니펫뿐이므로 전체가 필요할 때 쓴다.",
+                    input_schema=READ_FILE_INPUT_SCHEMA,
+                    handler=_read_file_handler,
+                ),
+                ToolSpec(
+                    name="write_file",
+                    description="OKF 루트 트리 내부에 새 파일을 만들거나 기존 파일을 통째로 덮어쓴다. 부분 수정에는 edit_file을 쓸 것.",
+                    input_schema=WRITE_FILE_INPUT_SCHEMA,
+                    handler=_write_file_handler,
+                ),
+                ToolSpec(
+                    name="edit_file",
+                    description="OKF 루트 트리 내부의 기존 파일에서 old_text 한 곳을 new_text로 교체한다(부분 수정).",
+                    input_schema=EDIT_FILE_INPUT_SCHEMA,
+                    handler=_edit_file_handler,
+                ),
+                ToolSpec(
+                    name="list_dir",
+                    description="OKF 루트 트리에서 한 디렉터리의 직계 항목(파일/하위 디렉터리)을 나열한다.",
+                    input_schema=LIST_DIR_INPUT_SCHEMA,
+                    handler=_list_dir_handler,
+                ),
+            ]
+        )
     tools.extend(
         [
-            ToolSpec(
-                name="read_file",
-                description="OKF 루트 트리 내부의 파일 전체 내용을 읽는다. 검색 결과는 스니펫뿐이므로 전체가 필요할 때 쓴다.",
-                input_schema=READ_FILE_INPUT_SCHEMA,
-                handler=_read_file_handler,
-            ),
-            ToolSpec(
-                name="write_file",
-                description="OKF 루트 트리 내부에 새 파일을 만들거나 기존 파일을 통째로 덮어쓴다. 부분 수정에는 edit_file을 쓸 것.",
-                input_schema=WRITE_FILE_INPUT_SCHEMA,
-                handler=_write_file_handler,
-            ),
-            ToolSpec(
-                name="edit_file",
-                description="OKF 루트 트리 내부의 기존 파일에서 old_text 한 곳을 new_text로 교체한다(부분 수정).",
-                input_schema=EDIT_FILE_INPUT_SCHEMA,
-                handler=_edit_file_handler,
-            ),
-            ToolSpec(
-                name="list_dir",
-                description="OKF 루트 트리에서 한 디렉터리의 직계 항목(파일/하위 디렉터리)을 나열한다.",
-                input_schema=LIST_DIR_INPUT_SCHEMA,
-                handler=_list_dir_handler,
-            ),
             _make_write_memory_tool(project_id),
             make_plan_tool(plan_state if plan_state is not None else PlanState()),
         ]
