@@ -118,3 +118,102 @@ def test_empty_document_produces_no_chunks():
     doc = Document(document_id="doc5", source=make_source_ref(), elements=[])
     chunks = AdaptiveChunker(max_tokens_per_chunk=4000).chunk(doc)
     assert chunks == []
+
+
+def test_small_sibling_leaves_are_merged_but_a_large_sibling_stays_separate():
+    """A title-only heading and a couple of one-word bullets should not
+    survive as their own tiny chunks once the section is forced to descend
+    to per-element leaves - but a big sibling that would blow the budget if
+    absorbed must stay on its own (never merge past budget)."""
+    big_text = " ".join(f"word{i}" for i in range(38))  # 76 tokens: fits the 80-token budget alone,
+    doc = Document(
+        document_id="doc-merge1",
+        source=make_source_ref(),
+        elements=[
+            Heading(element_id="h1", level=1, text="Chapter"),
+            TextBlock(element_id="t1", text="hi"),
+            TextBlock(element_id="t2", text="bye"),
+            TextBlock(element_id="t3", text=big_text),
+        ],
+    )
+    chunks = AdaptiveChunker(max_tokens_per_chunk=100, min_tokens=10).chunk(doc)
+
+    assert len(chunks) == 2
+    merged, standalone = chunks
+    assert "Chapter" in merged.text and "hi" in merged.text and "bye" in merged.text
+    assert merged.element_ids == ["h1", "t1", "t2"]
+    assert standalone.element_ids == ["t3"]
+    budget = int(100 * 0.8)
+    for c in chunks:
+        assert count_tokens(c.text) <= budget
+
+
+def test_table_chunks_never_merge_with_neighboring_non_table_leaves():
+    filler_a = " ".join(f"a{i}" for i in range(70))  # 140 tokens: fits the 160-token budget alone
+    filler_b = " ".join(f"b{i}" for i in range(70))
+    doc = Document(
+        document_id="doc-merge2",
+        source=make_source_ref(),
+        elements=[
+            Heading(element_id="h1", level=1, text="Chapter"),
+            TextBlock(element_id="t1", text="hi"),
+            TableElement(element_id="tb1", rows=[["a", "b"], ["c", "d"]]),
+            TextBlock(element_id="t2", text=filler_a),
+            TextBlock(element_id="t3", text=filler_b),
+        ],
+    )
+    chunks = AdaptiveChunker(max_tokens_per_chunk=200, min_tokens=10).chunk(doc)
+
+    # Heading+t1 merge (both tiny); the table stands alone on both sides
+    # even though its neighbor (heading+t1) is well under min_tokens.
+    assert len(chunks) == 4
+    assert "a | b" in chunks[1].text and "c | d" in chunks[1].text
+    assert chunks[1].element_ids == ["tb1"]
+
+
+def test_merge_never_crosses_a_chapter_boundary():
+    """Two chapters, each individually tiny (well under min_tokens) but
+    together over budget, must stay as two separate chunks - Document-level
+    children are never merge candidates (see _MERGE_GATE_LEVELS)."""
+    # 34 words -> 68 tokens, so each chapter (heading + body) is 72 tokens -
+    # under the 80-token budget alone - but the two together are not.
+    chapter1_body = " ".join(f"word{i}" for i in range(34))
+    chapter2_body = " ".join(f"word{i}" for i in range(34))
+    doc = Document(
+        document_id="doc-merge3",
+        source=make_source_ref(),
+        elements=[
+            Heading(element_id="h1", level=1, text="Chapter One"),
+            TextBlock(element_id="t1", text=chapter1_body),
+            Heading(element_id="h2", level=1, text="Chapter Two"),
+            TextBlock(element_id="t2", text=chapter2_body),
+        ],
+    )
+    chunks = AdaptiveChunker(max_tokens_per_chunk=100, min_tokens=1000).chunk(doc)
+
+    assert len(chunks) == 2
+    assert chunks[0].hierarchy_level.value == "chapter"
+    assert "Chapter One" in chunks[0].text
+    assert "Chapter Two" in chunks[1].text
+
+
+def test_default_min_tokens_merges_tiny_slide_like_paragraphs():
+    """Regression for the reported pptx/gdrive symptom: a title-only
+    paragraph followed by short bullets, using the AdaptiveChunker default
+    (no explicit min_tokens), should not each stand alone as ~1-2-token
+    chunks."""
+    filler = " ".join(f"w{i}" for i in range(2000))  # forces section descent
+    doc = Document(
+        document_id="doc-merge4",
+        source=make_source_ref(),
+        elements=[
+            Heading(element_id="h1", level=1, text="Slide Title"),
+            TextBlock(element_id="t1", text="bullet one"),
+            TextBlock(element_id="t2", text="bullet two"),
+            TextBlock(element_id="t3", text=filler),
+        ],
+    )
+    chunks = AdaptiveChunker(max_tokens_per_chunk=4000).chunk(doc)
+
+    tiny = [c for c in chunks if count_tokens(c.text) <= 5]
+    assert tiny == []

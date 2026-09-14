@@ -19,6 +19,7 @@ from knowledge_forge.chunking import AdaptiveChunker
 from knowledge_forge.collectors.base import Collector, Cursor
 from knowledge_forge.collectors.local_file import LocalFileCollector
 from knowledge_forge.collectors.saas.factory import SAAS_COLLECTOR_BUILDERS
+from knowledge_forge.config import settings
 from knowledge_forge.extraction.factory import get_extractor
 from knowledge_forge.parsers.registry import default_registry
 from knowledge_forge.pipeline import run_pipeline
@@ -40,7 +41,7 @@ async def _run_collector(
     cursor: Cursor | None = None,
 ) -> dict:
     registry = default_registry()
-    chunker = AdaptiveChunker(max_tokens_per_chunk=max_tokens)
+    chunker = AdaptiveChunker(max_tokens_per_chunk=max_tokens, min_tokens=settings.min_tokens_per_chunk)
     extractor = get_extractor(model=model)
 
     object_count = 0

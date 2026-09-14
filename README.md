@@ -177,6 +177,7 @@ uv sync --extra xlsx --extra pptx --extra hwpx --extra slack --extra google --ex
 |---|---|---|
 | `KF_EXTRACTION_MODEL` | `claude-opus-5` | Knowledge Extraction 모델 (`--model`로도 override) |
 | `KF_MAX_TOKENS_PER_CHUNK` | `4000` | 청크당 최대 토큰 예산 (`--max-tokens`로도 override) |
+| `KF_MIN_TOKENS_PER_CHUNK` | `50` | 이 값 미만인 리프 청크는 인접 형제 청크와 병합을 시도한다(Chapter/Section 경계는 절대 넘지 않고, 표 청크는 다른 어떤 청크와도 병합하지 않는다) |
 | `KF_MAX_CONCURRENT_LLM_REQUESTS` | `5` | Extractor/VisionExtractor 인스턴스당 동시 LLM 요청 수 상한 |
 | `KF_DATABASE_URL` | (없음) | PostgreSQL DSN — 없으면 저장 없이 출력만 생성 |
 | `KF_DATA_DIR` | `./data` | 원본 바이트를 저장하는 디스크 blob 스토어 루트 |

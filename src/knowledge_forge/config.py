@@ -31,6 +31,13 @@ class Settings(BaseSettings):
 
     extraction_model: str = "claude-opus-5"
     max_tokens_per_chunk: int = 4000
+    # AdaptiveChunker's min_tokens (chunking/adaptive.py): a leaf chunk under
+    # this many tokens is a candidate for the bottom-up merge with an
+    # adjacent sibling leaf (a lone bullet, a title-only slide paragraph)
+    # rather than being emitted on its own. Never merges across a
+    # Chapter/Section boundary or mixes a table chunk with a non-table one -
+    # see AdaptiveChunker._merge_small_siblings().
+    min_tokens_per_chunk: int = 50
     # Caps in-flight Anthropic/OpenAI API calls (extraction + vision +
     # embedding) so a large batch doesn't fan out unbounded concurrent
     # requests. Embedding reuses this rather than getting its own knob -

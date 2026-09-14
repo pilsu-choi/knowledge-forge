@@ -219,3 +219,125 @@ Drive 유래라면 NFD일 수 있음)였다. 즉 DB에 저장된 텍스트와 LL
 `documents.elements`(파서 원본)와 `documents.title`(별도 경로인
 `storage/document_title.py::_clean`이 이미 `to_nfc`를 건다)은 이번 변경과 무관하다 - 전자는
 의도적으로 원본을 보존하고, 후자는 이미 적재 시점에 정규화되고 있었다.
+
+## `feature/chunk-merge`: 작은 형제 청크 병합
+
+### 문제
+
+`_chunk_node()`는 분할만 하고 합치지 않는다 - 상위 단위가 예산을 넘으면 자식으로 내려가고,
+그 자식이 예산 안에 들면 크기와 상관없이 그대로 하나의 청크로 방출한다. 그 결과 불릿 하나,
+제목만 있는 슬라이드 문단처럼 1~2 토큰짜리 조각이 형제 청크들과 합쳐질 기회 없이 그대로
+DB에 들어간다. `parsers/pptx.py`는 문단(paragraph)마다 하나씩 `TextBlock`을 만들기 때문에
+(문단이 여러 개인 슬라이드 텍스트 상자에서 특히) 이 문제가 두드러진다.
+
+개발 DB(`postgresql://kf:kf@localhost:15432/knowledge_forge`, 358문서/2,856청크, 읽기 전용
+SELECT로 측정, 재청킹 전 상태)의 실측:
+
+| 범위 | 전체 청크 수 | ≤5토큰 청크 수 | 비율 |
+|---|---|---|---|
+| 코퍼스 전체 | 2,856 | 605 | 21.2% |
+| `google_drive`, `hierarchy_level=paragraph` | 2,103 | 596 | 28.3% |
+| `gmail`, `hierarchy_level=paragraph` | 74 | 8 | 10.8% |
+
+`google_drive`로 수집된 pptx 덱 3개(제목 슬라이드가 드물어 여러 슬라이드가 하나의 Chapter로
+뭉쳐지고, 그 Chapter가 예산을 넘어 문단 단위까지 내려가는 경우) 개별 비율:
+
+| 파일 | 전체 청크 | ≤5토큰 | 비율 |
+|---|---|---|---|
+| `(공유용) DTS Equipment Cata별 Spacing 정의_260730 (1).pptx` | 494 | 268 | 54.3% |
+| `projectintel-development-handover.pptx` | 437 | 189 | 43.2% |
+| `structure_size.pptx` | 283 | 114 | 40.3% |
+
+### 원인 - PPTX 구조 특이점
+
+`PptxParser`는 슬라이드 제목을 `Heading(level=1)`로 만든다. `build_tree()`의
+`_split_by_heading_level(elements, level=1)`은 level-1 Heading을 만날 때마다 새 Chapter를
+시작하므로, 제목이 있는 슬라이드는 그 자체로 하나의 Chapter가 된다. 이 Chapter 안에는
+level-2 Heading이 없으므로(`_build_chapter`의 `section_groups` 폴백) 슬라이드 전체가 다시
+하나의 Section으로 묶인다 - 즉 **슬라이드 하나 = Chapter 하나 = Section 하나**이고, 그
+Section의 자식이 슬라이드의 각 도형(제목/문단/표)이다. 제목이 없는 슬라이드는 새 Chapter를
+시작하지 못해 바로 앞 Chapter의 요소 목록 뒤에 이어 붙는다 - 그래서 제목 없는 슬라이드가
+여러 장 이어지면 하나의 거대한 Chapter(=하나의 Section)가 되고, 예산을 넘기면 그 안의 모든
+문단(각 텍스트 상자의 각 paragraph, 표 행 그룹 등)이 개별 청크로 쏟아진다.
+
+### 해결 - 형제 리프의 bottom-up 병합
+
+`AdaptiveChunker`에 `min_tokens`(기본 50, `KF_MIN_TOKENS_PER_CHUNK`) 생성자 인자를 추가했다.
+`_chunk_node()`가 자식들을 재귀적으로 청킹해 `result`를 만든 직후, **Section과 Paragraph
+레벨에서만** `_merge_small_siblings(result)`를 돌린다:
+
+- 왼쪽에서 오른쪽으로 훑으며, 누적 버퍼(직전 청크)와 다음 청크 중 **어느 한쪽이라도**
+  `min_tokens` 미만이면 병합을 시도한다(둘 다 이미 적당한 크기면 그대로 둔다 - "가능한 가장
+  큰 semantic unit을 유지한다" 원칙을 반복 병합으로 깨지 않기 위해).
+- 합친 텍스트를 다시 토큰화해 `budget`(= `max_tokens * safety_margin`)을 넘으면 병합하지
+  않는다 - 병합도 항상 예산을 지킨다.
+- `element_ids`는 두 청크의 합집합(순서 보존, 중복 없음), `pages`도 합집합이라 `chunk()`가
+  계산하는 `page_range`(min/max)가 자동으로 정확해진다. `hierarchy_level`은 둘 중 더 거친
+  (coarser) 쪽을 취한다(`hierarchy.level_rank()`로 비교) - 예를 들어 작은 제목 문단(Paragraph)이
+  한 문단이 쪼개져 나온 문장 조각(Sentence)과 합쳐지면 Paragraph로 남는다.
+- `chunk_id`는 여전히 `stable_id(document_id, str(index), level.value)`로 최종 방출 리스트의
+  위치에서 결정되므로(병합은 `chunk()`가 `enumerate()`하기 전, `_chunk_node()` 안에서 끝난다)
+  파생 방식 자체는 바뀌지 않는다 - 같은 문서를 다시 청킹하면 같은 chunk_id가 나온다.
+
+**경계 규칙**:
+
+- **Chapter/Section 경계를 넘지 않는다**: 병합 패스는 `node.level`이 SECTION 또는 PARAGRAPH일
+  때만 실행된다(`_MERGE_GATE_LEVELS`). 즉 어떤 Section이 이미 예산 안에 들어 통째로 하나의
+  청크로 방출됐다면, 그 청크는 CHAPTER 레벨에서 옆 Section의 청크와 나란히 놓이지만
+  CHAPTER는 병합 게이트에 없으므로 둘이 합쳐지는 일이 없다 - 트리 구조 자체가 이미 Chapter/
+  Section 경계를 분리해 두므로, 이 두 레벨만 게이트에 넣는 것만으로 "헤딩 경계를 절대 넘지
+  않는다"는 제약이 공짜로 만족된다. (부작용: 예산 안에 드는 아주 짧은 Section 하나는 - 예:
+  참고문헌만 있는 절 - 옆 Section과 병합되지 않고 그대로 작게 남는다. 아래 실측의
+  `ProjectIntel 관리자 운영 가이드.pdf`가 그 사례다.)
+- **표 청크는 아무것도 병합하지 않는다**: `Node.is_table`(→ `RenderedChunk.is_table`)이 표
+  문단 자신과 `split_table_by_rows()`가 만든 모든 행 그룹에 전파된다. 병합 조건은 양쪽 다
+  `is_table=False`일 때만 참이 되므로, 표 청크는 옆의 일반 텍스트와도, 다른 표 행 그룹과도
+  합쳐지지 않는다 - 헤더 반복 규칙을 다시 계산해야 하는 복잡함과, 표 데이터와 산문이
+  뒤섞이는 것을 둘 다 피하기 위한 의도적 선택이다.
+
+### 재청킹 실측 (in-memory, DB 쓰기 없음)
+
+개발 DB에서 `documents.elements`를 SELECT로 읽어 `Document`를 복원하고, 메모리에서만
+`AdaptiveChunker`를 두 번 돌려(`min_tokens=0`으로 병합을 끈 "이전" vs 기본값 `min_tokens=50`인
+"이후") 비교했다. DB에는 아무것도 쓰지 않았다.
+
+**pptx 3개**(실제 이 코퍼스가 적재될 때 쓰인 것으로 역산되는 `max_tokens_per_chunk=60` 예산 -
+`min_tokens=0`으로 돌렸을 때 청크 수·최대 토큰 수가 DB에 저장된 값과 정확히 일치함을 확인):
+
+| 파일 | 이전 청크 수 | 이전 ≤5토큰 | 이후 청크 수 | 이후 ≤5토큰 |
+|---|---|---|---|---|
+| DTS Equipment Cata... | 494 | 54.3% | 110 | 0.9% |
+| projectintel-development-handover.pptx | 451 | 42.1% | 114 | 0.0% |
+| structure_size.pptx | 291 | 39.5% | 90 | 0.0% |
+
+같은 3개 파일을 프로덕션 기본 예산(`max_tokens_per_chunk=4000`)으로 재청킹하면 - 슬라이드
+전체가 예산 안에 훨씬 여유 있게 들어가 병합이 더 공격적으로 일어난다(그래도 병합된 청크의
+최대 토큰 수는 767로, budget인 3200에는 한참 못 미친다 - 무한정 커지지 않는다는 뜻):
+
+| 파일 | 이전 청크 수 | 이후 청크 수 |
+|---|---|---|
+| DTS Equipment Cata... | 283 | 6 |
+| projectintel-development-handover.pptx | 437 | 12 |
+| structure_size.pptx | 283 | 6 |
+
+**비-pptx 문서 3개**(각각 실제 적재 예산인 `max_tokens_per_chunk=4000`으로):
+
+| 파일 | 이전 청크 수 | 이전 ≤5토큰 | 이후 청크 수 | 이후 ≤5토큰 |
+|---|---|---|---|---|
+| `doc_ontology_report.html` | 85 | 11.8% | 32 | 0.0% |
+| `SeAH_착수보고서_260820.docx` | 77 | 9.1% | 16 | 0.0% |
+| `ProjectIntel 관리자 운영 가이드 (배포본).pdf` | 59 | 10.2% | 59 | 10.2% |
+
+`ProjectIntel` PDF는 그대로다 - 위 "경계 규칙"에 적은 대로, 이 문서의 ≤5토큰 청크들은
+파편화된 문단이 아니라 그 자체로 예산 안에 드는 아주 짧은 **Section**이라 Chapter 레벨에서
+옆 Section과 병합될 수 없다(병합 게이트가 SECTION/PARAGRAPH에서만 열리므로). 의도된 동작이다.
+
+**검증**: `tests/chunking/test_adaptive.py`에 형제 병합(작은 형제는 합치고 큰 형제는 예산을
+넘기면서까지 합치지 않음), 표 청크의 병합 배제, Chapter 경계를 넘지 않음, 기본 `min_tokens`로도
+슬라이드형 문서의 파편이 사라짐을 확인하는 테스트 4개를 추가했다.
+
+**DB로는 검증하지 못한 부분**: 위 pptx/비-pptx 실측은 전부 메모리 안에서만 이뤄졌다(개발 DB는
+SELECT 전용). `storage/postgres_store.py::save_chunks`가 병합된 청크(합쳐진 `element_ids`/
+`page_range`, 바뀐 `hierarchy_level`)를 그대로 왕복 저장·복원하는지, 그리고 실제 재적재
+(`reparse`) 후 코퍼스 전체의 ≤5토큰 비율이 위 표본 수치와 맞아떨어지는지는 복제 DB
+(`CREATE DATABASE ... TEMPLATE knowledge_forge`)에서 별도로 확인이 필요하다.

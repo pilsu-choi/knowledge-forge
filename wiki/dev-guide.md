@@ -52,6 +52,7 @@ export할 필요 없이 `.env`에 값을 채워 넣으면 된다. 템플릿은 [
 |---|---|---|
 | `KF_EXTRACTION_MODEL` | `claude-opus-5` | Knowledge Extraction에 사용할 모델. `--model` CLI 옵션으로도 override 가능 |
 | `KF_MAX_TOKENS_PER_CHUNK` | `4000` | Adaptive Chunker의 청크당 최대 토큰 예산. `--max-tokens` CLI 옵션으로도 override 가능 |
+| `KF_MIN_TOKENS_PER_CHUNK` | `50` | 이 값 미만인 리프 청크(외톨이 불릿, 제목만 있는 슬라이드 문단 등)는 인접 형제 청크와 합쳐질 후보가 된다 — `AdaptiveChunker._merge_small_siblings()`. Chapter/Section 경계는 절대 넘지 않고, 표 청크는 어떤 청크와도 병합하지 않는다. 자세한 내용은 [`adaptive-chunking.md`](adaptive-chunking.md#fixchunk-merge-작은-형제-청크-병합) |
 | `KF_MAX_CONCURRENT_LLM_REQUESTS` | `5` | Extractor/VisionExtractor 인스턴스마다 동시에 진행 가능한 LLM 요청 수 상한(`asyncio.Semaphore`). 한 문서의 여러 청크·표·이미지는 이 한도 안에서 동시 처리된다 |
 | `KF_DATABASE_URL` | (없음, 저장 비활성) | Source/Document/Chunk/KnowledgeObject를 저장할 PostgreSQL DSN. [`storage.md`](storage.md) 참고 |
 | `KF_DATA_DIR` | `./data` | 원본 바이트를 저장하는 디스크 blob 스토어 루트 |
