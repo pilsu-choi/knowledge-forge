@@ -274,19 +274,56 @@ def split_table_by_rows(node: Node, budget: int) -> list[Node] | None:
     header_rows, data_rows = node.table_rows[:header_count], node.table_rows[header_count:]
     prefix_lines = [node.table_caption] if node.table_caption else []
     header_lines = [" | ".join(r) for r in header_rows]
+    fixed_lines = [*prefix_lines, *header_lines]  # always non-empty: header_count >= 1
 
     def render(rows: list[list[str]]) -> str:
-        return "\n".join([*prefix_lines, *header_lines, *(" | ".join(r) for r in rows)])
+        return "\n".join([*fixed_lines, *(" | ".join(r) for r in rows)])
+
+    # Re-tokenizing the whole accumulated group's rendered text for every row
+    # (the old `count_tokens(render(candidate))` above) is O(rows^2) - it
+    # stalled a 5,000+ row xlsx sheet for 7+ minutes. Instead, tokenize each
+    # line (data row or the fixed header block) at most twice, up front, and
+    # keep a running total that is updated in O(1) per row.
+    #
+    # A line's token count isn't simply additive across a "\n" join: BPE can
+    # fuse a line's trailing character with the following newline into one
+    # token (e.g. cl100k_base tokenizes "0%" + "\n" as a single "%\n" token,
+    # one fewer than counting "0%" and "\n" separately). That fusion only
+    # ever involves a line and the newline immediately after it, so it's
+    # captured exactly by tokenizing each line both alone (as the *last*
+    # line of a group, which `render()` never follows with "\n") and with a
+    # trailing "\n" (as a *non-last* line) - no need to re-tokenize anything
+    # that came before it. Swapping a group's current last line from
+    # "no_trailing" to "with_trailing" when a new row extends the group is
+    # then one subtraction and two additions. This reproduces
+    # `count_tokens(render(...))` exactly (see
+    # tests/chunking/test_hierarchy_table_split.py's old-vs-new comparison).
+    fixed_block = "\n".join(fixed_lines)
+    fixed_tokens_with_trailing_nl = count_tokens(fixed_block + "\n")
+    row_lines = [" | ".join(row) for row in data_rows]
+    tokens_alone = [count_tokens(line) for line in row_lines]
+    tokens_with_trailing_nl = [count_tokens(line + "\n") for line in row_lines]
 
     groups: list[list[list[str]]] = []
     current: list[list[str]] = []
-    for row in data_rows:
-        candidate = current + [row]
-        if not current or count_tokens(render(candidate)) <= budget:
-            current = candidate
+    current_tokens = 0
+    last_alone = 0
+    last_with_trailing_nl = 0
+    for row, alone, with_trailing_nl in zip(data_rows, tokens_alone, tokens_with_trailing_nl, strict=True):
+        candidate_tokens = (
+            fixed_tokens_with_trailing_nl + alone
+            if not current
+            else current_tokens - last_alone + last_with_trailing_nl + alone
+        )
+        if not current or candidate_tokens <= budget:
+            current.append(row)
+            current_tokens = candidate_tokens
+            last_alone, last_with_trailing_nl = alone, with_trailing_nl
         else:
             groups.append(current)
             current = [row]
+            current_tokens = fixed_tokens_with_trailing_nl + alone
+            last_alone, last_with_trailing_nl = alone, with_trailing_nl
     if current:
         groups.append(current)
 

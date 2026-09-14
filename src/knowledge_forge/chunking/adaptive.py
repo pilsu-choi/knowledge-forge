@@ -33,6 +33,12 @@ class RenderedChunk:
     text: str
     element_ids: list[str] = field(default_factory=list)
     pages: list[int] = field(default_factory=list)
+    # Set when `_chunk_node` already knows the token count from its budget
+    # check (the common leaf case) - `chunk()` reuses it instead of calling
+    # count_tokens() on the same text a second time. None (the hard-split
+    # path, which doesn't already have a per-piece count) falls back to
+    # counting once in `chunk()`.
+    token_count: int | None = None
 
 
 class AdaptiveChunker(Chunker):
@@ -61,7 +67,7 @@ class AdaptiveChunker(Chunker):
                     # chunk store.
                     parent_chunk_id=None,
                     text=item.text,
-                    token_count=count_tokens(item.text),
+                    token_count=item.token_count if item.token_count is not None else count_tokens(item.text),
                     element_ids=item.element_ids,
                     page_range=page_range,
                 )
@@ -71,9 +77,18 @@ class AdaptiveChunker(Chunker):
     def _chunk_node(self, node: Node) -> list[RenderedChunk]:
         if not node.text:
             return []
-        if count_tokens(node.text) <= self._budget:
+        node_tokens = count_tokens(node.text)
+        if node_tokens <= self._budget:
             # Largest semantic unit that still fits the budget - keep it whole.
-            return [RenderedChunk(level=node.level, text=node.text, element_ids=node.element_ids, pages=node.pages)]
+            return [
+                RenderedChunk(
+                    level=node.level,
+                    text=node.text,
+                    element_ids=node.element_ids,
+                    pages=node.pages,
+                    token_count=node_tokens,
+                )
+            ]
 
         children: list[Node] | None
         if node.children is not None:
