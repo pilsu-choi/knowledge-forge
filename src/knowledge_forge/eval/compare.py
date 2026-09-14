@@ -32,6 +32,14 @@ def compare_runs(a: dict[str, Any], b: dict[str, Any], metric: str = "ndcg@10", 
         for key in ("chunks", "knowledge_objects", "embeddings")
         if a["corpus_before"].get(key) != b["corpus_before"].get(key)
     ]
+    # none 생성 게이트와 채점 둘 다 `vector_min_score`에 기대는데(생성: 벡터 최고 유사도가 이보다
+    # 낮아야 채택, 채점: 결과가 비어야 정답) 두 run의 랭킹 설정이 다르면 none_correct(그리고 다른
+    # 지표) delta가 검색 품질이 아니라 이 값 차이를 잰 것일 수 있다.
+    settings_a, settings_b = a.get("provenance", {}).get("settings", {}), b.get("provenance", {}).get("settings", {})
+    diff = sorted(k for k in settings_a.keys() | settings_b.keys() if settings_a.get(k) != settings_b.get(k))
+    if diff:
+        note = " - none_correct 등 delta는 검색 품질이 아니라 이 설정 차이를 반영할 수 있다" if "vector_min_score" in diff else ""
+        warnings.append(f"provenance.settings 차이: {', '.join(diff)}{note}")
     warnings += [f"{run['run_id']}: {w}" for run in (a, b) for w in run.get("warnings", [])]
 
     def _scores(run: dict[str, Any]) -> dict[str, float]:

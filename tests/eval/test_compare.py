@@ -59,6 +59,23 @@ def test_compare_refuses_different_golden_or_documents_and_warns_on_chunks():
     assert compare_runs(_report("a", A), rechunked)["warnings"] == ["chunks 지문이 다르다"]
 
 
+def test_compare_warns_when_provenance_settings_differ():
+    """none 게이트와 채점 둘 다 `vector_min_score`를 쓰므로, 두 run의 랭킹 설정이 다르면 delta가
+    검색 품질이 아니라 그 값 차이를 반영할 수 있다(wiki/search-quality-review-2026-09-15.md 3.2)."""
+    a = _report("a", A, provenance={"settings": {"vector_min_score": 0.45, "embedding_model": "m"}})
+    b = _report("b", B, provenance={"settings": {"vector_min_score": 0.0, "embedding_model": "m"}})
+
+    result = compare_runs(a, b)
+
+    assert any("vector_min_score" in w for w in result["warnings"])
+
+
+def test_compare_is_silent_about_settings_when_provenance_is_absent_or_identical():
+    same = _report("b", B, provenance={"settings": {"vector_min_score": 0.45}})
+    assert compare_runs(_report("a", A, provenance={"settings": {"vector_min_score": 0.45}}), same)["warnings"] == []
+    assert compare_runs(_report("a", A), _report("b", B))["warnings"] == []
+
+
 def test_compare_cli_prints_delta(tmp_path):
     a, b = tmp_path / "a.json", tmp_path / "b.json"
     a.write_text(json.dumps(_report("a", A)))
