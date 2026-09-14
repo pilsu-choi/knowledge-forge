@@ -28,12 +28,14 @@ through `search/rerank.py::merge_and_rerank` (Reciprocal Rank Fusion) rather
 than just concatenated - see that module for why RRF and not a raw score
 merge.
 
-Each sub-query's own text is also scanned for a temporal expression
-(`search/temporal.py::parse_temporal_expression`, "어제"/"지난주"/"2025년
-Q3"/...) and, if found, applied as a `since`/`until` filter on that
+Each sub-query's own text (never the dependency excerpts appended to it - see
+`_execute_subquery`) is also scanned for a temporal expression
+(`search/constraints.py::_resolve_time_range`, same year-context-aware
+resolution `extract_constraints_rules` uses: "어제"/"지난주"/"2025년 Q3"/
+"작년 3분기"/...) and, if found, applied as a `since`/`until` filter on that
 sub-query's `file_search`/`vector_search` calls - this is the one piece of
-Query Understanding this module does itself (see that module's docstring
-for why it's a heuristic parser, not an LLM call).
+Query Understanding this module does itself (see `search/temporal.py`'s
+docstring for why it's a heuristic parser, not an LLM call).
 """
 
 from __future__ import annotations
@@ -42,13 +44,15 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from knowledge_forge.chat_provider import ChatProvider, Message
+from knowledge_forge.search.constraints import _resolve_time_range
 from knowledge_forge.search.rerank import merge_and_rerank
 from knowledge_forge.search.router import FILE_SEARCH, VECTOR_SEARCH, route_query
 from knowledge_forge.search.service import file_search, vector_search
-from knowledge_forge.search.temporal import TimeRange, parse_temporal_expression
+from knowledge_forge.search.temporal import TimeRange
 
 if TYPE_CHECKING:
     from knowledge_forge.storage.store import PipelineStore
@@ -173,11 +177,17 @@ async def _execute_subquery(
     store: PipelineStore | None,
     project_id: str | None,
     limit: int,
+    now: datetime,
     target_kind: str | None = None,
 ) -> tuple[list[dict[str, Any]], TimeRange | None]:
     augmented_query = _augment_with_dependencies(subquery, results_by_id)
     decision = route_query(augmented_query, available_sources)
-    time_range = parse_temporal_expression(augmented_query)
+    # 시간은 하위 질의 자신의 텍스트에서만 본다 - `augmented_query`(의존 결과 발췌가 붙은 텍스트)를
+    # 쓰면 발췌 안의 "어제" 같은 표현이 이 하위 질의의 기간 필터로 오염된다. `constraints.py`의
+    # 연도 문맥 보정(`_resolve_time_range` - "작년"/"올해"/"재작년" 아래 분기·월)도 여기서 같이
+    # 타야 "작년 3분기 매출 보고서"가 `now`의 연도로 잘못 해석되지 않는다 - 시간 해석 진입점을
+    # 이 함수와 `constraints.py`(제약 추출)/`retrieve.py`(비교 대상) 사이에서 하나로 유지한다.
+    time_range = _resolve_time_range(subquery.query, now)
     since = time_range.start if time_range else None
     until = time_range.end if time_range else None
 
@@ -202,6 +212,7 @@ async def plan_and_search(
     max_subqueries: int = DEFAULT_MAX_SUBQUERIES,
     limit_per_subquery: int = DEFAULT_LIMIT_PER_SUBQUERY,
     target_kind: str | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Decomposes `query`, executes the resulting sub-queries wave by wave
     (concurrently within a wave, `route_query()`-picked source(s) per
@@ -209,7 +220,13 @@ async def plan_and_search(
     evidence pool a caller (the `plan_search` agent tool) hands back to the
     model to synthesize into an actual answer. Never raises for a query it
     can't decompose or a source that returns nothing - worst case this
-    degrades to "search the whole query once against file_search"."""
+    degrades to "search the whole query once against file_search".
+
+    `now` should be the same fixed instant the caller's own time filters use
+    (`search/retrieve.py::retrieve`'s `now`) - without it, a sub-query's
+    relative time expression ("어제", "작년 3분기") resolves against wall-clock
+    time instead of the run's fixed `now`, which breaks eval/test reproducibility."""
+    now = now or datetime.now(timezone.utc)
     subqueries = await decompose_query(query, provider, max_subqueries)
     available_sources = [FILE_SEARCH] + ([VECTOR_SEARCH] if store is not None else [])
 
@@ -218,7 +235,7 @@ async def plan_and_search(
     for wave in _topological_waves(subqueries):
         wave_results = await asyncio.gather(
             *(
-                _execute_subquery(sq, results_by_id, available_sources, store, project_id, limit_per_subquery, target_kind)
+                _execute_subquery(sq, results_by_id, available_sources, store, project_id, limit_per_subquery, now, target_kind)
                 for sq in wave
             )
         )

@@ -58,6 +58,7 @@ from knowledge_forge.search.constraints import (
     STRATEGY_VECTOR,
     STRATEGY_WHOLE_DOCUMENT,
     QueryConstraints,
+    _resolve_time_range,
     extract_constraints,
     extract_constraints_rules,
     keyword_terms,
@@ -67,7 +68,6 @@ from knowledge_forge.search.document import read_document
 from knowledge_forge.search.planner import plan_and_search
 from knowledge_forge.search.rerank import DEFAULT_RRF_K, merge_and_rerank
 from knowledge_forge.search.service import document_search, lexical_search, vector_search
-from knowledge_forge.search.temporal import parse_temporal_expression
 
 if TYPE_CHECKING:
     from knowledge_forge.storage.store import PipelineStore
@@ -1106,7 +1106,10 @@ class _Run:
         collected: list[dict[str, Any]] = []
         resolved: list[dict[str, Any]] = []
         targets = list(self.c.comparison_targets)
-        ranges = [parse_temporal_expression(target, now=self.now) for target in targets]
+        # 연도 문맥 보정까지 받는 `_resolve_time_range`를 쓴다 - `parse_temporal_expression`
+        # 하나만 쓰면 "작년" 같은 연도 단어가 있는 대상("작년 매출")의 bare 분기/월이 `self.now`의
+        # 연도로 잘못 해석된다(`search/planner.py::_execute_subquery`와 같은 이유).
+        ranges = [_resolve_time_range(target, self.now) for target in targets]
         # 대상별 제목 조회를 한꺼번에 던진다. 본문 폴백은 제목 조회가 빈손인 대상만 도는
         # 2단계라 겹칠 수 없으므로 그대로 순차로 둔다(대개 0~1개다). `pinned` 순서는 아래
         # 루프가 대상 순서대로 돌기 때문에 그대로 유지된다 - 그 순서가 최종 랭킹의 고정
@@ -1155,6 +1158,7 @@ class _Run:
                 project_id=self.project_id,
                 limit_per_subquery=self.limit,
                 target_kind=self.grain,
+                now=self.now,
             )
         except Exception as exc:  # noqa: BLE001 - planner 실패가 나머지 전략 결과를 버리게 하면 안 된다
             logger.warning("plan_and_search failed, continuing without it: %s", exc)

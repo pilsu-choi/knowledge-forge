@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 
 from knowledge_forge.chat_provider import AssistantTurn, ChatProvider
 from knowledge_forge.search.planner import (
@@ -334,3 +335,70 @@ async def test_plan_and_search_time_range_is_none_without_a_temporal_expression(
     assert captured["since"] is None
     assert captured["until"] is None
     assert result["evidence"][0]["time_range"] is None
+
+
+async def test_plan_and_search_does_not_let_a_dependency_excerpt_leak_a_time_filter(monkeypatch):
+    # review: wiki/search-quality-review-2026-09-15.md 1.질의해석 #3 - a dependent
+    # sub-query's own text carries no temporal expression, but the evidence
+    # snippet appended from its dependency does ("어제"). That excerpt must not
+    # become this sub-query's since/until filter.
+    provider = _ScriptedProvider(
+        json.dumps(
+            [
+                {"query": "가장 성과가 좋은 프로젝트", "depends_on": []},
+                {"query": "그 프로젝트의 성공 이유", "depends_on": [1]},
+            ]
+        )
+    )
+    captured_ranges: dict[str, tuple] = {}
+
+    async def _fake_file_search(query, project_id=None, type=None, limit=20, since=None, until=None):
+        captured_ranges[query.split("\n", 1)[0]] = (since, until)
+        if "가장 성과가 좋은 프로젝트" in query:
+            return [{"path": "p1", "summary": "어제 발표된 Project Phoenix가 가장 성과가 좋았다"}]
+        return [{"path": "p2", "summary": "이유 상세"}]
+
+    monkeypatch.setattr("knowledge_forge.search.planner.file_search", _fake_file_search)
+
+    result = await plan_and_search("가장 성과가 좋은 프로젝트와 그 이유는?", provider, store=None)
+
+    since, until = captured_ranges["그 프로젝트의 성공 이유"]
+    assert (since, until) == (None, None)
+    assert result["evidence"][1]["time_range"] is None
+
+
+async def test_plan_and_search_resolves_last_year_quarter_with_year_context(monkeypatch):
+    # review item #3 - without year-context resolution, "작년 3분기" parses as
+    # this year's Q3 (`now`'s year) because the bare-quarter branch fires first.
+    now = datetime(2026, 9, 14, 3, 0, tzinfo=timezone.utc)
+    provider = _ScriptedProvider(json.dumps([{"query": "작년 3분기 매출 보고서", "depends_on": []}]))
+
+    async def _fake_file_search(query, project_id=None, type=None, limit=20, since=None, until=None):
+        return []
+
+    monkeypatch.setattr("knowledge_forge.search.planner.file_search", _fake_file_search)
+
+    result = await plan_and_search("작년 3분기 매출 보고서 요약해줘", provider, store=None, now=now)
+
+    assert result["evidence"][0]["time_range"]["label"] == "2025년 Q3"
+    assert result["evidence"][0]["time_range"]["since"].startswith("2025-06-30")
+
+
+async def test_plan_and_search_is_reproducible_with_a_fixed_now(monkeypatch):
+    # A fixed `now` must fully determine the resolved time range - eval/test
+    # runs pass a fixed instant precisely so results don't depend on wall-clock
+    # time (review item #3, "now 미전달").
+    now = datetime(2026, 9, 14, 3, 0, tzinfo=timezone.utc)
+    provider = _ScriptedProvider(json.dumps([{"query": "어제 있었던 주요 결정", "depends_on": []}]))
+
+    async def _fake_file_search(query, project_id=None, type=None, limit=20, since=None, until=None):
+        return []
+
+    monkeypatch.setattr("knowledge_forge.search.planner.file_search", _fake_file_search)
+
+    first = await plan_and_search("어제 뭐 결정했어?", provider, store=None, now=now)
+    second = await plan_and_search("어제 뭐 결정했어?", provider, store=None, now=now)
+
+    assert first["evidence"][0]["time_range"] == second["evidence"][0]["time_range"]
+    assert first["evidence"][0]["time_range"]["since"] == "2026-09-12T15:00:00+00:00"
+    assert first["evidence"][0]["time_range"]["until"] == "2026-09-13T15:00:00+00:00"

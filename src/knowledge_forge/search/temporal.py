@@ -163,9 +163,13 @@ _LAST_BARE_MONTH_RE = re.compile(
 )
 # `resolve_within_year`가 "올해 3월"처럼 접두 없이 연도 문맥 아래의 달을 찾을 때 쓴다 - 뒤에
 # 숫자가 더 붙으면(예: "3월 15일"의 "3월") 날짜의 일부이므로 여기서는 건드리지 않는다.
-_BARE_MONTH_ONLY_RE = re.compile(
-    rf"(?<!\d)(?:(?P<num>1[0-2]|0?[1-9])\s?월(?!\s?\d)|(?P<word>{_KO_MONTH_WORD_ALT})월)"
-)
+#
+# 한자어 수사 단독형(word)은 여기서 받지 않는다 - "이월"은 회계 용어(예산 이월/이월 잔액)와
+# 완전히 동음이의라, "지난/저번" 같은 명시적 접두(그건 `_LAST_BARE_MONTH_RE`가 받는다) 없이
+# 문장 아무 데서나 찾으면 왼쪽에 경계를 세워도 못 걸러진다(실측: "작년 예산 이월 내역" →
+# 2025년 2월, 앞에 공백이 있어 어절 경계 자체는 이미 만족한다). 숫자형("3월")은 이런
+# 동음이의가 없어 계속 받는다.
+_BARE_MONTH_ONLY_RE = re.compile(r"(?<!\d)(?P<num>1[0-2]|0?[1-9])\s?월(?!\s?\d)")
 
 
 def _recent_amount(match: re.Match[str]) -> tuple[int, str] | None:
@@ -246,7 +250,7 @@ def resolve_within_year(text: str, now: datetime, year: int) -> TimeRange | None
             return TimeRange(start, add_months(start, 3), f"{year}년 Q{quarter}")
     m = _BARE_MONTH_ONLY_RE.search(text)
     if m:
-        month = int(m.group("num")) if m.group("num") else _KO_MONTH_WORDS[m.group("word")]
+        month = int(m.group("num"))
         start = local_date_start(now, year, month)
         return TimeRange(start, add_months(start, 1), f"{year}년 {month}월")
     return None
