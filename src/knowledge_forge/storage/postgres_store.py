@@ -58,8 +58,8 @@ _CHUNK_HIT_SUMMARY_CHARS = 500
 # 하나면 아무 이득이 없다 - 실측(이 코퍼스, 936청크): lexical_search 5회가 순차 182ms,
 # 같은 커넥션에 gather 183ms(= 이득 0), 커넥션 5개로 gather 46ms(약 4배).
 #
-# max 8인 이유: 평가 하네스가 질의 4개를 동시에 돌리고(`eval-ir --concurrency 4`) 질의
-# 하나가 arm 안에서 2~3개를 겹치므로 상한이 대략 그 곱이다. 그 위로 더 열어도 Postgres가
+# max 8인 이유: 동시 질의 몇 개(측정 당시 4)가 각각 arm 안에서 2~3개를 겹치므로
+# 상한이 대략 그 곱이다. 그 위로 더 열어도 Postgres가
 # 같은 코어에서 같은 일을 하는 것이라 처리량이 늘지 않는다.
 #
 # min 4인 이유: 풀이 필요할 때만 늘어나면 첫 버스트가 커넥션 하나를 놓고 줄을 선다
@@ -1251,11 +1251,11 @@ class PostgresStore:
         왜 필요한가: 개발 DB의 슬랙 문서 197건은 전부 제목이 `#C0BGQEQG1L6 2026-09-01`,
         참여자가 `["U0BBCPVEHF0"]`였다. v0 골든셋의 정답 문서 90건 중 48건이 슬랙인데,
         제목 조회(`search_documents_by_title`)로 닿는 슬랙 정답은 **66건 중 0건**이었다
-        (오프라인 실측, wiki/search-evaluation.md). 재적재가 아니라 전용 백필인 이유는
+        (오프라인 실측). 재적재가 아니라 전용 백필인 이유는
         `normalize_unicode_text`와 같다 - 내용은 멀쩡하고 **표현만** 틀렸으며, 재적재는
         파싱/추출/임베딩을 전부 다시 돌리면서 결국 같은 id를 덮어쓸 뿐이다. 게다가 슬랙
         재적재는 `chunks`/`knowledge_object_embeddings`까지 다시 쓰므로, 같은 DB를 공유하는
-        평가 런의 인덱스 정합을 깬다.
+        다른 작업의 인덱스 정합을 깬다.
 
         `directory`는 `collectors/saas/slack.py::SlackDirectory` 모양의 무엇이든 된다
         (`channel_name(id)` / `user_names(ids)` / `resolve_mentions(text)`). 스토리지 계층이

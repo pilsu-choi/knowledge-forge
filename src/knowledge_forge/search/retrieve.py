@@ -4,15 +4,13 @@
 랭킹(`RetrievalResult`)으로 돌려준다 - wiki/search-architecture.md "Retrieval Plan 실행기".
 
 왜 필요한가: 지금까지 "어떤 도구를 어떤 순서로 부를지"는 에이전트(LLM)가 매 턴 암묵적으로
-정했다. 그 판단은 (a) 에이전트 turn 없이 검색을 호출해야 하는 소비자 - 골든셋 IR 평가 하네스
-(`eval-ir`, wiki/search-evaluation.md (C)) - 에게는 존재하지 않고, (b) 같은 입력에 같은 출력을
-보장하지 않아 지표를 비교할 수 없다. 이 모듈은 그 판단을 `QueryConstraints`/`suggest_strategies`
+정했다. 그 판단은 같은 입력에 같은 출력을
+보장하지 않아 검색 품질을 재현 가능하게 비교할 수 없다. 이 모듈은 그 판단을 `QueryConstraints`/`suggest_strategies`
 위의 순수 함수 조합으로 꺼낸 것이다: LLM은 (1) 제약 추출 보강(`extract_constraints`)과 (2)
 멀티홉 분해(`plan_and_search`)에만 쓰이고, `provider=None`이면 둘 다 건너뛴 채 규칙만으로 돈다.
 
-반환 계약(`RetrievalResult`/`RetrievalStep`)은 `eval-ir` 쪽과 공유하는 약속이다 - 채점은
-`document_ids`(hits에서 document_id 첫 등장 순으로 중복 제거)와 `scores`/`predicted_count`만
-쓰고, `hits`/`steps`는 사람이 실패 원인을 추적하는 용도다(`evaluation/ir_metrics.score_query`).
+반환 계약(`RetrievalResult`/`RetrievalStep`): 랭킹은 `document_ids`(hits에서 document_id 첫 등장
+순으로 중복 제거)와 `scores`/`predicted_count`이고, `hits`/`steps`는 사람이 실패 원인을 추적하는 용도다.
 
 전략별 실행 규칙과 병합 결정(anchor 고정, metadata 필터 교집합, RRF)의 이유는 wiki에 표로 적어
 두었다. 여기서는 코드가 따르는 순서만 요약한다:
@@ -755,7 +753,12 @@ class _Run:
         error: str | None = None
         if query:
             vector_call = vector_search(
-                query, self.store, project_id=self.project_id, limit=self.fetch_limit, since=self.since, until=self.until
+                query,
+                self.store,
+                project_id=self.project_id,
+                limit=self.fetch_limit,
+                since=self.since,
+                until=self.until,
             )
             # 벡터 조회와 어휘 arm(`keyword_arm`)의 DB 왕복 두 개는 서로의 결과를 안 본다 -
             # 셋을 겹쳐서 던진다. 이게 이 파일에서 가장 큰 지연시간 항목이다: 벡터 조회에는
@@ -1050,7 +1053,11 @@ class _Run:
             return
         try:
             plan = await plan_and_search(
-                self.c.query, provider, store=self.store, project_id=self.project_id, limit_per_subquery=self.limit
+                self.c.query,
+                provider,
+                store=self.store,
+                project_id=self.project_id,
+                limit_per_subquery=self.limit,
             )
         except Exception as exc:  # noqa: BLE001 - planner 실패가 나머지 전략 결과를 버리게 하면 안 된다
             logger.warning("plan_and_search failed, continuing without it: %s", exc)
@@ -1394,9 +1401,9 @@ async def retrieve(
 ) -> RetrievalResult:
     """질의 하나를 제약 추출 → 전략 선택 → 실행 → 병합까지 돌려 `RetrievalResult`로 돌려준다.
 
-    - `provider=None`: 규칙 기반 제약 추출만, multihop(planner)은 건너뜀 - 평가 하네스의 기준선.
+    - `provider=None`: 규칙 기반 제약 추출만, multihop(planner)은 건너뜀.
       `use_llm_constraints=False`면 provider가 있어도 제약 보강만 끈다(planner는 그대로).
-    - `now`: 상대 시간 표현("최근 3일", "올해")의 기준. 골든셋의 `as_of`를 넣어 재현한다.
+    - `now`: 상대 시간 표현("최근 3일", "올해")의 기준. 테스트는 고정값을 넣어 재현한다.
     - `limit`: 최종 `document_ids` 길이 상한(exhaustive/negative/count면 `EXHAUSTIVE_LIMIT`까지
       컷오프 없음). 소스별 조회는 `_OVERFETCH`배로 더 가져와 병합 뒤에도 limit개가 남게 한다.
     - `strategies_override`: `suggest_strategies` 대신 이 목록만 실행(A/B용). 이름은
@@ -1415,7 +1422,14 @@ async def retrieve(
         constraints = extract_constraints_rules(query, now=now)
     strategies = list(strategies_override) if strategies_override is not None else suggest_strategies(constraints)
 
-    run = _Run(store=store, constraints=constraints, strategies=strategies, project_id=project_id, now=now, limit=limit)
+    run = _Run(
+        store=store,
+        constraints=constraints,
+        strategies=strategies,
+        project_id=project_id,
+        now=now,
+        limit=limit,
+    )
 
     # 후보 생성 - document_lookup이 먼저다(anchor가 뒤 전략을 좁힌다).
     if STRATEGY_DOCUMENT_LOOKUP in strategies:

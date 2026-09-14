@@ -355,6 +355,22 @@ entity 필터/temporal join/graph 1-hop 조회 세 gap을 한 번에 메웠다(�
 같은 문서 참고. `POST /search/vector`/`POST /search/sql`/`GET /relations/expand`(`depth>1`
 재귀 탐색) HTTP 엔드포인트는 여전히 후속 작업.
 
+### 8단계 — 검색 평가 서브시스템 전면 삭제 (2026-09-14), 재구현 예정
+
+기존 검색 평가/피드백 구현을 처음부터 다시 설계하기로 하고 전부 삭제했다: `evaluation/`
+(search_log 기록·파싱, LLM-judge 채점, 골든셋 기반 IR 평가 `eval-ir`/`eval-gen`, agent 경로
+평가), `storage/eval_store.py`(`EvalStore`), `tests/eval/golden/`(v0/v1 골든셋), CLI
+`eval`/`eval-ir`/`eval-gen`/`feedback`와 REPL `/feedback` + `log_id` 출력, DB 스키마의
+`search_log`/`search_feedback`/`eval_score`/`eval_run`/`eval_run_query` 테이블, `retrieve()`의
+`grain` 축(`normalize_grain`, `eval-ir --grain`)과 `default_tools(now=/grain=)`(평가 전용
+배선), `agent/loop.py::parse_tool_result`, `agent/providers/claude_agent_sdk.py`(도구 호출을
+거부하는 단발 호출 전용 ChatProvider라 평가 커맨드 외에는 쓸 곳이 없었다 - 추출기
+`extraction/claude_agent_sdk_extractor.py`는 그대로). `vector_search`의 `target_kind`, `search`/
+`retrieve()` 자체, `KF_AGENT_FILE_SEARCH_ENABLED`는 평가와 무관해 그대로 남겼다.
+
+**개발 DB는 손대지 않았다** — 위 테이블과 그 안의 행이 기존 dev DB에 여전히 남아 있다. 스키마
+재구현 전까지 직접 `DROP`하지 않는 한 그대로다.
+
 **한 줄 정의(향후 아키텍처 문서화 시 재사용)**: "Multi-source SaaS 및 File 데이터를 수집하고,
 source별 semantic context를 복원한 뒤 adaptive chunking과 knowledge extraction을 수행하여
 Knowledge Base를 구축하는 ingestion pipeline."

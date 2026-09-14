@@ -12,7 +12,7 @@
 |---|---|
 | pgvector 스키마(`knowledge_object_embeddings`) | **구현됨** — [`embeddings.md`](embeddings.md) |
 | 임베딩 생성 파이프라인(`--embed`, `knowledge-forge embed`) | **구현됨** — [`embeddings.md`](embeddings.md) |
-| `search` (통합 검색 agent 도구, `search/retrieve.py`) | **구현됨** — [`search-architecture.md`](search-architecture.md) "Retrieval Plan 실행기", [`agent-runtime.md`](agent-runtime.md) "도구 표면". **에이전트에게 기본으로 노출되는 유일한 검색 도구**이자 골든셋 IR 평가가 재는 경로 |
+| `search` (통합 검색 agent 도구, `search/retrieve.py`) | **구현됨** — [`search-architecture.md`](search-architecture.md) "Retrieval Plan 실행기", [`agent-runtime.md`](agent-runtime.md) "도구 표면". **에이전트에게 기본으로 노출되는 유일한 검색 도구** |
 | `vector_search` (agent 도구) | **구현됨** — [`agent-runtime.md`](agent-runtime.md), 아래 절 참고. 다만 기본 도구 표면에서는 빠져 있고(`KF_AGENT_TOOL_SURFACE=full`에서만 노출), 기본값에서는 `search`의 `vector` 전략으로 안에서 돈다. `POST /search/vector` HTTP 엔드포인트 자체는 여전히 미구현 |
 | Query Planning + Query Routing (`plan_search` agent 도구) | **구현됨** — [`search-architecture.md`](search-architecture.md), [`agent-runtime.md`](agent-runtime.md). `vector_search`와 같이 `full` 표면 전용 - 기본값에서는 `search`의 `multihop` 전략이 같은 `plan_and_search()`를 부른다 |
 | Text-to-SQL (`sql_search` agent 도구) | **구현됨** — [`search-architecture.md`](search-architecture.md), [`agent-runtime.md`](agent-runtime.md). Temporal join, entity/속성 필터, graph 1-hop 조회를 이걸로 대체 |

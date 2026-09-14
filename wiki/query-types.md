@@ -42,8 +42,9 @@ docstring과 `search-architecture.md` ①절의 계약 표를 따른다.
 ## 읽는 법
 
 - **"추출 구현됨 / 실행은 `retrieve.py`"**가 반복되는 이유: 이 단계는 의도적으로 *판단*만 하고
-  *실행*은 하지 않는다. 판단이 결정론적 함수로 분리돼야 골든셋 평가(`search-evaluation.md`)가
-  "제약 추출이 틀렸나, 검색이 틀렸나"를 가를 수 있다. 실행은 다른 에이전트들이 동시에 만드는
+  *실행*은 하지 않는다. 판단이 결정론적 함수로 분리돼야 골든셋 평가가 "제약 추출이 틀렸나,
+  검색이 틀렸나"를 가를 수 있다(평가 하네스는 2026-09-14 삭제, 재구현 예정 —
+  [`roadmap.md`](roadmap.md) 참고). 실행은 다른 에이전트들이 동시에 만드는
   `document_search`/`read_document`/버전·부모-자식 메타데이터가 갖춰진 뒤 `retrieve.py`에서 한 번에
   조합한다.
 - 유형은 서로 배타적이지 않다. "김철수가 2025년 3월에 작성한 보고서 전부"는 6+4+12이고,
@@ -55,6 +56,5 @@ docstring과 `search-architecture.md` ①절의 계약 표를 따른다.
 ## 관련 문서
 
 - `search-architecture.md` ① Query Understanding - 왜 지금 명시적 레이어인가, 규칙/LLM 2단계, 전략 이름 계약
-- `search-evaluation.md` - 이 제약 추출을 에이전트 없이 돌리는 평가 하네스
 - `agent-search.md` - `file_search`/`vector_search`/`plan_search`/`sql_search` 도구
 - `context-reconstruction.md` - 17 Conversation Thread의 맥락 재구성

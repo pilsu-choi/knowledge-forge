@@ -421,7 +421,7 @@ async def test_vector_min_score_drops_hits_for_a_query_nothing_matches(store):
     됐다(run 9ad2bba2).
 
     `KF_VECTOR_MIN_SCORE`(config.py, 기본 0.45)가 그 하한이다. 임계값은 v0 스윕으로 정했고
-    0.42~0.47이 고원이다 - 근거는 config.py 주석과 wiki/search-evaluation.md. 여기서는
+    0.42~0.47이 고원이다 - 근거는 config.py 주석. 여기서는
     "하한이 실제로 후보를 버리고 그 사실이 steps에 남는다"는 계약만 고정한다."""
     result = await retrieve("단풍 낚시 여행 메시지 전부", store=store, project_id=_PROJECT, now=_NOW)
 

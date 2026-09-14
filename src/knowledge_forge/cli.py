@@ -7,7 +7,6 @@ from pathlib import Path
 import typer
 
 from knowledge_forge.agent.auth import agent_credential_hint_ko, has_resolvable_agent_credentials
-from knowledge_forge.agent.providers.factory import get_chat_provider
 from knowledge_forge.agent.runtime import AgentSession, run_query
 from knowledge_forge.chunking import AdaptiveChunker
 from knowledge_forge.collectors.base import Collector, ensure_utc
@@ -16,11 +15,6 @@ from knowledge_forge.collectors.replay import RawBlobReplayCollector, filter_row
 from knowledge_forge.collectors.saas.factory import SAAS_COLLECTOR_BUILDERS
 from knowledge_forge.config import settings
 from knowledge_forge.embedding.factory import get_embedding_provider
-from knowledge_forge.evaluation.gen import GenStats, generate_golden
-from knowledge_forge.evaluation.golden import SPLITS, GoldenSet, IndexSnapshot, load_golden, save_golden
-from knowledge_forge.evaluation.ir_compare import compare_runs
-from knowledge_forge.evaluation.ir_runner import format_code_identity, is_dirty_commit, run_ir_eval, run_to_dict
-from knowledge_forge.evaluation.judge import judge_search_log
 from knowledge_forge.extraction.auth import credential_hint_ko, has_resolvable_credentials
 from knowledge_forge.extraction.factory import get_extractor
 from knowledge_forge.models.source import SourceType
@@ -33,7 +27,6 @@ from knowledge_forge.scheduling.scheduler import (
     DEFAULT_TRIGGER_API_PORT,
 )
 from knowledge_forge.storage import PipelineStore
-from knowledge_forge.storage.eval_store import EvalRun, EvalStore
 from knowledge_forge.storage.postgres_store import PostgresStore
 from knowledge_forge.storage.replay_index import load_replay_rows
 
@@ -750,13 +743,8 @@ def agent(
                     break
                 if not line.strip():
                     continue
-                if line.startswith("/feedback"):
-                    _handle_feedback_command(line, session.last_log_id)
-                    continue
                 answer = await session.ask(line)
                 typer.echo(answer)
-                if session.last_log_id:
-                    typer.echo(f"[log_id={session.last_log_id} - /feedback up|down [코멘트]로 평가 가능]", err=True)
                 if session.plan.steps:
                     typer.echo(f"\n[계획]\n{session.plan.render()}\n", err=True)
 
@@ -764,42 +752,14 @@ def agent(
         return
 
     assert question is not None  # guaranteed above: not interactive and not question already exits
-    answer, log_id = asyncio.run(run_query(question, project_id=project_id, provider=provider, model=model))
+    answer = asyncio.run(run_query(question, project_id=project_id, provider=provider, model=model))
     typer.echo(answer)
-    if log_id:
-        typer.echo(f"[log_id={log_id} - `knowledge-forge feedback {log_id} up|down`로 평가 가능]", err=True)
-
-
-def _handle_feedback_command(line: str, log_id: str | None) -> None:
-    """`--interactive` REPL의 `/feedback up|down [코멘트]` - 직전 턴의
-    `session.last_log_id`에 피드백을 붙인다 (wiki/search-evaluation.md (A))."""
-    if log_id is None:
-        typer.echo("아직 기록된 답변이 없거나 검색 로깅이 꺼져 있습니다(KF_DATABASE_URL 필요).", err=True)
-        return
-    parts = line.split(maxsplit=2)
-    if len(parts) < 2 or parts[1] not in ("up", "down"):
-        typer.echo("사용법: /feedback up|down [코멘트]", err=True)
-        return
-    rating = parts[1]
-    comment = parts[2] if len(parts) > 2 else None
-    if not settings.database_url:
-        typer.echo("KF_DATABASE_URL이 설정되지 않았습니다.", err=True)
-        return
-    database_url = settings.database_url
-
-    async def _run() -> None:
-        async with EvalStore(database_url) as store:
-            await store.add_feedback(log_id, rating, comment)
-
-    asyncio.run(_run())
-    typer.echo(f"피드백 기록됨: {rating}", err=True)
 
 
 @db_app.command("init")
 def db_init() -> None:
-    """Create the PostgreSQL schema (sources/documents/chunks/knowledge_objects/relations/
-    search_log/search_feedback/eval_score/...) - the same schema.sql `agent`/`feedback`/`eval`
-    read and write through `EvalStore`, so this must run before any of them against a fresh DB."""
+    """Create the PostgreSQL schema (sources/documents/chunks/knowledge_objects/relations/...) -
+    must run before any DB-backed command against a fresh DB."""
     if not settings.database_url:
         typer.echo("KF_DATABASE_URL이 설정되지 않았습니다.", err=True)
         raise typer.Exit(1)
@@ -882,7 +842,7 @@ def db_backfill_slack_names(
     왜: 슬랙 문서는 제목이 `#C0BGQEQG1L6 2026-09-01`이라 제목 조회가 구조적으로 못 맞는다.
     v0 골든셋 정답 문서 90건 중 48건이 슬랙인데, 제목 검색으로 닿는 슬랙 정답은 66건 중
     0건이었다(오프라인 실측). 새 제목은 `#<채널명> <날짜> <첫 메시지 발췌 120자>`다 -
-    조각을 그렇게 고른 근거는 `storage/document_title.py` 주석과 wiki/search-evaluation.md.
+    조각을 그렇게 고른 근거는 `storage/document_title.py` 주석.
 
     `sources.metadata`와 `documents.title` **두 컬럼만** 쓴다(chunks/embeddings 불변).
     원시 `channel`/`participants` ID는 지우지 않고 키만 덧붙이므로 재실행하면 0건이 나오는
@@ -1072,480 +1032,6 @@ def db_export_okf(
         f"OKF 백필 완료: 리소스 {resources}개, Knowledge Object {objects}개, Relation {relations}개 (OKF: {okf_dir})",
         err=True,
     )
-
-
-@app.command()
-def feedback(
-    log_id: str = typer.Argument(..., help="`knowledge-forge agent`/REPL이 답변과 함께 출력한 log_id."),
-    rating: str = typer.Argument(..., help="'up' 또는 'down'."),
-    comment: str | None = typer.Option(None, "--comment", help="선택적 코멘트."),
-) -> None:
-    """일회성 `knowledge-forge agent <질문>` 답변에 사후 피드백을 붙인다
-    (wiki/search-evaluation.md (A)) - `--interactive` REPL은 대신 그 자리에서
-    `/feedback up|down [코멘트]`를 쓸 수 있다."""
-    if not settings.database_url:
-        typer.echo("KF_DATABASE_URL이 설정되지 않았습니다 - feedback은 Postgres가 필수입니다.", err=True)
-        raise typer.Exit(1)
-    database_url = settings.database_url
-    if rating not in ("up", "down"):
-        typer.echo("rating은 'up' 또는 'down'이어야 합니다.", err=True)
-        raise typer.Exit(1)
-
-    async def _run() -> bool:
-        async with EvalStore(database_url) as store:
-            if await store.get_search_log(log_id) is None:
-                return False
-            await store.add_feedback(log_id, rating, comment)
-            return True
-
-    if not asyncio.run(_run()):
-        typer.echo(f"log_id '{log_id}'를 찾을 수 없습니다.", err=True)
-        raise typer.Exit(1)
-    typer.echo(f"피드백 기록됨: {rating}", err=True)
-
-
-@app.command()
-def eval(
-    project_id: str | None = typer.Option(
-        None, "--project-id", help="이 프로젝트의 search_log만 채점. 생략하면 모든 프로젝트."
-    ),
-    batch_size: int = typer.Option(20, "--batch-size", help="한 번에 가져와 채점할 search_log 행 수."),
-    max_batches: int | None = typer.Option(
-        None, "--max-batches", help="최대 몇 배치까지 돌지 제한(생략하면 미채점 행이 없어질 때까지)."
-    ),
-    provider: str | None = typer.Option(
-        None, "--provider", help="채점에 쓸 ChatProvider. 생략하면 KF_AGENT_PROVIDER(에이전트와 동일)."
-    ),
-    model: str | None = typer.Option(None, "--model", help="채점 모델. 생략하면 그 provider의 기본 모델."),
-) -> None:
-    """아직 채점되지 않은 `search_log` 행을 LLM-judge로 채점해 `eval_score`에 저장한다
-    (wiki/search-evaluation.md (B)) - Recall/Precision/MRR/NDCG(같은 문서 (C), 골드셋
-    필요)와 달리 골드 relevance judgment 없이 지금 바로 돌릴 수 있다. 답변 생성 경로와
-    분리된 오프라인 배치라 답변 지연시간에는 영향이 없다."""
-    if not settings.database_url:
-        typer.echo("KF_DATABASE_URL이 설정되지 않았습니다 - eval은 Postgres가 필수입니다.", err=True)
-        raise typer.Exit(1)
-    database_url = settings.database_url
-
-    chat_provider = get_chat_provider(provider=provider, model=model)
-    # Mirrors get_chat_provider()'s own model resolution (agent/providers/factory.py)
-    # - recorded on eval_score.judge_model for "which model actually judged this".
-    active_provider = provider or settings.agent_provider
-    default_model = settings.agent_openai_compatible_model if active_provider == "openai_compatible" else settings.agent_model
-    judge_model = model or default_model
-
-    async def _run() -> tuple[int, int]:
-        scored = failed = 0
-        async with EvalStore(database_url) as store:
-            batches_run = 0
-            while max_batches is None or batches_run < max_batches:
-                logs = await store.list_unscored_search_logs(project_id=project_id, limit=batch_size)
-                if not logs:
-                    break
-                for log in logs:
-                    result = await judge_search_log(log, chat_provider)
-                    if result is None:
-                        failed += 1
-                        continue
-                    await store.save_eval_score(
-                        log.log_id, result.groundedness_score, result.citation_precision, result.claims, judge_model
-                    )
-                    scored += 1
-                batches_run += 1
-        return scored, failed
-
-    scored, failed = asyncio.run(_run())
-    typer.echo(f"채점 완료: {scored}개 성공, {failed}개 실패(다음 실행에서 재시도)", err=True)
-
-
-# Per-type table columns for `eval-ir`, in display order; only the ones at
-# least one type row actually carries are printed (none_correct exists only
-# for negative/null, count_match only for aggregation, ...).
-_IR_TABLE_METRICS = ("hit@1", "recall@5", "mrr", "ndcg@10", "exhaustive_recall", "count_match", "none_correct")
-
-
-def _fmt_metric(value: float | None) -> str:
-    return "-" if value is None else f"{value:.3f}"
-
-
-def _format_ir_summary(summary: dict, run: EvalRun | None = None) -> str:
-    """Overall line + per-type table + failed/stale lists, as one string so
-    tests can assert on it without capturing stdout.
-
-    `run`을 주면 맨 위에 "이 숫자를 만든 코드"를 한 줄 찍는다. 숫자만 보고
-    커밋을 유추하다 b470057 하나에 0.736/0.477이 같이 적히는 사고가 났으므로,
-    dirty였다는 사실은 사람이 점수를 읽는 바로 그 자리에 있어야 한다."""
-    overall = summary.get("overall", {})
-    by_type: dict[str, dict] = summary.get("by_type", {})
-    cols = [m for m in _IR_TABLE_METRICS if any(m in row for row in by_type.values()) or m in overall]
-    lines = [
-        "overall: n={} ".format(overall.get("n", 0))
-        + " ".join(f"{m}={_fmt_metric(overall.get(m))}" for m in cols if m in overall)
-    ]
-    if by_type:
-        header = f"{'type':<26}{'n':>4} " + " ".join(f"{m:>17}" for m in cols)
-        lines.append(header)
-        for t, row in by_type.items():
-            lines.append(f"{t:<26}{row.get('n', 0):>4} " + " ".join(f"{_fmt_metric(row.get(m)):>17}" for m in cols))
-    if run is not None:
-        code = f"code: {format_code_identity(run.git_commit)}"
-        if is_dirty_commit(run.git_commit):
-            files = run.dirty_files or []
-            shown = ", ".join(f.strip() for f in files[:5]) + (f" 외 {len(files) - 5}개" if len(files) > 5 else "")
-            code += f" — 수정된 작업 트리에서 측정됨({run.git_commit}); 변경 {len(files)}개: {shown}"
-        lines.insert(0, code)
-    errors = summary.get("errors", [])
-    if errors:
-        lines.append(f"실패한 질의 {len(errors)}개:")
-        lines.extend(f"  {e['query_id']}: {e['error']}" for e in errors)
-    stale = summary.get("stale_queries", [])
-    if stale:
-        lines.append(f"stale 질의 {len(stale)}개 (골든셋과 인덱스가 어긋남 - 점수에는 포함됨):")
-        lines.extend(f"  {s['query_id']}: {s['reason']} {','.join(s['document_ids'])}" for s in stale)
-    elif not summary.get("staleness_checked", False):
-        lines.append("staleness 검사 생략 (--no-store)")
-    return "\n".join(lines)
-
-
-def _format_ir_compare(report: dict) -> str:
-    lines = [
-        f"metric={report['metric']} golden_version={report['golden_version']} n={report['n']}",
-        f"A={report['run_a']['run_id']} ({report['run_a']['label'] or '-'}, cfg {report['run_a']['config_hash']}, "
-        f"code {format_code_identity(report['run_a'].get('git_commit'))})",
-        f"B={report['run_b']['run_id']} ({report['run_b']['label'] or '-'}, cfg {report['run_b']['config_hash']}, "
-        f"code {format_code_identity(report['run_b'].get('git_commit'))})",
-    ]
-    lines.extend(f"경고: {w}" for w in report.get("warnings", []))
-    if report["n"] == 0:
-        lines.append("공통으로 채점된 질의가 없어 비교할 수 없습니다.")
-        return "\n".join(lines)
-    lo, hi = report["ci95"]
-    lines.append(
-        f"mean A={report['mean_a']:.4f} B={report['mean_b']:.4f} delta(B-A)={report['mean_delta']:+.4f} "
-        f"95% CI [{lo:+.4f}, {hi:+.4f}] {'유의' if report['significant'] else '유의하지 않음'}"
-    )
-    lines.append(f"win/loss/tie = {report['wins']}/{report['losses']}/{report['ties']}")
-    if report["by_type"]:
-        lines.append(f"{'type':<26}{'n':>4} {'delta':>9} {'w/l/t':>10}")
-        for t, row in report["by_type"].items():
-            lines.append(
-                f"{t:<26}{row['n']:>4} {row['mean_delta']:>+9.4f} {row['wins']}/{row['losses']}/{row['ties']:>3}"
-            )
-    movers = [q for q in report["per_query"] if q["delta"] != 0]
-    if movers:
-        movers.sort(key=lambda q: abs(q["delta"]), reverse=True)
-        lines.append("가장 크게 움직인 질의:")
-        lines.extend(f"  {q['query_id']}: {q['a']:.3f} -> {q['b']:.3f} ({q['delta']:+.3f})" for q in movers[:10])
-    return "\n".join(lines)
-
-
-def _parse_csv_option(value: str | None) -> list[str] | None:
-    if value is None:
-        return None
-    items = [v.strip() for v in value.split(",") if v.strip()]
-    return items or None
-
-
-@app.command(name="eval-ir")
-def eval_ir(
-    golden: Path | None = typer.Option(None, "--golden", help="골든셋 JSON 경로(예: tests/eval/golden/v0.json)."),
-    project_id: str | None = typer.Option(
-        None, "--project-id", help="검색 범위 project_id. 골든셋에 project_id가 박혀 있으면 그쪽이 우선."
-    ),
-    limit: int = typer.Option(10, "--limit", help="질의당 결과 수. exhaustive/count 질의는 자동으로 200으로 승격."),
-    k: str = typer.Option("1,3,5,10", "--k", help="@k 지표의 k 목록(쉼표 구분)."),
-    strategies: str | None = typer.Option(
-        None, "--strategies", help="라우팅을 무시하고 이 전략만 실행(쉼표 구분, 예: vector,lexical)."
-    ),
-    no_llm: bool = typer.Option(False, "--no-llm", help="LLM 제약 추출 없이 실행(provider 생성 안 함)."),
-    provider: str | None = typer.Option(
-        None, "--provider", help="제약 추출에 쓸 ChatProvider. 생략하면 KF_AGENT_PROVIDER(에이전트와 동일)."
-    ),
-    model: str | None = typer.Option(None, "--model", help="제약 추출 모델. 생략하면 그 provider의 기본 모델."),
-    label: str | None = typer.Option(None, "--label", help="run에 붙일 사람용 이름(예: 'rerank-on')."),
-    type_filter: str | None = typer.Option(
-        None, "--type", help="이 유형(들)만 실행(쉼표 구분). multi-label `types` 중 하나라도 맞으면 포함."
-    ),
-    query_id: list[str] | None = typer.Option(None, "--query-id", help="이 질의 id만 실행(반복 지정 가능)."),
-    split: str | None = typer.Option(
-        None, "--split", help="분할된 골든셋의 한쪽만 실행: dev(노브 튜닝) 또는 test(헤드라인 보고)."
-    ),
-    concurrency: int = typer.Option(4, "--concurrency", help="동시에 실행할 질의 수."),
-    no_store: bool = typer.Option(False, "--no-store", help="eval_run에 기록하지 않음(스냅샷/staleness 검사도 생략)."),
-    json_path: Path | None = typer.Option(None, "--json", help="결과(run + 질의별 행)를 이 JSON 파일에도 저장."),
-    compare: tuple[str, str] = typer.Option(
-        (None, None), "--compare", help="두 run_id를 paired 비교(A B 순서, B-A를 보고)."
-    ),
-    metric: str = typer.Option("ndcg@10", "--metric", help="--compare의 헤드라인 지표."),
-    list_runs: bool = typer.Option(False, "--list", help="최근 eval_run 목록."),
-    golden_version: str | None = typer.Option(None, "--golden-version", help="--list를 이 골든셋 버전으로 제한."),
-) -> None:
-    """골든셋(wiki/search-evaluation.md (C))으로 `search/retrieve.py`의 문서 랭킹을 채점해
-    Recall/Precision/MRR/NDCG를 내고 `eval_run`/`eval_run_query`에 기록한다. `eval`(LLM-judge)과
-    달리 정답 파일이 필요한 대신 LLM 없이 결정적으로 돈다. `--compare A B`는 같은 golden_version
-    의 두 run을 질의별 paired delta + bootstrap CI로 비교하고, `--list`는 최근 run을 보여준다."""
-    if not settings.database_url:
-        typer.echo("KF_DATABASE_URL이 설정되지 않았습니다 - eval-ir은 Postgres가 필수입니다.", err=True)
-        raise typer.Exit(1)
-    database_url = settings.database_url
-
-    if list_runs:
-
-        async def _list() -> None:
-            async with EvalStore(database_url) as eval_store:
-                runs = await eval_store.list_eval_runs(golden_version=golden_version)
-            if not runs:
-                typer.echo("기록된 eval_run이 없습니다.", err=True)
-                return
-            # `code` 열: 커밋 앞 7자리 + dirty 표식. 목록에서 두 run이 "같은
-            # 커밋"으로 보이는데 사실은 다른 코드였던 게 이 표의 원죄였다.
-            typer.echo(
-                f"{'run_id':<32} {'golden':<7} {'cfg':<12} {'code':<14} {'started_at':<20} "
-                f"{'ndcg@10':>8} {'mrr':>6} label"
-            )
-            for r in runs:
-                overall = r.summary.get("overall", {})
-                started = r.started_at.strftime("%Y-%m-%d %H:%M:%S")
-                typer.echo(
-                    f"{r.run_id:<32} {r.golden_version:<7} {r.config_hash:<12} "
-                    f"{format_code_identity(r.git_commit):<14} {started:<20} "
-                    f"{_fmt_metric(overall.get('ndcg@10')):>8} {_fmt_metric(overall.get('mrr')):>6} {r.label or ''}"
-                )
-
-        asyncio.run(_list())
-        return
-
-    if compare[0] is not None or compare[1] is not None:
-        run_a_id, run_b_id = compare
-        if not run_a_id or not run_b_id:
-            typer.echo("--compare는 run_id 두 개(A B)가 필요합니다.", err=True)
-            raise typer.Exit(1)
-
-        async def _compare() -> dict:
-            async with EvalStore(database_url) as eval_store:
-                run_a = await eval_store.get_eval_run(run_a_id)
-                run_b = await eval_store.get_eval_run(run_b_id)
-                if run_a is None or run_b is None:
-                    missing = run_a_id if run_a is None else run_b_id
-                    typer.echo(f"run_id '{missing}'를 찾을 수 없습니다.", err=True)
-                    raise typer.Exit(1)
-                qa = await eval_store.list_eval_run_queries(run_a_id)
-                qb = await eval_store.list_eval_run_queries(run_b_id)
-            return compare_runs(run_a, qa, run_b, qb, metric=metric)
-
-        try:
-            report = asyncio.run(_compare())
-        except ValueError as exc:
-            typer.echo(str(exc), err=True)
-            raise typer.Exit(1) from None
-        typer.echo(_format_ir_compare(report))
-        if json_path is not None:
-            json_path.parent.mkdir(parents=True, exist_ok=True)
-            json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-        return
-
-    if golden is None:
-        typer.echo("--golden <골든셋 JSON>이 필요합니다 (또는 --compare / --list).", err=True)
-        raise typer.Exit(1)
-    try:
-        golden_set = load_golden(golden)
-    except (OSError, ValueError) as exc:
-        typer.echo(f"골든셋을 읽을 수 없습니다: {exc}", err=True)
-        raise typer.Exit(1) from None
-    try:
-        k_values = tuple(int(v) for v in k.split(",") if v.strip())
-    except ValueError:
-        typer.echo("--k는 쉼표로 구분한 정수여야 합니다 (예: 1,3,5,10).", err=True)
-        raise typer.Exit(1) from None
-
-    chat_provider = None
-    provider_name = model_name = None
-    if not no_llm:
-        chat_provider = get_chat_provider(provider=provider, model=model)
-        # Same resolution as `eval` - recorded on eval_run.config so two runs
-        # with different constraint extractors don't share a config_hash.
-        provider_name = provider or settings.agent_provider
-        default_model = (
-            settings.agent_openai_compatible_model if provider_name == "openai_compatible" else settings.agent_model
-        )
-        model_name = model or default_model
-
-    type_set = set(_parse_csv_option(type_filter) or []) or None
-    query_set = set(query_id) if query_id else None
-    if split is not None and (split not in SPLITS or not golden_set.has_split()):
-        typer.echo(
-            f"--split은 dev|test 중 하나여야 하고 골든셋에 분할 라벨이 있어야 합니다 "
-            f"({golden.name}: split={'있음' if golden_set.has_split() else '없음'}).",
-            err=True,
-        )
-        raise typer.Exit(1)
-
-    async def _run() -> EvalRun:
-        async with PipelineStore(database_url, settings.data_dir) as store:
-            if no_store:
-                return await run_ir_eval(
-                    golden_set,
-                    store=store,
-                    eval_store=None,
-                    golden_path=str(golden),
-                    provider=chat_provider,
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    project_id=project_id,
-                    limit=limit,
-                    k_values=k_values,
-                    strategies_override=_parse_csv_option(strategies),
-                    use_llm_constraints=not no_llm,
-                    label=label,
-                    query_filter=query_set,
-                    type_filter=type_set,
-                    split_filter=split,
-                    concurrency=concurrency,
-                )
-            async with EvalStore(database_url) as eval_store:
-                return await run_ir_eval(
-                    golden_set,
-                    store=store,
-                    eval_store=eval_store,
-                    golden_path=str(golden),
-                    provider=chat_provider,
-                    provider_name=provider_name,
-                    model_name=model_name,
-                    project_id=project_id,
-                    limit=limit,
-                    k_values=k_values,
-                    strategies_override=_parse_csv_option(strategies),
-                    use_llm_constraints=not no_llm,
-                    label=label,
-                    query_filter=query_set,
-                    type_filter=type_set,
-                    split_filter=split,
-                    concurrency=concurrency,
-                )
-
-    run = asyncio.run(_run())
-    typer.echo(_format_ir_summary(run.summary, run))
-    if json_path is not None:
-        json_path.parent.mkdir(parents=True, exist_ok=True)
-        json_path.write_text(json.dumps(run_to_dict(run), ensure_ascii=False, indent=2), encoding="utf-8")
-        typer.echo(f"JSON 저장: {json_path}", err=True)
-    typer.echo(f"run_id={run.run_id}{' (--no-store: DB 미기록)' if no_store else ''}", err=True)
-
-
-def _format_gen_stats(stats: dict) -> str:
-    """생성 통계 한 덩어리 - "왜 20개 요청했는데 11개가 나왔나"를 한 화면에서
-    설명할 수 있어야 사람 검수가 시작된다."""
-    by_source = ", ".join(f"{k}={v}" for k, v in stats["sampled_by_source_type"].items()) or "-"
-    lines = [
-        f"후보 청크 {stats['candidates']}개 중 {stats['sampled_chunks']}개 샘플링 ({by_source})",
-        f"LLM 호출 {stats['llm_calls']}회 (실패 {stats['llm_failures']}회), 생성된 질의 {stats['raw_queries']}개",
-    ]
-    if stats["rejected"]:
-        lines.append("자동 필터로 버림: " + ", ".join(f"{k}={v}" for k, v in stats["rejected"].items()))
-    lines.append(
-        f"채택 {stats['accepted']}개 / 검색 검증 {stats['verified']}개 / "
-        f"[review:hard] 표시 {stats['flagged_hard']}개"
-    )
-    return "\n".join(lines)
-
-
-@app.command(name="eval-gen")
-def eval_gen(
-    out: Path = typer.Option(
-        Path("tests/eval/golden/v1-draft.json"), "--out", help="생성한 골든셋 초안을 쓸 경로."
-    ),
-    golden_version: str = typer.Option(
-        "v1-draft", "--golden-version", help="골든셋 버전 문자열. 사람 검수 전이므로 'draft'가 들어가야 한다."
-    ),
-    chunks: int = typer.Option(20, "--chunks", help="질의 원천으로 뽑을 청크 수(층화 샘플링)."),
-    per_chunk: int = typer.Option(2, "--per-chunk", help="청크 하나당 요청할 질의 수."),
-    max_queries: int | None = typer.Option(None, "--max-queries", help="채택 질의 수 상한."),
-    min_tokens: int = typer.Option(80, "--min-tokens", help="이 토큰 수 미만 청크는 후보에서 제외(노이즈 필터)."),
-    source_type: str | None = typer.Option(
-        None, "--source-type", help="이 소스 타입만 후보로(쉼표 구분, 예: slack,gmail)."
-    ),
-    project_id: str | None = typer.Option(None, "--project-id", help="이 프로젝트의 청크만 후보로."),
-    seed: int = typer.Option(0, "--seed", help="샘플링 시드 - 같은 시드는 같은 청크를 고른다."),
-    max_per_document: int = typer.Option(2, "--max-per-document", help="한 문서에서 뽑을 청크 수 상한."),
-    provider: str | None = typer.Option(
-        None, "--provider", help="질의 생성에 쓸 ChatProvider. 생략하면 KF_AGENT_PROVIDER(에이전트와 동일)."
-    ),
-    model: str | None = typer.Option(None, "--model", help="생성 모델. 생략하면 그 provider의 기본 모델."),
-    concurrency: int = typer.Option(4, "--concurrency", help="동시 LLM 호출/검증 수."),
-    no_verify: bool = typer.Option(False, "--no-verify", help="생성한 질의를 되돌려 검색하는 자동 검증을 건너뜀."),
-    verify_k: int = typer.Option(10, "--verify-k", help="자동 검증에서 정답 문서를 찾을 상위 k."),
-    force: bool = typer.Option(False, "--force", help="--out 파일이 이미 있어도 덮어씀."),
-    stats_json: Path | None = typer.Option(None, "--stats-json", help="생성 통계를 이 JSON 파일에도 저장."),
-) -> None:
-    """원문 청크(`chunks.text`)에서 LLM으로 골든셋 **초안**을 생성한다
-    (wiki/search-evaluation.md (C)의 eval-gen). 층화 샘플링 → 질의 생성 → 자동 필터 →
-    (선택) 검색 되돌리기 검증까지 돌고, 사람 검수는 이 커맨드 밖이다 - 그래서 결과는
-    항상 draft 버전으로만 나가고 `origin`은 "synthetic"이다. 손으로 쓴
-    `tests/eval/golden/v0.json`은 건드리지 않는다(별도 스모크셋)."""
-    if not settings.database_url:
-        typer.echo("KF_DATABASE_URL이 설정되지 않았습니다 - eval-gen은 Postgres가 필수입니다.", err=True)
-        raise typer.Exit(1)
-    database_url = settings.database_url
-
-    # 사람 검수를 거치지 않은 결과가 정식 버전 파일로 위장하는 걸 구조적으로 막는다.
-    if "draft" not in golden_version.lower():
-        typer.echo("--golden-version에는 'draft'가 들어가야 합니다 (사람 검수 전 초안이므로).", err=True)
-        raise typer.Exit(1)
-    if "draft" not in out.name.lower():
-        typer.echo("--out 파일명에도 'draft'가 들어가야 합니다 (예: tests/eval/golden/v1-draft.json).", err=True)
-        raise typer.Exit(1)
-    if out.exists() and not force:
-        typer.echo(f"{out}이(가) 이미 있습니다 - 덮어쓰려면 --force. (골든셋 버전 파일은 원칙적으로 불변입니다.)", err=True)
-        raise typer.Exit(1)
-
-    chat_provider = get_chat_provider(provider=provider, model=model)
-
-    async def _run() -> tuple[GoldenSet | None, GenStats]:
-        async with EvalStore(database_url) as eval_store:
-            candidates = await eval_store.list_chunk_candidates(
-                project_id=project_id,
-                min_token_count=min_tokens,
-                source_types=_parse_csv_option(source_type),
-            )
-            snapshot = await eval_store.snapshot_index(project_id)
-            by_type = await eval_store.sources_by_type(project_id)
-        index_snapshot = IndexSnapshot(
-            documents=snapshot["documents"],
-            chunks=snapshot["chunks"],
-            knowledge_objects=snapshot["knowledge_objects"],
-            sources_by_type=by_type,
-        )
-        async with PipelineStore(database_url, settings.data_dir) as store:
-            return await generate_golden(
-                candidates,
-                provider=chat_provider,
-                golden_version=golden_version,
-                n_chunks=chunks,
-                per_chunk=per_chunk,
-                seed=seed,
-                max_per_document=max_per_document,
-                max_queries=max_queries,
-                concurrency=concurrency,
-                project_id=project_id,
-                index_snapshot=index_snapshot,
-                store=None if no_verify else store,
-                verify=not no_verify,
-                verify_k=verify_k,
-            )
-
-    golden_set, stats = asyncio.run(_run())
-    stats_dict = stats.to_dict()
-    typer.echo(_format_gen_stats(stats_dict))
-    if stats_json is not None:
-        stats_json.parent.mkdir(parents=True, exist_ok=True)
-        stats_json.write_text(json.dumps(stats_dict, ensure_ascii=False, indent=2), encoding="utf-8")
-    if golden_set is None:
-        typer.echo("자동 필터를 통과한 질의가 하나도 없어 파일을 쓰지 않았습니다.", err=True)
-        raise typer.Exit(1)
-    save_golden(golden_set, out)
-    typer.echo(f"골든셋 초안 저장: {out} ({len(golden_set.queries)}개 질의)", err=True)
-    typer.echo("사람 검수 필요 - '[review:hard]' 표시가 붙은 항목부터 확인하세요.", err=True)
-
 
 
 if __name__ == "__main__":

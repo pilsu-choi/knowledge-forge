@@ -247,9 +247,9 @@ async def vector_search(
     `target_kind`(기본 None = 두 grain 모두)로 `knowledge_object` 행만 또는 `chunk` 행만
     (`KF_EMBEDDING_SOURCE=chunk`로 만든 청크 원문 임베딩, `embeddings.md` "청크 기반 vs
     KnowledgeObject 기반") 조회하도록 좁힐 수 있다 - 에이전트 도구는 생략해서 둘을 한 랭킹에서
-    경쟁시키고, 평가(`search-evaluation.md` (C))처럼 한 grain을 따로 재야 할 때만 명시한다.
+    경쟁시키고, 한 grain만 따로 봐야 할 때만 명시한다.
     모든 히트에 `target_kind`/`document_id`/`knowledge_object_id`/`chunk_id`가 실린다(후자 둘 중
-    하나는 None) - 두 grain이 공유하는 `document_id`가 평가의 채점 단위다.
+    하나는 None) - 두 grain이 공유하는 식별자는 `document_id`다.
 
     `query`를 요청 시점에 `get_embedding_provider(embedding_model)`로 임베딩한
     뒤 `store.search_by_embedding()`(HNSW `<=>` ORDER BY)으로 조회한다 -
@@ -322,8 +322,7 @@ async def document_search(
 
     `store.search_documents_by_title()`(정확 substring → 토큰 전부 포함 → trigram 유사도 순
     랭킹)을 얇게 감싼다 - `vector_search`처럼 호출자가 연결된 `PipelineStore`를 쥐고 있어야
-    한다. 모든 히트에 `target_kind="document"`/`document_id`가 실린다 - 평가 골든셋
-    (`search-evaluation.md` (C))의 채점 단위가 `document_id`이고, `vector_search`/
+    한다. 모든 히트에 `target_kind="document"`/`document_id`가 실린다 - `vector_search`/
     `lexical_search` 히트와 같은 키로 합쳐질 수 있어야 하기 때문. 본문은 싣지 않는다 - 후보를
     고른 뒤 본문이 필요하면 `lexical_search`/`vector_search`(또는 `sql_search`)로 이어가면 된다.
 

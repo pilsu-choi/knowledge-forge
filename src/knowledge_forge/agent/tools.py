@@ -463,12 +463,16 @@ def _make_read_document_tool(database_url: str) -> ToolSpec:
     )
 
 
-def _make_search_tool(database_url: str, *, provider: ChatProvider | None, project_id: str | None) -> ToolSpec:
+def _make_search_tool(
+    database_url: str,
+    *,
+    provider: ChatProvider | None,
+    project_id: str | None,
+) -> ToolSpec:
     """`search`(통합 검색, `search/retrieve.py`) - `vector_search`와 같은 "database_url이 있을
     때만, 호출마다 `PipelineStore`를 열고 닫는" 패턴. 개별 도구(document/lexical/vector/sql/
     read_document)를 모델이 고르는 대신 질의 제약(`search/constraints.py`)으로 전략을 결정론적으로
-    조합한다 - 평가 하네스가 쓰는 것과 같은 경로라, 여기서 좋아진 것은 평가 지표에도 그대로
-    반영된다. `provider`가 있으면 제약 보강과 멀티홉 분해에 쓴다(없으면 규칙만).
+    조합한다. `provider`가 있으면 제약 보강과 멀티홉 분해에 쓴다(없으면 규칙만).
 
     결과는 `RetrievalResult.to_dict()`에서 hits 상위 limit개 + steps 요약만 싣는다 - 청크 원문은
     검색 소스가 이미 500자로 자르지만(`postgres_store.py::_CHUNK_HIT_SUMMARY_CHARS`) 여기서도
@@ -722,16 +726,17 @@ def default_tools(
     "minimal"(기본) + `KF_DATABASE_URL` 설정됨:
         search, read_document, sql_search + 비검색 도구
     "minimal" + DB 없음(OKF 전용 배포):
-        file_search + 비검색 도구
+        (file_search - `KF_AGENT_FILE_SEARCH_ENABLED`가 켜져 있을 때만) + 비검색 도구
     "full" + DB 설정됨:
-        search, file_search, read_document, sql_search, vector_search,
-        document_search, lexical_search, plan_search(provider 있을 때) + 비검색 도구
+        search, read_document, sql_search, vector_search, document_search,
+        lexical_search, plan_search(provider 있을 때) + 비검색 도구
+        (+ file_search - `KF_AGENT_FILE_SEARCH_ENABLED`가 켜져 있을 때만)
     "full" + DB 없음:
-        file_search, plan_search(provider 있을 때) + 비검색 도구
+        plan_search(provider 있을 때) + 비검색 도구
+        (+ file_search - 같은 조건)
 
     왜 기본을 좁히는가: `search/retrieve.py`는 "어떤 검색을 어떤 순서로 돌릴지"를
-    LLM에게서 빼앗아 결정론적 함수로 만들려고 존재하는 모듈이고(그 docstring),
-    골든셋 IR 평가가 재는 유일한 경로다(wiki/search-evaluation.md). 그런데 도구
+    LLM에게서 빼앗아 결정론적 함수로 만들려고 존재하는 모듈이다(그 docstring). 그런데 도구
     목록이 개별 검색 도구를 여덟 개 늘어놓으면 그 결정을 그대로 모델에게 되돌려
     주는 셈이라 - 모델이 고른 조합은 측정된 적이 없고 재현되지도 않는다.
     `sql_search`만 예외로 남긴 이유는 집계(COUNT/GROUP BY)와 임의 속성 조건이
@@ -739,15 +744,11 @@ def default_tools(
     안 나오기 때문이다(구조화 질의 비상구). `read_document`는 검색 도구가 아니라
     검색으로 특정한 문서를 끝까지 읽는 후속 동작이라 남는다.
 
-    `file_search`가 "minimal"에서 DB가 없을 때만 들어가는 것도 같은 이유의 뒷면
-    이다: 그 구성에서는 `search`/`sql_search`/`read_document`가 전부 빠져
-    (Postgres 없이는 실행 자체가 불가능하므로 - `embedding_enabled`와 같은
-    "설정 안 되어 있으면 조용히 빠짐" 컨벤션) 도구 목록에 검색 경로가 하나도
-    남지 않는다. `file_search`는 Postgres를 전혀 요구하지 않는 유일한 검색
-    경로이므로(`search/service.py` docstring의 "OKF-only deployment") 그때는
-    반드시 남아야 한다. 반대로 DB가 있으면 `search`가 같은 OKF 코퍼스를 색인한
-    Postgres 쪽을 더 넓게 훑으므로 기본 표면에서는 뺀다 - `KF_OKF_DIR`이 안
-    잡힌 배포에서 `file_search`는 조용히 `[]`만 돌려주기까지 한다.
+    **`file_search`는 지금 기본적으로 아예 빠진다** (`KF_AGENT_FILE_SEARCH_ENABLED`,
+    기본 False - config.py의 그 필드 주석에 이유가 있다). 표면 설정과 DB 유무를
+    보는 위 조건은 그대로 남겨 뒀지만 그 앞에 이 스위치가 하나 더 붙었으므로,
+    끄면 "minimal + DB 없음" 구성에는 검색 도구가 하나도 남지 않는다 - 그 구성을
+    쓸 때는 이 값을 켜야 한다.
 
     `plan_search`(Query Planning + Query Routing, `search/planner.py`)는 "full"
     에서만, 그것도 `provider`가 주어졌을 때만 추가된다 - 하위 질의 분해에 그
@@ -778,7 +779,7 @@ def default_tools(
     if database_url:
         # 1순위 검색 도구를 목록 맨 앞에 둔다 - 도구 순서는 모델이 읽는 순서이기도 하다.
         tools.append(_make_search_tool(database_url, provider=provider, project_id=project_id))
-    if not database_url or not minimal:
+    if settings.agent_file_search_enabled and (not database_url or not minimal):
         tools.append(_make_file_search_tool())
     if database_url:
         tools.append(_make_read_document_tool(database_url))

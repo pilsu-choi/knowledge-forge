@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from knowledge_forge.agent.loop import _wrap_untrusted, parse_tool_result, run_agent
+from knowledge_forge.agent.loop import run_agent
 from knowledge_forge.agent.providers.base import AssistantTurn, ChatProvider, Message, ToolCall, ToolSpec
 from knowledge_forge.exceptions import AgentError
 
@@ -154,7 +154,7 @@ async def test_truncated_answer_is_returned_but_marked_incomplete():
     indistinguishable from a complete answer. It is still returned (partial
     text beats nothing, and `run_agent`'s 2-tuple signature is fixed by its
     callers) but with an explicit marker appended, so no caller - CLI user,
-    parent agent via `delegate_task`, search_log - can mistake it for a
+    parent agent via `delegate_task` - can mistake it for a
     finished answer. The transcript keeps the model's raw text."""
     provider = _FakeProvider([AssistantTurn(text="답변이 여기서", tool_calls=[], stop_reason="max_tokens")])
 
@@ -223,33 +223,3 @@ async def test_history_threads_across_separate_run_agent_calls_for_the_repl():
 
     assert answer_two == "second answer"
     assert [m.content for m in history_after_second if m.role == "user"] == ["first question", "second question"]
-
-
-def test_parse_tool_result_round_trips_structured_payload():
-    wrapped = _wrap_untrusted("file_search", [{"path": "a.md", "score": 3}])
-
-    parsed = parse_tool_result(wrapped)
-
-    assert parsed == ("file_search", [{"path": "a.md", "score": 3}])
-
-
-def test_parse_tool_result_round_trips_plain_string_payload():
-    wrapped = _wrap_untrusted("file_search", "error: unknown tool 'x'")
-
-    parsed = parse_tool_result(wrapped)
-
-    assert parsed == ("file_search", "error: unknown tool 'x'")
-
-
-def test_parse_tool_result_round_trips_payload_containing_the_delimiter():
-    # A payload with its own "---" line must not truncate the greedy match
-    # at the wrong boundary (see parse_tool_result's docstring).
-    wrapped = _wrap_untrusted("file_search", "a snippet\n---\nwith an embedded delimiter")
-
-    parsed = parse_tool_result(wrapped)
-
-    assert parsed == ("file_search", "a snippet\n---\nwith an embedded delimiter")
-
-
-def test_parse_tool_result_returns_none_for_non_envelope_content():
-    assert parse_tool_result("just a plain assistant message") is None

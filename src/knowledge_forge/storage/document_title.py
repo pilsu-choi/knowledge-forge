@@ -52,7 +52,7 @@ _SOURCE_TITLE_KEYS = ("title", "name", "subject", "file_name", "filename")
 #     사람은 슬랙을 찾을 때 채널 이름을 대지 않는다. "caddy-drift 아웃테이지 알림",
 #     "OCR 제품 교육 참석 여부를 묻는 스레드"처럼 **첫 메시지 내용**을 댄다.
 #
-# (2) 그런데 파이프라인 전체(eval-ir v0, --no-llm)로는 셋 다 노이즈 안에서 구분되지 않는다:
+# (2) 그런데 파이프라인 전체(골든셋 v0, --no-llm)로는 셋 다 노이즈 안에서 구분되지 않는다:
 #       채널ID(기준)          ndcg@10 0.8516   run da5cf39a0cc64bcf9576f020c6f00e26
 #       채널명                        0.8490   run b77b9e65eda1400184bd48bd6943ae11  (0승 1패)
 #       채널명+발췌120자              0.8498   run 62966bd1af93469eac681c02d6d3ffbd  (3승 5패)
@@ -72,7 +72,6 @@ _SOURCE_TITLE_KEYS = ("title", "name", "subject", "file_name", "filename")
 # 문자열이라 5107행에 571가지 값이며 KO가 붙은 문서도 263/358뿐이다). 그 술어를 쓰던 질의
 # 4건 중 둘이 위 붕괴의 당사자였고, 제거 후 v0 delta는 0.000(0승 0패 70무)이었다.
 # 재적재는 필요 없었다 - 발췌의 원재료(`sources.metadata.first_message`)가 이미 저장돼 있다.
-# 자세한 표와 질의별 증감은 wiki/search-evaluation.md.
 _SLACK_CHANNEL_KEYS = ("channel_name", "channel")
 _SLACK_EXCERPT_CHARS = 120  # 위 (3)의 title_types 술어가 제거되어(09296fb) 켤 수 있게 됐다
 

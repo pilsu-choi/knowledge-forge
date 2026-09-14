@@ -160,8 +160,9 @@ LLM 자격 증명 검사도 건너뛴다 — 임베딩 API 키(`OPENAI_API_KEY`)
 두 모드의 행은 같은 테이블에 `target_kind`로 구분돼 들어가고, `vector_search`는 기본적으로
 둘을 한 랭킹에서 경쟁시킨다(같은 모델의 같은 벡터 공간이라 섞어도 된다). 한 grain만 따로
 보려면 `search/service.py::vector_search(target_kind=...)`를 명시한다 — 에이전트 도구는
-노출하지 않고, 평가([`search-evaluation.md`](search-evaluation.md) (C))처럼 "KO 모드 vs 청크
-모드"를 A/B할 때 쓰라고 둔 파라미터다. 청크 grain 히트는 `type="chunk"`, `summary`=원문 앞
+노출하지 않고, "KO 모드 vs 청크 모드"를 A/B로 비교 측정할 때 쓰라고 둔 파라미터다(측정
+하네스는 2026-09-14 전면 삭제, 재구현 예정 — [`roadmap.md`](roadmap.md) 참고). 청크 grain
+히트는 `type="chunk"`, `summary`=원문 앞
 500자(`postgres_store.py::_CHUNK_HIT_SUMMARY_CHARS` — 청크는 `--max-tokens`만큼 길 수 있어
 `limit`개를 통째로 실으면 에이전트 컨텍스트가 터진다), `topics=[]`로 렌더링되고, 모든 히트에
 `target_kind`/`document_id`/`knowledge_object_id`/`chunk_id`(둘 중 하나는 None)가 실린다.
@@ -219,10 +220,11 @@ CREATE INDEX IF NOT EXISTS idx_koe_target_kind ON knowledge_object_embeddings(ta
 
 `document_id`를 두 grain 모두에 항상 채우는 이유는 검색 평가 때문이다: KO 모드 히트와 청크
 모드 히트는 서로 다른 id 공간에 있어 그대로는 비교할 수 없지만, 둘 다 `document_id`를
-가지므로 "이 질의의 정답 문서를 찾았는가"는 같은 골든셋으로 채점할 수 있다 — 그래야 두 모드를
-공정하게 A/B할 수 있다([`search-evaluation.md`](search-evaluation.md) (C)). 스키마에서 이
-컬럼을 뺐다면 청크 히트는 `chunks`, KO 히트는 `knowledge_objects`를 각각 join해야 문서를 알 수
-있어 평가/검색 양쪽 SQL이 grain별로 갈라진다.
+가지므로 "이 질의의 정답 문서를 찾았는가"는 같은 채점 기준으로 잴 수 있다 — 그래야 두 모드를
+공정하게 A/B할 수 있다(측정 하네스 자체는 2026-09-14 삭제, 재구현 예정 —
+[`roadmap.md`](roadmap.md) 참고). 스키마에서 이 컬럼을 뺐다면 청크 히트는 `chunks`, KO
+히트는 `knowledge_objects`를 각각 join해야 문서를 알 수 있어 평가/검색 양쪽 SQL이 grain별로
+갈라진다.
 
 **기존 DB 마이그레이션**: `init_schema()`가 `target_kind` 컬럼이 없는 옛 모양의 테이블을 발견하면
 `DROP` 후 재생성한다(`schema.sql`의 `DO $$ ... $$` 블록). 임베딩은 파생 데이터라

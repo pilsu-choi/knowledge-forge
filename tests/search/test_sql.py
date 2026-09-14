@@ -150,6 +150,55 @@ def test_describe_schema_default_uses_default_max_rows():
     assert str(DEFAULT_MAX_ROWS) in describe_schema()
 
 
+def test_describe_schema_documents_sources_metadata_keys_per_source_type():
+    """`sources.metadata`는 free-form JSONB라 스키마에서 키를 읽을 수 없다 - 모델이
+    추측하거나 탐색 쿼리를 한 번 낭비해야 했다. 실제로 쓰이는 키(슬랙 발신자, 스레드
+    길이, 파일 종류)는 전부 여기 있고, 그게 metadata_filter가 못 푸는 질의들의 답이다."""
+    text = describe_schema()
+    for key in (
+        "subject",
+        "message_count",
+        "participant_names",
+        "thread_ts",
+        "first_message",
+        "channel_name",
+        "mimeType",
+        "file_id",
+    ):
+        assert key in text, f"sources.metadata 키 {key!r}가 스키마 설명에 없다"
+
+
+def test_describe_schema_warns_that_slack_participants_are_ids_not_names():
+    """이름으로 거는 조건이 `participants`(user ID 배열)로 가면 조용히 0행이 된다 -
+    사람이 읽고 틀리는 지점이라 스키마 설명이 명시적으로 갈라 줘야 한다."""
+    text = describe_schema()
+    assert "Slack user ID" in text
+    assert "participant_names(배열, 표시 이름" in text
+
+
+def test_describe_schema_covers_every_source_type_it_names():
+    """위에서 source_type을 5종으로 열거해 놓고 키는 3종만 적으면, 모델은 나머지 둘에
+    metadata가 비어 있다고 읽는다 - notion/local_file도 키를 갖는다."""
+    text = describe_schema()
+    for key in ("page_id", "last_edited_time", "filename", "size_bytes"):
+        assert key in text, f"sources.metadata 키 {key!r}가 스키마 설명에 없다"
+
+
+def test_describe_schema_separates_key_presence_from_non_null_value():
+    """`metadata ? 'subject'`는 제목 없는 메일에서도 참이다(값이 JSON null) - 존재
+    확인만 하고 값을 쓰면 조용히 NULL 행이 섞인다."""
+    text = describe_schema()
+    assert "metadata->>'키' IS NOT NULL" in text
+
+
+def test_describe_schema_gives_jsonb_access_idioms():
+    """키 이름만 알려주면 접근 문법에서 다시 막힌다(숫자 캐스팅, 배열 포함, 키 존재)."""
+    text = describe_schema()
+    assert "(s.metadata->>'message_count')::int" in text
+    assert "jsonb_array_elements_text" in text
+    assert "s.metadata ? 'thread_ts'" in text
+
+
 # --- sql_search ------------------------------------------------------------
 
 

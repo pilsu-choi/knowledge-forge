@@ -839,7 +839,7 @@ async def test_multihop_joins_planner_evidence_and_drops_hits_without_document_i
     _patch_vector(monkeypatch, [])
     captured = {}
 
-    async def _fake_plan_and_search(query, provider, *, store=None, project_id=None, limit_per_subquery=5):
+    async def _fake_plan_and_search(query, provider, *, store=None, project_id=None, limit_per_subquery=5, target_kind=None):
         captured.update(query=query, provider=provider, limit=limit_per_subquery)
         return {
             "subqueries": [{"id": 1, "query": "q1", "depends_on": []}],

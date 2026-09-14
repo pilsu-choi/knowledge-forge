@@ -4,16 +4,15 @@
 
 지금까지 "이 질의가 특정 문서를 가리키는가 / 작성자·기간 필터인가 / 개수를 묻는가 / 비교인가"
 같은 판단은 전부 에이전트(LLM)가 매 턴 암묵적으로 했다. 그걸 굳이 결정론적인 별도 단계로 뽑아낸
-이유는 두 가지다. (a) 에이전트 turn 없이 검색을 호출하는 소비자가 생겼다 - 골든셋 기반 IR 평가
-하네스(`eval-ir`, wiki/search-evaluation.md)는 질의 → 검색 결과를 LLM 판단 없이, 같은 입력에
-같은 출력으로 재현 가능하게 돌려야 지표가 의미를 가진다. (b) 검색 유형 표(Navigational/Temporal/
+이유는 두 가지다. (a) 같은 입력에 같은 출력이 나와야 검색 품질을
+재현 가능하게 측정하고 비교할 수 있다. (b) 검색 유형 표(Navigational/Temporal/
 Aggregation/Exhaustive/Exact/Negative/Comparison/...)의 절반 이상은 "유사도 검색으로는 원리적으로
 못 잡는" 유형이라, 검색 전략 선택 자체가 질의를 제약+의도 플래그로 먼저 분해하는 데 달려 있다.
 
 2단계로 나눈 이유:
 - 1단계 `extract_constraints_rules()`: LLM 없이 regex/사전만으로. 시간 범위(`search/temporal.py`
   재사용), 따옴표/식별자/파일명, 최신/전부/개수/요약/전체/부정/비교 마커, 작성자 조사 패턴,
-  소스·문서 타입 힌트. 이 결과는 결정론적이라 평가 하네스의 기준선이 되고, 단위 테스트로 못
+  소스·문서 타입 힌트. 이 결과는 결정론적이라 단위 테스트로 못
   박을 수 있다. `search/router.py`/`temporal.py`가 LLM 대신 regex를 택한 것과 같은 이유 -
   "어제"를 날짜 범위로, `ERR_CONNECTION_RESET`을 정확 일치 토큰으로 바꾸는 건 기계적 계산이지
   판단이 아니다.
@@ -27,7 +26,7 @@ Aggregation/Exhaustive/Exact/Negative/Comparison/...)의 절반 이상은 "유�
 `suggest_strategies()`가 내놓는 전략 이름 목록은 다음 단계 통합 실행기(`search/retrieve.py`)와의
 계약이다 - 그 함수의 docstring에 각 이름의 의미를 적어 두었다.
 
-이 모듈은 `search/service.py`/`planner.py`를 import하지 않는다 - 평가 하네스가 DB/임베딩 없이
+이 모듈은 `search/service.py`/`planner.py`를 import하지 않는다 - DB/임베딩 없이
 제약 추출만 단독으로 돌릴 수 있어야 하고, `tests/search/test_layering.py`가 지키는 "search/*는
 agent/* 아래" 계층도 그대로 유지하기 위해서(`ChatProvider`는 `knowledge_forge.chat_provider`에서
 가져온다).
@@ -428,7 +427,7 @@ class QueryConstraints:
     is_multihop: bool = False
     comparison_targets: list[str] = field(default_factory=list)
     semantic_query: str = ""
-    # 필드명 → "rule"|"llm". 어떤 값이 어느 단계에서 왔는지 - 평가 하네스가 "LLM 보강이 실제로
+    # 필드명 → "rule"|"llm". 어떤 값이 어느 단계에서 왔는지 - "LLM 보강이 실제로
     # 무엇을 바꿨나"를 집계하고, 디버깅 때 규칙 오탐인지 LLM 환각인지 가르기 위한 것.
     origins: dict[str, str] = field(default_factory=dict)
 
@@ -799,8 +798,7 @@ def _enrichment_user_message(constraints: QueryConstraints) -> str:
 async def extract_constraints(
     query: str, provider: ChatProvider | None = None, *, now: datetime | None = None
 ) -> QueryConstraints:
-    """규칙 1단계 + (provider가 있으면) LLM 보강 2단계. provider가 None이면 규칙 결과 그대로 -
-    평가 하네스가 LLM 없이 기준선을 돌리는 경로.
+    """규칙 1단계 + (provider가 있으면) LLM 보강 2단계. provider가 None이면 규칙 결과 그대로.
 
     `ChatProvider.send()`는 temperature를 노출하지 않는다(벤더 중립 추상화가 파라미터를 최소로
     유지하기 때문). 결정성은 "JSON 하나만 출력" 프롬프트와 위 병합 정책(규칙 확정 필드 불변)으로

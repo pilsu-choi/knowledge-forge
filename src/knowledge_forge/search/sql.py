@@ -65,6 +65,29 @@ SCHEMA_DESCRIPTION = """사용 가능한 테이블(PostgreSQL, 읽기 전용):
 sources(source_id TEXT PK, source_type TEXT, uri TEXT, collected_at TIMESTAMPTZ,
         modified_at TIMESTAMPTZ, project_id TEXT, metadata JSONB)
   원본 문서/메시지 1건. source_type: local_file/slack/gmail/google_drive/notion.
+  metadata JSONB의 키는 source_type마다 다르다(수집기가 넣는다). 같은 source_type이어도 키가
+  없는 행이 있으므로(예: slack.thread_ts는 스레드 에피소드에만) `metadata ? '키'`로 존재를 먼저 볼 것.
+  키가 있어도 값이 JSON null인 행이 있다(gmail.subject는 제목 없는 메일에서 null) - 값을 조건에
+  쓸 땐 `metadata ? '키'`가 아니라 `metadata->>'키' IS NOT NULL`로 볼 것:
+    gmail         subject(제목) / thread_id / participants(문자열 배열, From 헤더 원문
+                  '"이름" <a@b.com>' 형태라 주소·이름은 부분일치로 걸 것) / message_ids(배열) /
+                  message_count(숫자, 스레드의 메일 통수) / links(객체 배열)
+    slack         channel(채널 ID) / channel_name(채널명) / participants(배열, **Slack user ID**) /
+                  participant_names(배열, 표시 이름 - 사람 이름 조건은 반드시 이쪽) /
+                  message_count(숫자) / message_ts(배열, epoch 문자열) / thread_ts(스레드만) /
+                  first_message(첫 메시지 발췌) / links(객체 배열)
+    google_drive  name(파일명) / file_id / mimeType(application/pdf, image/png, text/plain,
+                  application/vnd.openxmlformats-officedocument.spreadsheetml.sheet=xlsx,
+                  ...wordprocessingml.document=docx, ...presentationml.presentation=pptx)
+    notion        page_id / title(페이지 제목) / last_edited_time(ISO 8601 문자열, TIMESTAMPTZ가
+                  아니라 텍스트다 - 시간 비교는 (metadata->>'last_edited_time')::timestamptz로 캐스팅)
+    local_file    filename(파일명) / size_bytes(숫자)
+  JSONB 관용구(sources를 s로 별칭했다고 할 때):
+    숫자 비교     (s.metadata->>'message_count')::int >= 2
+    배열 정확일치 s.metadata->'participant_names' @> '["홍길동"]'::jsonb
+    배열 부분일치 EXISTS (SELECT 1 FROM jsonb_array_elements_text(s.metadata->'participants') p
+                          WHERE p ILIKE '%nonghyup.com%')
+    키 존재       s.metadata ? 'thread_ts'
 
 documents(document_id TEXT PK, source_id TEXT REFERENCES sources, title TEXT NULL, metadata JSONB,
           project_id TEXT, created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ)
