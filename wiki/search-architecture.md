@@ -1266,3 +1266,76 @@ test에서 두 grain이 반대 방향으로 유의하다. chunk는 정답을 새
 - 커밋 스냅샷을 `git archive`로 풀고 `PYTHONPATH`로 올려 두 grain을 동시에 돌린다. 이러면 작업 트리를 고쳐도 측정이 흔들리지 않는다.
 - dev에서 반복하고, 채택은 test에서 통합 커밋(`82f4548`) 대비로 정했다. 판정은 grain × kind별 CI와 승패로 한다.
 - 최종 코드(결함 3 + 결함 6)는 따로 돌리지 않았다. 결함 6 경로가 골든셋에서 켜지지 않으므로 점수가 결함 3 커밋과 같다.
+
+### 실행기 동시성: 조회는 겹치고 반영은 계약 순서로 (2026-09-15, `perf/retrieve-concurrency-on-main`)
+
+**결과를 바꾸지 않는 지연시간 작업이다.** 랭킹·히트·점수·predicted_count·steps가 전부 예전과 같다(아래 동일성 증거).
+
+**설계 - 패턴 하나(`_gather_ordered`).** 후보 생성 전략(`document_lookup`/`lexical`/`metadata_filter`/`vector`/`keyword_arm`/`comparison`)을
+각각 "조회"와 "반영"으로 갈랐다. 전략 코루틴은 조회(DB·임베딩 왕복)를 끝내고 반영 함수를 돌려주고, `generate()`는 조회를 전부
+한꺼번에 던진 뒤 반영을 **예전 순서 그대로** 한다. 순차 실행과 결과가 같아지는 근거는 두 가지다.
+1. 조회는 실행 상태(anchor, 소스별 히트, 필터 집합)를 읽지 않는다. 입력은 제약·한도·since/until뿐이고, since/until은 반영 중에 바뀌지 않는다
+   (바뀌는 곳은 `relax_time_range` 하나이고 그 뒤 재실행은 새로 조회한다).
+2. 상태를 읽고 쓰는 것은 반영뿐이고 반영 순서는 예전과 같다. 그래서 `_claim_anchor`가 먼저 잡힌 anchor를 덮어쓰지 않는 규칙, 좁히기가 그
+   시점의 anchor를 쓰는 규칙, `results_by_source`의 소스 삽입 순서(RRF 입력), steps 순서가 전부 그대로다.
+
+예외도 맞췄다: `_gather_ordered`는 전부 끝날 때까지 기다린 뒤 **입력 순서상 첫** 실패를 올린다. 순차 실행에서 올라오던 예외와 같다
+(`asyncio.gather` 기본값은 먼저 터진 것을 올리고 나머지를 버려 둔다). 전략 안의 여러 왕복(질의별·term별·대상별)도 같은 함수로 겹친다.
+
+| 지점 | 예전 | 지금 |
+|---|---|---|
+| 후보 생성 6전략 | 순차(vector와 arm 두 조회만 겹침) | 한 물결로 전부 겹침, 반영은 계약 순서 |
+| multihop(planner) | 완화 재실행 뒤 순차 | 첫 물결과 같이 던지고 반영만 완화 재실행 뒤. planner는 실행 상태·시간 범위를 쓰지 않고, 완화 판정은 planner 히트를 보지 않는다 |
+| term fallback의 df SQL | term별 조회가 끝난 뒤 | term별 조회와 같이 던짐(입력은 term뿐, 실측 df와의 `max`는 뒤에서) |
+| comparison 본문 폴백 | 대상마다 순차 | 제목이 빈 대상끼리 겹침(조회 안에서 끝남 - 이 전략 자신의 결과에만 의존) |
+| whole_document 문서 읽기 | 문서마다 순차 | 겹침(아래 한계 참고) |
+
+**일부러 순차로 둔 것.**
+- **term fallback 자체**: 돌지 말지가 반영 결과(anchor 여부, arm이 찾은 문서 수)에 달려 있어 두 번째 물결이다. 추측으로 미리 던지는 것은
+  결과는 안 바꾸지만 안 쓸 조회 11개를 늘리므로 하지 않았다.
+- **LLM 제약 보강(`extract_constraints`) 전의 DB 작업**: 규칙이 확정한 입력만 쓰는 조회는 `lexical`(identifiers/quoted_phrases, 선택 조건도
+  같은 필드) 하나뿐이다. `document_lookup`은 `document_reference`, `metadata_filter`는 authors/document_types, vector·arm·term fallback은
+  `semantic_query`, comparison은 `comparison_targets`, multihop은 `is_multihop`에 달려 있고 전부 `LLM_ENRICHABLE_FIELDS`다. 미리 던질 수 있는
+  조회가 p50 수 ms짜리 하나라 LLM 왕복 앞에서 줄일 것이 없어 손대지 않았다.
+- **병합 뒤 후처리**(link_cohesion → latest → whole_document → limit 절단 → grain 펼치기 → count): 각 단계가 앞 단계의 랭킹을 입력으로 받는다.
+  grain 펼치기의 첫 문서 순차 조회는 임베딩 캐시 miss 중복을 막는 기존 설계 그대로다.
+
+**한계(스토리지, 바꾸지 않고 기록).** `read_document`가 부르는 `get_document`/`get_source`/`list_chunks_by_document`는 읽기 풀이 아니라 공유
+커넥션(`self.conn`)을 쓴다. psycopg `AsyncCursor.execute`가 `conn.lock`을 잡으므로 겹쳐 던져도 직렬로 돈다 - whole_document 겹치기는 안전하지만
+지금은 이득이 없다. 읽기 풀로 옮기면 이득이 생긴다.
+
+**main 변경과 합친 방식.** 9c9cc02 위에서 만든 작업을 `aa12fb1`(질의별 순위 리스트, anchor epsilon, comparison 대상 시간 해석) 위에 다시 올렸다.
+main의 변경은 전부 반영 함수 안으로 들어갔다: document_lookup·lexical·comparison·multihop의 `<소스>#<질의>` 리스트 삽입,
+lexical의 "좁히기 판정은 전체 합, 적용은 term별 리스트", comparison의 `_resolve_time_range`, multihop의 `now=`.
+
+**동일성 증거.** 골든셋 v1 두 벌 전 항목(chunk 281 + KO 281 = 562)을 `retrieve(grain=<골든셋 grain>, use_llm_constraints=False, now=2026-09-15T12:00Z)`로
+dev DB에서 순차(동시성 1) 실행했다. main(`aa12fb1`)과 브랜치 커밋을 각각 `git archive` 스냅샷으로 `PYTHONPATH`에 올렸다.
+히트 순서·id·점수·`retrieval_sources`, strategies, steps(strategy/source/n_hits/detail 전부), predicted_count, document_ids를 항목별로 비교했다.
+
+먼저 원격 임베딩을 그대로 쓰면 **코드와 무관하게 결과가 흔들린다.** 같은 문자열에도 호출마다 소수점 5자리쯤 다른 벡터가 와서
+vector 점수와 `vector_min_score` 통과 여부가 바뀐다. 그래서 질의 임베딩을 한 번 기록(547개 문자열)하고 이후 실행은 그 벡터만 재생해 비교했다.
+
+| 비교 | 임베딩 | chunk 동일/불일치 | KO 동일/불일치 |
+|---|---|---|---|
+| main vs 브랜치 (2회 × 교차 2회) | 고정 | **281 / 0** | **281 / 0** |
+| main vs main | 고정 | 281 / 0 | 281 / 0 |
+| 브랜치 vs 브랜치 | 고정 | 281 / 0 | 281 / 0 |
+| main vs main | 원격 매번 | 223 / 58 | 202 / 79 |
+| main vs 브랜치 (2회) | 원격 매번 | 215 / 66, 211 / 70 | 204 / 77, 209 / 72 |
+
+읽는 법:
+- 임베딩을 고정하면 네 실행의 모든 쌍이 562/562 동일하다. 오류·vector step 실패·재생 miss는 0건이었다.
+- 원격 임베딩 그대로의 불일치는 main끼리도 137건이고, 크기와 모양(대부분 점수만 다름, 몇 건은 하한 통과 수가 달라 document_ids까지)이 main vs 브랜치와 같다.
+  **평가 재현성에도 걸리는 소견이다** - 같은 코드로 다시 재도 grain 채점 리스트가 항목 20% 남짓에서 달라진다.
+- 09-15에 흔들렸던 KO lookup-006은 벡터를 고정한 이번 실행에서는 흔들리지 않았다.
+
+**지연시간(벽시계, 항목당).** 같은 DB에서 다른 에이전트의 평가 A/B가 동시에 돌고 있어 참고치다.
+
+| 조건 | main p50 / p95 | 브랜치 p50 / p95 |
+|---|---|---|
+| 원격 임베딩 포함, 1회차 | 728 / 1148 ms | 648 / 976 ms |
+| 원격 임베딩 포함, 2회차 | 714 / 1034 ms | 636 / 925 ms |
+| 임베딩 재생(DB 조회만) | 191 / 407 ms | 141 / 310 ms |
+
+- 종단 지연은 p50 약 −11%, p95 약 −12%다. 원격 임베딩 왕복(~300ms)이 원래도 다른 조회와 겹쳐 있어서 그 몫은 줄지 않는다.
+- DB 조회만 보면 p50 −26%, p95 −24%다. 이득은 전략 사이 조회를 겹친 몫이다.
