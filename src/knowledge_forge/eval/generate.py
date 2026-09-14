@@ -69,6 +69,8 @@ _YES_NO_RE = re.compile(
     r"|^(?:is|are|was|were|do|does|did|can|could|has|have|will|should)\s",
     re.IGNORECASE,
 )
+# 원문에 답이 없다는 "정답"(스모크에서 "소유자에 대한 정보는 원문에 명시되어 있지 않습니다"가 통과했다).
+_UNANSWERABLE_RE = re.compile(r"명시(?:되어|돼)\s?있지\s?않|언급(?:되어|돼)?\s?있지\s?않|알\s?수\s?없|정보(?:가|는)?\s?없|나와\s?있지\s?않")
 
 
 def target_mix(n: int) -> dict[str, int]:
@@ -114,7 +116,7 @@ _LOOKUP_SYSTEM = """당신은 사내 검색 평가용 질의를 만든다. 주�
 - 예/아니오 질문 금지. 누가/무엇/언제/얼마/어떻게처럼 구체적인 답이 있는 질문.
 - 질의만 보고도 어느 문서·대화 얘기인지 좁혀지도록 고유한 단서(프로젝트명, 고객사, 시스템명, 문서 제목 등)를 넣을 것.
 - 채널 id·해시 같은 원시 식별자는 넣지 말 것. 일반 상식으로 답할 수 있는 질문 금지.
-- answer는 한두 문장의 짧은 정답.
+- answer는 한두 문장의 짧은 정답. 원문에 구체적인 답이 없으면 질문을 만들지 말고 query를 빈 문자열로.
 {quote_rule}다른 설명 없이 JSON 객체 하나만 출력: {schema}"""
 
 _QUOTE_RULE = "- quote는 정답의 근거가 되는 원문 구절을 한 글자도 바꾸지 않고 그대로 옮긴 것(20~150자).\n"
@@ -241,6 +243,8 @@ class _Generator:
         query, answer, quote = _text(payload.get("query")), _text(payload.get("answer")), _text(payload.get("quote"))
         if not answer:
             return "bad_llm_output"
+        if _UNANSWERABLE_RE.search(answer):
+            return "unanswerable"
         reason = rule_gate(query, source_text)
         if reason:
             return reason

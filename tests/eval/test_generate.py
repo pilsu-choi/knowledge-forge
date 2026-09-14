@@ -142,3 +142,19 @@ async def test_generate_refuses_when_grain_embeddings_are_missing(fakes, monkeyp
 
     with pytest.raises(EvalError, match="embed --embedding-source knowledge_object"):
         await generate_golden(fakes.FakeStore(), fakes.ScriptedProvider(), grain="knowledge_object", n=5)
+
+
+@pytest.mark.parametrize(
+    ("answer", "unanswerable"),
+    [
+        ("소유자에 대한 정보는 원문에 명시되어 있지 않습니다.", True),
+        ("원문만으로는 알 수 없습니다.", True),
+        ("해당 정보가 없습니다.", True),
+        ("2026년 8월 26일입니다.", False),
+        ("차주까지 공유될 예정입니다.", False),
+    ],
+)
+def test_unanswerable_answer_is_detected(answer, unanswerable):
+    from knowledge_forge.eval.generate import _UNANSWERABLE_RE
+
+    assert bool(_UNANSWERABLE_RE.search(answer)) is unanswerable
