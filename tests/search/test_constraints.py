@@ -964,3 +964,44 @@ def test_keyword_terms_drop_question_endings_and_function_words():
     assert keyword_terms(extract_constraints_rules("issues with Redis cluster", now=NOW)) == ["issues", "Redis", "cluster"]
     assert keyword_terms(extract_constraints_rules("배포가 몇 개월 걸렸나", now=NOW)) == ["배포", "개월"]
     assert keyword_terms(extract_constraints_rules("액세스 요청한 사람이 누구인가", now=NOW)) == ["액세스", "요청한", "사람"]
+
+
+# --- 파싱 잔여 결함 (wiki/search-quality-review-2026-09-15.md "잔여 결함 수정") -----------------
+
+
+def test_adnominal_neun_after_ha_or_doe_is_not_a_topic_particle():
+    for query, word in (
+        ("지문 등록이 진행되는 날짜", "진행되는"),
+        ("AEGIS에 자동으로 적재되는 메일 주소", "적재되는"),
+        ("2번 Gate에 해당하는 모듈", "해당하는"),
+    ):
+        assert word in extract_constraints_rules(query, now=NOW).semantic_query.split(), query
+    # 받침 규칙으로 이미 막히는 의문 어미와, 실제 조사는 그대로
+    c = extract_constraints_rules("메일 테스트란 무슨 테스트인가 담당자는 누구인가", now=NOW)
+    assert c.semantic_query.split()[-3:] == ["테스트인가", "담당자", "누구인가"]
+    c = extract_constraints_rules("김철수가 보낸 매출과 전문가 정확도 보고서는", now=NOW)
+    assert c.authors == ["김철수"] and c.semantic_query == "매출 전문가 정확도 보고서"
+
+
+def test_a_symbol_right_before_an_identifier_stays_attached():
+    c = extract_constraints_rules("/aegis-email 명령어의 용도는 무엇인가요?", now=NOW)
+    assert c.identifiers == ["aegis-email"] and c.semantic_query == "/aegis-email 명령어 용도"
+    # 조사는 여전히 떨어지고, URL 경로 안의 식별자는 원래 모양으로 돌아온다
+    assert extract_constraints_rules("ERR_404에서 재시도", now=NOW).semantic_query == "ERR_404 재시도"
+    c = extract_constraints_rules("git.sparklingsoda.ai:8443/prepay-docs 접속 오류", now=NOW)
+    assert c.identifiers == ["prepay-docs"] and "8443/prepay-docs" in c.semantic_query
+    # 긴 연결 토큰 안의 식별자 앞 "-"는 term에 붙어 남지 않는다
+    c = extract_constraints_rules("#proj_2026-038-f_nh농협은행_당발송금usd-중계-ai-agent의 문서", now=NOW)
+    assert not [t for t in keyword_terms(c) if t[0] in "-_" or t[-1] in "-_"]
+
+
+def test_year_word_with_month_and_day_narrows_to_that_day():
+    for query, span, label in (
+        ("올해 5월 15일 회의록", (_kst(2026, 5, 15), _kst(2026, 5, 16)), "2026년 5월 15일"),
+        ("작년 3월 회의록", (_kst(2025, 3, 1), _kst(2025, 4, 1)), "2025년 3월"),
+        ("올해 5월", (_kst(2026, 5, 1), _kst(2026, 6, 1)), "2026년 5월"),
+        ("올해 계획서", (_kst(2026, 1, 1), _kst(2027, 1, 1)), "올해"),
+    ):
+        c = extract_constraints_rules(query, now=_REVIEW_NOW)
+        assert c.time_range is not None, query
+        assert ((c.time_range.start, c.time_range.end), c.time_range.label) == (span, label), query

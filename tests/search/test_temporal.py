@@ -312,6 +312,16 @@ def test_resolve_within_year_still_resolves_a_numeric_bare_month():
     assert result.label == "2025년 3월"
 
 
+def test_resolve_within_year_narrows_a_month_and_day_to_that_day():
+    result = resolve_within_year("5월 15일 회의록", NOW, 2026)
+    assert result is not None and result.label == "2026년 5월 15일"
+    assert (result.start, result.end) == (_kst(2026, 5, 15), _kst(2026, 5, 16))
+    # 없는 날은 그 달로, 일 없이 숫자만 붙으면 해석하지 않는다
+    result = resolve_within_year("2월 30일 회의록", NOW, 2026)
+    assert result is not None and (result.start, result.end) == (_kst(2026, 2, 1), _kst(2026, 3, 1))
+    assert resolve_within_year("3월 15 회의록", NOW, 2026) is None
+
+
 def test_resolve_within_year_still_resolves_a_bare_quarter():
     result = resolve_within_year("3분기 매출", NOW, 2025)
     assert result is not None

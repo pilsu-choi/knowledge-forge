@@ -640,6 +640,8 @@ def _particle_fits(stem: str, particle: str) -> bool:
       있는 "문" 뒤라 조사가 아니고(조사라면 "이"), "효과"의 "과"는 받침 없는 "효" 뒤라 아니다.
     - 한글 1음절 어간은 조사 앞말로 보지 않는다("결과"의 "결").
     - "회의"의 "의": 받침 규칙이 없는 조사라 회의록 코퍼스의 핵심어("주간회의")만 예외로 둔다.
+    - "하"/"되" 뒤 "는"은 관형형 어미다("해당하는", "진행되는") - 그 끝의 명사("부하는")보다
+      동사 활용이 압도적으로 흔하다.
     - 라틴/숫자 뒤("README를")는 발음을 몰라 허용한다."""
     word = stem.split()[-1] if stem.strip() else ""
     last = word[-1:]
@@ -647,7 +649,7 @@ def _particle_fits(stem: str, particle: str) -> bool:
         return False
     if not "가" <= last <= "힣":
         return True
-    if len(word) == 1 and len(particle) == 1:
+    if (len(word) == 1 and len(particle) == 1) or (particle == "는" and last in "하되"):
         return False
     has_final = (ord(last) - 0xAC00) % 28
     if particle in _AFTER_FINAL:
@@ -783,7 +785,9 @@ def extract_constraints_rules(query: str, *, now: datetime | None = None) -> Que
         if _PLAIN_COMPOUND_RE.fullmatch(m.group()):
             return m.group()
         id_slots.append(_strip_particle(m.group()))
-        return f" {chr(_ID_SLOT + len(id_slots) - 1)} "
+        # 앞은 붙인다 - 식별자 앞은 정규식상 한글·영숫자가 아니라 "/aegis-email"·"#proj_..."의 기호가
+        # 떨어져 남지 않는다. 뒤는 띄운다 - 붙은 조사를 따로 떼야 한다.
+        return f"{chr(_ID_SLOT + len(id_slots) - 1)} "
 
     def _restore_ids(text: str) -> str:
         return _ID_SLOT_RE.sub(lambda m: id_slots[ord(m.group()) - _ID_SLOT], text)
@@ -1076,7 +1080,8 @@ def keyword_terms(constraints: QueryConstraints, *, max_terms: int = 10) -> list
     seen: set[str] = set()
     for token in raw:
         # `_clean_semantic_query`와 같은 조사 규칙 - "논의"의 "의"를 떼면 1글자만 남는다.
-        term = _strip_word_particle(token.strip()).strip(".")
+        # 가장자리 연결 기호도 뗀다 - "…중계-ai-agent"처럼 긴 토큰 안의 식별자 앞 "-"가 붙어 남는다.
+        term = _strip_word_particle(token.strip()).strip("._-")
         key = term.casefold()
         # 1글자 term은 거의 모든 청크에 걸려 랭킹 신호가 없다.
         if len(term) < 2 or key in _TERM_NOISE or key in seen or _PREDICATE_END_RE.search(term):
