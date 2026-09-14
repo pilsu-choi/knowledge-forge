@@ -374,3 +374,120 @@ outcome/object 개수만 세므로 건너뛴 만큼 개수가 줄 뿐 어긋나�
 `content_hash`가 잘못된 콘텐츠를 정상 수집처럼 축복하는 일(위 "확정된 원인" 절)이 수집
 시점에서 막힌다. 이건 재적재로 고칠 수 있는 문제가 아니다(재수집이 필요하다는 점은
 그대로다) - 여기서 막는 건 **다음번에 같은 사고가 또 조용히 통과하는 것**이다.
+
+## 재적재 버그 3건 수정 (2026-09-14, `fix/reparse-bugs`)
+
+개발 DB 사본(`knowledge_forge_reparse_test`, 실측 후 삭제)에서 `--source-type slack/gmail/
+google_drive --all --no-extract --embed --embedding-source chunk`를 돌려본 결과 확인된
+버그 3건. 모두 회귀 테스트가 딸린 별도 커밋.
+
+### 1) 슬랙 재적재가 `KeyError: 'ts'`로 즉시 죽음 — `5f64863`
+
+**원인** (`pipeline.py:191`, `context/slack.py:81`): `run_pipeline`은
+`context_reconstructor`가 안 주어지면 `default_reconstructor_for(collector.source_type)`를
+쓴다. 재적재가 읽는 `sources` 행은 슬랙이든 지메일이든 **이미 재구성된 에피소드/스레드다**
+(`run_pipeline`이 `_make_source`보다 먼저 `ContextReconstructor`를 돌려서 그 결과만
+`sources`에 남기 때문 - 원본 메시지 낱개는 `sources` 행이 된 적이 없다). 그런데
+`reparse`는 이 사실을 모르고 같은 `default_reconstructor_for(SLACK)`을 또 돌렸다.
+`SlackConversationReconstructor._reconstruct_channel`의 첫 줄
+`by_ts = {m.metadata["ts"]: m for m in messages}`가 병합된 에피소드 메타데이터
+(`message_ts` 리스트만 있고 `ts` 없음)에서 즉시 `KeyError`를 던져 배치 전체가 죽었다.
+
+**수정**: `Collector.already_reconstructed: ClassVar[bool] = False`
+(`collectors/base.py`)를 추가하고 `RawBlobReplayCollector`가 `True`로 켠다
+(`collectors/replay.py`). `run_pipeline`은 이 플래그가 서 있으면
+`default_reconstructor_for` 대신 `NoopReconstructor`를 쓴다 - "재적재된 항목은 이미
+리컨스트럭터의 출력물"이라는 사실을 컬렉터 쪽이 선언하는 형태라, 향후 다른 재적재류
+컬렉터에도 그대로 적용된다.
+
+**실측(전/후)**: 슬랙 소스 4건(`sources`/`documents` 4:4, 사본 DB) 대상
+`--all --no-extract --no-embed`.
+
+| | 수정 전 | 수정 후 |
+|---|---|---|
+| 결과 | `KeyError: 'ts'`, 배치 전체 중단, 0건 처리 | 4건 중 4건 파이프라인 통과 |
+| documents | 4 (변화 없음, 크래시) | 4 (동일 document_id로 재기록) |
+
+### 2) 지메일 재적재가 문서를 중복 생성 — `5f64863`
+
+**원인** (`context/gmail.py:39,57`): `GmailThreadReconstructor`는 위와 같은 이유로 재적재된
+스레드 항목을 다시 받지만, 메타데이터에 `thread_id`가 남아 있어 **죽지 않고** 같은
+스레드로 재그룹된다. 문제는 `_merge`가 이미 병합된 본문을 `_format_message`로
+`"From: unknown\n" + <이미 병합된 본문>`으로 **한 번 더** 감싼다는 것
+(병합 메타데이터에는 `from`/`date` 키가 없어 `unknown`으로 떨어진다). 그 결과
+`content_hash`가 바뀌고, `document_id = stable_id("document", uri, content_hash)`
+(`parsers/conversation.py:35`)도 바뀐다. `uri`(=`source_id` 계산 키)는 그대로라
+`sources` 행은 upsert되지만, `documents`는 `document_id`가 다른 새 행이 하나
+더 생기고 **원래 행은 그대로 남는다** - `--all` 재적재 대상 59건이 118건이 된 사고.
+
+**수정**: 1번과 같은 커밋, 같은 메커니즘(`already_reconstructed` → `NoopReconstructor`).
+재구성을 건너뛰므로 재적재된 항목의 `uri`/`content`가 디스크 바이트 그대로 파서에
+들어가 `document_id`가 최초 적재와 정확히 같아진다 - "문서가 legitimate하게 바뀌면
+교체"가 아니라 "애초에 안 바뀐 것으로 정확히 인식"하는 쪽으로 고쳤다: 재적재의 존재
+이유 자체가 "바뀐 게 없는 바이트를 새 코드로 다시 파싱하는 것"이라, 재구성을 생략하면
+멱등성이 공짜로 따라온다.
+
+**실측(전/후)**: 지메일 소스 4건(`sources`/`documents` 4:4, 사본 DB) 대상
+`--all --no-extract --no-embed`.
+
+| | 수정 전 | 수정 후 |
+|---|---|---|
+| documents | 4 → **8** (전부 중복) | 4 → **4** (변화 없음) |
+| document_id 일치 | 새 id 4개 생성, 원본 4개 잔존 | 재적재된 4개 전부 원본과 **정확히 동일한 document_id** |
+
+재현 중 부작용 한 가지를 여기 남긴다: 수정 전 코드로 이 재현을 돌리는 과정에서
+`record_source`가 (재구성으로 바뀐) 새 `content_hash`로 원본 블롭 바이트를
+**실제 `KF_DATA_DIR`에 새로 write**했다(content-addressed라 원본 파일은 안 건드렸지만
+새 파일 4개가 남았다). 파일 삭제가 세션 권한으로 막혀 그대로 남아 있다 - 새 해시
+경로라 아무 `sources.raw_path`도 가리키지 않는 고아 파일이라 기능상 해는 없지만,
+`KF_DATA_DIR/raw/default/{99,90,50,a5}/...` 4개는 다음에 청소가 필요하다.
+재현에 쓴 `knowledge_forge_reparse_test` DB 자체는 검증 후 `dropdb`로 지웠다.
+
+### 3) 임베딩 요청이 프로바이더 한도를 넘겨 재적재 전체가 죽음 — `bdce362`
+
+**원인** (`storage/store.py`의 `record_chunk_embeddings`/`record_embeddings`,
+수정 전 `pipeline.py`의 호출부): 두 메서드 모두 문서 한 건의 청크/KnowledgeObject
+**전부**를 `embedder.embed()` 한 번에 몰아 보냈다. 청크가 많은 문서(대형 PDF 등)를
+reparse하면 OpenRouter가 `HTTP 400 ... maximum request size is 300000 tokens per
+request`를 돌려줬는데, `pipeline.py`가 이 호출을 try/except로 감싸지 않아 예외가
+`run_pipeline` 제너레이터 밖으로 그대로 새어나가 **그 문서 이후로는 아무것도 처리하지
+못하고 재적재 전체가 죽었다**(google_drive reparse 사고).
+
+**수정**:
+- `embedding/base.py`: `EmbeddingProvider.embed()`를 concrete로 바꾸고, 실제 API
+  호출은 새 추상 메서드 `_embed_batch()`로 옮겼다. `embed()`는 기존 토크나이저
+  (`chunking/tokenizer.py`, cl100k_base)로 토큰 수를 세어 `_batch_by_budget()`으로
+  텍스트를 요청 단위(기본 250,000토큰 / 2,048개 항목, 항목당 권장 상한
+  8,191토큰)로 쪼갠 뒤 각 배치를 `_embed_batch()`에 넘기고 결과를 순서대로 이어
+  붙인다 - 한 곳에서만 구현해서 `record_embeddings`/`record_chunk_embeddings` 양쪽이
+  따로 배치 로직을 만들 필요가 없다(요청한 대로 "provider base"에 구현).
+- `pipeline.py`: 두 임베딩 호출을 try/except로 감싸 로그만 남기고 다음 문서로
+  진행하도록 했다 - 파서 실패를 이미 이렇게 다루던 컨벤션과 동일. 실패한 문서의
+  Document/Chunk는 임베딩 이전에 이미 저장됐으므로 그대로 남는다(임베딩만 없는 채로).
+
+**실측**: 300k 토큰 과다 요청 자체는 사본 DB에서 값싸게 재현하기 어렵다(원인이 된
+"나에게맞춘간편건강보험약관.pdf"급 문서는 7,643청크 - 실비용/시간이 커서 이번 검증
+범위에서 제외, 단위 테스트로 대체). 대신:
+- **단위 테스트**로 분할 로직 자체를 검증했다(`tests/embedding/test_embedding_batching.py`):
+  예산 이내는 요청 1번, 300,000토큰짜리 입력은 여러 요청으로 분할, 순서 보존, 빈
+  입력, 예산을 혼자 넘는 단일 항목 처리.
+- **실 API 스모크 테스트**(OpenRouter, `text-embedding-3-small`, 사본 DB): google_drive
+  중간 크기 문서 2건(xlsx, 71청크/138청크)을 `--all --no-extract --embed
+  --embedding-source chunk`로 재적재 - 209개 청크 전부 청크당 임베딩 1개씩 정확히
+  기록됨(배치 분할까지는 안 갈 크기라 회귀 없음만 확인, 분할 자체는 위 단위 테스트가
+  본다).
+- **컨테인먼트**는 `tests/test_pipeline_embedding_failure_containment.py`로 검증:
+  2문서 중 1문서만 임베딩이 실패해도 두 문서 다 파싱·저장까지는 끝까지 처리됨(실패한
+  쪽만 임베딩이 비어 있음).
+
+### 남은 구멍: 재적재가 문서의 예전 청크를 지우지 않음
+
+이번 3건과 직접 얽힌 코드 경로가 아니라서(콘텐츠는 안 바뀌므로 청크 집합도 안 바뀐다)
+고치지 않고 여기 보고만 한다. `storage/postgres_store.py::save_chunks`는
+`chunk_id` 기준 upsert뿐이고, 한 문서의 예전 청크 중 새 청크 집합에 없는 것을 지우는
+코드가 없다. 파서/청커 로직이 바뀌어 같은 문서가 **더 적은** 청크로 재적재되면
+(`document_id`는 그대로인 정상 케이스 - 콘텐츠가 안 바뀌었으니), 사라진 청크와 그
+청크-grain 임베딩이 고아로 남는다. 고치려면 `record_chunks`가 "이 document_id의
+새 청크 집합"을 알아야 하므로 트랜잭션 안에서 `DELETE FROM chunks WHERE document_id
+= ? AND chunk_id NOT IN (...)` 형태(그리고 `knowledge_object_embeddings`의 대응
+행도 함께)가 필요하다 - 다음 재적재 작업의 범위로 남긴다.

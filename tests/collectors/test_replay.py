@@ -6,7 +6,7 @@ from knowledge_forge.collectors.replay import (
     ReplayRow,
     filter_rows_by_extension,
 )
-from knowledge_forge.ids import content_hash
+from knowledge_forge.ids import content_hash, stable_id
 from knowledge_forge.models.source import SourceType
 from knowledge_forge.parsers.registry import default_registry
 from knowledge_forge.pipeline import run_pipeline
@@ -113,3 +113,102 @@ async def test_replayed_rows_run_through_the_pipeline_into_documents(tmp_path):
     ]
 
     assert len(outcomes) == 1
+
+
+class _RecordingStore:
+    """Minimal PipelineStore stand-in - only `record_document` matters here,
+    to inspect the `document_id` run_pipeline actually produced."""
+
+    def __init__(self):
+        self.documents: list = []
+
+    async def record_source(self, source, item):
+        pass
+
+    async def get_source_content_hash(self, source_id):
+        return None
+
+    async def record_document(self, document):
+        self.documents.append(document)
+
+    async def link_document(self, source, document):
+        return []
+
+    async def record_chunks(self, chunks):
+        pass
+
+
+async def test_replayed_slack_episode_is_not_re_reconstructed_and_does_not_crash(tmp_path):
+    """A replayed Slack `sources` row is already a merged episode
+    (context/slack.py) - its metadata carries `message_ts` but no
+    per-message `ts`. Before `Collector.already_reconstructed` existed,
+    run_pipeline ran `SlackConversationReconstructor` over it a second time
+    and `_reconstruct_channel` raised `KeyError('ts')` on the first row,
+    aborting the whole reparse run."""
+    data = b"alice: are we still on for tomorrow?"
+    row = ReplayRow(
+        uri="slack://C123/episode/100.100",
+        raw_path=_blob(tmp_path, content_hash(data), data),
+        modified_at=MODIFIED_AT,
+        metadata={
+            "channel": "C123",
+            "message_ts": ["100.100"],
+            "participants": ["U1"],
+            "message_count": 1,
+        },
+    )
+    collector = RawBlobReplayCollector([row], SourceType.SLACK)
+
+    outcomes = [
+        outcome
+        async for outcome in run_pipeline(
+            collector, default_registry(), AdaptiveChunker(max_tokens_per_chunk=100), extractor=None
+        )
+    ]
+
+    assert len(outcomes) == 1
+
+
+async def test_replayed_gmail_thread_keeps_the_original_document_id(tmp_path):
+    """`GmailThreadReconstructor` doesn't crash on a replayed thread (its
+    metadata still has `thread_id`), but re-running it re-wraps the
+    already-merged text with a new "From: ..." header - changing
+    content_hash, and therefore document_id, even though the source is
+    unchanged. That produced a second `documents` row per gmail source on
+    every `--all` reparse (the old row was never replaced). With
+    reconstruction skipped for an already-reconstructed collector, the
+    replayed item's uri/content are exactly what was stored, so
+    document_id matches what the very first ingest produced for these
+    bytes."""
+    data = b"From: alice@example.com (Mon, 1 Jan 2026)\nHi team, thanks!"
+    uri = "gmail://thread/T1"
+    row = ReplayRow(
+        uri=uri,
+        raw_path=_blob(tmp_path, content_hash(data), data),
+        modified_at=MODIFIED_AT,
+        metadata={
+            "thread_id": "T1",
+            "message_ids": ["m1"],
+            "subject": "Re: kickoff",
+            "participants": ["alice@example.com"],
+            "message_count": 1,
+        },
+    )
+    collector = RawBlobReplayCollector([row], SourceType.GMAIL)
+    store = _RecordingStore()
+
+    outcomes = [
+        outcome
+        async for outcome in run_pipeline(
+            collector,
+            default_registry(),
+            AdaptiveChunker(max_tokens_per_chunk=100),
+            extractor=None,
+            store=store,
+            force=True,
+        )
+    ]
+
+    assert len(outcomes) == 1
+    assert len(store.documents) == 1
+    assert store.documents[0].document_id == stable_id("document", uri, content_hash(data))

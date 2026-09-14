@@ -54,6 +54,17 @@ class Cursor(BaseModel):
 
 class Collector(ABC):
     source_type: ClassVar[SourceType]
+    # True for a collector whose items are already the semantic units a
+    # ContextReconstructor would otherwise build (episodes/threads already
+    # merged) - see collectors/replay.py. pipeline.py reads this to decide
+    # whether to run `default_reconstructor_for(source_type)` at all; a
+    # reconstructor built for raw per-message/per-email items would either
+    # crash (SlackConversationReconstructor needs `metadata["ts"]`, which a
+    # merged episode doesn't carry) or silently re-merge and change the
+    # content it hashes (GmailThreadReconstructor re-wraps the text with a
+    # "From: ..." header), producing a different document_id for bytes that
+    # were never supposed to change on replay.
+    already_reconstructed: ClassVar[bool] = False
 
     @abstractmethod
     def initial_sync(self) -> Iterator[RawItem]:
