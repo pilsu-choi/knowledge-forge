@@ -6,8 +6,10 @@ Knowledge Extraction(`ClaudeExtractor`)과 Vision 추출(`VisionExtractor`, 표/
 OpenRouter는 향후 다른 모델(비-Claude 포함)을 붙일 수 있도록 준비해 둔 대안 경로다.
 Claude Agent SDK(`claude_agent_sdk`)는 Anthropic Messages API를 직접 호출하는 대신 `claude`
 CLI를 서브프로세스로 구동하는 세 번째 경로로, **별도 `ANTHROPIC_API_KEY` 없이 이미 로그인된
-Claude Code(OAuth)만으로 Knowledge Extraction을 실행**하고 싶을 때 쓴다 (Knowledge Extraction만
-지원 - Vision 추출은 아직 이 프로바이더로 구현되어 있지 않다).
+Claude Code(OAuth)만으로 Knowledge Extraction을 실행**하고 싶을 때 쓴다 (Knowledge Extraction과
+Vision 추출 둘 다 지원 - Vision 쪽은 `query()`의 스트리밍 입력 경로로 이미지 콘텐츠 블록을
+실어 보낸다, 자세한 내용과 라이브 검증 상태는 [`vision-extraction.md`](vision-extraction.md)의
+"claude_agent_sdk 아래 VLM이 조용히 전부 실패하던 문제" 참고).
 
 ## 왜 프로바이더를 나누는가
 
@@ -42,6 +44,7 @@ uv run knowledge-forge extract <path> --pretty
 | `KF_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API 엔드포인트 |
 | `OPENROUTER_API_KEY` | (없음) | OpenRouter API 키. `KF_` 접두사가 아님 — `ANTHROPIC_API_KEY`를 `Settings`에 중복 저장하지 않는 것과 같은 원칙으로, provider 클래스 생성 시점에 환경에서 직접 읽는다 |
 | `KF_CLAUDE_AGENT_SDK_EXTRACTION_MODEL` | `claude-haiku-4-5-20251001` | Knowledge Extraction에 쓸 모델 (Claude Agent SDK 경로) |
+| `KF_CLAUDE_AGENT_SDK_VISION_MODEL` | `claude-haiku-4-5-20251001` | Vision 추출(표/이미지/차트)에 쓸 모델 (Claude Agent SDK 경로) |
 | `KF_CLAUDE_AGENT_SDK_CLI_PATH` | (없음 → PATH의 `claude`) | `claude` 바이너리가 PATH에 없을 때만 명시적 경로 지정 |
 | `CLAUDE_CODE_OAUTH_TOKEN` | (없음) | `claude setup-token`으로 발급하는 장기 OAuth 토큰. `KF_` 접두사가 아님 — `claude` CLI가 직접 읽는 표준 환경변수라 여기서 중복 관리하지 않는다. headless/CI 환경에서 브라우저 로그인 대신 사용 |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` | (없음) | `claude` CLI 자체가 인식하는 표준 자격 증명 — 이미 로그인돼 있지 않아도 이 경로로 동작한다 |
@@ -79,8 +82,14 @@ OpenRouter는 `provider/model-name` 형식을 쓴다 (`anthropic/claude-haiku-4.
   "json_schema", "schema": ExtractionResult.model_json_schema()}, tools=[], max_turns=1, ...))`
   으로 `claude` CLI를 서브프로세스로 구동해 구조화 출력을 받는다. `tools=[]`로 모든 내장 도구를
   꺼서(파일 읽기/쓰기/명령 실행 없음) 순수 1회 completion 호출로 제한하고, 결과는
-  `ResultMessage.structured_output`에서 꺼낸다. Vision 추출 쪽은 아직 이 프로바이더로 구현되어
-  있지 않다(표/이미지 추출은 여전히 Anthropic/OpenRouter만 지원).
+  `ResultMessage.structured_output`에서 꺼낸다.
+- `src/knowledge_forge/vision/claude_agent_sdk_extractor.py` — `ClaudeAgentSDKVisionExtractor`.
+  위 extractor와 달리 문자열 프롬프트가 아니라 `query(prompt=<AsyncIterable[dict]>, ...)`
+  스트리밍 입력을 쓴다 - 문자열 프롬프트 경로는 `content`를 그 문자열로 고정해 이미지를
+  실을 자리가 없고, 스트리밍 입력의 각 메시지 dict는 검증 없이 그대로 CLI stdin에 쓰이므로
+  Anthropic 네이티브 이미지 콘텐츠 블록을 그 안에 넣을 수 있다. 구조화 출력 스키마는 없고
+  (표/이미지 설명은 자유 텍스트) `ResultMessage.result`를 읽는다. 자세한 근거와 라이브 검증
+  상태는 [`vision-extraction.md`](vision-extraction.md) 참고.
 - `src/knowledge_forge/retry.py` — `anthropic_retry()`/`openai_retry()`/
   `claude_agent_sdk_retry()`가 각자의 재시도 조건에 대해 동일한 지수 백오프 정책을 공유한다.
   앞의 둘은 SDK 예외 타입(`RateLimitError`/`APIConnectionError`/`InternalServerError`)으로

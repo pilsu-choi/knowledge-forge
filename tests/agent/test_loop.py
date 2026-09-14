@@ -88,6 +88,57 @@ async def test_unknown_tool_name_becomes_an_error_result_instead_of_crashing():
     assert answer == "handled the error"
 
 
+async def test_missing_required_argument_gets_a_readable_error_message():
+    """결함(`wiki/search-code-review-2026-09-14.md` 추천 수정 순서 1): `args['query']`가 빠지면
+    `str(KeyError(...))`가 `"'query'"`뿐이라 모델이 뭘 고쳐야 하는지 못 읽는다."""
+
+    async def _needs_query(args: dict) -> dict:
+        return {"echo": args["query"]}
+
+    tool = ToolSpec(name="search", description="d", input_schema={"type": "object"}, handler=_needs_query)
+    provider = _FakeProvider(
+        [
+            AssistantTurn(text=None, tool_calls=[ToolCall(id="c1", name="search", arguments={})], stop_reason="tool_use"),
+            AssistantTurn(text="handled", tool_calls=[], stop_reason="end_turn"),
+        ]
+    )
+
+    answer, history = await run_agent("question", [tool], "sys", provider, max_iterations=5)
+
+    assert answer == "handled"
+    tool_message = next(m for m in history if m.role == "tool")
+    assert "missing required argument 'query'" in tool_message.content
+
+
+async def test_invalid_json_arguments_sentinel_becomes_an_error_result_without_calling_the_handler():
+    """`agent/providers/openai_compatible.py`가 JSON 파싱에 실패하면 `ToolCall.arguments`에
+    `INVALID_JSON_ARGUMENTS_KEY` 하나만 담아 돌려준다(결함11) - `_dispatch`가 핸들러를 부르기도
+    전에 이걸 도구 오류 결과로 바꿔야 한다(핸들러가 불렸다면 잘못된 인자로 또 다른 예외가 났을
+    것)."""
+    from knowledge_forge.agent.loop import INVALID_JSON_ARGUMENTS_KEY
+
+    async def _should_not_be_called(args: dict) -> dict:
+        raise AssertionError("handler must not run for invalid-JSON tool calls")
+
+    tool = ToolSpec(name="search", description="d", input_schema={"type": "object"}, handler=_should_not_be_called)
+    provider = _FakeProvider(
+        [
+            AssistantTurn(
+                text=None,
+                tool_calls=[ToolCall(id="c1", name="search", arguments={INVALID_JSON_ARGUMENTS_KEY: "Expecting value"})],
+                stop_reason="tool_use",
+            ),
+            AssistantTurn(text="retried with fixed arguments", tool_calls=[], stop_reason="end_turn"),
+        ]
+    )
+
+    answer, history = await run_agent("question", [tool], "sys", provider, max_iterations=5)
+
+    assert answer == "retried with fixed arguments"
+    tool_message = next(m for m in history if m.role == "tool")
+    assert "error: invalid JSON arguments: Expecting value" in tool_message.content
+
+
 async def test_tool_handler_exception_becomes_an_error_result_instead_of_crashing():
     async def _boom(args):
         raise ValueError("boom")

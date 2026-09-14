@@ -193,3 +193,131 @@ def test_incremental_sync_keeps_prior_token_when_no_new_token_given():
     list(collector.incremental_sync(cursor))
 
     assert collector.get_cursor().data["start_page_token"] == "start-1"
+
+
+# --- 다운로드 무결성 검사 (item 6) -------------------------------------------
+# 실제 사고: 확장자/mimeType은 xlsx인데 실제로 받은 바이트는 Google Sheets의
+# HTML 페이지였다(<!DOCTYPE html>, 292KB) - content_hash는 그 바이트를 그대로
+# 축복해서 정상 수집처럼 보였다(wiki/reingest-replay.md).
+
+
+def test_initial_sync_skips_a_file_whose_bytes_dont_match_its_declared_extension(caplog):
+    list_pages = [
+        {
+            "files": [
+                {
+                    "id": "bad1",
+                    "name": "report.xlsx",
+                    "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "modifiedTime": "2024-01-15T10:30:00.000Z",
+                    "webViewLink": "https://drive/bad1",
+                },
+                {"id": "ok1", "name": "notes.txt", "mimeType": "text/plain", "modifiedTime": "2024-01-15T10:30:00.000Z"},
+            ],
+            "nextPageToken": None,
+        }
+    ]
+    files = _FakeFilesResource(
+        list_pages,
+        media_by_id={"bad1": b"<!DOCTYPE html><html><body>sign in</body></html>", "ok1": b"plain text"},
+    )
+    changes = _FakeChangesResource([], start_page_token="start-1")
+    client = _FakeDriveClient(files, changes)
+
+    collector = GoogleDriveCollector(client=client)
+    with caplog.at_level("ERROR"):
+        items = list(collector.initial_sync())
+
+    assert [i.uri for i in items] == ["gdrive://ok1"]  # the HTML-disguised xlsx is skipped, not yielded
+    assert any("bad1" in r.message or "https://drive/bad1" in r.message for r in caplog.records)
+
+
+def test_incremental_sync_skips_a_file_whose_bytes_dont_match_its_declared_extension():
+    change_pages = [
+        {
+            "changes": [
+                {
+                    "fileId": "bad2",
+                    "removed": False,
+                    "file": {
+                        "id": "bad2",
+                        "name": "contract.pdf",
+                        "mimeType": "application/pdf",
+                        "modifiedTime": "2024-02-01T00:00:00Z",
+                    },
+                },
+                {
+                    "fileId": "ok2",
+                    "removed": False,
+                    "file": {"id": "ok2", "name": "real.pdf", "mimeType": "application/pdf", "modifiedTime": "2024-02-01T00:00:00Z"},
+                },
+            ],
+            "nextPageToken": None,
+            "newStartPageToken": "start-2",
+        }
+    ]
+    files = _FakeFilesResource(
+        [], media_by_id={"bad2": b"<html>redirected to login</html>", "ok2": b"%PDF-1.4 real pdf bytes"}
+    )
+    changes = _FakeChangesResource(change_pages)
+    client = _FakeDriveClient(files, changes)
+
+    collector = GoogleDriveCollector(client=client)
+    items = list(collector.incremental_sync(Cursor(data={"start_page_token": "start-1"})))
+
+    assert [i.uri for i in items] == ["gdrive://ok2"]
+
+
+def test_zip_based_ooxml_and_pdf_magic_bytes_are_accepted():
+    list_pages = [
+        {
+            "files": [
+                {"id": "x1", "name": "a.xlsx", "mimeType": "...", "modifiedTime": "2024-01-01T00:00:00Z"},
+                {"id": "x2", "name": "a.docx", "mimeType": "...", "modifiedTime": "2024-01-01T00:00:00Z"},
+                {"id": "x3", "name": "a.pptx", "mimeType": "...", "modifiedTime": "2024-01-01T00:00:00Z"},
+                {"id": "x4", "name": "a.hwpx", "mimeType": "...", "modifiedTime": "2024-01-01T00:00:00Z"},
+                {"id": "x5", "name": "a.pdf", "mimeType": "...", "modifiedTime": "2024-01-01T00:00:00Z"},
+            ],
+            "nextPageToken": None,
+        }
+    ]
+    zip_bytes = b"PK\x03\x04rest of a real zip"
+    files = _FakeFilesResource(
+        list_pages,
+        media_by_id={
+            "x1": zip_bytes,
+            "x2": zip_bytes,
+            "x3": zip_bytes,
+            "x4": zip_bytes,
+            "x5": b"%PDF-1.7 rest of a real pdf",
+        },
+    )
+    changes = _FakeChangesResource([], start_page_token="start-1")
+    client = _FakeDriveClient(files, changes)
+
+    collector = GoogleDriveCollector(client=client)
+    items = list(collector.initial_sync())
+
+    assert {i.uri for i in items} == {"gdrive://x1", "gdrive://x2", "gdrive://x3", "gdrive://x4", "gdrive://x5"}
+
+
+def test_extensions_outside_the_checked_set_are_not_validated():
+    """확장자가 검사 대상(xlsx/docx/pptx/hwpx/pdf)이 아니면 - 예: 텍스트/csv -
+    바이트 내용과 무관하게 통과한다 (Workspace 파일 export 결과처럼 확장자와
+    실제 포맷이 무관한 경우를 오탐하지 않기 위함)."""
+    list_pages = [
+        {
+            "files": [
+                {"id": "c1", "name": "data.csv", "mimeType": "text/csv", "modifiedTime": "2024-01-01T00:00:00Z"},
+            ],
+            "nextPageToken": None,
+        }
+    ]
+    files = _FakeFilesResource(list_pages, media_by_id={"c1": b"<!DOCTYPE html>not really csv but not checked"})
+    changes = _FakeChangesResource([], start_page_token="start-1")
+    client = _FakeDriveClient(files, changes)
+
+    collector = GoogleDriveCollector(client=client)
+    items = list(collector.initial_sync())
+
+    assert [i.uri for i in items] == ["gdrive://c1"]

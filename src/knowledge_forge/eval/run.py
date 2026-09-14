@@ -144,9 +144,13 @@ async def run_agent_item(item: GoldenItem, grain: str, provider: ChatProvider) -
 
         return replace(spec, handler=_handler)
 
-    tools = [_wrap(spec) for spec in default_tools(provider=counting, system=system, grain=grain)]
+    base_tools = default_tools(provider=counting, system=system, grain=grain)
+    tools = [_wrap(spec) for spec in base_tools]
     started = time.perf_counter()
-    answer, _ = await run_agent(item.query, tools, system, counting, max_iterations=settings.agent_max_iterations)
+    try:
+        answer, _ = await run_agent(item.query, tools, system, counting, max_iterations=settings.agent_max_iterations)
+    finally:
+        await base_tools.aclose()
     latency_ms = (time.perf_counter() - started) * 1000.0
     judged = await judge_answer(provider, item, answer)
     metrics: dict[str, Any] = {"latency_ms": latency_ms, "llm_calls": counting.calls, "tool_calls": tool_calls}

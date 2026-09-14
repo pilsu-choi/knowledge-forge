@@ -14,19 +14,25 @@ delegating IS running a nested agent turn to completion. See
 
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+import json
+from typing import TYPE_CHECKING, Any
 
 from knowledge_forge.agent.memory import write_memory
 from knowledge_forge.agent.plan import PlanState, make_plan_tool
 from knowledge_forge.agent.providers.base import ChatProvider, ToolSpec
 from knowledge_forge.config import settings
 from knowledge_forge.okf.fs_service import edit_file, list_dir, read_file, write_file
+from knowledge_forge.search.constraints import STRATEGY_COUNT, STRATEGY_EXHAUSTIVE, STRATEGY_NEGATIVE
 from knowledge_forge.search.document import read_document
 from knowledge_forge.search.planner import DEFAULT_LIMIT_PER_SUBQUERY, plan_and_search
 from knowledge_forge.search.retrieve import retrieve
 from knowledge_forge.search.service import document_search, file_search, lexical_search, vector_search
 from knowledge_forge.search.sql import describe_schema, sql_search
 from knowledge_forge.search.temporal import parse_temporal_expression
+
+if TYPE_CHECKING:
+    from knowledge_forge.storage.store import PipelineStore
 
 # 모델(혹은 색인된 문서에 심긴 프롬프트 인젝션 - agent/loop.py의 `_wrap_untrusted`
 # 참고)이 limit을 비정상적으로 크게 불러 tool_result 하나가 컨텍스트 예산을
@@ -46,6 +52,14 @@ _READ_DOCUMENT_DEFAULT_MAX_CHARS = 20_000
 _READ_DOCUMENT_MAX_CHARS = 50_000
 # `search` 도구 결과의 히트당 본문 상한 - `postgres_store.py::_CHUNK_HIT_SUMMARY_CHARS`와 같은 500자.
 _SEARCH_HIT_SUMMARY_CHARS = 500
+# exhaustive/negative/count(wide) 질의의 `hits`는 문서 수가 `limit`을 넘어도 자르지 않는다
+# (retrieve()가 이미 EXHAUSTIVE_LIMIT=200까지 채워 돌려준다) - 대신 _READ_DOCUMENT_DEFAULT_MAX_CHARS와
+# 같은 이유로 총 글자 수에 상한을 하나 더 건다. 좁은(narrow) 질의는 문서 수가 이미 limit(≤50)
+# 이하라 이 예산에 거의 안 걸린다.
+_SEARCH_WIDE_HITS_CHAR_BUDGET = 20_000
+# `search/retrieve.py::RetrievalResult.strategies`에 이 중 하나라도 있으면 "wide" 질의다 -
+# `document_ids`/`hits`를 limit으로 자르면 안 된다(agent/tools.py::_make_search_tool 결함9).
+_WIDE_STRATEGIES = frozenset({STRATEGY_EXHAUSTIVE, STRATEGY_NEGATIVE, STRATEGY_COUNT})
 
 
 def _clamp_limit(value: Any, default: int, maximum: int) -> int:
@@ -54,6 +68,64 @@ def _clamp_limit(value: Any, default: int, maximum: int) -> int:
     except (TypeError, ValueError):
         limit = default
     return max(1, min(limit, maximum))
+
+
+class _LazyPipelineStore:
+    """One `PipelineStore` opened on first use and kept open for as long as
+    this tool set lives, instead of a fresh `async with PipelineStore(...)`
+    (+ its own lazily-opened 4-connection read pool, `storage/postgres_store.py`)
+    on **every single** DB-backed tool call (`wiki/search-code-review-2026-09-14.md`
+    결함10 - a `search`/`read_document`/`sql_search`/... call each opened and
+    immediately closed a whole store). `default_tools()` builds exactly one of
+    these per call and every DB-backed tool factory shares it via closure.
+
+    Lifetime: one per `default_tools()` call, i.e. one per `run_query()`
+    one-shot call, one per `AgentSession`, and one per `delegate_task` child
+    tool set (that handler closes its own via `aclose()` right after the
+    nested `run_agent()` call returns - see `_make_delegate_task_tool`).
+    `run_query`/`AgentSession` (agent/runtime.py, not owned by this fix) don't
+    call `aclose()` yet - both are short-lived CLI-process-scoped callers, so
+    the store simply lives for the process's lifetime, same as leaving any
+    other DB connection open until the process exits."""
+
+    def __init__(self, database_url: str) -> None:
+        self._database_url = database_url
+        self._cm: PipelineStore | None = None
+        self._entered: PipelineStore | None = None
+        self._lock = asyncio.Lock()
+
+    async def get(self) -> PipelineStore:
+        if self._entered is not None:
+            return self._entered
+        async with self._lock:
+            if self._entered is None:
+                from knowledge_forge.storage.store import PipelineStore
+
+                cm = PipelineStore(self._database_url, settings.data_dir)
+                self._entered = await cm.__aenter__()
+                self._cm = cm
+        return self._entered
+
+    async def aclose(self) -> None:
+        if self._cm is not None:
+            cm, self._cm, self._entered = self._cm, None, None
+            await cm.__aexit__(None, None, None)
+
+
+class _ToolList(list[ToolSpec]):
+    """`default_tools()`'s actual return type - a plain `list[ToolSpec]` (every
+    existing caller/test just iterates or indexes it) plus one extra:
+    `aclose()` releases the tool set's shared `_LazyPipelineStore`, if it ever
+    opened one. A no-op when the tool set never touched the DB (no
+    `database_url`, or the DB-backed tools were never called)."""
+
+    def __init__(self, tools: list[ToolSpec], lazy_store: _LazyPipelineStore | None) -> None:
+        super().__init__(tools)
+        self._lazy_store = lazy_store
+
+    async def aclose(self) -> None:
+        if self._lazy_store is not None:
+            await self._lazy_store.aclose()
 
 
 FILE_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
@@ -91,10 +163,6 @@ VECTOR_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
         "query": {
             "type": "string",
             "description": "자연어 검색어 - 정확한 문자열 일치보다 패러프레이즈/의미 유사도에 강하다(file_search와 상호보완).",
-        },
-        "project_id": {
-            "type": "string",
-            "description": "특정 프로젝트로 범위를 좁힌다. 생략하면 모든 프로젝트를 검색한다.",
         },
         "type": {
             "type": "string",
@@ -135,10 +203,6 @@ DOCUMENT_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
                 "'산출물 기간 변경'. 자연어 문장이 아니라 이름만 넣을 것."
             ),
         },
-        "project_id": {
-            "type": "string",
-            "description": "특정 프로젝트로 범위를 좁힌다. 생략하면 모든 프로젝트를 검색한다.",
-        },
         "source_type": {
             "type": "string",
             "description": "소스 종류로 좁힌다: local_file/slack/gmail/google_drive/notion. 생략하면 전부.",
@@ -163,10 +227,6 @@ LEXICAL_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
                 "원문에 그대로 들어 있어야 하는 문자열 - 에러 코드('ERR_CONNECTION_RESET'), 티켓/문서 ID, "
                 "정확한 문구. 의미가 비슷한 표현은 찾지 못하므로 그런 경우엔 vector_search를 쓸 것."
             ),
-        },
-        "project_id": {
-            "type": "string",
-            "description": "특정 프로젝트로 범위를 좁힌다. 생략하면 모든 프로젝트를 검색한다.",
         },
         "limit": {
             "type": "integer",
@@ -238,10 +298,6 @@ SEARCH_INPUT_SCHEMA: dict[str, Any] = {
                 "사용자의 질문을 자연어 그대로 - 시간 표현('지난주'), 파일명/에러 코드, '요약해줘'/'전부'/"
                 "'몇 건' 같은 의도 표현을 지우지 말고 넣을 것(그걸 보고 전략을 고른다)."
             ),
-        },
-        "project_id": {
-            "type": "string",
-            "description": "특정 프로젝트로 범위를 좁힌다. 생략하면 세션 기본 project_id(있다면)를 쓴다.",
         },
         "limit": {
             "type": "integer",
@@ -387,29 +443,27 @@ def _make_file_search_tool() -> ToolSpec:
     )
 
 
-def _make_vector_search_tool(database_url: str) -> ToolSpec:
+def _make_vector_search_tool(store: _LazyPipelineStore, *, project_id: str | None) -> ToolSpec:
     """`vector_search`는 `file_search`와 달리 자기 자신을 위한 Postgres 연결을
     묵시적으로 열 수 없다(OKF 루트처럼 그냥 경로를 읽는 게 아니라 커넥션이
-    필요하므로) - 그래서 이 factory가 `database_url`을 클로저로 잡고, 호출마다
-    `PipelineStore`를 열고 닫는다(`cli.py`의 `embed` 명령이 이미 쓰는
-    "그때그때 연결" 패턴과 동일). 세션 전체에 커넥션 하나를 유지하는 대신
-    호출마다 새로 여는 이유: 에이전트 도구 호출은 초당 여러 번 도는 핫 루프가
-    아니라 검색 한 번에 짧은 지연을 감수할 수 있는 빈도라, 세션 lifecycle에
-    커넥션 close를 새로 엮는 복잡도를 감수할 가치가 없다고 판단했다."""
-    from knowledge_forge.storage.store import PipelineStore
+    필요하므로) - 그래서 이 factory가 `default_tools()`가 만든 `_LazyPipelineStore`
+    하나를 클로저로 잡는다. 예전엔 호출마다 `PipelineStore`(+ 그 안의 4-커넥션
+    읽기 풀)를 새로 열고 닫았다 - 검색 도구 호출마다 매번 새 풀을 여는 비용이
+    쌓였다(`wiki/search-code-review-2026-09-14.md` 결함10). `project_id`는 세션
+    값을 항상 쓴다 - 모델이 지어낸 project_id로 검증 없이 덮어쓰면 0건 응답의
+    이유를 모델이 못 읽는다(결함8, `_make_search_tool`과 같은 문제)."""
 
     async def _handler(args: dict[str, Any]) -> list[dict[str, Any]]:
         since, until = _resolve_time_range(args)
-        async with PipelineStore(database_url, settings.data_dir) as store:
-            return await vector_search(
-                query=args["query"],
-                store=store,
-                project_id=args.get("project_id"),
-                type=args.get("type"),
-                limit=_clamp_limit(args.get("limit"), default=10, maximum=_MAX_SEARCH_LIMIT),
-                since=since,
-                until=until,
-            )
+        return await vector_search(
+            query=args["query"],
+            store=await store.get(),
+            project_id=project_id,
+            type=args.get("type"),
+            limit=_clamp_limit(args.get("limit"), default=10, maximum=_MAX_SEARCH_LIMIT),
+            since=since,
+            until=until,
+        )
 
     return ToolSpec(
         name="vector_search",
@@ -422,17 +476,16 @@ def _make_vector_search_tool(database_url: str) -> ToolSpec:
     )
 
 
-def _make_read_document_tool(database_url: str) -> ToolSpec:
+def _make_read_document_tool(store: _LazyPipelineStore) -> ToolSpec:
     """`read_document`(document expansion, `search/document.py`)는
     `vector_search`와 같은 이유로 `KF_DATABASE_URL`이 있을 때만 추가되고
-    호출마다 `PipelineStore`를 열고 닫는다. 검색 도구들이 top-k 청크/KO만
-    돌려주는 것과 달리 문서 하나의 청크 **전체**를 순서대로 돌려준다 - 문서
-    전체 요약, "보고서에서 리스크만 전부", "처음 제안 vs 최종 결정", "언급되지
-    않은 것" 같은 질의는 상위 k건으로는 답할 수 없기 때문. 없는 document_id는
-    `read_file`의 FileNotFoundError와 같은 방식으로 예외를 던져 `agent/loop.py`가
-    "error: ..." tool_result로 바꾸게 한다 - 모델이 잘못 짚은 ID를 다시 검색하게
-    만드는 신호로는 그게 가장 분명하다."""
-    from knowledge_forge.storage.store import PipelineStore
+    도구 세트가 공유하는 `_LazyPipelineStore`를 쓴다(결함10). 검색 도구들이
+    top-k 청크/KO만 돌려주는 것과 달리 문서 하나의 청크 **전체**를 순서대로
+    돌려준다 - 문서 전체 요약, "보고서에서 리스크만 전부", "처음 제안 vs 최종
+    결정", "언급되지 않은 것" 같은 질의는 상위 k건으로는 답할 수 없기 때문.
+    없는 document_id는 `read_file`의 FileNotFoundError와 같은 방식으로 예외를
+    던져 `agent/loop.py`가 "error: ..." tool_result로 바꾸게 한다 - 모델이
+    잘못 짚은 ID를 다시 검색하게 만드는 신호로는 그게 가장 분명하다."""
 
     async def _handler(args: dict[str, Any]) -> dict[str, Any]:
         document_id = args["document_id"]
@@ -443,8 +496,7 @@ def _make_read_document_tool(database_url: str) -> ToolSpec:
         max_chars = _clamp_limit(
             args.get("max_chars"), default=_READ_DOCUMENT_DEFAULT_MAX_CHARS, maximum=_READ_DOCUMENT_MAX_CHARS
         )
-        async with PipelineStore(database_url, settings.data_dir) as store:
-            result = await read_document(document_id, store, max_chars=max_chars, offset=offset)
+        result = await read_document(document_id, await store.get(), max_chars=max_chars, offset=offset)
         if result is None:
             raise LookupError(f"document not found: {document_id}")
         return result
@@ -464,39 +516,57 @@ def _make_read_document_tool(database_url: str) -> ToolSpec:
 
 
 def _make_search_tool(
-    database_url: str,
+    store: _LazyPipelineStore,
     *,
     provider: ChatProvider | None,
     project_id: str | None,
     grain: str | None = None,
 ) -> ToolSpec:
-    """`search`(통합 검색, `search/retrieve.py`) - `vector_search`와 같은 "database_url이 있을
-    때만, 호출마다 `PipelineStore`를 열고 닫는" 패턴. 개별 도구(document/lexical/vector/sql/
-    read_document)를 모델이 고르는 대신 질의 제약(`search/constraints.py`)으로 전략을 결정론적으로
-    조합한다. `provider`가 있으면 제약 보강과 멀티홉 분해에 쓴다(없으면 규칙만).
+    """`search`(통합 검색, `search/retrieve.py`) - 도구 세트가 공유하는 `_LazyPipelineStore`를
+    쓴다(결함10). 개별 도구(document/lexical/vector/sql/read_document)를 모델이 고르는 대신
+    질의 제약(`search/constraints.py`)으로 전략을 결정론적으로 조합한다. `provider`가 있으면
+    제약 보강과 멀티홉 분해에 쓴다(없으면 규칙만).
 
-    결과는 `RetrievalResult.to_dict()`에서 hits 상위 limit개 + steps 요약만 싣는다 - 청크 원문은
-    검색 소스가 이미 500자로 자르지만(`postgres_store.py::_CHUNK_HIT_SUMMARY_CHARS`) 여기서도
-    같은 상한을 다시 건다(`_MAX_SEARCH_LIMIT`와 같은 "값을 그대로 믿지 않는다" 패턴)."""
-    from knowledge_forge.storage.store import PipelineStore
+    `project_id`는 항상 세션 값을 쓴다 - 스키마에 `project_id`가 없다. 예전엔 모델이 지어낸
+    값(관측: "NH_MVP", "project_123")이 `args.get("project_id") or project_id`로 세션 값을
+    이겨 0건 응답이 났고, 모델은 그 이유를 알 길이 없었다(결함8).
+
+    결과: exhaustive/negative/count(wide) 질의는 `document_ids`를 limit으로 자르지 않는다 -
+    `retrieve()`가 이미 `EXHAUSTIVE_LIMIT`(200)까지 채워 돌려주는데 여기서 다시 10~50개로
+    자르면 `predicted_count`(예: 130건)와 실제로 돌려준 목록 길이가 어긋난다(결함9). `hits`는
+    문서 단위로 자른다(인덱스로 자르면 상위 문서의 뒤쪽 청크가 잘리고 하위 문서의 앞쪽 청크가
+    남는 비대칭이 생긴다) - wide 질의는 문서가 최대 200개라 그마저도 무제한이면 tool_result
+    하나가 컨텍스트 예산을 날릴 수 있어 총 글자 수 예산(`_SEARCH_WIDE_HITS_CHAR_BUDGET`)을
+    하나 더 건다. 히트당 본문은 검색 소스가 이미 500자로 자르지만
+    (`postgres_store.py::_CHUNK_HIT_SUMMARY_CHARS`) 여기서도 같은 상한을 다시 건다
+    (`_MAX_SEARCH_LIMIT`와 같은 "값을 그대로 믿지 않는다" 패턴)."""
 
     async def _handler(args: dict[str, Any]) -> dict[str, Any]:
         limit = _clamp_limit(args.get("limit"), default=10, maximum=_MAX_SEARCH_LIMIT)
-        async with PipelineStore(database_url, settings.data_dir) as store:
-            result = await retrieve(
-                args["query"],
-                store=store,
-                provider=provider,
-                project_id=args.get("project_id") or project_id,
-                limit=limit,
-                grain=grain,
-            )
+        result = await retrieve(
+            args["query"],
+            store=await store.get(),
+            provider=provider,
+            project_id=project_id,
+            limit=limit,
+            grain=grain,
+        )
         payload = result.to_dict()
-        hits = []
-        for hit in payload["hits"][:limit]:
+        wide = not _WIDE_STRATEGIES.isdisjoint(payload["strategies"])
+        document_ids = payload["document_ids"] if wide else payload["document_ids"][:limit]
+        keep = set(document_ids)
+        hits: list[dict[str, Any]] = []
+        budget = _SEARCH_WIDE_HITS_CHAR_BUDGET
+        for hit in payload["hits"]:
+            if hit.get("document_id") not in keep:
+                continue
             summary = hit.get("summary")
             if isinstance(summary, str) and len(summary) > _SEARCH_HIT_SUMMARY_CHARS:
-                hit["summary"] = summary[:_SEARCH_HIT_SUMMARY_CHARS]
+                hit = {**hit, "summary": summary[:_SEARCH_HIT_SUMMARY_CHARS]}
+            if wide:
+                budget -= len(json.dumps(hit, ensure_ascii=False))
+                if budget < 0 and hits:
+                    break
             hits.append(hit)
         return {
             "strategies": payload["strategies"],
@@ -505,7 +575,7 @@ def _make_search_tool(
                 {"strategy": s["strategy"], "source": s["source"], "n_hits": s["n_hits"], "detail": s["detail"]}
                 for s in payload["steps"]
             ],
-            "document_ids": payload["document_ids"][:limit],
+            "document_ids": document_ids,
             "documents_read": payload["documents_read"],
             "predicted_count": payload["predicted_count"],
             "hits": hits,
@@ -526,28 +596,26 @@ def _make_search_tool(
     )
 
 
-def _make_document_search_tool(database_url: str) -> ToolSpec:
-    """`document_search`(`search/service.py`) - `vector_search`와 같은
-    "database_url이 있을 때만, 호출마다 `PipelineStore`를 열고 닫는" 패턴.
-    별도 도구로 두는 이유: "2025_SH_업무_보고서 찾아줘" 같은 Navigational 질의는
-    답이 *문서 하나(또는 후보 몇 개)* 이지 청크/KO가 아니라, 결과 모양 자체가
-    다르다(본문 없이 제목+document_id 목록). `file_search`/`vector_search`
-    결과에 섞어 넣으면 모델이 "이게 그 문서인지"를 특정하는 단계를 건너뛰고
-    스니펫부터 읽기 시작한다."""
-    from knowledge_forge.storage.store import PipelineStore
+def _make_document_search_tool(store: _LazyPipelineStore, *, project_id: str | None) -> ToolSpec:
+    """`document_search`(`search/service.py`) - 도구 세트가 공유하는
+    `_LazyPipelineStore`를 쓴다(결함10). 별도 도구로 두는 이유: "2025_SH_업무_보고서
+    찾아줘" 같은 Navigational 질의는 답이 *문서 하나(또는 후보 몇 개)* 이지
+    청크/KO가 아니라, 결과 모양 자체가 다르다(본문 없이 제목+document_id 목록).
+    `file_search`/`vector_search` 결과에 섞어 넣으면 모델이 "이게 그 문서인지"를
+    특정하는 단계를 건너뛰고 스니펫부터 읽기 시작한다. `project_id`는 항상 세션
+    값(결함8, `_make_search_tool` 참고)."""
 
     async def _handler(args: dict[str, Any]) -> list[dict[str, Any]]:
         since, until = _resolve_time_range(args)
-        async with PipelineStore(database_url, settings.data_dir) as store:
-            return await document_search(
-                query=args["query"],
-                store=store,
-                project_id=args.get("project_id"),
-                source_type=args.get("source_type"),
-                limit=_clamp_limit(args.get("limit"), default=10, maximum=_MAX_SEARCH_LIMIT),
-                since=since,
-                until=until,
-            )
+        return await document_search(
+            query=args["query"],
+            store=await store.get(),
+            project_id=project_id,
+            source_type=args.get("source_type"),
+            limit=_clamp_limit(args.get("limit"), default=10, maximum=_MAX_SEARCH_LIMIT),
+            since=since,
+            until=until,
+        )
 
     return ToolSpec(
         name="document_search",
@@ -563,23 +631,23 @@ def _make_document_search_tool(database_url: str) -> ToolSpec:
     )
 
 
-def _make_lexical_search_tool(database_url: str) -> ToolSpec:
+def _make_lexical_search_tool(store: _LazyPipelineStore, *, project_id: str | None) -> ToolSpec:
     """`lexical_search`(`search/service.py`) - `file_search`가 OKF 마크다운(추출된
     KO 요약)만 보는 것과 달리 Postgres `chunks.text` 원문을 pg_trgm으로 보므로,
-    추출 과정에서 요약되며 사라진 에러 코드/ID 같은 리터럴도 찾는다."""
-    from knowledge_forge.storage.store import PipelineStore
+    추출 과정에서 요약되며 사라진 에러 코드/ID 같은 리터럴도 찾는다. 도구 세트가
+    공유하는 `_LazyPipelineStore`를 쓰고(결함10), `project_id`는 항상 세션 값이다
+    (결함8, `_make_search_tool` 참고)."""
 
     async def _handler(args: dict[str, Any]) -> list[dict[str, Any]]:
         since, until = _resolve_time_range(args)
-        async with PipelineStore(database_url, settings.data_dir) as store:
-            return await lexical_search(
-                query=args["query"],
-                store=store,
-                project_id=args.get("project_id"),
-                limit=_clamp_limit(args.get("limit"), default=10, maximum=_MAX_SEARCH_LIMIT),
-                since=since,
-                until=until,
-            )
+        return await lexical_search(
+            query=args["query"],
+            store=await store.get(),
+            project_id=project_id,
+            limit=_clamp_limit(args.get("limit"), default=10, maximum=_MAX_SEARCH_LIMIT),
+            since=since,
+            until=until,
+        )
 
     return ToolSpec(
         name="lexical_search",
@@ -594,21 +662,19 @@ def _make_lexical_search_tool(database_url: str) -> ToolSpec:
     )
 
 
-def _make_sql_search_tool(database_url: str) -> ToolSpec:
+def _make_sql_search_tool(store: _LazyPipelineStore) -> ToolSpec:
     """`sql_search`(Text-to-SQL, `search/sql.py`)는 `vector_search`와 같은
-    이유로 `KF_DATABASE_URL`이 있을 때만 추가되고 호출마다 `PipelineStore`를
-    열고 닫는다. `file_search`/`vector_search`가 다루기 어려운 구조화된
-    질문(특정 사람이 언급된 항목, 여러 조건의 AND/OR, 집계, 시간 범위 +
-    속성값을 함께 거는 temporal join)을 모델이 직접 쓴 SQL로 풀게 한다 -
+    이유로 `KF_DATABASE_URL`이 있을 때만 추가되고 도구 세트가 공유하는
+    `_LazyPipelineStore`를 쓴다(결함10). `file_search`/`vector_search`가 다루기
+    어려운 구조화된 질문(특정 사람이 언급된 항목, 여러 조건의 AND/OR, 집계, 시간
+    범위 + 속성값을 함께 거는 temporal join)을 모델이 직접 쓴 SQL로 풀게 한다 -
     별도 자연어→SQL 변환 LLM 호출 없이, 이 도구를 호출하는 모델 자신이
     이미 그 번역을 한다(도구 설명에 스키마를 실어 보내는 것만으로 충분).
     안전장치(읽기 전용 강제, 행 수 제한)는 `search/sql.py`/
     `storage/postgres_store.py::execute_readonly_query`에 있다."""
-    from knowledge_forge.storage.store import PipelineStore
 
     async def _handler(args: dict[str, Any]) -> dict[str, Any]:
-        async with PipelineStore(database_url, settings.data_dir) as store:
-            return await sql_search(args["sql"], store)
+        return await sql_search(args["sql"], await store.get())
 
     return ToolSpec(
         name="sql_search",
@@ -624,14 +690,19 @@ def _make_sql_search_tool(database_url: str) -> ToolSpec:
     )
 
 
-def _make_plan_search_tool(*, provider: ChatProvider, database_url: str | None, project_id: str | None) -> ToolSpec:
+def _make_plan_search_tool(
+    *, provider: ChatProvider, store: _LazyPipelineStore | None, project_id: str | None
+) -> ToolSpec:
     """`plan_search`(Query Planning + Query Routing, `search/planner.py`)는
     `vector_search`처럼 `database_url`이 있을 때만 vector_search 소스를 함께
-    쓰지만, `database_url` 없이도(OKF 트리 + file_search만으로도) 동작한다는
-    점이 다르다 - 그래서 이 도구 자체는 `provider`(하위 질의 분해용 LLM
-    호출에 필요)만 있으면 추가되고, DB 유무는 `plan_and_search()` 내부에서
-    사용 가능한 소스 목록을 좁히는 것으로만 반영된다."""
-    from knowledge_forge.storage.store import PipelineStore
+    쓰지만, DB 없이도(OKF 트리 + file_search만으로도) 동작한다는 점이 다르다 -
+    그래서 이 도구 자체는 `provider`(하위 질의 분해용 LLM 호출에 필요)만 있으면
+    추가되고, DB 유무는 `plan_and_search()` 내부에서 사용 가능한 소스 목록을
+    좁히는 것으로만 반영된다. DB가 있으면 도구 세트가 공유하는
+    `_LazyPipelineStore`를 쓴다(결함10). `project_id`의 질의별 override는(다른
+    검색 도구들과 달리) 그대로 둔다 - 문서화된 의도된 기능이고
+    (`PLAN_SEARCH_INPUT_SCHEMA`), 결함8이 가리키는 세 도구(vector/document/
+    lexical_search)에는 안 든다."""
 
     async def _handler(args: dict[str, Any]) -> dict[str, Any]:
         scoped_project_id = args.get("project_id") or project_id
@@ -640,13 +711,12 @@ def _make_plan_search_tool(*, provider: ChatProvider, database_url: str | None, 
             default=DEFAULT_LIMIT_PER_SUBQUERY,
             maximum=_MAX_PLAN_SEARCH_LIMIT_PER_SUBQUERY,
         )
-        if database_url:
-            async with PipelineStore(database_url, settings.data_dir) as store:
-                return await plan_and_search(
-                    args["query"], provider, store=store, project_id=scoped_project_id, limit_per_subquery=limit
-                )
         return await plan_and_search(
-            args["query"], provider, store=None, project_id=scoped_project_id, limit_per_subquery=limit
+            args["query"],
+            provider,
+            store=await store.get() if store is not None else None,
+            project_id=scoped_project_id,
+            limit_per_subquery=limit,
         )
 
     return ToolSpec(
@@ -693,13 +763,20 @@ def _make_delegate_task_tool(
 
     async def _handler(args: dict[str, Any]) -> str:
         child_tools = default_tools(project_id=project_id, provider=provider, system=system, include_delegate=False)
-        answer, _ = await run_agent(
-            args["task"],
-            child_tools,
-            system + DELEGATE_SYSTEM_SUFFIX,
-            provider,
-            max_iterations=settings.agent_max_iterations,
-        )
+        try:
+            answer, _ = await run_agent(
+                args["task"],
+                child_tools,
+                system + DELEGATE_SYSTEM_SUFFIX,
+                provider,
+                max_iterations=settings.agent_max_iterations,
+            )
+        finally:
+            # 자식의 도구 세트는 이 호출 하나에서만 쓰이고 버려진다 - `default_tools()`가
+            # 그 안에서 연 `_LazyPipelineStore`(결함10)를 여기서 확실히 닫는다. 부모/
+            # `AgentSession`의 도구 세트는 세션이 끝날 때까지 살아 있어야 하므로 여기서
+            # 안 닫는다(그건 agent/runtime.py의 몫 - 이 fix가 소유한 파일이 아니다).
+            await child_tools.aclose()
         return answer
 
     return ToolSpec(
@@ -721,7 +798,7 @@ def default_tools(
     *,
     include_delegate: bool = True,
     grain: str | None = None,
-) -> list[ToolSpec]:
+) -> _ToolList:
     """도구 집합 조립. **검색 도구 표면은 `settings.agent_tool_surface`
     (`KF_AGENT_TOOL_SURFACE`, 기본 "minimal")가 정한다** - 나머지(파일시스템/
     write_memory/write_plan/delegate_task)는 표면과 무관하게 항상 같다.
@@ -778,22 +855,28 @@ def default_tools(
     delegate_task가 없으므로)."""
     minimal = settings.agent_tool_surface != "full"
     database_url = settings.database_url
+    # 도구 세트 수명 동안 하나만 여는 공유 스토어(결함10) - 아래 DB 기반 도구 factory들이
+    # 전부 이 하나를 클로저로 잡는다. `database_url`이 없으면 아예 안 만든다(DB 없는 OKF
+    # 전용 배포에서 있지도 않을 연결을 시도하지 않도록). 닫는 쪽은 `_ToolList.aclose()` -
+    # `delegate_task`는 자기 자식 세트를 직접 닫고(`_make_delegate_task_tool`), `run_query`/
+    # `AgentSession`(agent/runtime.py, 이 fix가 소유한 파일이 아니다)은 아직 안 부른다.
+    lazy_store = _LazyPipelineStore(database_url) if database_url else None
     tools: list[ToolSpec] = []
-    if database_url:
+    if lazy_store is not None:
         # 1순위 검색 도구를 목록 맨 앞에 둔다 - 도구 순서는 모델이 읽는 순서이기도 하다.
         # `grain`은 평가 e2e(eval/run.py)만 넘긴다 - search 도구의 벡터 조회를 골든셋 grain으로 고정.
-        tools.append(_make_search_tool(database_url, provider=provider, project_id=project_id, grain=grain))
+        tools.append(_make_search_tool(lazy_store, provider=provider, project_id=project_id, grain=grain))
     if settings.agent_file_search_enabled and (not database_url or not minimal):
         tools.append(_make_file_search_tool())
-    if database_url:
-        tools.append(_make_read_document_tool(database_url))
-        tools.append(_make_sql_search_tool(database_url))
+    if lazy_store is not None:
+        tools.append(_make_read_document_tool(lazy_store))
+        tools.append(_make_sql_search_tool(lazy_store))
         if not minimal:
-            tools.append(_make_vector_search_tool(database_url))
-            tools.append(_make_document_search_tool(database_url))
-            tools.append(_make_lexical_search_tool(database_url))
+            tools.append(_make_vector_search_tool(lazy_store, project_id=project_id))
+            tools.append(_make_document_search_tool(lazy_store, project_id=project_id))
+            tools.append(_make_lexical_search_tool(lazy_store, project_id=project_id))
     if provider is not None and not minimal:
-        tools.append(_make_plan_search_tool(provider=provider, database_url=database_url, project_id=project_id))
+        tools.append(_make_plan_search_tool(provider=provider, store=lazy_store, project_id=project_id))
     if settings.okf_dir:
         # 파일시스템 도구는 `KF_OKF_DIR`이 있을 때만 싣는다. 없으면 네 도구 모두
         # fs_service가 "OKF 루트가 설정되어 있지 않습니다"로 거부하는데, 목록에 남아
@@ -835,4 +918,4 @@ def default_tools(
     )
     if include_delegate and provider is not None and system is not None:
         tools.append(_make_delegate_task_tool(project_id=project_id, provider=provider, system=system))
-    return tools
+    return _ToolList(tools, lazy_store)

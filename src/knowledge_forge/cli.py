@@ -376,6 +376,7 @@ def reparse(
                 store=pipeline_store,
                 embedder=embedder,
                 embedding_source=embedding_source,
+                force=True,
             ):
                 documents += 1
                 objects += len(outcome.objects)
@@ -751,18 +752,21 @@ def agent(
 
         async def _repl() -> None:
             typer.echo("knowledge-forge agent - 종료하려면 Ctrl+D", err=True)
-            while True:
-                try:
-                    line = input("> ")
-                except EOFError:
-                    typer.echo("", err=True)
-                    break
-                if not line.strip():
-                    continue
-                answer = await session.ask(line)
-                typer.echo(answer)
-                if session.plan.steps:
-                    typer.echo(f"\n[계획]\n{session.plan.render()}\n", err=True)
+            try:
+                while True:
+                    try:
+                        line = input("> ")
+                    except EOFError:
+                        typer.echo("", err=True)
+                        break
+                    if not line.strip():
+                        continue
+                    answer = await session.ask(line)
+                    typer.echo(answer)
+                    if session.plan.steps:
+                        typer.echo(f"\n[계획]\n{session.plan.render()}\n", err=True)
+            finally:
+                await session.aclose()
 
         asyncio.run(_repl())
         return

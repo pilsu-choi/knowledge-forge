@@ -47,8 +47,18 @@ def _ts(item: RawItem) -> float:
 
 
 def _format_message(item: RawItem) -> str:
-    user = item.metadata.get("user", "unknown")
-    text = item.content.decode("utf-8", errors="replace")
+    """`collectors/saas/slack.py::SlackCollector._make_item` adds
+    `metadata.user_name`/`text_resolved` *alongside* the raw `user`
+    id/`content` when a `SlackDirectory` is attached (see that method's
+    comment) - use those resolved forms here when present, matching the
+    resolved display name `documents.title` already uses
+    (`storage/document_title.py`'s `_SLACK_CHANNEL_KEYS`/participant
+    handling), so a reconstructed episode's *body* doesn't read
+    "U0123ABC: ..." while its title reads a human name. Falls back to the
+    raw id/content (unresolved directory, e.g. no Slack user-list scope) -
+    same as before."""
+    user = item.metadata.get("user_name") or item.metadata.get("user", "unknown")
+    text = item.metadata.get("text_resolved") or item.content.decode("utf-8", errors="replace")
     return f"{user}: {text}"
 
 

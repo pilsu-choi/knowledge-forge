@@ -96,7 +96,8 @@ async def test_backfill_names_the_channel_and_rewrites_the_title_without_losing_
 
     metadata, title = await _read(store, "test-s1", "test-d1")
     assert stats["sources_updated"] == 1 and stats["titles_updated"] == 1
-    assert title == "#proj_2026-038-0_nh농협은행_mvp 2026-09-01"
+    # 292cb2d부터 제목에 첫 메시지 발췌(멘션은 표시명으로 해석)가 붙는다.
+    assert title == "#proj_2026-038-0_nh농협은행_mvp 2026-09-01 샨 3차 인터뷰 체크리스트 전달드립니다"
     # 원시 기록은 그대로 - `channel`은 스레드 조회/링크 백필의 조인 키다.
     assert metadata["channel"] == "C1"
     assert metadata["participants"] == ["U1", "U2"]
@@ -132,7 +133,7 @@ async def test_unresolvable_channel_is_counted_and_leaves_the_id_in_the_title(st
     # 참여자를 하나도 못 풀었으면 `participant_names`를 만들지 않는다 - 원시 ID를 이름인 척
     # 넣어 두면 다음 실행이 "이미 채워졌다"고 건너뛴다.
     assert "participant_names" not in metadata
-    assert title == "#CZZ 2026-09-01"
+    assert title == "#CZZ 2026-09-01 안녕"
 
 
 @pytest.mark.asyncio

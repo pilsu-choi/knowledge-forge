@@ -126,9 +126,13 @@ async def test_e2e_ranking_follows_call_order_not_completion_order(fakes, monkey
         await asyncio.sleep(0.05 if args["query"] == "slow" else 0.0)
         return {"hits": [{"chunk_id": f"c-{args['query']}", "document_id": "d1"}]}
 
+    class _Tools(list):
+        async def aclose(self):  # default_tools()가 돌려주는 도구 세트처럼 공유 DB 연결을 닫는 자리
+            return None
+
     def _tools(provider=None, system=None, grain=None):
         assert grain == "chunk"
-        return [ToolSpec(name="search", description="", input_schema={}, handler=_search)]
+        return _Tools([ToolSpec(name="search", description="", input_schema={}, handler=_search)])
 
     monkeypatch.setattr(run, "corpus_fingerprint", _fp)
     monkeypatch.setattr(run, "default_tools", _tools)

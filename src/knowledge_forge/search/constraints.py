@@ -48,10 +48,13 @@ from typing import Any
 
 from knowledge_forge.chat_provider import ChatProvider, Message
 from knowledge_forge.search.temporal import (
+    BARE_MONTH_PATTERN,
     RECENT_QUANTITY_PATTERN,
     RECENT_SPAN_PATTERN,
     TimeRange,
+    local_date_start,
     parse_temporal_expression,
+    resolve_within_year,
 )
 
 logger = logging.getLogger(__name__)
@@ -113,6 +116,43 @@ def _latin_aware(pattern: str) -> str:
     return "".join(out)
 
 
+# 마커 앞의 "경계"로 치는 문자 - 공백 외에 흔한 구두점/괄호/인용부호도 포함한다.
+_MARKER_BOUNDARY_CHARS = frozenset("?!.,;:()[]{}\"'“”‘’「」『』")
+
+
+def _is_marker_boundary(ch: str | None) -> bool:
+    return ch is None or ch.isspace() or ch in _MARKER_BOUNDARY_CHARS
+
+
+def _korean_eojeol_search(pattern: str, text: str) -> re.Match[str] | None:
+    """`pattern`이 `text` 안에서 독립된 어절로 **시작하는** 첫 매치를 돌려준다 -
+    `_marker_match`가 라틴 마커가 아닌 모든 마커에 쓴다. "체크리스트"의 "리스트", "회의자료"의
+    "자료", "공문서"의 "문서", "프로파일"의 "파일"처럼 마커 어간이 더 긴 낱말의 **뒤쪽** 일부일
+    때 `re.search`가 구분 없이 잡던 것을 막는다(`wiki/search-code-review-2026-09-14.md` 결함5).
+
+    왼쪽 경계만 본다 - 오른쪽까지 막으면 한국어 조사/어미/"~하다" 활용이 그대로 뒤에
+    붙는 정상 매치가 대거 막힌다("몇 통인가?"의 "통", "요약해줘"의 "요약", "작성한"의
+    "작성" 전부 마커 뒤에 활용형이 곧장 붙는다 - 그 가짓수를 규칙 하나로 다 못 받는다).
+    "전문가"의 "전문", "도메인지식"의 "도메인", "대한민국"의 "대한"처럼 마커가 더 긴
+    낱말의 **앞쪽** 일부인 경우는 왼쪽 경계만으로는 못 막는다 - 그 셋은 사전에서 해당
+    마커 패턴에 직접 부정 전방탐색을 달아 따로 막는다(뒤 경계를 일반화하는 대신)."""
+    for m in re.finditer(pattern, text, re.IGNORECASE):
+        content_start = m.start()
+        while content_start < m.end() and text[content_start].isspace():
+            content_start += 1
+        if content_start == 0 or _is_marker_boundary(text[content_start - 1]):
+            return m
+    return None
+
+
+def _marker_match(pattern: str, text: str) -> re.Match[str] | None:
+    """마커 패턴 하나의 판정 - 라틴 마커(전부 `\\b...\\b` 꼴로 적혀 있다)는 `_latin_aware`로,
+    한국어 마커는 `_korean_eojeol_search`로 갈린다."""
+    if "\\b" in pattern:
+        return re.search(_latin_aware(pattern), text, re.IGNORECASE)
+    return _korean_eojeol_search(pattern, text)
+
+
 # --- 마커 사전 (모듈 상수 - 표면형 추가는 여기만 고치면 된다) -------------------
 # 각 항목은 regex 문자열. 한국어는 어절 경계가 불규칙해서 \b를 쓰지 않고, 조사/어미가 붙어도
 # 잡히도록 어간만 적는다. 영어는 \b로 단어 경계를 건다 - 단, 그 \b는 `_latin_aware`를 거쳐야
@@ -167,7 +207,11 @@ SUMMARY_MARKERS: tuple[str, ...] = (
     r"\btl;?dr\b",
 )
 WHOLE_DOCUMENT_MARKERS: tuple[str, ...] = (
-    r"전문",
+    # "전문가"("expert")의 앞쪽 일부로 잡히는 걸 막는다 - 왼쪽 경계 판정만으로는 못 거른다
+    # (마커가 더 긴 낱말의 *뒤*가 아니라 *앞*이라서, `_korean_eojeol_search` 참고). "전문이"/
+    # "전문을"처럼 실제 조사가 붙는 흔한 꼴은 그대로 잡혀야 하므로 "가"만 막는다 - "전문" 뒤에
+    # "가"가 오는 실제 문장은 사실상 전부 "전문가"라는 한 낱말이지 "전문(주제)+가(조사)"가 아니다.
+    r"전문(?!가)",
     r"원문",
     r"통째로",
     r"처음부터\s*끝까지",
@@ -276,15 +320,21 @@ DOCUMENT_TYPE_MARKERS: tuple[tuple[str, str], ...] = (
 _TEMPORAL_SPAN_RE = re.compile(
     r"\d{4}\s?년\s?\d{1,2}\s?월(?:\s?\d{1,2}\s?일)?(?:에|의|부터|까지)?"
     r"|\d{4}\s?(?:년)?\s*(?:[Qq]\d|\d\s?분기)(?:에|의)?"
+    # "Q1 2025"처럼 분기가 연도보다 앞선 어순도 걷어낸다 - temporal.py의 `_QUARTER_WITH_YEAR_RE`가
+    # 이제 이 어순도 받는다(`wiki/search-code-review-2026-09-14.md` 결함3).
+    r"|(?:[Qq]\d|\d\s?분기)\s?\d{4}\s?년?(?:에|의)?"
     # 수량 표면형은 temporal.py가 단일 출처 - 숫자/한글 수사 목록이 두 곳으로 갈라지면
     # semantic_query에 "일주일"만 남는 식으로 반드시 어긋난다.
     # 뒤따르는 "간/동안"은 붙여 쓰고 "내/이내/사이"는 띄어 쓴다. 뒤에 한글이 이어지면
     # 후자는 제외 - "최근 3일 내용"의 "내용"을 "내"+"용"으로 자르지 않기 위해서.
     rf"|{RECENT_SPAN_PATTERN}(?:간|동안)?(?:\s*(?:이내|내|사이)(?![가-힣]))?"
     r"|(?:이번|지난|저번)\s?(?:주|달|분기)(?:에|의)?"
+    # "지난 4월"/"지난 오월"처럼 연도 없이 달만 가리키는 표현 - temporal.py::BARE_MONTH_PATTERN이
+    # 단일 출처(숫자/한자어 수사 이름 목록이 여기 다시 적히면 어긋난다).
+    rf"|(?:지난|저번)\s?(?:{BARE_MONTH_PATTERN})(?:에|의)?"
     r"|[Qq]\d|\d\s?분기"
     r"|\d{4}\s?년(?:도)?(?:에|의)?"
-    r"|오늘|어제|그저께|그제|올해|금년|작년|재작년"
+    r"|오늘|어제|그저께|그제|올해|금년|작년|지난해|재작년"
     r"|\bthis\s+year\b|\blast\s+year\b|\bthis\s+month\b|\blast\s+month\b"
 )
 
@@ -300,7 +350,7 @@ _TEMPORAL_SPAN_RE = re.compile(
 _MARKER_KEEP_PATTERN = r"(?:구글|google)\s*(?:드라이브|g?drive)\b"
 
 _THIS_YEAR_RE = re.compile(r"올해|금년|\bthis\s+year\b")
-_LAST_YEAR_RE = re.compile(r"작년|\blast\s+year\b")
+_LAST_YEAR_RE = re.compile(r"작년|지난해|\blast\s+year\b")
 _YEAR_BEFORE_LAST_RE = re.compile(r"재작년")
 
 # 따옴표 구절 - router.py의 _QUOTED_RE와 같은 표면형이지만 내용을 캡처해야 해서 별도 정의.
@@ -342,7 +392,11 @@ _EMAIL_RE = re.compile(r"(?<![\w.@+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-
 #     ("prepay-docs.168-107-13-173.sslip.io")는 정확 일치로 찾아야 할 문자열인데, 이걸
 #     participants로 빨아들이면 identifiers/lexical이 통째로 사라진다. 앞뒤에 `/`나 `:`가
 #     붙은 URL 문맥도 같은 이유로 제외.
-_TLD_ALT = r"co\.kr|or\.kr|ne\.kr|go\.kr|re\.kr|com|net|org|edu|gov|biz|info|io|ai|dev|app|kr|jp|cn|us|uk|de|fr"
+# "io"는 일부러 뺐다 - 실제 발신 도메인보다 "socket.io"류 제품/라이브러리 이름으로 훨씬 자주
+# 쓰여("socket.io 연결 오류" → participants=['socket.io']로 핵심 검색어가 사라졌다,
+# `wiki/search-code-review-2026-09-14.md` 결함7) 코퍼스에 io 발신 도메인 사례가 없는 이상
+# 이쪽이 덜 놀랍다. nonghyup.com/nonghyup.co.kr 같은 실제 메일 도메인은 그대로 잡힌다.
+_TLD_ALT = r"co\.kr|or\.kr|ne\.kr|go\.kr|re\.kr|com|net|org|edu|gov|biz|info|ai|dev|app|kr|jp|cn|us|uk|de|fr"
 _DOMAIN_RE = re.compile(
     rf"(?<![\w.@+:/-])[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.(?:{_TLD_ALT})(?![A-Za-z0-9.:/-])",
     re.IGNORECASE,
@@ -385,14 +439,26 @@ _COMPARISON_TAIL_RE = re.compile(
     + "|".join(_latin_aware(m) for m in COMPARISON_MARKERS if m not in _COMPARISON_CONNECTIVE_MARKERS)
     + r")"
 )
-# semantic_query 정리용 - 검색어로서 정보량이 없는 지시/보조 표현.
-_FILLER_RE = re.compile(
+# semantic_query 정리용 - 검색어로서 정보량이 없는 지시/보조 표현. 튜플이라 `_strip_markers`
+# (다른 마커 사전들과 같은 경로 - `_marker_match`의 어절 경계 판정)를 그대로 거친다. 예전엔
+# 이 전체가 통짜 정규식(`_FILLER_RE`)이라 `re.search`가 낱말 중간에서도 잡았다 - "도메인지식"의
+# "도메인", "회의자료"의 "자료", "공문서"의 "문서", "프로파일"의 "파일"(결함5).
+FILLER_MARKERS: tuple[str, ...] = (
     # "발신자"/"도메인" 같은 역할·메타 명사는 `_NAME_STOPWORDS`가 작성자 오탐은 막아 주지만
     # (v0-metadata_filter-001) semantic_query에는 그대로 남아 벡터 검색어를 흐린다.
-    r"발신자|수신자|발신인|수신인|보낸\s*사람|받는\s*사람|도메인"
-    r"|관련(?:된|해서|하여|한)?|문서(?:들)?|자료(?:들)?|파일(?:들)?|알려\s*줘|보여\s*줘|찾아\s*줘|해\s*줘|해줄래|해주세요|주세요|해\s*봐"
-    r"|뭐야|뭐였(?:지|어)|무엇(?:이야|인가요?)?|있(?:어|나요|었어|었나요)|좀|해서|대해(?:서)?|대한|에\s*대해"
-    r"|\bplease\b|\bshow\s+me\b|\btell\s+me\b|\bfind\b|\bsearch\b|\bdocuments?\b|\babout\b|\brelated\b"
+    r"발신자", r"수신자", r"발신인", r"수신인", r"보낸\s*사람", r"받는\s*사람",
+    # "도메인지식"("domain knowledge")의 앞쪽 일부로 잡히는 걸 막는다("도메인" 자체는 뒤에
+    # 한글 명사가 바로 붙는 복합어의 앞쪽일 때만 의심스럽다 - 조사는 보통 공백 없이 붙지 않는
+    # 여기 문맥상 뒤에 한글이 이어지면 거의 항상 다른 낱말의 시작이다).
+    r"도메인(?![가-힣])",
+    r"관련(?:된|해서|하여|한)?", r"문서(?:들)?", r"자료(?:들)?", r"파일(?:들)?",
+    r"알려\s*줘", r"보여\s*줘", r"찾아\s*줘", r"해\s*줘", r"해줄래", r"해주세요", r"주세요", r"해\s*봐",
+    r"뭐야", r"뭐였(?:지|어)", r"무엇(?:이야|인가요?)?", r"있(?:어|나요|었어|었나요)", r"좀", r"해서",
+    # "대한민국"("Republic of Korea")의 앞쪽 일부로 잡히는 걸 막는다 - 같은 이유로 뒤에 한글이
+    # 곧장 이어지면 거른다("~에 대해"는 보통 "대해"만으로도 걸리므로 손실이 적다).
+    r"대해(?:서)?", r"대한(?![가-힣])", r"에\s*대해",
+    r"\bplease\b", r"\bshow\s+me\b", r"\btell\s+me\b", r"\bfind\b", r"\bsearch\b",
+    r"\bdocuments?\b", r"\babout\b", r"\brelated\b",
 )
 _DANGLING_PARTICLE_RE = re.compile(r"(?:^|\s)(?:은|는|이|가|을|를|의|에|에서|로|으로|와|과|도|중)(?=\s|$)")
 
@@ -449,7 +515,7 @@ class QueryConstraints:
 
 
 def _any_marker(markers: tuple[str, ...], text: str) -> bool:
-    return any(re.search(_latin_aware(pattern), text, re.IGNORECASE) for pattern in markers)
+    return any(_marker_match(pattern, text) is not None for pattern in markers)
 
 
 def _strip_source_type_markers(text: str) -> str:
@@ -476,8 +542,21 @@ def _strip_source_type_markers(text: str) -> str:
 
 def _strip_markers(markers: tuple[str, ...], text: str) -> str:
     for pattern in markers:
-        text = re.sub(_latin_aware(pattern), " ", text, flags=re.IGNORECASE)
+        while True:
+            m = _marker_match(pattern, text)
+            if m is None:
+                break
+            text = text[: m.start()] + " " + text[m.end() :]
     return text
+
+
+def _strip_honorific(name: str) -> str:
+    """'김철수님' → '김철수'. `_AUTHOR_KO_RE`/`_PARTICIPANT_KO_RE`의 `(?:님)?`은 `_NAME`의
+    `[가-힣]{2,4}`가 탐욕적이라 이름+"님"이 4음절 이내면 "님"까지 그 그룹이 먼저 삼켜버려
+    무의미했다(실측: `"김철수님이 보낸 메일"` → `authors=['김철수님']`,
+    `wiki/search-code-review-2026-09-14.md` 결함6). 정규식 자체를 고치는 대신 캡처 후 한 번 더
+    떼어내는 쪽이 `_NAME`을 공유하는 다른 정규식에 영향을 주지 않는다."""
+    return name[:-1] if name.endswith("님") else name
 
 
 def _dedupe(values: list[str]) -> list[str]:
@@ -499,23 +578,31 @@ def _strip_particle(token: str) -> str:
 
 
 def _supplemental_time_range(text: str, now: datetime) -> TimeRange | None:
-    """temporal.py에 없는 '올해/작년/재작년'만 보충 - 다른 표현은 전부 temporal.py 담당."""
+    """temporal.py에 없는 '올해/작년/지난해/재작년' 연도 문맥을 먼저 잡고, 그 문맥 아래의
+    분기/월을 `temporal.py::resolve_within_year`로 해석한다.
+
+    `_resolve_time_range`가 `parse_temporal_expression`보다 **이 함수를 먼저** 부른다 - 안
+    그러면 "작년 3분기"의 bare 분기("3분기")가 `parse_temporal_expression`의 현재-연도 기본값에
+    먼저 먹혀 "작년"이 무시된다(실측: `temporal.py:255`, `"작년 3분기에 김민수가 보낸 메일"`
+    (now=2026-09-14) → `2026-07-01~2026-10-01`, `wiki/search-code-review-2026-09-14.md` 결함3)."""
 
     def _year(year: int, label: str) -> TimeRange:
-        start = now.replace(year=year, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-        return TimeRange(start, start.replace(year=year + 1), label)
+        start = local_date_start(now, year, 1)
+        return TimeRange(start, local_date_start(now, year + 1, 1), label)
 
     if _YEAR_BEFORE_LAST_RE.search(text):
-        return _year(now.year - 2, "재작년")
-    if _LAST_YEAR_RE.search(text):
-        return _year(now.year - 1, "작년")
-    if _THIS_YEAR_RE.search(text):
-        return _year(now.year, "올해")
-    return None
+        year, label = now.year - 2, "재작년"
+    elif _LAST_YEAR_RE.search(text):
+        year, label = now.year - 1, "작년"
+    elif _THIS_YEAR_RE.search(text):
+        year, label = now.year, "올해"
+    else:
+        return None
+    return resolve_within_year(text, now, year) or _year(year, label)
 
 
 def _resolve_time_range(text: str, now: datetime) -> TimeRange | None:
-    return parse_temporal_expression(text, now=now) or _supplemental_time_range(text, now)
+    return _supplemental_time_range(text, now) or parse_temporal_expression(text, now=now)
 
 
 def _extract_comparison_targets(text: str) -> list[str]:
@@ -540,7 +627,7 @@ def _extract_comparison_targets(text: str) -> list[str]:
 
 
 def _clean_semantic_query(text: str) -> str:
-    text = _FILLER_RE.sub(" ", text)
+    text = _strip_markers(FILLER_MARKERS, text)
     text = re.sub(r"[?？!！.,;:()\[\]{}]", " ", text)
     text = _DANGLING_PARTICLE_RE.sub(" ", text)
     # "사업계획의" → "사업계획", "프로젝트에서" → "프로젝트". 3음절 이상 한글 어절에만 - "회의"/
@@ -599,15 +686,17 @@ def extract_constraints_rules(query: str, *, now: datetime | None = None) -> Que
     # 5) 작성자 / 참여자 / 프로젝트 힌트
     for regex in (_AUTHOR_KO_RE, _AUTHOR_EN_RE):
         for m in regex.finditer(working):
-            if m.group("name") in _NAME_STOPWORDS:
+            name = _strip_honorific(m.group("name"))
+            if name in _NAME_STOPWORDS:
                 continue
-            c.authors.append(m.group("name"))
+            c.authors.append(name)
             working = working.replace(m.group(0), " ", 1)
     c.authors = _dedupe(c.authors)
     for regex in (_PARTICIPANT_KO_RE, _PARTICIPANT_EN_RE):
         for m in regex.finditer(working):
-            if m.group("name") not in _NAME_STOPWORDS:
-                c.participants.append(m.group("name"))
+            name = _strip_honorific(m.group("name"))
+            if name not in _NAME_STOPWORDS:
+                c.participants.append(name)
     # 주소/도메인이 앞 - 이름보다 특정력이 강한 신호다(participants는 AND라 순서 자체는 무관).
     c.participants = _dedupe(contact_handles + c.participants)
     for m in _PROJECT_RE.finditer(working):

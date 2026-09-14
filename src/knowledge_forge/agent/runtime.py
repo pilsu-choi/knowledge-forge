@@ -29,7 +29,10 @@ async def run_query(
     chat_provider = get_chat_provider(provider=provider, model=model)
     system = build_system_prompt(project_id=project_id, memory=read_memory(project_id))
     tools = default_tools(project_id=project_id, provider=chat_provider, system=system)
-    answer, _ = await run_agent(question, tools, system, chat_provider, max_iterations=settings.agent_max_iterations)
+    try:
+        answer, _ = await run_agent(question, tools, system, chat_provider, max_iterations=settings.agent_max_iterations)
+    finally:
+        await tools.aclose()
     return answer
 
 
@@ -71,3 +74,7 @@ class AgentSession:
             history=self._history,
         )
         return answer
+
+    async def aclose(self) -> None:
+        """도구 세트가 공유하는 DB 연결을 닫는다 - REPL을 끝낼 때 한 번."""
+        await self._tools.aclose()

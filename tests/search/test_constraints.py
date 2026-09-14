@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -22,12 +23,21 @@ from knowledge_forge.search.constraints import (
     suggest_strategies,
 )
 
-# 2026-09-04 (금) 15:30 UTC - test_temporal.py와 같은 고정 기준 시각.
-NOW = datetime(2026, 9, 4, 15, 30, tzinfo=timezone.utc)
+# 2026-09-04 (금) 06:30 UTC (= 15:30 KST, 같은 달력일) - test_temporal.py와 같은 고정 기준
+# 시각. UTC/KST 경계를 넘나드는 경우는 test_temporal.py 쪽에서 전담한다.
+NOW = datetime(2026, 9, 4, 6, 30, tzinfo=timezone.utc)
+
+_SEOUL = ZoneInfo("Asia/Seoul")
 
 
 def _utc(*args: int) -> datetime:
     return datetime(*args, tzinfo=timezone.utc)
+
+
+def _kst(*args: int) -> datetime:
+    """KST(서울) 지역시각을 UTC로 변환한다 - `search/temporal.py`가 모든 달력 경계를 서울시
+    기준으로 계산하므로(그 모듈 docstring), 테스트 기댓값도 이 경로로 만든다."""
+    return datetime(*args, tzinfo=_SEOUL).astimezone(timezone.utc)
 
 
 @dataclass
@@ -81,7 +91,7 @@ CASES = [
         "김철수가 2025년 3월에 작성한 보고서",
         authors=["김철수"],
         document_types=["보고서"],
-        time_range=(_utc(2025, 3, 1), _utc(2025, 4, 1)),
+        time_range=(_kst(2025, 3, 1), _kst(2025, 4, 1)),
         strategies_include={"metadata_filter"},
         strategies_exclude={"document_lookup", "lexical"},
     ),
@@ -99,12 +109,12 @@ CASES = [
     Case(
         "올해 프로젝트 몇 개 진행했어?",
         flags={"wants_count"},
-        time_range=(_utc(2026, 1, 1), _utc(2027, 1, 1)),
+        time_range=(_kst(2026, 1, 1), _kst(2027, 1, 1)),
         time_label="올해",
         strategies_include={"count", "metadata_filter"},
     ),
     Case("how many issues were reported in Q3", flags={"wants_count"}, time_label="2026년 Q3"),
-    Case("작년에 처리한 장애 건수", flags={"wants_count"}, time_range=(_utc(2025, 1, 1), _utc(2026, 1, 1))),
+    Case("작년에 처리한 장애 건수", flags={"wants_count"}, time_range=(_kst(2025, 1, 1), _kst(2026, 1, 1))),
     # Latest
     Case(
         "가장 최근 업무보고서",
@@ -168,7 +178,7 @@ CASES = [
     # Temporal / Relative Temporal
     Case(
         "지난달 회의 결정사항",
-        time_range=(_utc(2026, 8, 1), _utc(2026, 9, 1)),
+        time_range=(_kst(2026, 8, 1), _kst(2026, 9, 1)),
         semantic_query="회의 결정사항",
         strategies_include={"metadata_filter", "vector"},
     ),
@@ -429,7 +439,7 @@ def test_bare_recent_still_means_latest():
 
 def test_to_dict_serializes_time_range_as_iso_strings():
     d = extract_constraints_rules("지난달 회의 결정사항", now=NOW).to_dict()
-    assert d["time_range"] == {"start": "2026-08-01T00:00:00+00:00", "end": "2026-09-01T00:00:00+00:00", "label": "지난달"}
+    assert d["time_range"] == {"start": "2026-07-31T15:00:00+00:00", "end": "2026-08-31T15:00:00+00:00", "label": "지난달"}
     assert json.dumps(d, ensure_ascii=False)  # JSON-safe
 
 
@@ -529,7 +539,7 @@ async def test_llm_enriches_only_allowed_fields_and_cannot_override_rule_facts()
     assert c.semantic_query == "장애 원인 분석 보고서"
     assert c.is_multihop is True
     # 규칙이 확정한 것은 그대로
-    assert c.time_range is not None and (c.time_range.start, c.time_range.end) == (_utc(2025, 3, 1), _utc(2025, 4, 1))
+    assert c.time_range is not None and (c.time_range.start, c.time_range.end) == (_kst(2025, 3, 1), _kst(2025, 4, 1))
     assert c.identifiers == []
     assert c.wants_count is False and c.is_negative is False
     assert c.origins["authors"] == ORIGIN_LLM
@@ -706,3 +716,111 @@ def test_file_type_constraints_select_the_metadata_filter_strategy():
     from knowledge_forge.search.constraints import STRATEGY_METADATA_FILTER, suggest_strategies
 
     assert STRATEGY_METADATA_FILTER in suggest_strategies(extract_constraints_rules("CSV 파일 전부"))
+
+
+# --- 연도 문맥이 bare 분기/월보다 먼저(작년/올해/지난해/재작년) --------------------------
+# wiki/search-code-review-2026-09-14.md 결함3: "작년 3분기"가 bare 분기(`_QUARTER_BARE_RE`)에
+# 먼저 먹혀 올해 3분기로 해석됐다. now=2026-09-14 03:00Z(2026-09-14 KST 정오) 기준 회귀.
+
+_REVIEW_NOW = datetime(2026, 9, 14, 3, 0, tzinfo=timezone.utc)
+
+
+def test_last_year_quarter_wins_over_the_bare_quarter_default():
+    c = extract_constraints_rules("작년 3분기에 김민수가 보낸 메일", now=_REVIEW_NOW)
+    assert c.authors == ["김민수"]
+    assert c.time_range is not None
+    assert (c.time_range.start, c.time_range.end) == (_kst(2025, 7, 1), _kst(2025, 10, 1))
+    assert c.time_range.label == "2025년 Q3"
+
+
+def test_this_year_month_does_not_widen_to_the_whole_year():
+    c = extract_constraints_rules("올해 3월 보고서", now=_REVIEW_NOW)
+    assert c.time_range is not None
+    assert (c.time_range.start, c.time_range.end) == (_kst(2026, 3, 1), _kst(2026, 4, 1))
+
+
+def test_jinanhae_is_recognized_as_last_year():
+    """"지난해"는 이전엔 인식되지 않았다 - "작년"과 같은 처리."""
+    c = extract_constraints_rules("지난해 실적", now=_REVIEW_NOW)
+    assert c.time_range is not None
+    assert (c.time_range.start, c.time_range.end) == (_kst(2025, 1, 1), _kst(2026, 1, 1))
+    assert c.time_range.label == "작년"
+
+
+# --- 한국어 마커/필러가 낱말 중간에서 매치되는 것 (결함5) --------------------------------
+
+
+def test_markers_do_not_fire_from_inside_an_unrelated_word():
+    c = extract_constraints_rules("체크리스트 문서", now=NOW)
+    assert not c.wants_exhaustive
+    assert c.semantic_query == "체크리스트"
+
+    c = extract_constraints_rules("전문가 의견", now=NOW)
+    assert not c.wants_whole_document
+
+    # 아래 넷은 이전엔 마커가 낱말 중간에서 반쪽만 지워 "회의 공유"/"공 양식"/"프로 설정"/
+    # "민국 정책"이 됐다 - 고친 뒤에는 복합어를 통째로 남긴다.
+    c = extract_constraints_rules("도메인지식 정리", now=NOW)
+    assert c.semantic_query == "도메인지식"
+
+    c = extract_constraints_rules("회의자료 공유", now=NOW)
+    assert c.semantic_query == "회의자료 공유"
+
+    c = extract_constraints_rules("공문서 양식", now=NOW)
+    assert c.semantic_query == "공문서 양식"
+
+    c = extract_constraints_rules("프로파일 설정", now=NOW)
+    assert c.semantic_query == "프로파일 설정"
+
+    c = extract_constraints_rules("대한민국 정책", now=NOW)
+    assert c.semantic_query == "대한민국 정책"
+
+
+def test_markers_still_fire_as_their_own_standalone_eojeol():
+    """회귀 방지: 어절 경계 판정을 넣었다고 독립된 낱말로 쓰인 정상 매치까지 막으면 안 된다."""
+    assert extract_constraints_rules("관련 문서 전부", now=NOW).wants_exhaustive
+    assert extract_constraints_rules("최신 버전", now=NOW).wants_latest
+    assert extract_constraints_rules("자료 목록", now=NOW).wants_exhaustive
+
+
+def test_markers_survive_common_korean_inflection_right_after_the_stem():
+    """오른쪽 경계는 일부러 안 본다 - 조사/어미/"~하다" 활용이 마커 바로 뒤에 붙는 흔한 꼴까지
+    막으면 손실이 더 크다(`_korean_eojeol_search` docstring)."""
+    c = extract_constraints_rules("Google Drive 공유 요청 메일은 총 몇 통인가?", now=NOW)
+    assert c.wants_count
+    c = extract_constraints_rules("2025_SH_업무_보고서 요약해줘", now=NOW)
+    assert c.wants_summary and c.wants_whole_document
+    c = extract_constraints_rules("OKF 프로젝트 담당자가 작성한 회의록", now=NOW)
+    assert c.is_multihop
+
+
+# --- 작성자 "님" (결함6) -----------------------------------------------------------
+
+
+def test_author_honorific_nim_is_not_part_of_the_name():
+    c = extract_constraints_rules("김철수님이 보낸 메일", now=NOW)
+    assert c.authors == ["김철수"]
+
+
+def test_participant_honorific_nim_is_not_part_of_the_name():
+    c = extract_constraints_rules("김철수님과의 회의에서 논의된 내용", now=NOW)
+    assert c.participants == ["김철수"]
+
+
+# --- 도메인처럼 생긴 제품/라이브러리 이름 (결함7) -----------------------------------
+
+
+def test_product_name_with_a_dot_is_not_swallowed_as_a_mail_domain():
+    """"socket.io"는 발신 도메인이 아니라 제품/라이브러리 이름이다 - participants로 빨려
+    들어가면 핵심 검색어가 사라진다."""
+    c = extract_constraints_rules("socket.io 연결 오류", now=NOW)
+    assert c.participants == []
+    assert "socket" in c.semantic_query and "io" in c.semantic_query
+
+
+def test_real_email_domains_still_become_participants():
+    """회귀 방지: 실제 메일 도메인(.com/.co.kr 등)은 그대로 participants로 잡혀야 한다."""
+    c = extract_constraints_rules("nonghyup.com 도메인 발신자가 보낸 메일", now=NOW)
+    assert c.participants == ["nonghyup.com"]
+    c = extract_constraints_rules("nonghyup.co.kr 발신 메일", now=NOW)
+    assert c.participants == ["nonghyup.co.kr"]
