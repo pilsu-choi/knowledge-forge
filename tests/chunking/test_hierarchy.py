@@ -29,16 +29,14 @@ def test_render_element_text_ignores_indent_level_on_tables():
     assert render_element_text(element) == "a | b"
 
 
-def test_kss_windows_is_a_lossless_partition_that_never_exceeds_the_cap():
-    # A ~10k-char paragraph with regular Korean sentence boundaries - this is
-    # the shape that used to make a single kss.split_sentences() call take
-    # minutes (see wiki/adaptive-chunking.md). Windowing it must still
-    # reproduce the original text exactly and keep every window under cap.
-    sentence = "회의에서 결정된 사항은 다음과 같다. 첫째, 예산은 3분기까지 동결한다. "
-    text = sentence * 250  # ~10,250 chars
+def test_kss_windows_is_a_lossless_partition_that_never_splits_a_word():
+    # Punctuation-free prose is what still reaches kss - windowing it must
+    # reproduce the text exactly, stay under the cap, and cut only at spaces.
+    text = "서버 장애 원인은 디스크 부족이었고 조치 완료했습니다 " * 100
     windows = _kss_windows(text)
     assert len(windows) > 1
     assert all(len(w) <= _KSS_WINDOW_CHARS for w in windows)
+    assert all(w.endswith(" ") for w in windows[:-1])
     assert "".join(windows) == text
 
 
@@ -48,25 +46,32 @@ def test_kss_windows_leaves_short_text_as_a_single_window():
     assert _kss_windows(text) == [text]
 
 
-def test_kss_windows_hard_cuts_a_boundary_free_run():
-    # No newline and no sentence-final punctuation anywhere - kss can't find
-    # a boundary either way, so this must still be capped rather than fed to
-    # kss whole.
+def test_kss_windows_hard_cuts_a_space_free_run():
     text = "가" * (_KSS_WINDOW_CHARS * 3)
     windows = _kss_windows(text)
     assert all(len(w) <= _KSS_WINDOW_CHARS for w in windows)
     assert "".join(windows) == text
 
 
-def test_split_sentences_stays_fast_on_a_long_paragraph_with_no_newlines():
-    # Regression test for the quadratic kss blow-up: a single long,
-    # newline-free paragraph must not make split_sentences take anywhere
-    # close to the tens of seconds (let alone minutes) it used to before
-    # kss's input was capped via _kss_windows().
-    sentence = "회의에서 결정된 사항은 다음과 같다. 첫째, 예산은 3분기까지 동결한다. "
-    text = sentence * 250  # ~10,250 chars, no newlines
+def test_split_sentences_does_not_send_punctuated_prose_to_kss(monkeypatch):
+    # Sentence-final punctuation already bounds every piece under
+    # _KSS_MIN_CHARS, so kss (quadratic in input length) must not run at all.
+    import kss
+
+    def _fail(_text):
+        raise AssertionError("kss called on a short piece")
+
+    monkeypatch.setattr(kss, "split_sentences", _fail)
+    text = "회의에서 결정된 사항은 다음과 같다. 첫째, 예산은 3분기까지 동결한다. " * 250
+    assert len(split_sentences(text)) == 500
+
+
+def test_split_sentences_stays_fast_on_a_long_punctuation_free_paragraph():
+    # Regression test for the quadratic kss blow-up: this ~5k-char paragraph
+    # took tens of seconds as one kss call.
+    text = "서버 장애 원인은 디스크 부족이었고 조치 완료했습니다 " * 170
     start = time.perf_counter()
     sentences = split_sentences(text)
     elapsed = time.perf_counter() - start
     assert len(sentences) > 1
-    assert elapsed < 10, f"split_sentences took {elapsed:.1f}s on ~10k chars - kss input cap may be broken"
+    assert elapsed < 10, f"split_sentences took {elapsed:.1f}s on ~5k chars - kss input cap may be broken"
