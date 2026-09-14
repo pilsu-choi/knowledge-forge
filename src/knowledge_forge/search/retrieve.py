@@ -651,6 +651,16 @@ class _Run:
         self.steps.append(step)
         return step
 
+    def narrow(self, hits: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str | None]:
+        """anchor로 좁히기(`_narrow_to_anchor`) - 단 wide(exhaustive/negative/count) 질의는 좁히지 않는다.
+
+        anchor는 "사용자가 가리킨 문서 하나"라는 뜻인데, "한화손해보험 관련 문서 전부"는 **집합**을 묻는다.
+        제목에 그 단어가 든 문서 하나가 anchor가 되자 본문 히트가 전부 그 문서로 붕괴해 정답 7건 중 2건만
+        나왔다(리뷰 결함2). wide에서도 anchor는 `merge()`가 최상위로 고정한다."""
+        if self.wide and self.anchor is not None:
+            return hits, "wide_not_narrowed"
+        return _narrow_to_anchor(hits, self.anchor)
+
     # -- 후보 생성 ------------------------------------------------------------
 
     async def generate(self, provider: ChatProvider | None, *, with_filter: bool = True) -> None:
@@ -696,6 +706,11 @@ class _Run:
         안 된다 - 그건 날짜로 고른 필터 집합을 최신순으로 내는데, 여기서 날짜는 내용이었다. 다시 돌아도
         빈손이면 예전과 같은 `filter_only`(범위 안 문서 최신순)로 떨어진다."""
         if self.since is None and self.until is None:
+            return False
+        # wide 질의에서 필터가 문서를 찾았으면 그 집합이 답이다("2026년 6월 메일 전부") - 여기서 날짜는
+        # 내용이 아니라 조건이다. 풀면 범위 밖 후보가 필터를 대체해 정답을 통째로 잃는다(A/B 2026-09-14:
+        # 월 단위 exhaustive 2건 1.0 -> 0.0).
+        if self.wide and self.filter_hits:
             return False
         if not self.results_by_source or any(self.results_by_source.values()):
             return False
@@ -790,7 +805,7 @@ class _Run:
             )
         )
         collected: list[dict[str, Any]] = [hit for hits in per_term for hit in hits]
-        collected, narrowing = _narrow_to_anchor(collected, self.anchor)
+        collected, narrowing = self.narrow(collected)
         self.add_hits(SOURCE_LEXICAL_SEARCH, collected)
         self.step(STRATEGY_LEXICAL, SOURCE_LEXICAL_SEARCH, len(collected), terms=terms, anchor_narrowing=narrowing)
 
@@ -867,7 +882,7 @@ class _Run:
                 error = f"{type(vector_error).__name__}: {vector_error}"
             else:
                 hits = vector_hits
-        hits, narrowing = _narrow_to_anchor(hits, self.anchor)
+        hits, narrowing = self.narrow(hits)
         # 관련도 하한 - config.py의 vector_min_score 주석 참고. anchor 좁히기 뒤에 거는 이유는
         # anchor가 이미 "제목이 정확히 맞은 문서"라는 더 강한 신호라, 그 안에서 유사도가 낮다고
         # 버리면 정답을 잃기 때문이다.
@@ -950,7 +965,7 @@ class _Run:
         anchor_reason = "already_anchored"
         if self.anchor is None:
             anchor_reason, _ranked = self._claim_anchor(title_hits)
-        title_hits, _ = _narrow_to_anchor(title_hits, self.anchor)
+        title_hits, _ = self.narrow(title_hits)
         self.add_hits(SOURCE_DOCUMENT_SEARCH_SEMANTIC, title_hits)
         self.step(
             STRATEGY_DOCUMENT_LOOKUP,
@@ -961,7 +976,7 @@ class _Run:
             anchor=self.anchor,
             anchor_reason=anchor_reason,
         )
-        body_hits, _ = _narrow_to_anchor(fetched.body, self.anchor)
+        body_hits, _ = self.narrow(fetched.body)
         self.add_hits(SOURCE_LEXICAL_SEARCH_SEMANTIC, body_hits)
         self.step(STRATEGY_LEXICAL, SOURCE_LEXICAL_SEARCH_SEMANTIC, len(body_hits), query=query, arm="semantic_query")
         # 질의 문자열 통째로 뭔가 **강하게** 걸렸으면 그게 term 하나하나보다 강한 신호다 -
@@ -989,7 +1004,8 @@ class _Run:
         arm_documents = len(
             {hit["document_id"] for hit in [*title_hits, *body_hits] if hit.get("document_id")}
         )
-        if self.anchor is None and arm_documents < _ARM_STRONG_DOCUMENTS:
+        # wide 질의에서는 anchor가 "이 문서가 답"이 아니므로(`narrow`) 강한 신호로 치지 않는다.
+        if (self.anchor is None or self.wide) and arm_documents < _ARM_STRONG_DOCUMENTS:
             await self._term_fallback()
 
     async def _term_fallback(self) -> None:
@@ -1025,7 +1041,7 @@ class _Run:
             # df는 코퍼스의 성질이라 anchor 좁히기 **전**에 센다 - 좁힌 뒤 세면 anchor가 잡힌
             # 질의에서 모든 term의 df가 1로 붙어 변별력 판정이 무의미해진다.
             observed_df[term] = len({hit.get("document_id") for hit in raw_hits if hit.get("document_id")})
-            hits, _ = _narrow_to_anchor(raw_hits, self.anchor)
+            hits, _ = self.narrow(raw_hits)
             hits_by_term[term] = hits
             for hit in hits:
                 document_id = hit.get("document_id")

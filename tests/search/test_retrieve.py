@@ -293,6 +293,37 @@ async def test_grain_expansion_failure_is_recorded_not_raised(monkeypatch):
     assert step.n_hits == 0 and "embedder down" in step.detail["error"]
 
 
+# --- wide queries and the anchor ----------------------------------------------------
+
+
+async def test_wide_query_pins_the_title_anchor_but_keeps_every_other_document(monkeypatch):
+    store = _FakeStore(
+        title_hits={"한화손해보험": [_doc_hit("title_doc", 1.0)]},
+        chunk_hits={"한화손해보험": [_chunk_hit("a", "ca"), _chunk_hit("b", "cb"), _chunk_hit("title_doc", "ct")]},
+    )
+    _patch_vector(monkeypatch, [_chunk_hit("c", "cc", 0.9)])
+
+    result = await retrieve("한화손해보험 관련 문서 전부", store=store, now=_NOW)
+
+    assert "exhaustive" in result.strategies
+    assert result.document_ids[0] == "title_doc"
+    assert set(result.document_ids) == {"title_doc", "a", "b", "c"}
+    assert not any(s.detail.get("anchor_narrowing") == "narrowed" for s in result.steps)
+
+
+async def test_wide_query_with_an_anchor_still_runs_the_term_fallback_when_the_arm_is_weak(monkeypatch):
+    store = _FakeStore(title_hits={None: [_doc_hit("d1", 1.0)]})
+    _patch_vector(monkeypatch, [])
+
+    wide = await retrieve("배포 롤백 절차 관련 문서 전부", store=store, now=_NOW)
+
+    assert "exhaustive" in wide.strategies
+    assert any(s.detail.get("mode") == "per_term" for s in wide.steps)
+
+    narrow = await retrieve("배포 롤백 절차", store=_FakeStore(title_hits={None: [_doc_hit("d1", 1.0)]}), now=_NOW)
+    assert not any(s.detail.get("mode") == "per_term" for s in narrow.steps)
+
+
 # --- time range relaxation ---------------------------------------------------------
 
 
@@ -359,6 +390,21 @@ async def test_relaxation_that_still_finds_nothing_keeps_the_filter_only_answer(
 
     assert result.document_ids == ["same_day"]
     assert next(s for s in result.steps if s.strategy == "metadata_filter").detail["applied"] == "filter_only"
+
+
+async def test_a_wide_query_whose_filter_found_documents_is_not_relaxed(monkeypatch):
+    # "2026년 6월 메일 전부": the month is the condition, and the filter set is the answer
+    store = _TimeBoundStore(
+        title_hits={None: [_doc_hit("out_of_range_noise", 0.6)]},
+        filter_rows=[_filter_row("june_mail", datetime(2026, 6, 10, 3, tzinfo=timezone.utc))],
+    )
+    _patch_time_bound_vector(monkeypatch, [_chunk_hit("out_of_range_noise", "n1", 0.8)], [])
+
+    result = await retrieve("2026년 6월 메일 문서 전부", store=store, now=_NOW)
+
+    assert "exhaustive" in result.strategies
+    assert not any(s.strategy == "time_range_relaxed" for s in result.steps)
+    assert result.document_ids == ["june_mail"]
 
 
 async def test_a_temporal_query_with_matches_in_range_is_not_relaxed(monkeypatch):
