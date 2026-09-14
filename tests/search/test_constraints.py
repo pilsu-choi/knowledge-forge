@@ -154,14 +154,14 @@ CASES = [
     Case("Redis vs Memcached 차이", flags={"is_comparison"}, comparison_targets=["Redis", "Memcached"]),
     Case("Redis vs Memcached", flags={"is_comparison"}, comparison_targets=["Redis", "Memcached"]),
     # Exact Match
+    # 식별자는 semantic_query에도 남는다 - 벡터 검색어의 핵심인 경우가 많다("Wi-Fi 설정 방법").
     Case(
         "ERR_CONNECTION_RESET 관련 문서",
         identifiers=["ERR_CONNECTION_RESET"],
-        semantic_query="",
+        semantic_query="ERR_CONNECTION_RESET",
         strategies_include={"lexical", "document_lookup"},
-        strategies_exclude={"vector"},
     ),
-    Case("PRJ-2025-001 이슈 상태", identifiers=["PRJ-2025-001"], semantic_query="이슈 상태"),
+    Case("PRJ-2025-001 이슈 상태", identifiers=["PRJ-2025-001"], semantic_query="PRJ-2025-001 이슈 상태"),
     Case(
         '"인증 방식을 OAuth로" 문구가 들어간 문서',
         quoted=["인증 방식을 OAuth로"],
@@ -198,7 +198,7 @@ CASES = [
     # Ambiguous / 일반 QA - 아무 제약도 없어야 vector만 남는다
     Case(
         "인증 방식을 OAuth로 바꾼 결정",
-        semantic_query="인증 방식 OAuth로 바꾼 결정",
+        semantic_query="인증 방식 OAuth 바꾼 결정",
         strategies_include={"vector"},
         strategies_exclude={"metadata_filter", "lexical", "document_lookup"},
     ),
@@ -824,3 +824,143 @@ def test_real_email_domains_still_become_participants():
     assert c.participants == ["nonghyup.com"]
     c = extract_constraints_rules("nonghyup.co.kr 발신 메일", now=NOW)
     assert c.participants == ["nonghyup.co.kr"]
+
+
+# --- 질의 해석 정밀도 (wiki/search-quality-review-2026-09-15.md 1절) ------------------------
+# retrieve는 작성자·참여자·확장자·기간 필터를 믿고 결과를 좁힌다 - 규칙 오탐 하나가 곧 결과 손실이다.
+
+
+@pytest.mark.parametrize(
+    ("query", "authors"),
+    [
+        # 오탐: 문서가 주어인 수동태, 직함, 사람이 아닌 발신자, 더 긴 낱말의 뒤쪽
+        ("보고서가 작성된 날짜", []),
+        ("계약서가 작성된 시점 알려줘", []),
+        ("팀장이 보낸 메일", []),
+        ("시스템이 보낸 알림 메일", []),
+        ("고객지원팀이 보낸 메일", []),
+        ("reports from Google Drive", []),
+        # 정탐은 그대로
+        ("김철수 팀장이 보낸 메일", ["김철수"]),
+        ("박영희 과장님이 공유한 자료", ["박영희"]),
+        ("김민수가 보낸 메일", ["김민수"]),
+        ("김철수님이 작성한 보고서", ["김철수"]),
+        ("latest report from Alice", ["Alice"]),
+        ("mail sent by Bob Lee", ["Bob Lee"]),
+    ],
+)
+def test_author_extraction_precision(query: str, authors: list[str]):
+    assert extract_constraints_rules(query, now=NOW).authors == authors
+
+
+def test_english_with_is_a_participant_only_after_a_meeting_noun():
+    assert extract_constraints_rules("issues with Redis cluster", now=NOW).participants == []
+    assert extract_constraints_rules("meeting with John", now=NOW).participants == ["John"]
+
+
+def test_domains_become_participants_only_in_a_mail_context():
+    for query, name in (("ASP.NET 마이그레이션", "ASP.NET"), ("Amazon.com 사례 분석", "Amazon.com")):
+        c = extract_constraints_rules(query, now=NOW)
+        assert c.participants == [], query
+        assert name in c.semantic_query and name in keyword_terms(c), query
+    for query, domain in (
+        ("nonghyup.com에서 온 메일", "nonghyup.com"),
+        ("nonghyup.co.kr 발신 메일", "nonghyup.co.kr"),
+    ):
+        assert extract_constraints_rules(query, now=NOW).participants == [domain], query
+
+
+def test_value_markers_do_not_fire_from_the_front_of_a_longer_loanword():
+    assert extract_constraints_rules("엑셀러레이터 프로그램 지원 현황", now=NOW).file_extensions == []
+    assert extract_constraints_rules("API design doc 정리", now=NOW).file_extensions == []
+    assert extract_constraints_rules("스펙트럼 분석", now=NOW).document_types == []
+    c = extract_constraints_rules("메일링 리스트 운영 가이드라인", now=NOW)
+    assert c.source_types == [] and not c.wants_exhaustive
+    assert c.semantic_query.startswith("메일링 리스트")
+    # 정탐은 그대로
+    assert ".xlsx" in extract_constraints_rules("엑셀 파일 목록", now=NOW).file_extensions
+    assert ".docx" in extract_constraints_rules("docx 파일", now=NOW).file_extensions
+    assert extract_constraints_rules("이메일로 받은 계약서", now=NOW).source_types == ["gmail"]
+    assert extract_constraints_rules("가장 최근 업무보고서", now=NOW).document_types == ["보고서"]
+
+
+def test_identifiers_stay_in_the_semantic_query():
+    c = extract_constraints_rules("Wi-Fi 설정 방법", now=NOW)
+    assert c.identifiers == ["Wi-Fi"] and c.semantic_query == "Wi-Fi 설정 방법"
+    c = extract_constraints_rules("GPT-4 도입 효과", now=NOW)
+    assert c.semantic_query == "GPT-4 도입 효과"
+    c = extract_constraints_rules("장애 ERR_404에서 재시도", now=NOW)
+    assert c.identifiers == ["ERR_404"] and c.semantic_query == "장애 ERR_404 재시도"
+    c = extract_constraints_rules("GPT-4와 GPT-5 비교", now=NOW)
+    assert c.comparison_targets == ["GPT-4", "GPT-5"]
+
+
+def test_phrasal_english_compounds_are_not_identifiers_but_service_names_are():
+    c = extract_constraints_rules("end-to-end 테스트 요약해줘", now=NOW)
+    assert c.identifiers == [] and c.document_reference is None
+    assert "document_lookup" not in suggest_strategies(c)
+    assert "end-to-end" in c.semantic_query
+    assert extract_constraints_rules("follow-up 메일", now=NOW).identifiers == []
+    # 코퍼스의 서비스명은 소문자 하이픈 꼴이라도 정확 일치 대상이다.
+    assert extract_constraints_rules("risk-agent 상태 확인", now=NOW).identifiers == ["risk-agent"]
+
+
+def test_comparison_precision():
+    assert extract_constraints_rules("효과 분석 결과 비교", now=NOW).comparison_targets == []
+    assert not extract_constraints_rules("고객과 직원의 인식 변화", now=NOW).is_comparison
+    assert extract_constraints_rules("매출과 비용 비교", now=NOW).comparison_targets == ["매출", "비용"]
+    assert extract_constraints_rules("계획 대비 실적 비교", now=NOW).comparison_targets == ["계획", "실적"]
+    c = extract_constraints_rules("작년 대비 올해 매출 변화", now=_REVIEW_NOW)
+    assert c.is_comparison and c.time_range is None
+    assert c.comparison_targets == ["작년 매출 변화", "올해 매출 변화"]
+
+
+def test_year_words_follow_the_kst_calendar_across_new_year():
+    new_year = datetime(2026, 12, 31, 16, 0, tzinfo=timezone.utc)  # = 2027-01-01 01:00 KST
+    c = extract_constraints_rules("올해 계획서", now=new_year)
+    assert c.time_range is not None
+    assert (c.time_range.start, c.time_range.end) == (_kst(2027, 1, 1), _kst(2028, 1, 1))
+    c = extract_constraints_rules("작년 3분기", now=new_year)
+    assert c.time_range is not None
+    assert (c.time_range.start, c.time_range.end) == (_kst(2026, 7, 1), _kst(2026, 10, 1))
+
+
+def test_dates_inside_quotes_filenames_or_identifiers_are_not_time_filters():
+    for query in ("'2024년 결산' 문서", "보고서_2025년_3월.pdf 요약", "PRJ-2025-001 이슈 상태"):
+        assert extract_constraints_rules(query, now=NOW).time_range is None, query
+    c = extract_constraints_rules("2025-03-15 회의", now=NOW)
+    assert c.time_range is not None and c.time_range.label == "2025-03-15"
+    assert c.semantic_query == "회의"
+
+
+def test_intent_markers_precision():
+    c = extract_constraints_rules("몇 개월 걸렸나", now=NOW)
+    assert not c.wants_count and c.semantic_query == "몇 개월 걸렸나"
+    assert not extract_constraints_rules("몇 번째 슬라이드", now=NOW).wants_count
+    c = extract_constraints_rules("권한이 없는 사용자 에러 해결 방법", now=NOW)
+    assert not c.is_negative and not c.wants_exhaustive
+    # 정탐은 그대로
+    assert extract_constraints_rules("몇 개 진행했어", now=NOW).wants_count
+    assert extract_constraints_rules("테스트 코드가 없는 프로젝트", now=NOW).is_negative
+
+
+def test_particle_stripping_keeps_nouns_whose_last_syllable_looks_like_a_particle():
+    c = extract_constraints_rules("전문가 평가 정확도 개선 주간회의 안건", now=NOW)
+    assert c.semantic_query == "전문가 평가 정확도 개선 주간회의 안건"
+    assert keyword_terms(c) == ["전문가", "평가", "정확도", "개선", "주간회의", "안건"]
+    # 실제 조사는 라틴/숫자 뒤나 한글 혼합 어절에서도 뗀다
+    c = extract_constraints_rules("README를 수정한 개발자에게 NH농협은행의 공유", now=NOW)
+    assert c.semantic_query == "README 수정한 개발자 NH농협은행 공유"
+
+
+def test_english_apostrophes_are_not_quotes():
+    assert extract_constraints_rules("What's the team's plan", now=NOW).quoted_phrases == []
+    assert extract_constraints_rules("'OKF'의 일정", now=NOW).quoted_phrases == ["OKF"]
+    assert extract_constraints_rules('rollout "go live" checklist', now=NOW).quoted_phrases == ["go live"]
+
+
+def test_keyword_terms_drop_question_endings_and_function_words():
+    assert keyword_terms(extract_constraints_rules("장애 원인이 뭐였는지 알려줄 수 있나요", now=NOW)) == ["장애", "원인"]
+    assert keyword_terms(extract_constraints_rules("issues with Redis cluster", now=NOW)) == ["issues", "Redis", "cluster"]
+    assert keyword_terms(extract_constraints_rules("배포가 몇 개월 걸렸나", now=NOW)) == ["배포", "개월"]
+    assert keyword_terms(extract_constraints_rules("액세스 요청한 사람이 누구인가", now=NOW)) == ["액세스", "요청한", "사람"]
