@@ -131,7 +131,7 @@ hits(각 hit에 document_id/target_kind/score 필수), document_ids(hits에서 �
 | `latest` | **관련도 상위 `KF_LATEST_RELEVANCE_POOL`(기본 5) 문서 안에서만** `content_at` 내림차순, 같은 `version_family`는 `version_sort_key`로 최신 하나만 남기고 나머지는 뒤로 | family 안에서는 버전 표기(최종 > vN > 무표기 > 초안)가 시각보다 우선 - 구버전을 나중에 다시 올린 경우 때문. pool 밖 후보는 관련도 순 그대로 뒤에 붙는다 - 후보 전체를 시각 정렬하면 "질의와 상관없이 가장 최근 문서"가 1위가 된다(아래) |
 | `exhaustive`/`negative` | 소스별 limit을 200으로, 최종 컷오프 없음 | 부재 판정은 LLM 몫 - 실행기는 후보만 |
 | `count` | `predicted_count` = 최종 문서 수. 필터 단독 결과면 같은 WHERE로 `SELECT COUNT(*)` | count도 exhaustive 수집을 함의 |
-| `whole_document` | anchor(없으면 상위 2개 문서)를 `read_document`로 읽어 `documents_read`에, 청크를 문서 순서대로 히트 맨 앞에 | 같은 청크를 가리키던 검색 히트는 중복이라 제거 |
+| `whole_document` | anchor(없으면 상위 2개 문서)를 `read_document`로 읽어 `documents_read`에. 그 문서의 검색 히트(관련도 순) 뒤에 나머지 청크를 문서 순서로 | 이미 검색 히트로 있는 청크는 본문 쪽에서 뺀다(2026-09-15, 아래 "병합 결함 수정") |
 | (grain 펼치기) | 호출자가 `grain`을 **명시**했을 때만. limit 절단 뒤 grain 히트(`chunk_id`/`knowledge_object_id`)가 없는 문서마다 `vector_search(document_ids=[문서])`로 그 문서의 grain 단위 3개를 질의 유사도 순으로 골라 문서의 첫 히트 바로 뒤에 끼움. step `grain_expansion` | 2026-09-14. 제목·필터 히트는 문서 id만 싣고 anchor 좁히기가 벡터 히트를 지워서, 정답 문서를 1위로 찾고도 grain 채점 리스트가 비었다(평가 스모크). 문서 순서·`scores`는 그대로, 새 문서는 안 데려옴, `vector_min_score` 하한 없음(문서는 이미 뽑혔다). `grain=None`(설정 grain)은 펼치지 않는다 - 제품 경로는 문서 단위 히트로 충분하고 문서당 조회 비용을 낼 이유가 없다. 문서 id 필터는 btree + 정확 정렬이라 1ms |
 
 **어휘 arm (`keyword_arm`)**:
@@ -1208,3 +1208,27 @@ if self.anchor is None and arm_documents < _ARM_STRONG_DOCUMENTS:   # = 2
 - 종합 점수의 이득은 대부분 exhaustive recall이다(test chunk 0.049 → 0.805). 필터·제목이 찾은 문서가 grain 채점 리스트에 들어가게 됐다.
 - **grain 펼치기는 `retrieve(grain=...)`를 명시할 때만 켜진다** — 평가와 e2e가 그 경우다. 에이전트 `search` 도구(grain 미지정)의 동작을 바꾸는 채택분은 시간 완화와 wide anchor 둘뿐이다.
 - lookup은 승보다 패가 많다(test KO 4승 13패). 문서당 3개씩 끼워 넣는 grain 단위가 다른 정답을 밀어내는 것으로 보이며, 끼워 넣는 개수·유사도 하한 조정이 후속 과제다.
+
+### 병합 결함 수정 (2026-09-15, `fix/ranking-merge`) — A/B 대기
+
+[`search-quality-review-2026-09-15.md`](search-quality-review-2026-09-15.md) "2. 검색 실행"의 항목을 커밋 하나에 하나씩 고쳤다.
+**랭킹 커밋 셋은 아직 A/B를 돌리지 못했다.** 작업 당일 개발 DB(`localhost:15432`)가 내려가 있었다. 채택 여부는 아래 절차로 잰 뒤 정한다.
+
+| 커밋 | 종류 | 상태 |
+|---|---|---|
+| anchor 격차 비교에 epsilon, `RetrievalResult.vector_error` | 정확성 | 채택(단위 테스트). 회귀 측정은 대기 |
+| 질의별 순위 리스트 분리, 한 리스트 안 중복 히트는 한 표 (결함 3) | 랭킹 | A/B 대기 |
+| RRF 문서 합의 가점 (결함 1) | 랭킹 | A/B 대기 |
+| whole_document가 관련도 순 히트를 앞에 (결함 6) | 랭킹 | A/B 대기 |
+
+- **anchor 격차**: `1.0 - 0.8 >= 0.2`가 부동소수점으로 False라, 2위가 토큰 tier 상한 0.8이면 제목 정확 일치 1위가 `ambiguous`가 됐다. `title_match.py`의 "격차 0.2가 항상 유지된다"는 설명이 실제와 반대였다.
+- **`vector_error`**: vector arm·grain 펼치기 step의 `error`에서 파생한 속성이다. `to_dict`에도 실린다. 벡터가 실패하면 결과가 어휘 arm 단독인데, 지금까지는 steps를 열어 봐야 알 수 있었다.
+- **질의별 리스트**: document_lookup·lexical·comparison·multihop이 서로 다른 질의의 순위를 한 리스트에 이어 붙였다. `<소스>#<질의>`로 나눈다. multihop은 provider가 있을 때만 돌아 retrieval 모드 A/B로는 잴 수 없다.
+- **문서 합의 가점**: 09-14에 엇갈림으로 기각한 문서 RRF(858179c)는 문서 점수로 단위를 **묶었다**. 한 문서의 청크 여럿이 grain 채점 리스트 상위를 채우는 구조였다. 이번에는 묶지 않는다. 각 히트는 자기 순위를 유지하고, "이 히트는 못 찾았지만 같은 문서의 다른 히트를 찾은 리스트"마다 그 문서의 첫 순위로 한 표를 더 받는다. 제목 히트는 `("document", id)` 키로 소스를 넘어 합쳐진다. 위험은 투표자 불균형(결함 4)이다. term 소스가 최대 10개라, 어휘 쪽이 찾은 문서의 벡터 단위가 한꺼번에 올라갈 수 있다.
+- **whole_document**: 읽은 문서의 청크를 문서 순서로 맨 앞에 두던 것을, 그 문서의 검색 히트(관련도 순) 뒤로 옮겼다. 문서 순서는 그대로다.
+
+측정 절차(각 커밋을 바로 앞 커밋과 짝지음):
+- 커밋 스냅샷을 `git archive`로 풀고 `PYTHONPATH`로 올려 dev split을 두 grain 동시에 돌린다. 이러면 작업 트리를 고쳐도 측정이 흔들리지 않는다.
+- 판정은 grain × kind(lookup ndcg@10, exhaustive recall, none_correct)별 CI와 승패로 한다.
+- 채택 후보를 모은 뒤 test split에서 main과 비교한다.
+- 결함 4(투표자 불균형)·5(후보 풀)는 이 A/B 결과를 보고 손댈지 정한다.
