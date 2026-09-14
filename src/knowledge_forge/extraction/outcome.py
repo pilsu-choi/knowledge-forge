@@ -48,7 +48,7 @@ def build_extraction_outcome(
     # A stable per-call id prefix - joins every chunk id in the bundle so a
     # different chunk grouping (or a single chunk moved into a different
     # bundle) always produces different KnowledgeObject ids, same as before
-    # for the group_size=1 case (bundle_id == the one chunk's id).
+    # for a single-chunk group (bundle_id == the one chunk's id).
     bundle_id = stable_id(*(c.chunk_id for c in chunks))
     now = datetime.now(timezone.utc)
 

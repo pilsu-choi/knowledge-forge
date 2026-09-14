@@ -107,8 +107,10 @@ KnowledgeObject는 1:1이 아니다" 참고.
 
 - `Extractor` ABC의 `async def extract(chunks: list[Chunk], document, source) -> ExtractionOutcome`.
   `chunks`는 항상 비어 있지 않은 리스트다 — `extraction/grouping.py::group_chunks()`가 한
-  문서의 청크들을 `KF_EXTRACTION_CHUNK_GROUP_SIZE`(기본 1, 즉 기존과 동일하게 청크 하나당 호출
-  한 번)개씩 묶어 넘긴다. `ExtractionOutcome`은 `objects: list[KnowledgeObject]`와
+  문서의 청크들을 인접한 순서대로, 합쳐서 `KF_EXTRACTION_GROUP_MAX_TOKENS`(기본 4000) 토큰을
+  넘지 않는 선까지 그리디하게 묶어 넘긴다(개수가 아니라 토큰 예산 기준 — `feature/chunk-merge`
+  에서 옛 `KF_EXTRACTION_CHUNK_GROUP_SIZE`를 대체했다. 자세한 근거는 아래 설계 결정 참고).
+  `ExtractionOutcome`은 `objects: list[KnowledgeObject]`와
   `relations: list[Relation]` 두 필드다 — 하나의 `Chunk`가 하나의 `KnowledgeObject`로 고정
   대응되지 않는다(아래 설계 결정 참고).
 - 기본 구현 `ClaudeExtractor`가 Claude LLM을 호출해 `ExtractionResult`(entities/relations/typed
@@ -219,13 +221,25 @@ Concept)으로 구분되는 typed envelope이고, 서로 다른 `KnowledgeObject
 노트에 더 자세한 근거가 있다.
 
 `Extractor.extract()`는 이제 청크 하나가 아니라 청크 묶음(`chunks: list[Chunk]`)을 받는다 —
-`extraction/grouping.py::group_chunks()`가 한 문서의 청크들을 `KF_EXTRACTION_CHUNK_GROUP_SIZE`
-개씩(기본 1) 순서대로 묶어 파이프라인이 넘긴다. 기본값 1은 기존과 정확히 같은 동작(청크당 호출
-한 번)을 유지하기 위한 안전한 기본값이고, 이 값을 2 이상으로 올리면 인접한 여러 청크가 한
-LLM 호출로 묶여 `KnowledgeObject.evidence`가 실제로 여러 청크를 가리키게 된다(`extraction/
-outcome.py::build_extraction_outcome()`이 묶음의 모든 청크로 `evidence`를 채운다). 묶음
-전략은 지금은 순서 기반 윈도잉일 뿐 의미 기반(유사도 등)은 아니다 — 인접성이 "같은 claim에
-속할 가능성이 높다"는 값싼 근사치라는 전제.
+`extraction/grouping.py::group_chunks()`가 한 문서의 청크들을 순서대로, 누적 토큰 수가
+`KF_EXTRACTION_GROUP_MAX_TOKENS`(기본 4000)를 넘지 않는 선까지 그리디하게 묶어 파이프라인이
+넘긴다. 개수 기준이 아니라 토큰 예산 기준인 이유: 청크 하나가 이미 이 예산 근처(예: 예산
+안에 든 Chapter 전체)라면 그대로 혼자 한 번의 호출로 남고, 반대로 작은 청크(짧은 Slack
+메시지, `chunking/adaptive.py`의 형제 병합을 거치고도 여전히 작은 조각)가 많으면 여러 개가
+한 호출로 묶인다 — 청크 개수만 같아도 실제 크기는 문서마다 천차만별이라, 옛
+`KF_EXTRACTION_CHUNK_GROUP_SIZE`(청크 개수 고정)로는 이 차이를 반영할 수 없었다. 값을 낮추면
+`KnowledgeObject.evidence`가 여러 청크를 가리키는 일이 줄고(`extraction/
+outcome.py::build_extraction_outcome()`이 묶음의 모든 청크로 `evidence`를 채운다), 극단적으로
+낮추면(예: 1토큰) 사실상 청크당 호출 1회였던 이전 기본 동작에 가까워진다. 묶음 전략은 지금도
+순서 기반 윈도잉일 뿐 의미 기반(유사도 등)은 아니다 — 인접성이 "같은 claim에 속할 가능성이
+높다"는 값싼 근사치라는 전제.
+
+**추정(개발 DB, 읽기 전용, 358문서/2,856청크, 현재 저장된 chunk_id/sequence_index/token_count로
+계산 — 실제 LLM 호출 없음)**: 문서별로 저장된 청크를 순서대로 `group_chunks()`에 넣어 본
+결과, 옛 `group_size=1`(청크당 호출 1회) 기준 2,856회였을 호출이 `group_max_tokens=4000`
+기준 758회로 **73.5% 감소**한다. `chunking/adaptive.py`의 작은 형제 청크 병합(위 "작은 청크
+병합" 항목)까지 반영해 코퍼스를 다시 청킹하면 청크 수 자체가 줄어 이 숫자는 더 내려가지만,
+그건 전체 재청킹이 필요해 이 추정에는 포함하지 않았다.
 
 ## 설계 결정: Provenance는 참조(ref)로, 전체 객체 임베드 아님
 

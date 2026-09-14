@@ -50,13 +50,17 @@ class _RepeatingFactExtractor(Extractor):
         return ExtractionOutcome(objects=[ko], relations=[])
 
 
-async def test_repeated_claim_across_chunks_of_one_document_is_merged_by_dedup(tmp_path):
+async def test_repeated_claim_across_chunks_of_one_document_is_merged_by_dedup(tmp_path, monkeypatch):
     doc_path = tmp_path / "doc.txt"
     doc_path.write_text("First paragraph about Acme.\n\nSecond paragraph, also about Acme.\n\nThird paragraph too.\n")
 
+    # A group_max_tokens of 1 forces one chunk per extraction call (any real
+    # chunk is >= 1 token) so each of this tiny document's several chunks is
+    # extracted separately - the scenario dedup.py's merge is meant to catch.
+    monkeypatch.setattr("knowledge_forge.pipeline.settings.extraction_group_max_tokens", 1)
     collector = LocalFileCollector(root=doc_path)
     registry = default_registry()
-    chunker = AdaptiveChunker(max_tokens_per_chunk=5)  # tiny budget forces multiple chunks
+    chunker = AdaptiveChunker(max_tokens_per_chunk=5, min_tokens=0)  # tiny budget forces multiple chunks
     extractor = _RepeatingFactExtractor()
 
     outcomes = [outcome async for outcome in run_pipeline(collector, registry, chunker, extractor)]

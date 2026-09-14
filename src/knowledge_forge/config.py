@@ -44,13 +44,18 @@ class Settings(BaseSettings):
     # it's the same "don't fan out unbounded requests" concern, and a
     # dedicated setting isn't justified until it's actually a bottleneck.
     max_concurrent_llm_requests: int = 5
-    # How many consecutive chunks (see extraction/grouping.py) are bundled
-    # into one Extractor.extract() call. 1 (default) reproduces the exact
-    # prior one-chunk-per-call behavior; >1 lets a KnowledgeObject whose
-    # evidence spans an adjacent chunk boundary (see roadmap.md 5단계 item
-    # 1) actually be grounded in more than one chunk, at the cost of a
-    # larger prompt per call.
-    extraction_chunk_group_size: int = 1
+    # Token budget for bundling consecutive chunks (see
+    # extraction/grouping.py) into one Extractor.extract() call. A single
+    # chunk already at or over this budget (e.g. a whole Chapter under
+    # AdaptiveChunker's own budget) stays alone in its own call; several
+    # small chunks get bundled up to this many total tokens, which is what
+    # actually cuts LLM call count for a document with many small chunks -
+    # a call-count knob (the prior KF_EXTRACTION_CHUNK_GROUP_SIZE) can't
+    # express "chunk sizes vary" the way a token budget does. Bundling also
+    # lets a KnowledgeObject whose evidence spans an adjacent chunk boundary
+    # (see roadmap.md 5단계 item 1) actually be grounded in more than one
+    # chunk.
+    extraction_group_max_tokens: int = 4000
     # Same-document, same-run near-duplicate merging (roadmap.md 5단계 item
     # 2, dedup.py) - two chunks/chunk bundles that both extract "the same"
     # object get merged into one. 1.0 (or any value > 1.0) effectively
