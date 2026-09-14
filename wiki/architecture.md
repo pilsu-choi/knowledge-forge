@@ -154,6 +154,44 @@ KnowledgeObject는 1:1이 아니다" 참고.
   동일하게 저장 없이 동작한다.
 - 상세 스키마와 사용법은 [`storage.md`](storage.md) 참고.
 
+### 문서 간 동시성
+
+`run_pipeline`은 문서를 최대 `KF_MAX_CONCURRENT_DOCUMENTS`(기본 4)개 동시에 처리한다
+(`perf/etl-concurrency`). 한 문서의 흐름은 셋으로 나뉜다.
+
+| 단계 | 내용 | 동시성 |
+|---|---|---|
+| 앞 | 변경 없음 검사, `record_source`, 파싱 | 문서 간 동시 |
+| 문서 단계 | `record_document` → `link_document` → OKF resource/`_resolve_links` | **수집 순서대로 한 번에 하나** (`_DocumentTurns`) |
+| 뒤 | 청킹, `record_chunks`, 청크 임베딩, 추출, KO/relation 기록 | 문서 간 동시 |
+
+- **문서 단계를 순서대로 두는 이유**: 이 단계가 같은 실행의 *앞선* 항목이 쓴 것을 다시 읽는 유일한
+  곳이다. `_resolve_links`는 앞선 항목의 endpoint를, `link_document`는 THREAD_SEQUENCE/
+  SAME_CHANNEL_SEQUENCE 대상과 슬랙 스레드 부모 에피소드의 `documents` 행, 버전 패밀리 구성원을
+  읽는다. 버전 패밀리 relink는 PREVIOUS_VERSION 체인을 지우고 다시 쓰므로, 같은 패밀리 두 문서가
+  동시에 돌면 서로의 간선을 지울 수 있다. 링크 종류별로 의존을 추적하는 대신 이 단계 전체를 순서대로
+  두면 순차 실행과 똑같이 보인다. 앞에서 빠진 항목(변경 없음, 파싱 실패)은 자기 차례를 즉시 넘긴다.
+- **결과 순서**: yield는 수집 순서 그대로다(뒤 항목이 먼저 끝나도 앞 항목을 기다린다). 예외는 그 항목
+  순서에서 올라오고, 그때 진행 중인 뒤 항목들은 취소된다 - 순차 실행과 달리 그 항목들이 이미 일부 행을
+  썼을 수 있다.
+- **LLM 호출 상한**: VLM/추출/임베딩은 각 프로바이더 인스턴스의 `KF_MAX_CONCURRENT_LLM_REQUESTS`
+  세마포어가 그대로 묶는다. 파서는 레지스트리에 포맷당 하나, 추출기는 실행당 하나라 문서가 늘어도
+  세마포어는 공유된다.
+- **쓰기 커넥션**: 쓰기는 공유 autocommit 커넥션 하나를 그대로 쓴다. psycopg `AsyncConnection`은
+  문장 단위로 내부 락을 잡아 동시 코루틴의 단일 문장 쓰기를 직렬화하므로 안전하다. 여러 문장을 한
+  트랜잭션으로 묶는 곳(`save_chunks(document_id=...)`의 청크 집합 교체)만 풀에서 커넥션을 빌린다 -
+  공유 커넥션에서 트랜잭션을 열면 다른 코루틴의 문장이 그 안에 섞인다. 쓰기 풀을 두지 않은 이유는
+  실측이다: 고정 google_drive 26건 재적재에서 DB 쓰기 합이 0.66초로 벽시계 67.8초의 1%였다
+  ([`reingest-replay.md`](reingest-replay.md#e3-처리량-perfetl-concurrency)).
+- **동기 파싱은 스레드로**: pdf/xlsx/pptx/docx/hwpx 파서의 라이브러리 작업은 `asyncio.to_thread`로
+  돌고 VLM 호출만 루프에 남는다. PDFium(pdfplumber 렌더)은 thread-safe가 아니라 렌더만 모듈 락으로
+  직렬화한다. 다만 pdfminer·openpyxl·kss(pecab)는 순수 파이썬이라 GIL 때문에 CPU 병렬성은 거의
+  없다 - 이득은 VLM/임베딩/추출/DB 같은 I/O 대기가 겹칠 때 나고, 청킹은 스레드로 옮겨도 얻을 게 없어
+  루프에 그대로 둔다.
+- **같은 uri가 한 실행에 두 번** 나오는 경우는 순서를 보장하지 않는다(두 번째의 변경 없음 검사가 첫
+  번째 기록 전에 돌 수 있다). 현재 모든 컬렉터는 한 실행 안에서 uri가 유일하다(재적재는 `sources` 행
+  기준, 슬랙/지메일은 재구성 단위 기준).
+
 ### OKF — 파일 기반 Knowledge Base (`src/knowledge_forge/okf/`) — 선택적
 
 - `OKFWriter`가 `PipelineStore`와는 독립적인 두 번째 옵션 출력 경로다: 같은 `Source`/`Document`/

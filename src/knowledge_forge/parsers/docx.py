@@ -65,9 +65,14 @@ class DocxParser(Parser):
 
     async def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
         try:
-            docx_document = DocxDocument(io.BytesIO(item.content))
-            elements = self._convert_paragraphs(docx_document, item.uri)
-            elements.extend(self._convert_tables(docx_document, item.uri, len(elements)))
+            def _body() -> tuple[DocxDocumentType, list[DocumentElement]]:
+                docx_document = DocxDocument(io.BytesIO(item.content))
+                elements = self._convert_paragraphs(docx_document, item.uri)
+                elements.extend(self._convert_tables(docx_document, item.uri, len(elements)))
+                return docx_document, elements
+
+            # python-docx is synchronous CPU work - off the event loop (pipeline.py parses documents concurrently).
+            docx_document, elements = await asyncio.to_thread(_body)
             elements.extend(await self._convert_images(docx_document, item.uri, len(elements)))
         except Exception as exc:  # noqa: BLE001 - surfaced as a typed parsing error
             raise ParsingError(f"Failed to parse docx '{item.uri}': {exc}") from exc

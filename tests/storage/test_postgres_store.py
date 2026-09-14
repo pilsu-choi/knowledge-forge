@@ -947,3 +947,50 @@ async def test_list_chunks_by_document_orders_by_sequence_index_and_optionally_f
     assert [c.sequence_index for c in only_paragraphs] == [0, 1]
 
     assert await store.list_chunks_by_document("test-does-not-exist") == []
+
+
+async def test_save_chunks_with_document_id_replaces_the_documents_chunk_set(store):
+    """재청킹으로 같은 document_id가 더 적은 청크로 다시 나오면 예전 청크와 그 청크-grain
+    임베딩이 남아 검색에 계속 걸리던 구멍(wiki/reingest-replay.md) - `document_id`를 주면
+    그 문서의 청크 집합이 통째로 교체된다. KO evidence는 FK가 아닌 JSON 참조라 지워진
+    청크를 가리킨 채 남는다."""
+    src, doc, _, objects, _ = _sample_records()
+    await store.save_source(src, None)
+    await store.save_document(doc)
+
+    def _chunk(index: int, text: str) -> Chunk:
+        return Chunk(
+            chunk_id=f"test-rc-c{index}",
+            document_id="test-d1",
+            source_id="test-s1",
+            hierarchy_level=HierarchyLevel.PARAGRAPH,
+            sequence_index=index,
+            text=text,
+            token_count=1,
+        )
+
+    old = [_chunk(i, f"old {i}") for i in range(3)]
+    await store.save_chunks(old, document_id="test-d1")
+    await store.save_embeddings([_chunk_record(c, src.project_id, [0.1] * 1536, text=c.text) for c in old])
+    evidence_ko = objects[0].model_copy(
+        update={"evidence": [objects[0].evidence[0].model_copy(update={"chunk_id": "test-rc-c2"})]}
+    )
+    await store.save_knowledge_objects([evidence_ko])
+
+    # A plain upsert (no document_id) still never deletes.
+    await store.save_chunks([_chunk(0, "old 0")])
+    assert len(await store.list_chunks_by_document("test-d1")) == 3
+
+    await store.save_chunks([_chunk(0, "merged")], document_id="test-d1")
+
+    chunks = await store.list_chunks_by_document("test-d1")
+    assert [(c.chunk_id, c.text) for c in chunks] == [("test-rc-c0", "merged")]
+    rows = await (await store.conn.execute(
+        "SELECT chunk_id FROM knowledge_object_embeddings WHERE document_id = 'test-d1' AND target_kind = 'chunk'"
+    )).fetchall()
+    assert rows == [("test-rc-c0",)]
+    kept = await store.get_knowledge_object(evidence_ko.knowledge_object_id)
+    assert kept is not None and kept.evidence[0].chunk_id == "test-rc-c2"
+
+    await store.save_chunks([], document_id="test-d1")
+    assert await store.list_chunks_by_document("test-d1") == []

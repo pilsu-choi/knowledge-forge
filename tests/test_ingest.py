@@ -98,7 +98,7 @@ class _FakeCursorStore:
     async def link_document(self, source, document):
         return []
 
-    async def record_chunks(self, chunks):
+    async def record_chunks(self, document_id, chunks):
         pass
 
     async def record_knowledge_objects(self, objects):

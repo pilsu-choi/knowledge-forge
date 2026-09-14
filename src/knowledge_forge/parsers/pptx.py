@@ -49,13 +49,10 @@ class PptxParser(Parser):
 
     async def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
         try:
-            elements: list[DocumentElement] = []
-            presentation = Presentation(io.BytesIO(item.content))
-            slides = list(presentation.slides)
+            # python-pptx is synchronous CPU work - off the event loop (pipeline.py parses documents concurrently).
+            slides = await asyncio.to_thread(lambda: list(Presentation(io.BytesIO(item.content)).slides))
             descriptions = await self._describe_all_pictures(item.uri, slides)
-            desc_iter = iter(descriptions)
-            for slide_index, slide in enumerate(slides, start=1):
-                elements.extend(self._parse_slide(slide, item.uri, slide_index, len(elements), desc_iter))
+            elements = await asyncio.to_thread(self._parse_slides, slides, item.uri, descriptions)
         except Exception as exc:  # noqa: BLE001 - surfaced as a typed parsing error
             raise ParsingError(f"Failed to parse pptx '{item.uri}': {exc}") from exc
 
@@ -66,21 +63,35 @@ class PptxParser(Parser):
         )
 
     async def _describe_all_pictures(self, uri: str, slides) -> list[str | None]:
-        picture_shapes = [
-            (slide_index, shape)
-            for slide_index, slide in enumerate(slides, start=1)
-            for shape in slide.shapes
-            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE
-        ]
+        def _pictures() -> list[tuple[int, bytes | Exception, str]]:
+            found: list[tuple[int, bytes | Exception, str]] = []
+            for slide_index, slide in enumerate(slides, start=1):
+                for shape in slide.shapes:
+                    if shape.shape_type != MSO_SHAPE_TYPE.PICTURE:
+                        continue
+                    try:
+                        found.append((slide_index, shape.image.blob, shape.image.content_type))
+                    except Exception as exc:  # noqa: BLE001 - e.g. a linked (not embedded) picture; degraded below
+                        found.append((slide_index, exc, ""))
+            return found
 
-        async def _describe(slide_index: int, shape) -> str | None:
+        async def _describe(slide_index: int, blob: bytes | Exception, content_type: str) -> str | None:
             try:
-                return await self._vision_extractor().describe_figure(shape.image.blob, media_type=shape.image.content_type) or None
+                if isinstance(blob, Exception):
+                    raise blob
+                return await self._vision_extractor().describe_figure(blob, media_type=content_type) or None
             except Exception as exc:  # noqa: BLE001 - degrade this image, not the whole slide/deck
                 logger.warning("VLM figure description failed on %s slide %d: %s", uri, slide_index, exc)
                 return None
 
-        return await asyncio.gather(*(_describe(si, s) for si, s in picture_shapes))
+        return await asyncio.gather(*(_describe(*picture) for picture in await asyncio.to_thread(_pictures)))
+
+    def _parse_slides(self, slides, uri: str, descriptions: list[str | None]) -> list[DocumentElement]:
+        elements: list[DocumentElement] = []
+        desc_iter = iter(descriptions)
+        for slide_index, slide in enumerate(slides, start=1):
+            elements.extend(self._parse_slide(slide, uri, slide_index, len(elements), desc_iter))
+        return elements
 
     def _parse_chart(self, shape, uri: str, page: int, start_index: int, elements: list[DocumentElement]) -> None:
         chart = shape.chart

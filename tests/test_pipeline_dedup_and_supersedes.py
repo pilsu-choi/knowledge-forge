@@ -107,7 +107,7 @@ class _FakeStore:
     async def link_document(self, source, document):
         return []
 
-    async def record_chunks(self, chunks):
+    async def record_chunks(self, document_id, chunks):
         self.saved_chunks.extend(chunks)
         self.calls.append("record_chunks")
 

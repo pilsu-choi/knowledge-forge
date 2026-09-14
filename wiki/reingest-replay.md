@@ -480,7 +480,7 @@ request`를 돌려줬는데, `pipeline.py`가 이 호출을 try/except로 감싸
   2문서 중 1문서만 임베딩이 실패해도 두 문서 다 파싱·저장까지는 끝까지 처리됨(실패한
   쪽만 임베딩이 비어 있음).
 
-### 남은 구멍: 재적재가 문서의 예전 청크를 지우지 않음
+### ~~남은 구멍: 재적재가 문서의 예전 청크를 지우지 않음~~ → 아래 "재적재 시 문서의 청크 집합 교체"에서 해결
 
 이번 3건과 직접 얽힌 코드 경로가 아니라서(콘텐츠는 안 바뀌므로 청크 집합도 안 바뀐다)
 고치지 않고 여기 보고만 한다. `storage/postgres_store.py::save_chunks`는
@@ -491,3 +491,89 @@ request`를 돌려줬는데, `pipeline.py`가 이 호출을 try/except로 감싸
 새 청크 집합"을 알아야 하므로 트랜잭션 안에서 `DELETE FROM chunks WHERE document_id
 = ? AND chunk_id NOT IN (...)` 형태(그리고 `knowledge_object_embeddings`의 대응
 행도 함께)가 필요하다 - 다음 재적재 작업의 범위로 남긴다.
+
+## E3 처리량 (`perf/etl-concurrency`)
+
+### 재적재 시 문서의 청크 집합 교체
+
+`PostgresStore.save_chunks(chunks, document_id=...)`가 이제 그 문서의 **청크 집합 전체를 교체**한다:
+기존 청크 중 새 집합에 없는 것과 그 청크-grain 임베딩 행을 upsert와 **같은 트랜잭션**에서 지운다.
+`pipeline.py`는 `PipelineStore.record_chunks(document_id, chunks)`로 항상 문서 id를 넘기므로 빈
+청크 집합(예: VLM 실패로 이미지 설명이 사라진 문서)도 예전 청크를 전부 지운다. `document_id` 없이
+부르면 예전처럼 upsert만 한다(테스트 픽스처처럼 여러 문서 청크를 한 번에 넣는 호출용).
+
+- **순서 제약**: `knowledge_object_embeddings.chunk_id → chunks` FK가 있어 임베딩 행을 먼저 지운다.
+  `chunks.parent_chunk_id`는 FK가 없고(현재 청커는 항상 None) 다른 FK도 chunks를 가리키지 않는다.
+- **JSON 참조**: `knowledge_objects.evidence`/`relations.evidence`의 chunk_id는 FK가 아닌 JSON이라
+  지워진 청크를 가리킨 채 남을 수 있다. 이걸 역참조하는 읽기 경로는 없다 - `read_document`는
+  `chunks` 테이블을 직접 읽고, 검색은 KO 행 자체(요약/본문/임베딩)를 돌려줄 뿐 evidence로 청크를
+  조회하지 않는다. DB 테스트(`test_save_chunks_with_document_id_replaces_the_documents_chunk_set`)가
+  이 상태에서도 KO를 그대로 읽을 수 있는지 확인한다.
+- **커넥션**: 트랜잭션은 풀에서 빌린 전용 커넥션에서 연다(`_read_conn` → `_pooled_conn`). 공유
+  autocommit 커넥션에서 열면 문서 간 동시 처리 중인 다른 코루틴의 문장이 그 트랜잭션에 섞인다.
+
+### 실측 (복제 DB `knowledge_forge_e3`, 실측 후 삭제)
+
+개발 DB 스냅숏(`/tmp/kf_etl.dump`, 358문서/2,856청크, 청크 병합 이전 청크)을 매 실행 전에 새로
+복원하고, 문서가 있는 google_drive 소스 **26건 고정**(pdf 5, pptx 7, xlsx 9, docx 5 - 대형 pptx
+3개, 약관 OCR pdf, 4MB xlsx 2개 포함)을 `reparse --source-type google_drive --all --no-extract
+--no-embed --uri ...`로 돌렸다. `KF_LLM_PROVIDER=anthropic ANTHROPIC_API_KEY=`라 VLM은 자격 증명
+오류로 **네트워크 호출 없이 즉시 실패**하고(실행당 773건) 표는 pdfplumber 추출로, 그림은 설명 없이
+강등된다 - 최초 적재 때와 같은 조건이다.
+
+| 코드 | 벽시계 |
+|---|---|
+| main `90e8515` | 72.6s, 67.5s (구간 계측 켠 실행 67.8s, 67.8s) |
+| 청크 집합 교체만 `4262e06` | 70.3s |
+| 이 브랜치, `KF_MAX_CONCURRENT_DOCUMENTS=4`(기본) | 53.5s, 54.0s (계측 53.7s) |
+| 이 브랜치, `KF_MAX_CONCURRENT_DOCUMENTS=1` | 54.4s |
+
+구간별 누적 시간(파서 `parse`, 청커 `chunk`, `PipelineStore` 쓰기를 감싸 합산, 초):
+
+| 구간 | main | 이 브랜치 동시성 1 | 이 브랜치 동시성 4 |
+|---|---|---|---|
+| PDF 파싱 | 38.3 | 37.6 | 63.1 |
+| XLSX 파싱 | 18.6 | **6.2** | 17.4 |
+| PPTX / DOCX 파싱 | 0.6 / 0.15 | 0.6 / 0.15 | 3.6 / 4.2 |
+| 청킹 | 5.1 | 5.3 | 7.9 |
+| DB 쓰기 합(source/document/link/chunks) | 0.66 | 0.78 | 13.8 |
+
+- **벽시계 이득 약 14초(67.8 → 54초)는 거의 전부 xlsx 수식 이중 로드 제거다**(18.6 → 6.2초).
+  전체 `data_only=False` 재로드는 셀 객체와 스타일을 전부 만든다. read-only 스트리밍 패스는 그걸
+  만들지 않는다. 단독 벤치(xlsx 23건, 로드만)의 4.48 → 1.10초보다 파이프라인 안의 이득이 큰 건,
+  워크북 두 개를 들고 있던 메모리/GC 비용까지 함께 빠졌기 때문으로 보인다(분리 측정은 안 했다).
+- **이 측정 조건에서는 문서 간 동시성의 벽시계 이득이 없다**(동시성 4: 54.0초, 1: 54.4초).
+  VLM이 네트워크 없이 즉시 실패해 I/O 대기가 없고, 남는 일(pdfminer·openpyxl·kss pecab)은 순수
+  파이썬이라 GIL 하나를 나눠 쓴다. 동시성 4의 구간 합이 벽시계를 넘는 건 코루틴이 GIL과 이벤트
+  루프 차례를 기다린 시간이 각 구간에 함께 잡혀서다. DB 쓰기 합이 13.8초로 뛴 것도 같은 이유다
+  (쓰기 자체는 동시성 1에서 0.78초). 동시성의 이득은 VLM/임베딩/추출 호출이 실제로 네트워크를 탈 때
+  나온다 - 아래 임베딩 백필이 그 경우다. 청킹과 파싱을 다른 프로세스로 옮기지 않는 한 CPU만 쓰는
+  재적재는 더 빨라지지 않는다(후속 과제 후보).
+- main 쪽 구간 합(DB 쓰기 0.66초 / 벽시계 67.8초, 1%)을 보고 쓰기 풀을 두지 않았다
+  ([`architecture.md`](architecture.md#문서-간-동시성)).
+
+**결과 행 동일성** (`documents`는 id·elements md5·metadata md5·title, `chunks`는 id·text md5·
+token_count·level·sequence·element_ids·page 범위를 비교):
+
+- `documents` 26행: main 실행과 이 브랜치 실행이 **완전히 같다**(동시성 1/4 모두).
+- `chunks`: 이 브랜치 결과 1,584행은 main 결과 2,806행의 **부분집합**이다. 차이 1,222행은 전부
+  복원 직후에도 있던 행(병합 이전 청크)이고, 새 결과와 chunk_id가 겹치는 행은 없다 - 즉 차이는
+  의도한 stale 청크 삭제뿐이다. 반복 실행끼리(main 두 번, 이 브랜치 두 번)도 행이 같다.
+- 전체 합계: chunks 2,856 → main 3,876(새 청크가 예전 청크 **옆에 쌓임**) / 이 브랜치 2,654,
+  청크 임베딩 2,856 → main 2,856(stale 1,222행 잔존) / 이 브랜치 1,634. documents 358,
+  knowledge_objects 5,107, document_links 204, sources 502는 모두 그대로.
+- 파서 출력 자체도 따로 확인했다: 고정 26건 + 개발 DB xlsx 전체 23건 + 픽스처 7건(총 47건)을 두
+  코드로 파싱한 Document JSON 해시가 전부 같다(파싱 불가 xlsx 2건은 양쪽 같은 오류). 수식이 있는
+  xlsx 7건, 수식 셀 6,606개.
+
+**`embed --embedding-source chunk` 백필**: 같은 스냅숏에서 고정 26건의 청크 임베딩 1,786행을
+지우고 채웠다(OpenRouter `openai/text-embedding-3-small`, 배치 64).
+
+| 코드 | 벽시계 | 결과 |
+|---|---|---|
+| main (배치 하나씩 조회→임베딩→기록) | 48.2s | 1,786행, 누락 0 |
+| 이 브랜치 (조회 1회에 배치 5개분, 겹치지 않게 동시 임베딩) | **15.9s** (3.0배) | 1,786행, 누락 0, chunk_id·embedded_text_hash가 main과 동일 |
+
+동시 배치 수는 새 설정 없이 `KF_MAX_CONCURRENT_LLM_REQUESTS`(기본 5) - 프로바이더 세마포어와 같은
+값이다. 다음 조회는 그 조회의 쓰기가 모두 끝난 뒤에만 하므로 같은 행이 두 배치에 들어가지 않는다.
+

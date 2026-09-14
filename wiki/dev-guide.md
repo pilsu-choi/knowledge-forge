@@ -54,6 +54,7 @@ export할 필요 없이 `.env`에 값을 채워 넣으면 된다. 템플릿은 [
 | `KF_MAX_TOKENS_PER_CHUNK` | `4000` | Adaptive Chunker의 청크당 최대 토큰 예산. `--max-tokens` CLI 옵션으로도 override 가능 |
 | `KF_MIN_TOKENS_PER_CHUNK` | `50` | 이 값 미만인 리프 청크(외톨이 불릿, 제목만 있는 슬라이드 문단 등)는 인접 형제 청크와 합쳐질 후보가 된다 — `AdaptiveChunker._merge_small_siblings()`. Chapter/Section 경계는 절대 넘지 않고, 표 청크는 어떤 청크와도 병합하지 않는다. 자세한 내용은 [`adaptive-chunking.md`](adaptive-chunking.md#fixchunk-merge-작은-형제-청크-병합) |
 | `KF_MAX_CONCURRENT_LLM_REQUESTS` | `5` | Extractor/VisionExtractor 인스턴스마다 동시에 진행 가능한 LLM 요청 수 상한(`asyncio.Semaphore`). 한 문서의 여러 청크·표·이미지는 이 한도 안에서 동시 처리된다 |
+| `KF_MAX_CONCURRENT_DOCUMENTS` | `4` | `run_pipeline`이 동시에 처리하는 문서 수. LLM/VLM/임베딩 호출은 여전히 위 세마포어가 묶고, 문서 기록·링크 단계와 결과 yield는 수집 순서를 지킨다(`pipeline.py::_DocumentTurns`). `1`이면 예전 순차 처리와 같다. [`architecture.md`](architecture.md#문서-간-동시성) |
 | `KF_EXTRACTION_GROUP_MAX_TOKENS` | `4000` | `extraction/grouping.py::group_chunks()`가 한 문서 안의 인접 청크를 Knowledge Extraction 호출 1회로 묶을 때의 누적 토큰 예산 — 개수 기준이 아니다. 이미 예산에 가까운 청크 하나는 혼자 남고, 작은 청크 여럿은 한 호출로 묶인다. 옛 `KF_EXTRACTION_CHUNK_GROUP_SIZE`(청크 개수 고정)를 대체했다 |
 | `KF_DATABASE_URL` | (없음, 저장 비활성) | Source/Document/Chunk/KnowledgeObject를 저장할 PostgreSQL DSN. [`storage.md`](storage.md) 참고 |
 | `KF_DATA_DIR` | `./data` | 원본 바이트를 저장하는 디스크 blob 스토어 루트 |

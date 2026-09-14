@@ -685,33 +685,49 @@ def embed(
     embedding_model = model or settings.embedding_model
     embedder = get_embedding_provider(model=embedding_model)
 
+    # Batches embedded at once - the embedding provider's own semaphore caps
+    # in-flight requests at the same number (KF_MAX_CONCURRENT_LLM_REQUESTS).
+    fan_out = settings.max_concurrent_llm_requests
+
     async def _run() -> int:
         total = 0
         async with PipelineStore(database_url, settings.data_dir) as store:
             await store.init_schema()
             while True:
+                # One read fetches `fan_out` batches' worth of missing rows, split into disjoint batches and
+                # embedded concurrently; the next read only happens once they are all written, so no row is
+                # embedded twice.
+                limit = batch_size * fan_out
                 if embedding_source == "chunk":
-                    pairs = await store.list_chunks_missing_embedding(
-                        embedding_model, project_id=project_id, limit=batch_size
-                    )
+                    pairs = await store.list_chunks_missing_embedding(embedding_model, project_id=project_id, limit=limit)
                     if not pairs:
                         break
-                    # One backfill batch can straddle projects (project_id
-                    # filter omitted) - group so each record gets its own.
-                    by_project: dict[str, list] = {}
-                    for chunk, chunk_project in pairs:
-                        by_project.setdefault(chunk_project, []).append(chunk)
-                    for chunk_project, chunks in by_project.items():
-                        await store.record_chunk_embeddings(chunks, chunk_project, embedder, embedding_model)
+                    writes = []
+                    for start in range(0, len(pairs), batch_size):
+                        # One backfill batch can straddle projects (project_id
+                        # filter omitted) - group so each record gets its own.
+                        by_project: dict[str, list] = {}
+                        for chunk, chunk_project in pairs[start : start + batch_size]:
+                            by_project.setdefault(chunk_project, []).append(chunk)
+                        writes += [
+                            store.record_chunk_embeddings(chunks, chunk_project, embedder, embedding_model)
+                            for chunk_project, chunks in by_project.items()
+                        ]
+                    await asyncio.gather(*writes)
                     total += len(pairs)
                 else:
-                    batch = await store.list_knowledge_objects_missing_embedding(
-                        embedding_model, project_id=project_id, limit=batch_size
+                    objects = await store.list_knowledge_objects_missing_embedding(
+                        embedding_model, project_id=project_id, limit=limit
                     )
-                    if not batch:
+                    if not objects:
                         break
-                    await store.record_embeddings(batch, embedder, embedding_model)
-                    total += len(batch)
+                    await asyncio.gather(
+                        *(
+                            store.record_embeddings(objects[start : start + batch_size], embedder, embedding_model)
+                            for start in range(0, len(objects), batch_size)
+                        )
+                    )
+                    total += len(objects)
                 typer.echo(f"{total}개 임베딩 완료...", err=True)
         return total
 

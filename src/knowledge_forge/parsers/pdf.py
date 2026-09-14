@@ -28,6 +28,7 @@ import asyncio
 import io
 import logging
 import statistics
+import threading
 from typing import Literal
 
 import pdfplumber
@@ -71,11 +72,41 @@ _RENDER_RESOLUTION = 150
 # read, only x-position - like the heading/paragraph-gap heuristics above,
 # this is a coarse layout signal, not semantic list-nesting detection).
 _INDENT_STEP_POINTS = 18.0
+# pdfplumber renders crops through pypdfium2, and PDFium is not thread-safe.
+# Page scanning runs in worker threads (`_scan_page`), and pipeline.py parses
+# several documents at once, so two renders must never overlap.
+_RENDER_LOCK = threading.Lock()
 
 
 def _indent_level(x0: float, page_left_x0: float) -> int | None:
     level = round((x0 - page_left_x0) / _INDENT_STEP_POINTS)
     return level if level >= 1 else None
+
+
+def _render_region(page, bbox: tuple[float, float, float, float]) -> bytes | Exception:
+    """PNG crop of `bbox`, or the exception rendering raised (e.g. a region
+    reaching outside the page) - returned rather than raised so the caller
+    degrades just that one table/figure, as when it rendered inline."""
+    try:
+        with _RENDER_LOCK:
+            cropped = page.crop(bbox).to_image(resolution=_RENDER_RESOLUTION)
+        buf = io.BytesIO()
+        cropped.original.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception as exc:  # noqa: BLE001 - degrade this region, not the whole document
+        return exc
+
+
+def _scan_page(page) -> tuple[list, list[bytes | Exception], list[tuple[float, float, float, float]], list[bytes | Exception], list[dict]]:
+    """All of one page's synchronous pdfplumber work - detected tables and
+    image regions with their rendered crops, plus the text lines - run in a
+    worker thread (`asyncio.to_thread`) so it doesn't block the event loop
+    while the VLM calls that follow stay async."""
+    tables = list(page.find_tables())
+    table_crops = [_render_region(page, tuple(t.bbox)) for t in tables]
+    image_bboxes = [(img["x0"], img["top"], img["x1"], img["bottom"]) for img in page.images]
+    image_crops = [_render_region(page, bbox) for bbox in image_bboxes]
+    return tables, table_crops, image_bboxes, image_crops, page.extract_text_lines()
 
 
 def _bbox_overlap_fraction(line_bbox: tuple[float, float, float, float], region_bbox: tuple[float, float, float, float]) -> float:
@@ -110,10 +141,14 @@ class PDFParser(Parser):
     async def parse(self, item: RawItem, source_ref: SourceRef) -> Document:
         try:
             elements: list[DocumentElement] = []
-            with pdfplumber.open(io.BytesIO(item.content)) as pdf:
-                page_count = len(pdf.pages)
-                for page in pdf.pages:
+            pdf = await asyncio.to_thread(pdfplumber.open, io.BytesIO(item.content))
+            try:
+                pages = await asyncio.to_thread(lambda: pdf.pages)
+                page_count = len(pages)
+                for page in pages:
                     elements.extend(await self._parse_page(page, item.uri, len(elements)))
+            finally:
+                pdf.close()
         except Exception as exc:  # noqa: BLE001 - surfaced as a typed parsing error
             raise ParsingError(f"Failed to parse pdf '{item.uri}': {exc}") from exc
 
@@ -124,31 +159,31 @@ class PDFParser(Parser):
             metadata=DocumentMetadata(page_count=page_count),
         )
 
-    def _render_region(self, page, bbox: tuple[float, float, float, float]) -> bytes:
-        cropped = page.crop(bbox).to_image(resolution=_RENDER_RESOLUTION)
-        buf = io.BytesIO()
-        cropped.original.save(buf, format="PNG")
-        return buf.getvalue()
-
-    async def _parse_tables(self, page, uri: str, start_index: int, elements: list[DocumentElement]) -> list[tuple[float, float, float, float]]:
-        tables = list(page.find_tables())
+    async def _parse_tables(
+        self, page, uri: str, start_index: int, elements: list[DocumentElement], tables: list, crops: list[bytes | Exception]
+    ) -> list[tuple[float, float, float, float]]:
         covered = [tuple(t.bbox) for t in tables]
 
-        async def _one(idx: int, table) -> tuple[int, tuple, list, Literal["rule_based", "vlm"]]:
-            bbox = tuple(table.bbox)
-            extraction_method: Literal["rule_based", "vlm"]
+        async def _one(idx: int, crop: bytes | Exception) -> list | None:
             try:
-                markdown = await self._vision_extractor().extract_table_markdown(self._render_region(page, bbox))
-                rows = parse_markdown_table(markdown)
-                extraction_method = "vlm"
+                if isinstance(crop, Exception):
+                    raise crop
+                return parse_markdown_table(await self._vision_extractor().extract_table_markdown(crop))
             except Exception as exc:  # noqa: BLE001 - degrade this table, not the whole document
                 logger.warning("VLM table extraction failed on %s page %d table %d, falling back to pdfplumber: %s", uri, page.page_number, idx, exc)
-                raw_rows = table.extract() or []
-                rows = [["" if cell is None else str(cell) for cell in row] for row in raw_rows]
-                extraction_method = "rule_based"
-            return idx, bbox, rows, extraction_method
+                return None
 
-        results = await asyncio.gather(*(_one(idx, table) for idx, table in enumerate(tables)))
+        vlm_rows = await asyncio.gather(*(_one(idx, crop) for idx, crop in enumerate(crops)))
+        # pdfplumber's own cell extraction for the tables the VLM couldn't do - CPU work, so off the loop too.
+        fallback = iter(
+            await asyncio.to_thread(lambda: [table.extract() or [] for table, rows in zip(tables, vlm_rows, strict=True) if rows is None])
+        )
+        results: list[tuple[int, tuple, list, Literal["rule_based", "vlm"]]] = [
+            (idx, bbox, rows, "vlm")
+            if rows is not None
+            else (idx, bbox, [["" if cell is None else str(cell) for cell in row] for row in next(fallback)], "rule_based")
+            for idx, (bbox, rows) in enumerate(zip(covered, vlm_rows, strict=True))
+        ]
         for idx, bbox, rows, extraction_method in results:
             if not rows:
                 continue
@@ -163,18 +198,25 @@ class PDFParser(Parser):
             )
         return covered
 
-    async def _parse_images(self, page, uri: str, start_index: int, elements: list[DocumentElement]) -> list[tuple[float, float, float, float]]:
-        images = list(page.images)
-        covered = [(img["x0"], img["top"], img["x1"], img["bottom"]) for img in images]
-
-        async def _one(idx: int, bbox) -> str | None:
+    async def _parse_images(
+        self,
+        page,
+        uri: str,
+        start_index: int,
+        elements: list[DocumentElement],
+        covered: list[tuple[float, float, float, float]],
+        crops: list[bytes | Exception],
+    ) -> list[tuple[float, float, float, float]]:
+        async def _one(idx: int, crop: bytes | Exception) -> str | None:
             try:
-                return await self._vision_extractor().describe_figure(self._render_region(page, bbox)) or None
+                if isinstance(crop, Exception):
+                    raise crop
+                return await self._vision_extractor().describe_figure(crop) or None
             except Exception as exc:  # noqa: BLE001 - degrade this image, not the whole document
                 logger.warning("VLM figure description failed on %s page %d image %d: %s", uri, page.page_number, idx, exc)
                 return None
 
-        descriptions = await asyncio.gather(*(_one(idx, bbox) for idx, bbox in enumerate(covered)))
+        descriptions = await asyncio.gather(*(_one(idx, crop) for idx, crop in enumerate(crops)))
         for idx, (bbox, description) in enumerate(zip(covered, descriptions, strict=True)):
             elements.append(
                 ImageElement(
@@ -191,10 +233,10 @@ class PDFParser(Parser):
         elements: list[DocumentElement] = []
         page_number = page.page_number
 
-        covered_bboxes = await self._parse_tables(page, uri, start_index, elements)
-        covered_bboxes += await self._parse_images(page, uri, start_index, elements)
+        tables, table_crops, image_bboxes, image_crops, lines = await asyncio.to_thread(_scan_page, page)
+        covered_bboxes = await self._parse_tables(page, uri, start_index, elements, tables, table_crops)
+        covered_bboxes += await self._parse_images(page, uri, start_index, elements, image_bboxes, image_crops)
 
-        lines = page.extract_text_lines()
         if not lines:
             return elements
 
