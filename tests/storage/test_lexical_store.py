@@ -19,6 +19,7 @@ from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.document import Document, DocumentMetadata, Heading, TextBlock
 from knowledge_forge.models.source import Source, SourceRef, SourceType
 from knowledge_forge.storage.postgres_store import PostgresStore
+from knowledge_forge.text_normalize import to_nfc
 
 DSN = os.environ.get("KF_TEST_DATABASE_URL")
 
@@ -54,13 +55,18 @@ def _document(idx: int, src: Source, *, title: str | None = None, heading: str |
 
 
 def _chunk(idx: int, doc: Document, text: str, seq: int = 0) -> Chunk:
+    """NFC-normalizes `text` here, the way `chunking/adaptive.py::AdaptiveChunker.chunk`
+    does before a real Chunk ever reaches `save_chunks` (fix/etl-quick moved
+    normalization there - `save_chunks` itself no longer normalizes, see its
+    docstring) - so a test that hands `_chunk()` NFD text is exercising the
+    same invariant a production chunk arrives with."""
     return Chunk(
         chunk_id=f"test-lex-c{idx}-{seq}",
         document_id=doc.document_id,
         source_id=doc.source.source_id,
         hierarchy_level=HierarchyLevel.PARAGRAPH,
         sequence_index=seq,
-        text=text,
+        text=to_nfc(text),
         token_count=len(text.split()),
         element_ids=[],
     )

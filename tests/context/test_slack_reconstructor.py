@@ -177,3 +177,47 @@ def test_merge_falls_back_to_raw_content_and_omits_name_keys_without_a_directory
     assert episode.metadata["first_message"] == "안녕하세요 반갑습니다"
     assert "channel_name" not in episode.metadata
     assert "participant_names" not in episode.metadata
+
+
+def test_episode_body_uses_resolved_display_name_and_resolved_text_when_available():
+    """버그: 본문은 `item.metadata["user"]`(원시 id, 예 "U0123ABC")로만 조립됐고
+    제목만 해석된 이름을 썼다. 이제 SlackDirectory가 붙어 `user_name`/
+    `text_resolved`를 채워주면 본문도 그 해석된 형태를 쓴다."""
+    items = [
+        _msg_named("C1", "100.0", "U1", "<@U2> 확인 부탁", user_name="샨", text_resolved="딘 확인 부탁"),
+        _msg_named("C1", "120.0", "U2", "넵", user_name="딘"),
+    ]
+
+    (episode,) = list(SlackConversationReconstructor().reconstruct(iter(items)))
+
+    body = episode.content.decode("utf-8")
+    assert "샨: 딘 확인 부탁" in body
+    assert "딘: 넵" in body
+    assert "U1:" not in body
+    assert "U2:" not in body
+
+
+def test_episode_body_falls_back_to_raw_id_and_raw_text_without_a_directory():
+    """디렉터리가 없어 `user_name`/`text_resolved`가 없는 경우(권한 부족 등) - 기존
+    동작대로 원시 id/원문을 그대로 쓴다."""
+    items = [_msg("C1", "100.0", "U1", "<@U2> 확인 부탁")]
+
+    (episode,) = list(SlackConversationReconstructor().reconstruct(iter(items)))
+
+    body = episode.content.decode("utf-8")
+    assert body == "U1: <@U2> 확인 부탁"
+
+
+def test_episode_body_mixes_resolved_and_unresolved_participants():
+    """한 에피소드 안에서 어떤 메시지는 이름이 풀리고 어떤 건 안 풀린 경우 - 메시지별로
+    독립적으로 결정된다(에피소드 전체가 한꺼번에 저하되지 않는다)."""
+    items = [
+        _msg_named("C1", "100.0", "U1", "hello", user_name="샨"),
+        _msg("C1", "120.0", "U2", "hi back"),
+    ]
+
+    (episode,) = list(SlackConversationReconstructor().reconstruct(iter(items)))
+
+    body = episode.content.decode("utf-8")
+    assert "샨: hello" in body
+    assert "U2: hi back" in body

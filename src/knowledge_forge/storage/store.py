@@ -44,6 +44,11 @@ class PipelineStore:
     async def record_document(self, document: Document) -> None:
         await self._db.save_document(document)
 
+    async def get_source_content_hash(self, source_id: str) -> str | None:
+        """`run_pipeline`'s unchanged-source check - see
+        `PostgresStore.get_source_content_hash`."""
+        return await self._db.get_source_content_hash(source_id)
+
     async def record_chunks(self, chunks: list[Chunk]) -> None:
         await self._db.save_chunks(chunks)
 
