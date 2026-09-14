@@ -51,6 +51,7 @@ from knowledge_forge.search.temporal import (
     BARE_MONTH_PATTERN,
     RECENT_QUANTITY_PATTERN,
     RECENT_SPAN_PATTERN,
+    SEOUL_TZ,
     TimeRange,
     local_date_start,
     parse_temporal_expression,
@@ -178,19 +179,21 @@ EXHAUSTIVE_MARKERS: tuple[str, ...] = (
     r"빠짐없이",
     r"전체\s*(?:목록|리스트)",
     r"목록",
-    r"리스트",
+    # "메일링 리스트"(mailing list)는 굳은 합성어라 전수 요청이 아니다.
+    r"(?<!메일링\s)리스트",
     # "다"는 단독 어절일 때만 - "다른", "보고서다" 등에 붙지 않도록
     r"(?:^|\s)다(?=\s|$)",
     r"\ball\b",
     r"\bevery\b",
-    r"\blist\b",
+    r"(?<!mailing\s)\blist\b",
 )
 COUNT_MARKERS: tuple[str, ...] = (
     # 한국어는 세는 대상마다 분류사가 달라진다 - "메일 몇 통"(v0-aggregation-002)을 놓쳐
     # count 전략이 아예 안 뽑혔다(predicted_count=None). 넣지 않은 것도 실측 근거가 있다:
     # 시간 단위(년/달/주/일)는 "몇 년 전"처럼 시점 표현이고, "팀"/"가지"는 코퍼스 개수가 아니라
     # 문서 안에 적힌 사실을 묻는 쪽이 많다(`v0-factoid-004` "총 몇 팀으로 구성되어 있나?").
-    r"몇\s*(?:개|건|명|번|회|종류|통|장|부|곳|군데|권|편)",
+    # 같은 이유로 "몇 개월"(기간)과 "몇 번째"(서수)도 개수가 아니다.
+    r"몇\s*(?:개(?!월)|건|명|번(?!째)|회|종류|통|장|부|곳|군데|권|편)",
     r"개수",
     r"건수",
     r"수량",
@@ -225,7 +228,9 @@ NEGATIVE_MARKERS: tuple[str, ...] = (
     r"언급\s*(?:되지\s*않|안\s*된|없)",
     r"나오지\s*않",
     r"포함\s*(?:되지\s*않|안\s*된)",
-    r"없는",
+    # 맨 "없는"은 서술어일 때가 훨씬 많다("권한이 없는 사용자", "응답이 없는 서버") - 부재 판정
+    # 질의는 "X가 없는 문서/회의록"처럼 **찾을 대상**이 곧장 뒤따를 때만 본다.
+    r"없는\s*(?:문서|파일|자료|것|항목|기록|프로젝트|회의록|보고서|계획서|메일)",
     r"빠진",
     r"누락",
     r"제외",
@@ -241,7 +246,7 @@ COMPARISON_MARKERS: tuple[str, ...] = (
     r"대비",
     r"달라진",
     r"변경\s*점",
-    r"변화",
+    # "변화"는 넣지 않는다 - "인식 변화"/"매출 변화"는 한 대상의 추이지 문서 간 비교가 아니다.
     r"\bvs\.?\b",
     r"\bversus\b",
     r"\bcompar(?:e|ison)\b",
@@ -272,9 +277,16 @@ MULTIHOP_MARKERS: tuple[str, ...] = (
 # 코퍼스 실측으로 본문에 "Google Drive"/"드라이브"를 언급하는 문서의 source_type은 gmail 11건 /
 # slack 4건 / google_drive 3건이었다. 그래서 `search/retrieve.py`는 이 힌트만으로 만들어진 필터를
 # 하드 `WHERE IN`으로 쓰지 않는다(`_is_source_hint_only_filter`).
+#
+# 값 사전(소스/확장자/문서 타입)은 합성어의 **뒤**에 붙는 머리 명사("업무보고서", "이메일")라
+# 의도 마커처럼 왼쪽 어절 경계를 걸 수 없다(`_marker_values`). 대신 외래어 마커가 더 긴 외래어의
+# **앞부분**인 경우("메일링", "엑셀러레이터", "스펙트럼")만 해당 마커에 부정 전방탐색을 단다 -
+# `WHOLE_DOCUMENT_MARKERS`의 `전문(?!가)`와 같은 규칙이다.
+# "채널"은 일반어("유통 채널")이기도 하지만 코퍼스 골든셋의 "채널" 질의는 거의 전부 슬랙
+# 채널이라 남긴다 - 이 힌트는 하드 필터가 아니다(위 주의).
 SOURCE_TYPE_MARKERS: tuple[tuple[str, str], ...] = (
     (r"슬랙|\bslack\b|채널|스레드|\bDM\b", "slack"),
-    (r"(?:구글|google)\s*(?:메일|g?mail)\b|이메일|메일|\bg?mail\b|\be-?mail\b|수신함", "gmail"),
+    (r"(?:구글|google)\s*(?:메일|g?mail)\b|이메일|메일(?!링)|\bg?mail\b|\be-?mail\b|수신함", "gmail"),
     (r"드라이브|\bg?drive\b|구글\s*(?:독스|문서|시트)|스프레드시트", "google_drive"),
     (r"노션|\bnotion\b", "notion"),
     (r"로컬\s*파일|\blocal\s+file", "local_file"),
@@ -288,10 +300,11 @@ SOURCE_TYPE_MARKERS: tuple[tuple[str, str], ...] = (
 # ("mimeType이 text/markdown으로...")는 그대로 mimeType으로 잡아야 한다 - 확장자가 .md여도
 # mimeType이 text/plain인 문서가 따로 있어서 확장자로는 못 가른다.
 FILE_EXTENSION_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    (r"엑셀|\bxlsx?\b|스프레드시트\s*파일", (".xlsx", ".xls")),
+    (r"엑셀(?!러|레|런)|\bxlsx?\b|스프레드시트\s*파일", (".xlsx", ".xls")),
     (r"\bcsv\b", (".csv",)),
     (r"파워포인트|프레젠테이션\s*파일|\bpptx?\b", (".pptx", ".ppt")),
-    (r"워드\s*파일|\bdocx?\b", (".docx", ".doc")),
+    # 맨 "doc"은 영어 낱말("design doc")이라 확장자로 보지 않는다 - docx나 "doc 파일"만.
+    (r"워드\s*파일|\bdocx\b|\bdoc\s*파일", (".docx", ".doc")),
     (r"\bpdf\b", (".pdf",)),
     (r"한글\s*파일|\bhwpx?\b", (".hwpx", ".hwp")),
 )
@@ -308,17 +321,18 @@ DOCUMENT_TYPE_MARKERS: tuple[tuple[str, str], ...] = (
     (r"보고서|리포트|\breport\b", "보고서"),
     (r"제안서|\bproposal\b", "제안서"),
     (r"계약서|\bcontract\b", "계약서"),
-    (r"명세서|스펙|\bspec(?:ification)?\b", "명세서"),
+    (r"명세서|스펙(?!트)|\bspec(?:ification)?\b", "명세서"),
     (r"매뉴얼|가이드|\bmanual\b|\bguide\b", "매뉴얼"),
     (r"발표\s*자료|슬라이드|\bppt\b|프레젠테이션|\bdeck\b", "발표자료"),
-    (r"이메일|메일|\be-?mail\b", "메일"),
+    (r"이메일|메일(?!링)|\be-?mail\b", "메일"),
 )
 
 # 시간 표현 표면형 - 의미 해석은 전부 temporal.py가 하고, 여기서는 semantic_query에서 그 구절을
 # 걷어내는 용도로만 쓴다(temporal.py는 매치 위치를 돌려주지 않는다). 올해/작년은 temporal.py에
 # 없어 `_supplemental_time_range`로 여기서 보충한다.
 _TEMPORAL_SPAN_RE = re.compile(
-    r"\d{4}\s?년\s?\d{1,2}\s?월(?:\s?\d{1,2}\s?일)?(?:에|의|부터|까지)?"
+    r"\d{4}-\d{1,2}-\d{1,2}(?:에|의|부터|까지)?"
+    r"|\d{4}\s?년\s?\d{1,2}\s?월(?:\s?\d{1,2}\s?일)?(?:에|의|부터|까지)?"
     r"|\d{4}\s?(?:년)?\s*(?:[Qq]\d|\d\s?분기)(?:에|의)?"
     # "Q1 2025"처럼 분기가 연도보다 앞선 어순도 걷어낸다 - temporal.py의 `_QUARTER_WITH_YEAR_RE`가
     # 이제 이 어순도 받는다(`wiki/search-code-review-2026-09-14.md` 결함3).
@@ -354,7 +368,11 @@ _LAST_YEAR_RE = re.compile(r"작년|지난해|\blast\s+year\b")
 _YEAR_BEFORE_LAST_RE = re.compile(r"재작년")
 
 # 따옴표 구절 - router.py의 _QUOTED_RE와 같은 표면형이지만 내용을 캡처해야 해서 별도 정의.
-_QUOTED_RE = re.compile(r"[\"“”'‘’「『]([^\"“”'‘’」』]+?)[\"“”'‘’」』]")
+# 홑따옴표는 라틴 영숫자에 붙어 있으면 아포스트로피다("What's the team's plan") - 여는 쪽은 앞에,
+# 닫는 쪽은 뒤에 영숫자가 없을 때만 따옴표로 본다. 한글 조사가 붙는 "'OKF'의"는 그대로 잡힌다.
+_QUOTED_RE = re.compile(
+    r"(?:[\"“”「『]|(?<![A-Za-z0-9])['‘’])([^\"“”'‘’」』]+?)(?:[\"“”」』]|['‘’](?![A-Za-z0-9]))"
+)
 # 파일명: 확장자가 붙은 토큰. 확장자 목록은 parsers/registry.py가 다루는 형식 + 흔한 것.
 _FILENAME_RE = re.compile(
     r"(?<![\w가-힣.])([\w가-힣.\-]+\.(?:pdf|xlsx|xls|docx|doc|pptx|ppt|hwpx?|txt|md|csv|json))(?![\w가-힣])",
@@ -372,9 +390,27 @@ _CODE_ID_RE = re.compile(
 # 언더스코어/하이픈으로 연결된 혼합 토큰(한글 포함, 숫자 시작 허용) - "2025_SH_업무_보고서".
 # 파일명이 아니어도 특정 문서 제목을 그대로 옮겨 적은 형태라 document_reference로 본다.
 _JOINED_TOKEN_RE = re.compile(r"(?<![\w가-힣])[A-Za-z0-9가-힣]+(?:[_-][A-Za-z0-9가-힣]+)+")
-# 날짜(2025-03-15)처럼 숫자와 구분자만으로 된 토큰은 식별자가 아니다.
+# 날짜(2025-03-15)처럼 숫자와 구분자만으로 된 토큰은 식별자가 아니다. 그중 ISO 날짜만 시간 범위로
+# 읽히도록 텍스트에 남긴다("2026-022 프로젝트"의 번호까지 남기면 프로젝트명이 "022"가 된다).
 _DIGITS_ONLY_RE = re.compile(r"^[\d_-]+$")
-_TRAILING_PARTICLE_RE = re.compile(r"(?<=[가-힣A-Za-z0-9])(?:으로|에서|에게|께서|이랑|부터|까지|와|과|랑|을|를|이|가|은|는|의|에|로|도)$")
+_ISO_DATE_TOKEN_RE = re.compile(r"\d{4}-\d{1,2}-\d{1,2}")
+# 기능어로 이은 영어 합성어("end-to-end", "state-of-the-art", "follow-up", "built-in")도 식별자/문서
+# 참조가 아니다. 소문자 하이픈 전체로 넓히면 안 된다 - 코퍼스의 서비스명("risk-agent",
+# "aml-watchlist", "prepay-docs")이 전부 그 꼴이라 정확 일치 검색이 사라진다.
+_PLAIN_COMPOUND_RE = re.compile(r"[a-z]+(?:-(?:to|of|the|and|by|in|on|for)(?=-))+(?:-[a-z]+)+|[a-z]+-(?:up|in|out|on|off)")
+# 식별자 자리표시 - semantic_query/비교 대상에 식별자를 제자리로 되돌리기 위해 마스킹에 쓴다.
+# 사용 영역(PUA) 문자라 어떤 마커/시간 정규식에도 걸리지 않는다.
+_ID_SLOT = 0xE000
+_ID_SLOT_RE = re.compile("[-]")
+# "도"는 뺐다 - 질의에서 보조사 "도"는 드물고 "정확도"/"만족도"/"제도" 같은 명사 끝이 흔하다.
+_TRAILING_PARTICLE_RE = re.compile(r"(?<=[가-힣A-Za-z0-9])(?:으로|에서|에게|께서|이랑|부터|까지|와|과|랑|을|를|이|가|은|는|의|에|로)$")
+# 받침 유무로 갈리는 조사 짝(이/가, 은/는, 을/를, 과/와, 이랑/랑, 으로/로) - `_particle_fits`.
+_AFTER_FINAL = frozenset({"이", "은", "을", "과", "이랑", "으로"})
+_AFTER_OPEN = frozenset({"가", "는", "를", "와", "랑"})
+# 조사 후보가 붙을 수 있는 어절: 한글 3음절 이상으로 끝나거나("NH농협은행의"), 라틴/숫자 뒤에 한글
+# 1~2자가 붙은 것("README를", "3월에"). 2음절 한글("회의", "차이")은 끝 글자를 조사로 보면 1글자만
+# 남아 뺀다.
+_PARTICLE_CANDIDATE_RE = re.compile(r"\S*[가-힣]{3,}|\S*[A-Za-z0-9][가-힣]{1,2}")
 
 # 이메일 주소 / 도메인 - `sources.metadata.participants`가 gmail에서 ["이름 <주소>", ...] 형태라
 # 주소도 도메인도 그 JSON 텍스트에 그대로 들어 있다. `search/retrieve.py::_metadata_filter_where`가
@@ -402,19 +438,37 @@ _DOMAIN_RE = re.compile(
     re.IGNORECASE,
 )
 
-_NAME = r"[가-힣]{2,4}|[A-Z][a-z]+(?:\s[A-Z][a-z]+)?"
+# 도메인이 participants(발신 도메인 필터)가 되는 건 메일 문맥일 때뿐이다 - "Amazon.com 사례
+# 분석"의 도메인은 회사 이름이라 검색어로 남아야 한다. gmail 소스 마커(`SOURCE_TYPE_MARKERS`)나
+# 아래 발신/수신 어휘가 질의에 있어야 한다.
+_MAIL_ROLE_RE = re.compile(r"발신|수신|보낸|받은|도메인|(?<![A-Za-z])(?:from|sender)(?![A-Za-z])", re.IGNORECASE)
+
+# 이름은 어절 첫머리에서만 시작한다(`(?<!...)`) - 경계가 없으면 "고객지원팀이"에서 "객지원팀"을
+# 뽑는다. 직함은 이름 뒤에 선택으로 받는다("김철수 팀장이 보낸" → 김철수). 직함 자체는
+# `_NAME_STOPWORDS`에 들어가 "팀장이 보낸"이 작성자가 되지 않는다.
+_TITLES = ("팀장", "부장", "차장", "과장", "대리", "사원", "주임", "선임", "책임", "수석", "실장", "본부장",
+           "이사", "상무", "전무", "대표", "사장", "매니저", "교수", "위원")
+_NAME = rf"(?<![가-힣A-Za-z0-9])(?P<name>[가-힣]{{2,4}}|[A-Z][a-z]+(?:\s[A-Z][a-z]+)?)(?:\s?(?:{'|'.join(_TITLES)}))?(?:님)?"
 # "김철수가 (2025년 3월에) 작성한" - 이름과 동사 사이에 시간 표현 등이 끼어도 잡히도록 짧은 임의
-# 구간을 허용한다.
+# 구간을 허용한다. 맨 "작성"은 뺐다 - "보고서가 작성된"의 주어는 문서다.
 _AUTHOR_KO_RE = re.compile(
-    rf"(?P<name>{_NAME})(?:님)?(?:가|이|께서)\s+(?:[^\s]+\s+){{0,3}}?(?:작성한|작성했|작성|쓴|쓰신|보낸|보내신|올린|올리신|만든|공유한)"
+    rf"{_NAME}(?:가|이|께서)\s+(?:[^\s]+\s+){{0,3}}?(?:작성한|작성했|쓴|쓰신|보낸|보내신|올린|올리신|만든|공유한)"
 )
-_AUTHOR_EN_RE = re.compile(rf"\b(?:from|by|written\s+by|sent\s+by|authored\s+by)\s+(?P<name>{_NAME})")
+# 영어 from/with는 전치사라 "reports from Google Drive"/"issues with Redis"처럼 사람이 아닌 경우가
+# 흔하다 - by는 그대로 두고, from/with는 앞말이 메시지·만남 명사일 때만 사람으로 본다. 작성자
+# 구절은 working에서 지워지므로 from의 앞말은 후방탐색으로만 확인한다("report"는 남아야 한다).
+_FROM_HEADS = ("mail", "email", "message", "note", "report", "update", "memo")
+_AUTHOR_EN_RE = re.compile(
+    r"\b(?:by|(?:" + "|".join(rf"(?<={h}\s)|(?<={h}s\s)" for h in _FROM_HEADS) + rf")from)\s+{_NAME}"
+)
 _PARTICIPANT_KO_RE = re.compile(
-    rf"(?P<name>{_NAME})(?:님)?(?:와|과|이랑|랑|하고)(?:의|\s)\s*(?:회의|미팅|대화|논의|통화|스레드|주고받은|나눈)"
+    rf"{_NAME}(?:와|과|이랑|랑|하고)(?:의|\s)\s*(?:회의|미팅|대화|논의|통화|스레드|주고받은|나눈)"
 )
-_PARTICIPANT_EN_RE = re.compile(rf"\b(?:with|between)\s+(?P<name>{_NAME})")
+_PARTICIPANT_EN_RE = re.compile(
+    rf"\b(?:(?:meetings?|calls?|chats?|discussions?|conversations?|threads?|sync)\s+with|between)\s+{_NAME}"
+)
 # "A 프로젝트"/"OKF프로젝트" - 앞말이 관형어/시간어면 프로젝트명이 아니다.
-_PROJECT_RE = re.compile(r"(?<![\w가-힣])(?P<name>[A-Za-z0-9가-힣]{1,20})\s?프로젝트")
+_PROJECT_RE = re.compile(r"(?<![\w가-힣-])(?P<name>[A-Za-z0-9가-힣]{1,20})\s?프로젝트")
 # 이름 자리에 올 수 있지만 사람 이름이 아닌 일반명사 - "담당자가 작성한"은 작성자 필터가 아니라
 # multi-hop("담당자가 누구인지 먼저 찾아야 함") 신호다.
 _NAME_STOPWORDS = frozenset(
@@ -425,15 +479,22 @@ _NAME_STOPWORDS = frozenset(
         # authors=["발신자"]가 실려 ILIKE '%발신자%'가 0행 → 필터가 통째로 무시됐다
         # (applied="filter_empty_ignored"). 역할이지 사람을 특정하는 이름이 아니다.
         "발신자", "수신자", "참조", "보낸사람", "보낸이", "받는사람", "받는이", "발신인", "수신인",
-        "작성자", "관리자", "책임자", "참석자", "참여자",
+        "작성자", "관리자", "책임자", "참석자", "참여자", "시스템",
+        *_TITLES,
     }
 )
 _PROJECT_STOPWORDS = frozenset(
     {"올해", "작년", "이번", "지난", "그", "이", "저", "그런", "이런", "모든", "전체", "관련", "새", "신규", "각", "해당", "어떤", "무슨"}
 )
-_COMPARISON_SPLIT_RE = re.compile(r"(?<=[가-힣A-Za-z0-9\)])(?:와|과|이랑|랑|하고)\s+|\s+(?:vs\.?|versus|and|및)\s+|,\s*")
-# 비교 대상 분리용 꼬리 마커 - "vs/versus"는 대상 사이의 접속어라 꼬리가 아니므로 제외한다.
-_COMPARISON_CONNECTIVE_MARKERS = frozenset({r"\bvs\.?\b", r"\bversus\b"})
+# 접속 조사 분리는 `_particle_fits`로 한 번 더 거른다("효과 분석 결과"의 "과"는 조사가 아니다).
+# 식별자 자리표시("  ") 뒤에 떨어져 남은 조사도 받는다("GPT-4와 GPT-5 비교").
+_COMPARISON_SPLIT_RE = re.compile(
+    r"(?:(?<=[가-힣A-Za-z0-9\)])|(?<=[-]\s))(?P<josa>와|과|이랑|랑|하고)\s+"
+    r"|\s+(?:vs\.?|versus|and|및|대비)\s+|,\s*"
+)
+# 비교 대상 분리용 꼬리 마커 - "vs/versus/대비"는 대상 사이의 접속어("작년 대비 올해")라 꼬리가
+# 아니므로 제외한다.
+_COMPARISON_CONNECTIVE_MARKERS = frozenset({r"\bvs\.?\b", r"\bversus\b", r"대비"})
 _COMPARISON_TAIL_RE = re.compile(
     r"(?:\s*(?:의|은|는|이|가|을|를|에서|에|간|사이))?\s*(?:"
     + "|".join(_latin_aware(m) for m in COMPARISON_MARKERS if m not in _COMPARISON_CONNECTIVE_MARKERS)
@@ -452,8 +513,9 @@ FILLER_MARKERS: tuple[str, ...] = (
     # 여기 문맥상 뒤에 한글이 이어지면 거의 항상 다른 낱말의 시작이다).
     r"도메인(?![가-힣])",
     r"관련(?:된|해서|하여|한)?", r"문서(?:들)?", r"자료(?:들)?", r"파일(?:들)?",
-    r"알려\s*줘", r"보여\s*줘", r"찾아\s*줘", r"해\s*줘", r"해줄래", r"해주세요", r"주세요", r"해\s*봐",
-    r"뭐야", r"뭐였(?:지|어)", r"무엇(?:이야|인가요?)?", r"있(?:어|나요|었어|었나요)", r"좀", r"해서",
+    r"알려\s*(?:줘|줄래|줄|주세요)", r"보여\s*줘", r"찾아\s*줘", r"해\s*줘", r"해줄래", r"해주세요", r"주세요",
+    r"해\s*봐", r"뭐야", r"뭐였(?:는지|나요?|지|어)", r"무엇(?:이야|인가요?)?",
+    r"수\s*있(?:나요|을까요?|어요?|나)", r"있(?:어|나요|었어|었나요)", r"좀", r"해서",
     # "대한민국"("Republic of Korea")의 앞쪽 일부로 잡히는 걸 막는다 - 같은 이유로 뒤에 한글이
     # 곧장 이어지면 거른다("~에 대해"는 보통 "대해"만으로도 걸리므로 손실이 적다).
     r"대해(?:서)?", r"대한(?![가-힣])", r"에\s*대해",
@@ -570,11 +632,57 @@ def _dedupe(values: list[str]) -> list[str]:
     return out
 
 
+def _particle_fits(stem: str, particle: str) -> bool:
+    """`stem` 바로 뒤의 `particle`이 조사로 성립하는가 - 사전 없이 끝 글자를 조사로 오인하는 걸
+    한국어 조사 교체 규칙으로 거른다.
+
+    - 이/가·은/는·을/를·과/와·이랑/랑·으로/로는 앞 음절의 받침으로 갈린다. "전문가"의 "가"는 받침
+      있는 "문" 뒤라 조사가 아니고(조사라면 "이"), "효과"의 "과"는 받침 없는 "효" 뒤라 아니다.
+    - 한글 1음절 어간은 조사 앞말로 보지 않는다("결과"의 "결").
+    - "회의"의 "의": 받침 규칙이 없는 조사라 회의록 코퍼스의 핵심어("주간회의")만 예외로 둔다.
+    - 라틴/숫자 뒤("README를")는 발음을 몰라 허용한다."""
+    word = stem.split()[-1] if stem.strip() else ""
+    last = word[-1:]
+    if not last:
+        return False
+    if not "가" <= last <= "힣":
+        return True
+    if len(word) == 1 and len(particle) == 1:
+        return False
+    has_final = (ord(last) - 0xAC00) % 28
+    if particle in _AFTER_FINAL:
+        return has_final != 0
+    if particle in _AFTER_OPEN:
+        return has_final == 0
+    if particle == "로":
+        return has_final in (0, 8)  # 받침 없음 또는 ㄹ받침("이메일로")
+    return not (particle == "의" and last == "회")
+
+
 def _strip_particle(token: str) -> str:
     """'2025_SH_업무_보고서를' → '2025_SH_업무_보고서'. 조사 자체가 토큰의 마지막 구성요소
-    전부인 경우(예: '_를')는 건드리지 않는다."""
-    stripped = _TRAILING_PARTICLE_RE.sub("", token)
-    return stripped if stripped and not stripped.endswith(("_", "-")) else token
+    전부인 경우(예: '_를')와 `_particle_fits`가 조사로 인정하지 않는 끝 글자는 건드리지 않는다."""
+    m = _TRAILING_PARTICLE_RE.search(token)
+    if m is None:
+        return token
+    stem = token[: m.start()]
+    return stem if not stem.endswith(("_", "-")) and _particle_fits(stem, m.group()) else token
+
+
+def _strip_word_particle(token: str) -> str:
+    """semantic_query/term 어절용 - 조사 후보가 붙을 수 있는 어절(`_PARTICLE_CANDIDATE_RE`)만."""
+    return _strip_particle(token) if _PARTICLE_CANDIDATE_RE.fullmatch(token) else token
+
+
+def _marker_values(markers: tuple[tuple[str, Any], ...], text: str) -> list[Any]:
+    """값 사전(소스/확장자/문서 타입) 판정 - 머리 명사라 왼쪽 어절 경계 없이 라틴 경계만 본다."""
+    return [value for pattern, value in markers if re.search(_latin_aware(pattern), text, re.IGNORECASE)]
+
+
+def _is_person_name(name: str) -> bool:
+    """역할·직함 명사(`_NAME_STOPWORDS`)나 소스/문서 종류어가 든 구절("Google Drive", "보고서")은
+    사람이 아니다."""
+    return name not in _NAME_STOPWORDS and not _marker_values((*SOURCE_TYPE_MARKERS, *DOCUMENT_TYPE_MARKERS), name)
 
 
 def _supplemental_time_range(text: str, now: datetime) -> TimeRange | None:
@@ -590,12 +698,14 @@ def _supplemental_time_range(text: str, now: datetime) -> TimeRange | None:
         start = local_date_start(now, year, 1)
         return TimeRange(start, local_date_start(now, year + 1, 1), label)
 
+    # 연도는 KST 달력 기준 - UTC `now.year`를 쓰면 1월 1일 00~09시 KST에 "올해"가 작년이 된다.
+    this_year = now.astimezone(SEOUL_TZ).year
     if _YEAR_BEFORE_LAST_RE.search(text):
-        year, label = now.year - 2, "재작년"
+        year, label = this_year - 2, "재작년"
     elif _LAST_YEAR_RE.search(text):
-        year, label = now.year - 1, "작년"
+        year, label = this_year - 1, "작년"
     elif _THIS_YEAR_RE.search(text):
-        year, label = now.year, "올해"
+        year, label = this_year, "올해"
     else:
         return None
     return resolve_within_year(text, now, year) or _year(year, label)
@@ -613,7 +723,14 @@ def _extract_comparison_targets(text: str) -> list[str]:
     m = _COMPARISON_TAIL_RE.search(text)
     # "Redis vs Memcached"처럼 꼬리 마커 없이 접속어만 있는 형태는 전체가 머리말이다.
     head = text[: m.start()].strip() if m else text.strip()
-    parts = [p.strip() for p in _COMPARISON_SPLIT_RE.split(head) if p and p.strip()]
+    parts: list[str] = []
+    start = 0
+    for sep in _COMPARISON_SPLIT_RE.finditer(head):
+        if sep.group("josa") and not _particle_fits(head[: sep.start()], sep.group("josa")):
+            continue
+        parts.append(head[start : sep.start()])
+        start = sep.end()
+    parts = [p.strip() for p in (*parts, head[start:]) if p.strip()]
     if len(parts) < 2:
         return []
     left, right = parts[-2], parts[-1]
@@ -628,14 +745,11 @@ def _extract_comparison_targets(text: str) -> list[str]:
 
 def _clean_semantic_query(text: str) -> str:
     text = _strip_markers(FILLER_MARKERS, text)
-    text = re.sub(r"[?？!！.,;:()\[\]{}]", " ", text)
+    # 마침표는 낱말 사이("ASP.NET", "v1.2")가 아닐 때만 구두점이다.
+    text = re.sub(r"[?？!！,;:()\[\]{}]|(?<![A-Za-z0-9])\.|\.(?![A-Za-z0-9])", " ", text)
     text = _DANGLING_PARTICLE_RE.sub(" ", text)
-    # "사업계획의" → "사업계획", "프로젝트에서" → "프로젝트". 3음절 이상 한글 어절에만 - "회의"/
-    # "차이"처럼 조사로 끝나 보이는 2음절 명사를 잘라먹지 않도록.
-    tokens = [
-        _strip_particle(tok) if re.fullmatch(r"[가-힣]{3,}", tok) else tok for tok in text.split()
-    ]
-    return " ".join(tokens).strip()
+    # "사업계획의" → "사업계획", "Drive에서" → "Drive"(`_strip_word_particle`).
+    return " ".join(_strip_word_particle(tok) for tok in text.split()).strip()
 
 
 def extract_constraints_rules(query: str, *, now: datetime | None = None) -> QueryConstraints:
@@ -653,21 +767,40 @@ def extract_constraints_rules(query: str, *, now: datetime | None = None) -> Que
     # 로컬 파트는 `_CODE_ID_RE`가 코드형 식별자로 오인해 엉뚱한 document_lookup을 켠다.
     contact_handles = _dedupe(_EMAIL_RE.findall(working))
     working = _EMAIL_RE.sub(" ", working)
-    contact_handles += _dedupe(_DOMAIN_RE.findall(working))
-    working = _DOMAIN_RE.sub(" ", working)
+    if "gmail" in _marker_values(SOURCE_TYPE_MARKERS, working) or _MAIL_ROLE_RE.search(working):
+        contact_handles += _dedupe(_DOMAIN_RE.findall(working))
+        working = _DOMAIN_RE.sub(" ", working)
 
     # 3) 파일명 / 코드형 식별자 / 연결 토큰(문서 참조)
     filenames = _dedupe(_FILENAME_RE.findall(working))
     working = _FILENAME_RE.sub(" ", working)
-    code_ids = _dedupe([_strip_particle(t) for t in _CODE_ID_RE.findall(working)])
-    working = _CODE_ID_RE.sub(" ", working)
+    # 코드형 식별자는 자리표시로 가려 두었다가 semantic_query에 제자리로 되돌린다 - "Wi-Fi 설정
+    # 방법"에서 "Wi-Fi"를 빼면 벡터 검색어의 핵심이 사라진다. 가려 두는 동안은 마커/작성자/시간
+    # 판정이 식별자 안쪽("PRJ-2025-001"의 2025)을 보지 않는다.
+    id_slots: list[str] = []
+
+    def _mask_code_id(m: re.Match[str]) -> str:
+        if _PLAIN_COMPOUND_RE.fullmatch(m.group()):
+            return m.group()
+        id_slots.append(_strip_particle(m.group()))
+        return f" {chr(_ID_SLOT + len(id_slots) - 1)} "
+
+    def _restore_ids(text: str) -> str:
+        return _ID_SLOT_RE.sub(lambda m: id_slots[ord(m.group()) - _ID_SLOT], text)
+
+    working = _CODE_ID_RE.sub(_mask_code_id, working)
     joined_refs: list[str] = []
-    for raw in _JOINED_TOKEN_RE.findall(working):
-        token = _strip_particle(raw)
-        if _DIGITS_ONLY_RE.match(token):
-            continue
-        joined_refs.append(token)
-    working = _JOINED_TOKEN_RE.sub(" ", working)
+
+    def _take_joined(m: re.Match[str]) -> str:
+        token = _strip_particle(m.group())
+        if _ISO_DATE_TOKEN_RE.fullmatch(token) or _PLAIN_COMPOUND_RE.fullmatch(token):
+            return m.group()
+        if not _DIGITS_ONLY_RE.match(token):
+            joined_refs.append(token)
+        return " "
+
+    working = _JOINED_TOKEN_RE.sub(_take_joined, working)
+    code_ids = _dedupe(id_slots)
     c.identifiers = _dedupe(code_ids + filenames)
     references = _dedupe(filenames + joined_refs)
     if references:
@@ -680,14 +813,16 @@ def extract_constraints_rules(query: str, *, now: datetime | None = None) -> Que
     # "담당자가 작성한" 같은 multi-hop 신호가 같이 사라진다).
     marker_text = working
 
-    # 4) 시간 범위 - 원문 기준(작성자 구절 안의 "2025년 3월"도 잡아야 하므로 working이 아니라 query)
-    c.time_range = _resolve_time_range(query, now)
+    # 4) 시간 범위 - 작성자 구절을 지우기 전 텍스트(그 안의 "2025년 3월"도 잡아야 한다). 원문이
+    # 아닌 이유: 따옴표 구절/파일명 안의 날짜("'2024년 결산'", "보고서_2025년_3월.pdf")는 제목의
+    # 일부지 기간 조건이 아니다.
+    c.time_range = _resolve_time_range(marker_text, now)
 
     # 5) 작성자 / 참여자 / 프로젝트 힌트
     for regex in (_AUTHOR_KO_RE, _AUTHOR_EN_RE):
         for m in regex.finditer(working):
             name = _strip_honorific(m.group("name"))
-            if name in _NAME_STOPWORDS:
+            if not _is_person_name(name):
                 continue
             c.authors.append(name)
             working = working.replace(m.group(0), " ", 1)
@@ -695,7 +830,7 @@ def extract_constraints_rules(query: str, *, now: datetime | None = None) -> Que
     for regex in (_PARTICIPANT_KO_RE, _PARTICIPANT_EN_RE):
         for m in regex.finditer(working):
             name = _strip_honorific(m.group("name"))
-            if name not in _NAME_STOPWORDS:
+            if _is_person_name(name):
                 c.participants.append(name)
     # 주소/도메인이 앞 - 이름보다 특정력이 강한 신호다(participants는 AND라 순서 자체는 무관).
     c.participants = _dedupe(contact_handles + c.participants)
@@ -707,20 +842,9 @@ def extract_constraints_rules(query: str, *, now: datetime | None = None) -> Que
     c.entities = _dedupe(c.authors + c.participants + c.project_hints)
 
     # 6) 소스 / 문서 타입 힌트
-    c.source_types = _dedupe(
-        [label for pattern, label in SOURCE_TYPE_MARKERS if re.search(_latin_aware(pattern), working, re.IGNORECASE)]
-    )
-    c.document_types = _dedupe(
-        [label for pattern, label in DOCUMENT_TYPE_MARKERS if re.search(_latin_aware(pattern), working, re.IGNORECASE)]
-    )
-    c.file_extensions = _dedupe(
-        [
-            ext
-            for pattern, exts in FILE_EXTENSION_MARKERS
-            if re.search(_latin_aware(pattern), working, re.IGNORECASE)
-            for ext in exts
-        ]
-    )
+    c.source_types = _dedupe(_marker_values(SOURCE_TYPE_MARKERS, working))
+    c.document_types = _dedupe(_marker_values(DOCUMENT_TYPE_MARKERS, working))
+    c.file_extensions = _dedupe([ext for exts in _marker_values(FILE_EXTENSION_MARKERS, working) for ext in exts])
     c.mime_types = _dedupe([m.group(1).lower() for m in _MIME_TYPE_RE.finditer(query)])
 
     # 7) 의도 플래그
@@ -737,13 +861,14 @@ def extract_constraints_rules(query: str, *, now: datetime | None = None) -> Que
     )
 
     if c.is_comparison:
-        c.comparison_targets = _extract_comparison_targets(marker_text)
+        targets = _extract_comparison_targets(marker_text)
         # 비교 대상마다 다른 시간 범위를 가지면(2024년 vs 2025년) 단일 time_range 필터는 한쪽을
         # 잘라내므로 비워 둔다 - 시간 조건은 각 comparison_target이 들고 간다.
-        target_ranges = [_resolve_time_range(t, now) for t in c.comparison_targets]
+        target_ranges = [_resolve_time_range(t, now) for t in targets]
         labels = {r.label for r in target_ranges if r is not None}
         if len(labels) > 1:
             c.time_range = None
+        c.comparison_targets = [_restore_ids(t) for t in targets]
 
     # 8) semantic_query - 제약 표현을 걷어낸 나머지
     semantic = _TEMPORAL_SPAN_RE.sub(" ", working)
@@ -758,7 +883,7 @@ def extract_constraints_rules(query: str, *, now: datetime | None = None) -> Que
         COMPARISON_MARKERS,
     ):
         semantic = _strip_markers(markers, semantic)
-    c.semantic_query = _clean_semantic_query(semantic)
+    c.semantic_query = _restore_ids(_clean_semantic_query(semantic))
 
     for name, value in asdict(c).items():
         if name in {"query", "origins"}:
@@ -916,8 +1041,15 @@ async def extract_constraints(
 # 예산만 잡아먹는다. `_FILLER_RE`(질의 전체에서 지우는 군더더기)와 달리 여기서만 뺀다 -
 # semantic_query 자체에는 남아 있어야 벡터 검색이 문맥으로 쓴다.
 _TERM_NOISE = frozenset(
-    {"내용", "관련", "정보", "자료", "부분", "목록", "리스트", "상황", "경우", "이야기", "순서", "여부"}
+    {"내용", "관련", "정보", "자료", "부분", "목록", "리스트", "상황", "경우", "이야기", "순서", "여부",
+     # 의문사 / 영어 기능어 - 어느 청크에나 걸리거나(영어) 답에 안 나오는(의문사) 낱말.
+     "어떻게", "무엇", "어떤", "언제", "어디", "누가", "왜",
+     "the", "a", "an", "of", "for", "with", "from", "to", "in", "on", "and", "or", "is", "are", "by",
+     "what", "how", "why", "when", "who", "which"}
 )
+# 서술어/의문 어미로 끝나는 어절("걸렸나", "되었나요", "있는지") - 문서 본문에 그 활용형으로 나올
+# 일이 드물어 term 리스트만 늘린다. semantic_query에는 남긴다(벡터가 문맥으로 쓴다).
+_PREDICATE_END_RE = re.compile(r"[았었였렸했됐겠](?:나|니|어|지|는지)요?$|(?:는지|나요|까요|습니까)$|(?<=.)(?:인|는|한)가요?$")
 _TERM_SPLIT_RE = re.compile(r"[^0-9A-Za-z가-힣_.\-]+")
 
 
@@ -943,15 +1075,11 @@ def keyword_terms(constraints: QueryConstraints, *, max_terms: int = 10) -> list
     terms: list[str] = []
     seen: set[str] = set()
     for token in raw:
-        token = token.strip()
-        # `_clean_semantic_query`와 같은 이유로 3음절 이상 한글에만 조사를 뗀다 - "논의"의 "의",
-        # "묻는"의 "는"을 조사로 보면 1글자만 남아 term이 통째로 사라진다.
-        term = _strip_particle(token) if re.fullmatch(r"[가-힣]{3,}", token) else token
-        # 1글자 term은 거의 모든 청크에 걸려 랭킹 신호가 없다.
-        if len(term) < 2 or term in _TERM_NOISE:
-            continue
+        # `_clean_semantic_query`와 같은 조사 규칙 - "논의"의 "의"를 떼면 1글자만 남는다.
+        term = _strip_word_particle(token.strip()).strip(".")
         key = term.casefold()
-        if key in seen:
+        # 1글자 term은 거의 모든 청크에 걸려 랭킹 신호가 없다.
+        if len(term) < 2 or key in _TERM_NOISE or key in seen or _PREDICATE_END_RE.search(term):
             continue
         seen.add(key)
         terms.append(term)
