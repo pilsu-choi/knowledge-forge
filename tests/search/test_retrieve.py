@@ -12,6 +12,7 @@ dev DB holds real data), skipped unless KF_TEST_DATABASE_URL is set.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from datetime import datetime, timezone
@@ -1441,3 +1442,106 @@ def test_a_file_type_predicate_is_not_a_source_hint_only_filter():
     assert _is_source_hint_only_filter(c) is True
     c.file_extensions = [".xlsx"]
     assert _is_source_hint_only_filter(c) is False
+
+
+# --- concurrency: fetch together, apply in contract order ----------------------------
+
+
+class _DelayedStore(_FakeStore):
+    """Delays (and optionally fails) chosen lookups so fetches finish in the reverse of
+    the apply order, and records how many lookups were in flight at once."""
+
+    def __init__(self, *, delays: dict | None = None, errors: dict | None = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.delays = delays or {}
+        self.errors = errors or {}
+        self.in_flight = 0
+        self.peak = 0
+
+    async def _lookup(self, kind: str, query: str) -> None:
+        self.in_flight += 1
+        self.peak = max(self.peak, self.in_flight)
+        try:
+            await asyncio.sleep(self.delays.get((kind, query), 0))
+            if (kind, query) in self.errors:
+                raise self.errors[(kind, query)]
+        finally:
+            self.in_flight -= 1
+
+    async def search_documents_by_title(self, query, **kwargs):
+        await self._lookup("title", query)
+        return await super().search_documents_by_title(query, **kwargs)
+
+    async def search_chunks_lexical(self, query, **kwargs):
+        await self._lookup("chunk", query)
+        return await super().search_chunks_lexical(query, **kwargs)
+
+
+async def test_document_lookup_anchor_wins_over_the_arm_even_when_its_fetch_finishes_last(monkeypatch):
+    """조회는 겹쳐 던지지만 반영은 계약 순서다 - document_lookup의 조회가 **가장 늦게** 끝나도 그 anchor가
+    arm의 제목 1.0 일치보다 먼저 잡히고, lexical/vector 좁히기도 그 anchor를 쓴다."""
+    store = _DelayedStore(
+        title_hits={"report_v2.pdf": [_doc_hit("d1", 1.0)], "리스크 항목": [_doc_hit("d9", 1.0)]},
+        chunk_hits={"report_v2.pdf": [_chunk_hit("d9", "c9"), _chunk_hit("d1", "c1")], "리스크 항목": [_chunk_hit("d9", "c9b")]},
+        delays={("title", "report_v2.pdf"): 0.05},
+    )
+    _patch_vector(monkeypatch, [_chunk_hit("d9", "c9v", 0.9), _chunk_hit("d1", "c1v", 0.8)])
+
+    result = await retrieve("report_v2.pdf 에서 리스크 항목", store=store, now=_NOW)
+
+    assert store.peak >= 3  # document_lookup's title lookup overlapped lexical and the arm's two lookups
+    assert [(s.strategy, s.source) for s in result.steps] == [
+        ("document_lookup", "document_search"),
+        ("lexical", "lexical_search"),
+        ("vector", "vector_search"),
+        ("document_lookup", "document_search#semantic"),
+        ("lexical", "lexical_search#semantic"),
+    ]
+    lookup, lexical, vector, arm_title, _arm_body = result.steps
+    assert lookup.detail["anchor"] == "d1"
+    assert arm_title.detail["anchor_reason"] == "already_anchored" and arm_title.detail["anchor"] == "d1"
+    assert lexical.detail["anchor_narrowing"] == "narrowed" and vector.detail["anchor_narrowing"] == "narrowed"
+    assert result.document_ids[0] == "d1"
+
+
+async def test_the_first_failing_strategy_in_contract_order_raises_whichever_fails_first_in_time(monkeypatch):
+    store = _DelayedStore(
+        delays={("title", "report_v2.pdf"): 0.05},
+        errors={("title", "report_v2.pdf"): RuntimeError("document_lookup"), ("chunk", "report_v2.pdf"): ValueError("lexical")},
+    )
+    _patch_vector(monkeypatch, [])
+
+    with pytest.raises(RuntimeError, match="document_lookup"):
+        await retrieve("report_v2.pdf 에서 리스크 항목", store=store, now=_NOW)
+
+
+async def test_multihop_is_fetched_with_the_first_wave_but_applied_after_the_time_range_rerun(monkeypatch):
+    planner_started = asyncio.Event()
+    plan_calls: list = []
+
+    class _WaitsForPlanner(_TimeBoundStore):
+        async def search_documents_by_title(self, query, **kwargs):
+            if kwargs.get("since") is not None:
+                # sequential execution would never get here with the planner already running
+                await asyncio.wait_for(planner_started.wait(), 1)
+            return await super().search_documents_by_title(query, **kwargs)
+
+    async def _fake_plan_and_search(query, provider, *, store=None, project_id=None, limit_per_subquery=5, target_kind=None, now=None):
+        plan_calls.append(query)
+        planner_started.set()
+        await asyncio.sleep(0.01)
+        return {"subqueries": [{"id": 1, "query": "q1", "depends_on": []}], "evidence": [{"subquery_id": 1, "results": [_chunk_hit("planned", "p1")]}]}
+
+    monkeypatch.setattr(retrieve_module, "plan_and_search", _fake_plan_and_search)
+    _patch_time_bound_vector(monkeypatch, [_chunk_hit("doc", "c1", 0.8)], [])
+    store = _WaitsForPlanner(title_hits={None: [_doc_hit("doc", 0.6)]})
+
+    result = await retrieve(
+        "2022년 프로젝트 중에서 담당자가 작성한 문서", store=store, provider=_FakeProvider(), now=_NOW, use_llm_constraints=False
+    )
+
+    strategies = [s.strategy for s in result.steps]
+    assert plan_calls == ["2022년 프로젝트 중에서 담당자가 작성한 문서"]  # once, not again on the rerun
+    assert strategies.count("multihop") == 1 and strategies[-1] == "multihop"
+    assert strategies.index("time_range_relaxed") < strategies.index("multihop")
+    assert {"doc", "planned"} <= set(result.document_ids)
