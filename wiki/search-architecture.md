@@ -535,6 +535,72 @@ NFD로 파싱된 청크는 NFC로 저장되면서도 임베딩은 NFD 텍스트�
 쪼개니 벡터 품질에 미세한 영향이 있을 수 있지만, 이번에 깨진 건 어휘 arm이고 임베딩 쪽은 측정한
 바가 없어 범위 밖으로 뒀다. 고친다면 `Chunk` 모델이나 청커 출력이 정규화 지점이 된다.
 
+### 어휘 검색 SQL이 trigram 인덱스를 타게 (2026-09-14, `perf/lexical-sql`)
+
+**문제.** `search_chunks_lexical`의 `WHERE (text ILIKE p OR text ILIKE ALL(tokens) OR word_similarity(q, text) >= 0.5)`는
+`word_similarity()`가 인덱스 연산자가 아니고 `ILIKE ALL(array)`도 GIN이 받지 못해 항상 `Seq Scan on chunks`였다 -
+행마다 긴 본문의 trigram을 만들어 유사도를 계산하는 게 비용의 정체다(2,856청크에서 호출당 ~350-460ms). term
+fallback이 질의당 최대 10회 부르므로 질의 지연의 대부분이 여기서 났다.
+
+**선택한 형태.** 결과는 그대로 두고 후보 수집만 바꿨다(`postgres_store.py::_lexical_candidates_sql`).
+
+```sql
+-- READ ONLY + 무조건 롤백 트랜잭션 안에서 (_read_transaction)
+SET LOCAL pg_trgm.word_similarity_threshold = 0.5;  -- 제목은 0.3
+SET LOCAL enable_seqscan = off;
+WITH hits AS MATERIALIZED (
+  SELECT chunk_id FROM chunks WHERE text ILIKE %(pattern)s
+  UNION SELECT chunk_id FROM chunks WHERE %(query)s <% text
+  UNION SELECT chunk_id FROM chunks WHERE text ILIKE %(token0)s AND text ILIKE %(token1)s ...  -- 토큰이 전체 패턴과 다를 때만
+)
+SELECT ... is_substring, word_similarity(q, c.text) AS sim  -- 후보에만 계산
+FROM hits JOIN chunks c ... ORDER BY/LIMIT 기존과 동일
+```
+
+- **결과 동일성 근거.** 세 분기의 합집합이 예전 OR 술어와 같은 집합이다. `q <% col`은 pg_trgm 내부에서
+  `word_similarity(q, col) >= pg_trgm.word_similarity_threshold`와 같은 계산(임계값을 넘는 순간 멈추는 최적화만 있음)이고,
+  GIN의 `<%` consistent는 "질의 trigram 중 행에 있는 비율 >= 임계값"이라는 상한이라 재검사로 정확해진다.
+  `ILIKE ALL(array)`를 `ILIKE ... AND`로 펼친 것은 같은 술어다. 정렬 키(`document_id, sequence_index` / `title, document_id`)는
+  전순서라 계획이 바뀌어도 순서가 흔들리지 않는다.
+- **all-tokens tier를 다른 분기에서 유도하지 않은 이유.** 2글자 한글 토큰("명함 제작")은 LIKE 패턴에서 trigram이 0개라
+  그 tier의 행이 substring/`<%` 분기에 들어 있다는 보장이 없다. 그래서 별도 분기로 두고, trigram 없는 패턴은
+  GIN 전체 스캔 + 재검사로 정확히(느리지만) 답하게 했다. 공백 없는 질의(term fallback의 대부분)는 토큰 분기가
+  substring 분기와 같아 생략한다.
+- **OR 하나(BitmapOr)가 아니라 UNION인 이유.** BitmapOr는 재검사 때 OR 전체를 평가한다. 한 분기가 trigram 없는
+  패턴(2글자 term)이면 비트맵이 전체 행이 되고, 그 모든 행에 `word_similarity`를 계산하는 예전 비용으로 돌아간다
+  ("AI 보고" 실측 464ms).
+- **`SET LOCAL enable_seqscan = off`를 쓴 이유.** 분기를 나눠도 이 규모에서는 플래너가 `<%` 분기를 순차 스캔으로
+  골랐다(7어절 질의 361ms). 함수 비용 추정(`COST 1`)이 긴 본문의 trigram 생성 비용을 모르기 때문이다. 플래너 설정은
+  계획만 바꾸고 결과는 바꾸지 못하며, 이 트랜잭션에는 이 SELECT 하나만 있다. MATERIALIZED CTE만으로는 분기 안의
+  스캔 선택을 강제하지 못해 대안이 되지 않았다.
+- 제목 검색(`search_documents_by_title`)도 같은 빌더를 쓴다. 문서 358행이라 절대 이득은 작다.
+
+**동일성 증거(`knowledge_forge`, 읽기 전용).** 예전 SQL을 그대로 복사한 구현과 새 구현을 같은 DB에서 나란히 불러
+결과 리스트(dict 전체 - id·순서·score·snippet)를 비교했다. 문자열 2,508개 = 두 골든셋 질의 562개 + 그 공백 토큰 1,540개 +
+`keyword_terms` term 1,103개 + 경계 사례 14개(`""`, `"?"`, `"_"`, `"%"`, `"\\"`, `"AI"`, `"명함"`, 9토큰 질의 등).
+- 청크: limit 10/20/60/200 전부(새 결과를 예전 limit 200의 앞부분과 비교 - 정렬이 전순서라 유효), 골든 질의는 예전
+  limit 10/20/60을 직접 호출해서도 비교.
+- 제목: limit 10/20/60/200 전부 직접 비교(재채점 때문에 앞부분 비교가 성립하지 않는다).
+- 필터 변형(골든 질의, limit 20): `project_id`, `since`, `until`, 셋 모두, 제목은 `source_type`+`since`까지.
+- **26,808회 비교(279,294행), 불일치 0.**
+
+**지연(순차, 쌍마다 old/new 순서 무작위, 골든 562 + term 300, 다른 평가 작업과 DB 공유 중).**
+
+| 호출 | old p50 / p95 | new p50 / p95 | 쌍별 new/old p5 / p50 / p95 | 느려진 쌍 |
+|---|---|---|---|---|
+| `search_chunks_lexical` limit 20 | 372.0 / 497.7ms | 9.4 / 100.1ms | 0.014 / 0.022 / 0.281 | 1/862 ("to" 348→450ms) |
+| `search_documents_by_title` limit 10 | 6.9 / 9.0ms | 4.1 / 6.5ms | 0.480 / 0.584 / 0.892 | 12/862 (최대 1.42배, 절대 1ms 안팎) |
+
+EXPLAIN ANALYZE(새 SQL): 7어절 질의는 세 분기 모두 `Bitmap Index Scan on idx_chunks_text_trgm`, 2.5ms(예전 380ms).
+"한화손해보험" 67ms(예전 357ms) - 후보 54행의 `<%` 재검사와 SELECT의 `word_similarity`가 대부분이다. "명함"(trigram 없는
+2글자 패턴)은 substring 분기가 GIN 전체 스캔 + 재검사 2,853행으로 65ms. "AI 보고" 304ms(예전 464ms) - fuzzy 후보 346행.
+
+**남은 비용과 하지 않은 것.** 느린 꼬리는 fuzzy 후보가 수백 행인 짧은 term("to", "AI", "70")이다. 후보마다 유사도를
+두 번(인덱스 재검사 + 정렬용 SELECT) 계산하고, trigram 없는 패턴은 전체 인덱스 스캔이 된다. 스키마를 바꾸는 개선은
+하지 않고 기록만 한다: `word_similarity`/`word_similarity_op`의 `COST`를 올리면 `enable_seqscan` 없이도 플래너가
+인덱스를 고른다(확장 소유 함수라 `ALTER FUNCTION`은 DDL). 1-2글자 토큰을 인덱스로 받으려면 bigram 인덱스
+(`pg_bigm`) 같은 별도 확장이 필요하다.
+
 ### 벡터 경로(pgvector) — 임베딩이 실제로 채워졌을 때 (2026-09-04 검증)
 
 `knowledge_object_embeddings`가 개발 DB에서 0행이라, `vector_search` → `search_by_embedding`

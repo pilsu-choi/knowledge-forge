@@ -1230,20 +1230,27 @@ class PostgresStore:
         literal-interpolation safe (whatever `limit` was, only its digits
         ever reach the query)."""
         wrapped = f"SELECT * FROM (\n{sql}\n) AS sql_search LIMIT {int(limit)}"
-        async with self._read_conn() as conn:
-            # `_tx_lock`은 **공유 커넥션 하나를 쓸 때만** 필요하다. 풀에서 빌린 커넥션은
-            # 이 호출이 반납할 때까지 이 호출 전용이라 BEGIN/ROLLBACK이 겹칠 수가 없고,
-            # 거기에 전역 락을 걸면 풀을 넣은 이유(질의 여러 개를 겹치는 것)가 그대로
-            # 사라진다. `_read_conn`이 공유 커넥션으로 폴백했을 때만 예전처럼 직렬화한다.
-            guard: Any = self._tx_lock if conn is self._conn else nullcontext()
-            async with guard:
-                async with conn.transaction(force_rollback=True):
-                    await conn.execute("SET TRANSACTION READ ONLY")
-                    async with conn.cursor() as cur:
-                        await cur.execute(wrapped)
-                        rows = await cur.fetchall()
-                        columns = [d.name for d in cur.description] if cur.description else []
+        async with self._read_transaction() as cur:
+            await cur.execute(wrapped)
+            rows = await cur.fetchall()
+            columns = [d.name for d in cur.description] if cur.description else []
         return rows, columns
+
+    @asynccontextmanager
+    async def _read_transaction(self, *settings: str) -> AsyncIterator[psycopg.AsyncCursor]:
+        """`_read_conn` 위에 `READ ONLY` + 무조건 롤백 트랜잭션을 열고 커서를 준다.
+        `settings`는 그 트랜잭션에만 걸리는 `SET LOCAL` 문(상수 문자열만 - 파라미터 없이
+        한 번에 보낸다)이다.
+
+        `_tx_lock`은 **공유 커넥션 하나를 쓸 때만** 필요하다. 풀에서 빌린 커넥션은
+        이 호출이 반납할 때까지 이 호출 전용이라 BEGIN/ROLLBACK이 겹칠 수가 없고,
+        거기에 전역 락을 걸면 풀을 넣은 이유(질의 여러 개를 겹치는 것)가 그대로
+        사라진다. `_read_conn`이 공유 커넥션으로 폴백했을 때만 예전처럼 직렬화한다."""
+        async with self._read_conn() as conn:
+            guard: Any = self._tx_lock if conn is self._conn else nullcontext()
+            async with guard, conn.transaction(force_rollback=True), conn.cursor() as cur:
+                await cur.execute("; ".join(["SET TRANSACTION READ ONLY", *settings]))
+                yield cur
 
     async def backfill_document_titles(self, project_id: str | None = None, *, overwrite: bool = False) -> int:
         """Fills `documents.title` for rows written before the column existed
@@ -1544,48 +1551,38 @@ class PostgresStore:
         짝이라 한쪽만으로는 절반만 맞는다 - 저장만 고치면 NFD 질의가, 질의만 고치면 이미
         저장된 NFD 행이 남는다."""
         query = to_nfc(query)
-        pattern = _like_pattern(query)
-        token_patterns = _token_patterns(query)
         # 토큰 tier가 순위를 뒤집을 수 있으므로 SQL 순서만 믿고 자르면 안 된다 - 넉넉히 받아
         # 재채점한 뒤 파이썬에서 자른다(`_TITLE_TOKEN_OVERFETCH`).
         fetch_limit = min(limit * _TITLE_TOKEN_OVERFETCH, _TITLE_TOKEN_MAX_FETCH)
-        async with self._read_conn() as conn, conn.cursor() as cur:
+        params = _lexical_params(query)
+        async with self._read_transaction(*_lexical_settings(_TITLE_SIMILARITY_THRESHOLD)) as cur:
             await cur.execute(
-                """
+                f"""
+                WITH hits AS MATERIALIZED ({_lexical_candidates_sql("documents", "document_id", "title", params)})
                 SELECT d.document_id, d.title, d.source_id, s.source_type, s.uri, s.modified_at,
                        d.project_id, COALESCE(s.modified_at, s.collected_at) AS content_at,
-                       (d.title ILIKE %s) AS is_substring,
-                       (d.title ILIKE ALL(%s::text[])) AS all_tokens,
-                       word_similarity(%s, d.title) AS sim
-                FROM documents d
+                       (d.title ILIKE %(pattern)s) AS is_substring,
+                       (d.title ILIKE ALL(%(tokens)s::text[])) AS all_tokens,
+                       word_similarity(%(query)s, d.title) AS sim
+                FROM hits
+                JOIN documents d ON d.document_id = hits.document_id
                 JOIN sources s ON s.source_id = d.source_id
                 WHERE d.title IS NOT NULL
-                  AND (d.title ILIKE %s OR d.title ILIKE ALL(%s::text[]) OR word_similarity(%s, d.title) >= %s)
-                  AND (%s::text IS NULL OR d.project_id = %s)
-                  AND (%s::text IS NULL OR s.source_type = %s)
-                  AND (%s::timestamptz IS NULL OR COALESCE(s.modified_at, s.collected_at) >= %s)
-                  AND (%s::timestamptz IS NULL OR COALESCE(s.modified_at, s.collected_at) < %s)
+                  AND (%(project_id)s::text IS NULL OR d.project_id = %(project_id)s)
+                  AND (%(source_type)s::text IS NULL OR s.source_type = %(source_type)s)
+                  AND (%(since)s::timestamptz IS NULL OR COALESCE(s.modified_at, s.collected_at) >= %(since)s)
+                  AND (%(until)s::timestamptz IS NULL OR COALESCE(s.modified_at, s.collected_at) < %(until)s)
                 ORDER BY is_substring DESC, all_tokens DESC, sim DESC, d.title, d.document_id
-                LIMIT %s
+                LIMIT %(limit)s
                 """,
-                (
-                    pattern,
-                    token_patterns,
-                    query,
-                    pattern,
-                    token_patterns,
-                    query,
-                    _TITLE_SIMILARITY_THRESHOLD,
-                    project_id,
-                    project_id,
-                    source_type,
-                    source_type,
-                    since,
-                    since,
-                    until,
-                    until,
-                    fetch_limit,
-                ),
+                {
+                    **params,
+                    "project_id": project_id,
+                    "source_type": source_type,
+                    "since": since,
+                    "until": until,
+                    "limit": fetch_limit,
+                },
             )
             rows = await cur.fetchall()
 
@@ -1654,50 +1651,35 @@ class PostgresStore:
         the joined document/source. `summary` is a window of
         `_CHUNK_HIT_SUMMARY_CHARS` around the first match rather than the head
         of the chunk (the match is usually deep in a long chunk, and the head
-        would show nothing relevant). The fuzzy tier calls
-        `word_similarity()` per row instead of the index-backed `<%` operator
-        because that operator reads its threshold from a session GUC; at the
-        current table sizes the explicit function call is fast enough, and
-        the trigram index still serves the `ILIKE` tiers.
+        would show nothing relevant). Every tier is fetched through the trigram
+        index (`_lexical_candidates_sql`), and `word_similarity()` is computed
+        only for those candidates - see that helper for why the result set is
+        identical to the single `OR` predicate it replaced.
 
         질의 NFC 정규화 이유는 `search_documents_by_title` 참고 - `_lexical_snippet`의
         일치 지점 탐색도 같은 정규화된 질의를 쓴다."""
         query = to_nfc(query)
-        pattern = _like_pattern(query)
-        token_patterns = _token_patterns(query)
-        async with self._read_conn() as conn, conn.cursor() as cur:
+        params = _lexical_params(query)
+        async with self._read_transaction(*_lexical_settings(_CHUNK_SIMILARITY_THRESHOLD)) as cur:
             await cur.execute(
-                """
+                f"""
+                WITH hits AS MATERIALIZED ({_lexical_candidates_sql("chunks", "chunk_id", "text", params)})
                 SELECT c.chunk_id, c.document_id, c.source_id, c.hierarchy_level, c.sequence_index, c.text,
                        d.title, d.project_id, s.source_type, s.uri, s.modified_at,
                        COALESCE(s.modified_at, s.collected_at) AS content_at,
-                       (c.text ILIKE %s) AS is_substring,
-                       word_similarity(%s, c.text) AS sim
-                FROM chunks c
+                       (c.text ILIKE %(pattern)s) AS is_substring,
+                       word_similarity(%(query)s, c.text) AS sim
+                FROM hits
+                JOIN chunks c ON c.chunk_id = hits.chunk_id
                 JOIN documents d ON d.document_id = c.document_id
                 JOIN sources s ON s.source_id = d.source_id
-                WHERE (c.text ILIKE %s OR c.text ILIKE ALL(%s::text[]) OR word_similarity(%s, c.text) >= %s)
-                  AND (%s::text IS NULL OR d.project_id = %s)
-                  AND (%s::timestamptz IS NULL OR COALESCE(s.modified_at, s.collected_at) >= %s)
-                  AND (%s::timestamptz IS NULL OR COALESCE(s.modified_at, s.collected_at) < %s)
+                WHERE (%(project_id)s::text IS NULL OR d.project_id = %(project_id)s)
+                  AND (%(since)s::timestamptz IS NULL OR COALESCE(s.modified_at, s.collected_at) >= %(since)s)
+                  AND (%(until)s::timestamptz IS NULL OR COALESCE(s.modified_at, s.collected_at) < %(until)s)
                 ORDER BY is_substring DESC, sim DESC, c.document_id, c.sequence_index
-                LIMIT %s
+                LIMIT %(limit)s
                 """,
-                (
-                    pattern,
-                    query,
-                    pattern,
-                    token_patterns,
-                    query,
-                    _CHUNK_SIMILARITY_THRESHOLD,
-                    project_id,
-                    project_id,
-                    since,
-                    since,
-                    until,
-                    until,
-                    limit,
-                ),
+                {**params, "project_id": project_id, "since": since, "until": until, "limit": limit},
             )
             rows = await cur.fetchall()
 
@@ -1991,6 +1973,49 @@ def _like_pattern(text: str) -> str:
 def _token_patterns(query: str) -> list[str]:
     tokens = query.split()[:_MAX_QUERY_TOKENS]
     return [_like_pattern(token) for token in tokens] or [_like_pattern(query)]
+
+
+def _lexical_params(query: str) -> dict[str, Any]:
+    """`_lexical_candidates_sql`과 두 검색 SELECT가 공유하는 이름 붙은 파라미터. 토큰
+    패턴은 배열(`tokens`, 점수 계산의 `ILIKE ALL`)과 낱개(`token0`.., 후보 분기의 AND)로 둘 다 싣는다."""
+    tokens = _token_patterns(query)
+    return {
+        "query": query,
+        "pattern": _like_pattern(query),
+        "tokens": tokens,
+        **{f"token{i}": token for i, token in enumerate(tokens)},
+    }
+
+
+def _lexical_settings(threshold: float) -> tuple[str, str]:
+    """후보 분기의 `<%`가 읽는 임계값, 그리고 순차 스캔 금지 - 둘 다 `SET LOCAL`이라 이 검색
+    한 건의 트랜잭션에만 걸린다. `enable_seqscan = off`가 필요한 이유: 이 규모(청크 수천 행)에서는
+    플래너가 `word_similarity`의 행당 비용(긴 본문의 trigram 생성)을 모른 채 `<%` 분기를
+    순차 스캔(행마다 유사도 계산, ~350ms)으로 고른다. 플래너 설정은 계획만 바꾸고 결과는 못
+    바꾸며, 인덱스가 못 쓰이는 분기(trigram 없는 2글자 토큰 등)는 여전히 전체 인덱스 스캔으로 답한다."""
+    return (f"SET LOCAL pg_trgm.word_similarity_threshold = {float(threshold)}", "SET LOCAL enable_seqscan = off")
+
+
+def _lexical_candidates_sql(table: str, key: str, column: str, params: dict[str, Any]) -> str:
+    """세 매칭 tier(전체 substring / 모든 토큰 substring / `word_similarity` >= 임계값)를
+    만족하는 행의 `key`를 tier마다 따로 trigram GIN 인덱스로 뽑아 합친다.
+
+    예전의 `A OR ILIKE ALL(...) OR word_similarity(q, col) >= t` 한 WHERE는 인덱스를 못 탔다 -
+    `word_similarity()` 호출은 인덱스 연산자가 아니고 `ILIKE ALL(array)`도 GIN이 받지 못해,
+    행마다 유사도를 계산하는 순차 스캔이 됐다. 분기별로 다시 쓰면 결과 집합이 정확히 같다:
+    - fuzzy: `q <% col`은 `word_similarity(q, col) >= pg_trgm.word_similarity_threshold`와
+      같은 판정이다(연산자가 같은 함수를 부르고, 임계값을 넘는 순간 멈추는 최적화만 있음).
+      임계값은 `_lexical_settings`가 트랜잭션에 건다.
+    - 모든 토큰: `ILIKE ALL(array)`를 토큰별 `ILIKE ... AND`로 펼친다 - 같은 술어이고 GIN이 받는다.
+      토큰이 전체 패턴 하나뿐이면(공백 없는 질의) 전체 substring 분기와 같아 생략한다.
+    - `ILIKE`/`AND` 분기는 trigram이 없는 패턴(2글자 이하 토큰)에서도 GIN 전체 스캔 +
+      재검사로 정확히 답한다 - 행이 빠지지 않고 느려질 뿐이다.
+    OR 하나로 합치지 않고 UNION으로 나누는 이유: BitmapOr는 재검사 때 OR 전체를 평가해,
+    한 분기가 trigram 없는 패턴이면 모든 행에 `word_similarity`를 계산하는 예전 비용으로 돌아간다."""
+    branches = [f"{column} ILIKE %(pattern)s", f"%(query)s <%% {column}"]
+    if params["tokens"] != [params["pattern"]]:
+        branches.append(" AND ".join(f"{column} ILIKE %(token{i})s" for i in range(len(params["tokens"]))))
+    return " UNION ".join(f"SELECT {key} FROM {table} WHERE {branch}" for branch in branches)
 
 
 def _lexical_snippet(text: str, query: str, max_chars: int) -> str:
