@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     # it's the same "don't fan out unbounded requests" concern, and a
     # dedicated setting isn't justified until it's actually a bottleneck.
     max_concurrent_llm_requests: int = 5
+    # How many documents run_pipeline (pipeline.py) processes at once -
+    # parse, chunk, store, embed and extract. LLM/VLM/embedding calls stay
+    # capped by max_concurrent_llm_requests above; this only stops one slow
+    # document from holding up the rest. 1 restores strictly sequential
+    # processing. See wiki/architecture.md "문서 간 동시성".
+    max_concurrent_documents: int = 4
     # Token budget for bundling consecutive chunks (see
     # extraction/grouping.py) into one Extractor.extract() call. A single
     # chunk already at or over this budget (e.g. a whole Chapter under
