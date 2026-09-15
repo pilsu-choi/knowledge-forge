@@ -9,6 +9,7 @@
 | [`architecture.md`](architecture.md) | 파이프라인 전체 구조(Collector→Context Reconstruction→Parser→Chunker→Extraction), 컴포넌트별 책임, 확장 포인트, provenance/타입드 오브젝트/hierarchy 설계 결정 |
 | [`knowledge-object-schema.md`](knowledge-object-schema.md) | `KnowledgeObject`/`Relation`/`Source`/`Document`/`Chunk` 필드별 스펙과 예시 JSON |
 | [`roadmap.md`](roadmap.md) | 완료된 범위, PRD 제외 범위가 왜 설계를 막지 않는지, 단계별 후속 계획 |
+| [`improvement-plan-2026-09-15.md`](improvement-plan-2026-09-15.md) | 개선 필요 사항 — Foundry형 온톨로지·오픈소스 LLM(gpt-oss-120b)·품질과 지연 동시 달성 기준의 진단. 측정(e2e 부재), 에이전트 런타임(reasoning·max_tokens), 지연 구조(LLM 호출 수·프리필), 검색 코어(BM25·리랭커·온프렘 임베딩), 온톨로지(엔티티 해소·타입 속성·그래프 읽기·MCP)와 추천 순서 |
 
 ## 수집 (Collector · Context Reconstruction)
 
