@@ -36,3 +36,21 @@ async def test_rerank_scores_requires_an_endpoint(monkeypatch):
     monkeypatch.setattr(settings, "reranker_base_url", None)
     with pytest.raises(RuntimeError):
         await rerank_scores("q", ["a"])
+
+
+async def test_rerank_scores_speaks_tei_native_format(monkeypatch):
+    monkeypatch.setattr(settings, "reranker_base_url", "http://tei.test")
+    monkeypatch.setattr(settings, "reranker_api", "tei")
+    monkeypatch.setattr(settings, "reranker_api_key", "k")
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(url=str(request.url), auth=request.headers["authorization"], body=json.loads(request.content))
+        return httpx.Response(200, json=[{"index": 1, "score": 0.8}, {"index": 0, "score": 0.2}])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        scores = await rerank_scores("q", ["a", "b"], client=client)
+
+    assert seen["url"] == "http://tei.test/rerank" and seen["auth"] == "Bearer k"
+    assert seen["body"] == {"query": "q", "texts": ["a", "b"], "truncate": True}
+    assert scores == [0.2, 0.8]

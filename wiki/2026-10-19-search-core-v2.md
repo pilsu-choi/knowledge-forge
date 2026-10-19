@@ -23,7 +23,7 @@ sources:
 | `KF_SEARCH_ARM_FUSION` | false | `arm_fusion` |
 | `KF_SEARCH_METADATA_SOFT_FILTER` | false | `metadata_boost` |
 | `KF_SEARCH_BM25` | false | `lexical_search#semantic`의 `ranker` |
-| `KF_RERANKER_BASE_URL` (+`_MODEL`, `_API_KEY`, `_TOP_N`=50, `_TIMEOUT`=10) | 미설정=비활성 | `rerank` |
+| `KF_RERANKER_BASE_URL` (+`_API`=cohere\|tei, `_MODEL`, `_API_KEY`, `_TOP_N`=50, `_TIMEOUT`=10) | 미설정=비활성 | `rerank` |
 
 ## S3: RRF 융합 단위
 
@@ -97,8 +97,9 @@ sources:
 재정렬한다(`search/remote_rerank.py`, `_Run.rerank`). 엔드포인트가 없으면 이 단계는 존재하지 않는다.
 
 - 프로토콜: Cohere/Jina 호환 `POST {base_url}/v1/rerank`, 요청 `{model, query, documents, top_n}`, 응답
-  `{results: [{index, relevance_score}]}`. vLLM·Infinity·Jina·Cohere가 이 형식이다. TEI 고유의 `/rerank`는
-  지원하지 않는다(필요하면 `remote_rerank.py` 한 함수에 분기 추가). 모델은 `KF_RERANKER_MODEL`.
+  `{results: [{index, relevance_score}]}`. vLLM·Infinity·Jina·Cohere가 이 형식이다. `KF_RERANKER_API=tei`로
+  HuggingFace TEI 네이티브 `POST {base}/rerank`(요청 `{query, texts, truncate: true}`, 응답 `[{index, score}]`)도 쓴다.
+  인증은 둘 다 `Authorization: Bearer <KF_RERANKER_API_KEY>`(TEI `--api-key`). 모델은 `KF_RERANKER_MODEL`.
 - 위치: 메타데이터 필터·링크 응집도 **뒤**, anchor/비교 대상 고정 **앞**. 후보 집합은 건드리지 않고 순서만 바꾸며,
   명시 신호(제목 anchor)는 리랭커가 뒤집지 못한다. 상위 N건 밖은 융합 순서 그대로 뒤에 붙는다.
 - 입력 텍스트: 히트의 `title` + `summary`(일치 지점 발췌, 최대 1000자). 문서 본문 전체가 아니다.

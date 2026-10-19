@@ -202,6 +202,8 @@ class Settings(BaseSettings):
     # `{base_url}/v1/rerank`). 엔드포인트(`reranker_base_url`)가 없으면 비활성 - 기본값이다. 실패하면 융합 순서 그대로.
     reranker_base_url: str | None = None
     reranker_model: str | None = None
+    # 엔드포인트 형식: cohere(Cohere/Jina 호환 /v1/rerank) 또는 tei(HuggingFace TEI 네이티브 /rerank).
+    reranker_api: Literal["cohere", "tei"] = "cohere"
     reranker_api_key: str | None = None
     reranker_top_n: int = 50
     reranker_timeout: float = 10.0
