@@ -160,3 +160,38 @@ async def test_bad_request_is_not_retried_and_raises_knowledge_extraction_error(
         await extractor.extract([_sample_chunk()], _sample_document(), _sample_source())
 
     assert client.chat.completions.calls == 1
+
+
+def _schema_nodes(node: dict):
+    """Every schema node, skipping the `properties`/`$defs` name maps themselves."""
+    yield node
+    for key, value in node.items():
+        children = value.values() if key in ("properties", "$defs") else value if isinstance(value, list) else [value]
+        for child in children:
+            if isinstance(child, dict):
+                yield from _schema_nodes(child)
+
+
+def test_strict_json_schema_drops_title_and_default_and_closes_every_object():
+    from knowledge_forge.extraction.openrouter_extractor import _to_strict_json_schema
+
+    original = ExtractionResult.model_json_schema()
+    strict = _to_strict_json_schema(original)
+
+    for node in _schema_nodes(strict):
+        assert "title" not in node and "default" not in node
+        if node.get("type") == "object" and "properties" in node:
+            assert node["additionalProperties"] is False
+            assert node["required"] == list(node["properties"])
+    assert "title" in original  # the input is deep-copied, not patched in place
+
+def test_strict_json_schema_keeps_a_field_literally_named_title():
+    from knowledge_forge.extraction.openrouter_extractor import _to_strict_json_schema
+
+    schema = {"type": "object", "title": "Doc", "properties": {"title": {"type": "string", "title": "Title"}}}
+    assert _to_strict_json_schema(schema) == {
+        "type": "object",
+        "properties": {"title": {"type": "string"}},
+        "additionalProperties": False,
+        "required": ["title"],
+    }
