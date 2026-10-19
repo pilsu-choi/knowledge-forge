@@ -147,11 +147,26 @@ compare는 두 실행 모두 ok인 항목끼리 짝지어 delta(B−A) 평균, �
 
 ## 알려진 한계
 
-- **chunk grain 점수는 문서 단위 히트에 구조적으로 눌린다(grain id 없는 히트는 0점).** 2026-09-14
-  스모크(lookup 7개)에서 5개는 채점 리스트가 비었다: `metadata_filter`나 `document_lookup` anchor가
-  걸리면 retrieve 결과가 청크 id 없는 문서 히트 위주가 된다. 정답 문서를 1위로 찾고도 정답 청크가
-  리스트에 없어 0점인 항목도 있었다. 계획대로의 채점 규칙이며, 개선 여부는 S2에서 판단할 일이다.
-- **KO grain은 사실상 벡터 단독**이다. KO 어휘 검색 arm이 없어 lexical/keyword 히트는 전부 청크라 채점 리스트에서 빠진다.
+- **grain id는 검색 경로마다 있거나 없다 - 채점은 id가 있는 히트만 센다(`goldenset.py::ranked_ids`).**
+  `document_search`(제목)와 `metadata_filter`는 `documents`/`sources` 행을 조회해 문서 단위 히트만 내고
+  (chunk_id·KO id 둘 다 없음), `lexical_search`는 `chunks` 행이라 chunk_id는 있지만 `knowledge_object_id`는
+  항상 None이다(`postgres_store.py::search_chunks_lexical`). KO id를 내는 경로는 `vector_search`뿐이다.
+  그래서 grain 펼치기 전(기준점 `7160f0d`, 아래 v1 표)에는 정답 문서를 1위로 찾고도 채점 리스트가 비었다 -
+  lookup 빈 리스트 31/30건, exhaustive recall 0.042/0.013. 예: chunk `exhaustive-005`("2026년 8월에 발송된
+  메일을 전부")는 필터가 정답 48건을 정확히 찾았지만 벡터 200건이 전부 하한 미만으로 버려져
+  `no_overlap_fallback_to_filter`로 문서 히트만 남아 recall 0이었다.
+- **grain 펼치기(`retrieve.py::_Run.expand_to_grain`, 2026-09-14 채택)가 이걸 뒤에서 메운다.** 최종 랭킹에서
+  grain 히트가 없는 문서마다 그 문서 안에서만 `vector_search(document_ids=[문서])`로 grain 단위 3개를 골라
+  문서의 첫 히트 뒤에 끼운다. 효과: test split chunk exhaustive recall 0.049 → 0.805, 종합 chunk +0.123 / KO
+  +0.046(`search-architecture.md` "랭킹 구조 수정 A/B"). 남은 한계:
+  - **KO grain에서 "어느 문서인가"는 모든 arm이, "문서 안의 어느 KO인가"는 벡터만 정한다.** KO 어휘 검색이
+    없어서다. chunk grain은 어휘 arm의 청크 히트가 그대로 채점된다.
+  - 문서당 3개씩 끼우는 단위가 다른 정답을 밀어낸다 - test KO lookup ndcg@10 −0.010(4승 13패). 끼우는 개수·
+    유사도 하한 조정이 후속 과제다.
+  - 문서마다 `vector_search`가 1회씩 붙고 wide 질의는 절단하지 않아 조회가 불어난다
+    (`search-quality-review-2026-09-15.md` 2장 9번).
+  - `grain`을 명시할 때(평가·e2e)만 켜진다. 에이전트 `search` 도구 기본값(grain 미지정)은 펼치지 않으므로
+    펼치기 이득은 제품 경로에 반영되지 않는다.
 - KO grain은 KO 임베딩이 먼저 있어야 한다: `knowledge-forge embed --embedding-source knowledge_object`. 0건이면 `eval gen`이
   거부하고 `eval run`은 경고를 남긴다. 개발 DB는 2026-09-14에 5,107건을 백필했다(chunk 2,856 / knowledge_object 5,107, `openai/text-embedding-3-small`).
 - `OPENROUTER_API_KEY`는 셸에 export해야 한다. settings는 `.env`의 `KF_` 접두사 키만 읽는다.
@@ -186,6 +201,7 @@ main 코드(`7160f0d`) 기준점, 전체 split, LLM 0회. **`overall` 열은 그
 | chunk-v1 | 0.422 | 0.474 | 0.381 | 0.502 | 0.042 | 0.400 | 1.1초 |
 | knowledge_object-v1 | 0.388 | 0.446 | 0.314 | 0.463 | 0.013 | 0.333 | 1.4초 |
 
-- lookup 채점 리스트가 빈 항목이 chunk 31건, KO 30건이다. 제목·필터 히트는 문서 단위라 grain id가 없어서다(검색 개선 S2의 "grain 펼치기"가 겨냥).
-- exhaustive recall이 거의 0인 것도 같은 원인이다. 필터가 찾은 문서가 grain 채점 리스트에 들어가지 않는다.
+- **이 표는 grain 펼치기 이전 값이다.** 펼치기는 이 기준점 뒤에 main에 머지됐다(`37c42cb`).
+- lookup 채점 리스트가 빈 항목이 chunk 31건, KO 30건이다. 제목·필터 히트는 문서 단위라 grain id가 없어서다(위 "알려진 한계" 첫 두 항목, grain 펼치기가 겨냥).
+- exhaustive recall이 거의 0인 것도 같은 원인이다. 필터가 찾은 문서가 grain 채점 리스트에 들어가지 않았다. 펼치기 후 test chunk 0.049 → 0.805.
 - none_correct가 낮은 이유: 채점 리스트가 0건이어야 정답인데 어휘 arm이 무언가를 물어온다.
