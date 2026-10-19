@@ -416,3 +416,62 @@ async def test_normalize_unicode_text_fixes_rows_written_before_the_fix(store):
     assert hits[0]["document_id"] == "test-lex-d20" and hits[0]["score"] == 1.0
     assert [h["chunk_id"] for h in await store.search_chunks_lexical(_NFC_NAME, project_id=_PROJECT)] == ["test-lex-c20-0"]
     assert await store.normalize_unicode_text(_PROJECT) == (0, 0)  # 멱등
+
+
+# --- 한국어 BM25 (KF_SEARCH_BM25, chunk_terms 역색인) ---------------------------------
+
+
+async def _indexed(store: PostgresStore) -> dict[str, int | None]:
+    cur = await store.conn.execute("SELECT chunk_id, lex_len FROM chunks WHERE source_id LIKE 'test-lex-%'")
+    return dict(await cur.fetchall())
+
+
+async def test_bm25_index_is_not_written_while_the_flag_is_off(store):
+    docs = await _seed(store)
+    await store.save_chunks([_chunk(1, docs["d1"], "유통 채널 전략을 정리했다")])
+
+    assert (await _indexed(store)) == {"test-lex-c1-0": None}
+    assert await store.search_chunks_bm25("전략", project_id=_PROJECT) == []
+
+
+async def test_bm25_matches_inflected_forms_and_ranks_by_tf_and_length(store, monkeypatch):
+    from knowledge_forge.config import settings
+
+    monkeypatch.setattr(settings, "search_bm25", True)
+    docs = await _seed(store)
+    await store.save_chunks(
+        [
+            _chunk(1, docs["d1"], "유통 채널 전략을 정리했다. 전략은 분기마다 바뀐다.", seq=0),
+            _chunk(1, docs["d1"], "회의 결과 전략이 있었다. " + "그 밖의 안건은 다음 주에 논의한다. " * 10, seq=1),
+            _chunk(3, docs["d3"], "산출물 기간 변경 안내", seq=0),
+        ]
+    )
+
+    hits = await store.search_chunks_bm25("전략", project_id=_PROJECT)
+
+    # 조사가 다른 "전략을/전략은/전략이"가 같은 term이다. 둘 다 걸리고, tf가 높고 짧은 청크가 위.
+    assert [h["chunk_id"] for h in hits] == ["test-lex-c1-0", "test-lex-c1-1"]
+    assert hits[0]["score"] > hits[1]["score"] > 0
+    assert hits[0]["target_kind"] == "chunk" and hits[0]["title"] == "2025_SH_업무_보고서.pdf"
+    # substring이 아니라 형태소 단위다: "략을"은 term이 아니다.
+    assert await store.search_chunks_bm25("략을", project_id=_PROJECT) == []
+    # 시간 창이 후보만 거른다.
+    assert await store.search_chunks_bm25("전략", project_id=_PROJECT, since=_T0 + timedelta(days=15)) == []
+
+
+async def test_bm25_backfill_indexes_old_chunks_and_a_changed_text_goes_stale(store, monkeypatch):
+    from knowledge_forge.config import settings
+
+    docs = await _seed(store)
+    await store.save_chunks([_chunk(1, docs["d1"], "유통 채널 전략을 정리했다")])
+    assert await store.search_chunks_bm25("전략", project_id=_PROJECT) == []
+
+    assert await store.backfill_chunk_terms(_PROJECT) == 1
+    assert await store.backfill_chunk_terms(_PROJECT) == 0  # 멱등
+    assert [h["chunk_id"] for h in await store.search_chunks_bm25("전략", project_id=_PROJECT)] == ["test-lex-c1-0"]
+
+    # 플래그가 꺼진 채 본문이 바뀌면 낡은 색인은 검색에서 빠진다(미색인 NULL).
+    monkeypatch.setattr(settings, "search_bm25", False)
+    await store.save_chunks([_chunk(1, docs["d1"], "전혀 다른 내용으로 교체")])
+    assert (await _indexed(store))["test-lex-c1-0"] is None
+    assert await store.search_chunks_bm25("전략", project_id=_PROJECT) == []

@@ -117,6 +117,18 @@ CREATE INDEX IF NOT EXISTS idx_chunks_source_id ON chunks(source_id);
 -- pg_trgm-over-tsvector reasoning as idx_documents_title_trgm above.
 CREATE INDEX IF NOT EXISTS idx_chunks_text_trgm ON chunks USING gin (text gin_trgm_ops);
 
+-- 한국어 BM25 역색인(`KF_SEARCH_BM25`, wiki/2026-10-19-search-core-v2.md). Kiwi 형태소 term을 (term, tf)로
+-- 저장하고 `chunks.lex_len`(문서 길이=term 수, NULL이면 미색인)과 함께 BM25를 SQL에서 계산한다. PK가
+-- term 선두라 질의 term의 posting 조회와 df(count)가 인덱스 범위 스캔이다.
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS lex_len INT;
+CREATE TABLE IF NOT EXISTS chunk_terms (
+    chunk_id TEXT NOT NULL REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+    term     TEXT NOT NULL,
+    tf       INT NOT NULL,
+    PRIMARY KEY (term, chunk_id)
+);
+CREATE INDEX IF NOT EXISTS idx_chunk_terms_chunk_id ON chunk_terms(chunk_id);
+
 -- `evidence` replaces the old single `chunk_id` column: a KnowledgeObject
 -- can be grounded in more than one Chunk (see models/knowledge_object.py),
 -- so provenance to chunks is a JSONB list of {chunk_id, ...} rather than a

@@ -726,6 +726,49 @@ async def test_term_fallback_runs_when_the_whole_query_matched_only_one_document
     assert "d2" in result.document_ids
 
 
+class _Bm25Store(_FakeStore):
+    def __init__(self, bm25_hits: list[dict], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.bm25_hits = bm25_hits
+        self.bm25_calls: list[str] = []
+
+    async def search_chunks_bm25(self, query, *, project_id=None, since=None, until=None, limit=10):
+        self.bm25_calls.append(query)
+        return [dict(h) for h in self.bm25_hits][:limit]
+
+
+async def test_bm25_arm_replaces_the_trigram_body_lookup_and_the_term_fallback(monkeypatch):
+    """`search_bm25`가 켜지면 arm 본문 조회는 BM25다. 히트가 하나뿐이어도 term 구제 경로(최대 10회 조회)는 돌지 않는다
+    (BM25가 질의 term 전체를 한 번에 점수화한다). 식별자 조회(trigram)는 이 플래그와 무관하다."""
+    from knowledge_forge.config import settings
+
+    monkeypatch.setattr(settings, "search_bm25", True)
+    store = _Bm25Store([_chunk_hit("d2", "c2", 7.5)], title_hits={"codex README": [_doc_hit("d1", 0.4)]})
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("codex README", store=store, now=_NOW)
+
+    assert store.bm25_calls == ["codex README"] and store.chunk_calls == []
+    step = next(s for s in result.steps if s.source == "lexical_search#semantic")
+    assert step.detail["ranker"] == "bm25"
+    assert not [s for s in result.steps if s.detail.get("mode") == "per_term"]
+    assert set(result.document_ids) == {"d1", "d2"}
+
+
+async def test_bm25_arm_falls_back_to_trigram_when_the_index_is_empty(monkeypatch):
+    from knowledge_forge.config import settings
+
+    monkeypatch.setattr(settings, "search_bm25", True)
+    store = _Bm25Store([], chunk_hits={"codex README": [_chunk_hit("d2", "c2", 1.0)]})
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("codex README", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.source == "lexical_search#semantic")
+    assert step.detail["ranker"] == "trigram"
+    assert result.document_ids == ["d2"]
+
+
 async def test_term_fallback_splits_the_query_and_ranks_by_term_coverage(monkeypatch):
     """자연어 질의는 전체 문자열로는 pg_trgm에 안 걸린다(히트 0) - term별로 나눠 찾고, 여러
     term이 겹친 문서가 RRF로 위에 온다. v0 baseline의 conversation_thread/sequence 실패 형태.

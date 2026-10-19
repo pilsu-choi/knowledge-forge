@@ -193,6 +193,11 @@ class Settings(BaseSettings):
     # 대신 점수 부스트(RRF 한 표)로 쓴다. 작성자/참여자/시간/확장자/MIME 같은 명시적 구조 조건은
     # 그대로 하드 필터다. 기본 False = 기존 동작.
     search_metadata_soft_filter: bool = False
+    # 어휘 arm(`semantic_query` 통째 본문 조회)을 pg_trgm substring(전부 1.0점) 대신 한국어 형태소 BM25로 한다
+    # (wiki/2026-10-19-search-core-v2.md). True면 청크 저장 때 `chunk_terms` 색인도 갱신하고(`kiwipiepy`,
+    # `korean` extra 필요), 기존 청크는 `knowledge-forge db backfill-bm25`로 채운다. 식별자·따옴표 구절·제목
+    # 조회는 계속 pg_trgm이다. BM25가 0히트면(미색인) 예전 trigram 경로로 되돌아간다.
+    search_bm25: bool = False
 
     embedding_enabled: bool = False
     # Which embedding backend embedding/factory.py builds (mirrors

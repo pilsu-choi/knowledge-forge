@@ -1023,17 +1023,27 @@ class _Run:
         query = self.c.semantic_query
         if not query:
             return _noop
-        title_hits, body_hits = await _gather_ordered(
+        title_hits, (body_hits, ranker) = await _gather_ordered(
             document_search(
                 query, self.store, project_id=self.project_id, limit=self.fetch_limit, since=self.since, until=self.until
             ),
-            lexical_search(
-                query, self.store, project_id=self.project_id, limit=self.fetch_limit, since=self.since, until=self.until
-            ),
+            self._arm_body_hits(query),
         )
-        return lambda: self._apply_keyword_arm(query, title_hits, body_hits)
+        return lambda: self._apply_keyword_arm(query, title_hits, body_hits, ranker)
 
-    async def _apply_keyword_arm(self, query: str, title_hits: list[dict[str, Any]], body_hits: list[dict[str, Any]]) -> None:
+    async def _arm_body_hits(self, query: str) -> tuple[list[dict[str, Any]], str]:
+        """arm의 본문 조회. `search_bm25`가 켜져 있으면 한국어 BM25를 먼저 보고, 0히트(미색인 등)면 trigram으로
+        되돌아간다. 반환의 두 번째 값이 실제로 쓴 순위 방식이다."""
+        kwargs = {"project_id": self.project_id, "limit": self.fetch_limit, "since": self.since, "until": self.until}
+        if settings.search_bm25:
+            hits = await lexical_search(query, self.store, bm25=True, **kwargs)
+            if hits:
+                return hits, "bm25"
+        return await lexical_search(query, self.store, **kwargs), "trigram"
+
+    async def _apply_keyword_arm(
+        self, query: str, title_hits: list[dict[str, Any]], body_hits: list[dict[str, Any]], ranker: str = "trigram"
+    ) -> None:
         # anchor 판정을 `document_lookup`과 공유한다(`_claim_anchor` docstring 참고). 이미
         # anchor가 잡혀 있으면 다시 판정하지 않는다 - 그건 `document_reference`/`identifiers`
         # 같은 명시적 신호에서 나온 더 강한 anchor라 semantic_query가 덮어쓰면 안 된다.
@@ -1053,7 +1063,14 @@ class _Run:
         )
         body_hits, _ = self.narrow(body_hits)
         self.add_hits(SOURCE_LEXICAL_SEARCH_SEMANTIC, body_hits)
-        self.step(STRATEGY_LEXICAL, SOURCE_LEXICAL_SEARCH_SEMANTIC, len(body_hits), query=query, arm="semantic_query")
+        self.step(
+            STRATEGY_LEXICAL,
+            SOURCE_LEXICAL_SEARCH_SEMANTIC,
+            len(body_hits),
+            query=query,
+            arm="semantic_query",
+            **({"ranker": ranker} if settings.search_bm25 else {}),
+        )
         # 질의 문자열 통째로 뭔가 **강하게** 걸렸으면 그게 term 하나하나보다 강한 신호다 -
         # term 분해는 그 신호가 약할 때만 도는 구제 경로다. 항상 돌리면 "codex README"처럼
         # 제목이 정확히 맞은 질의에서 term별 히트가 정답을 밀어낸다(v0-navigational-002:
@@ -1080,7 +1097,8 @@ class _Run:
             {hit["document_id"] for hit in [*title_hits, *body_hits] if hit.get("document_id")}
         )
         # wide 질의에서는 anchor가 "이 문서가 답"이 아니므로(`narrow`) 강한 신호로 치지 않는다.
-        if (self.anchor is None or self.wide) and arm_documents < _ARM_STRONG_DOCUMENTS:
+        # BM25는 질의 term 전체를 한 번에 점수화하므로 term별 구제 경로(최대 10회 조회 + df 질의)가 필요 없다.
+        if (self.anchor is None or self.wide) and arm_documents < _ARM_STRONG_DOCUMENTS and ranker != "bm25":
             await self._term_fallback()
 
     async def _term_fallback(self) -> None:

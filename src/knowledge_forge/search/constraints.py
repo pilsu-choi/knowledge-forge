@@ -1102,7 +1102,7 @@ def suggest_strategies(constraints: QueryConstraints) -> list[str]:
     후보 생성:
     - "document_lookup": `document_reference`/`identifiers`로 문서 제목·파일명을 찾는다
       (Navigational/Specific Document QA). 결과는 문서 단위, 이후 whole_document/vector가 그 안을 본다.
-    - "lexical": `identifiers`/`quoted_phrases`를 본문에 정확 일치(substring/BM25)로 찾는다(Exact Match).
+    - "lexical": `identifiers`/`quoted_phrases`를 본문에 정확 일치(pg_trgm substring - BM25가 아니다)로 찾는다(Exact Match).
       임베딩은 에러코드 같은 토큰에 의미가 없어 못 잡는다.
     - "metadata_filter": `authors`/`participants`/`source_types`/`document_types`/`time_range`를
       sources.metadata/타임스탬프 WHERE 조건으로 건다(Metadata Filter/Temporal). 다른 후보 생성 전략과
