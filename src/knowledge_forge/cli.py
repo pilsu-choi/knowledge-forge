@@ -899,6 +899,26 @@ def db_backfill_titles(
     typer.echo(f"문서 제목 백필 완료: {updated}건", err=True)
 
 
+@db_app.command("backfill-bm25")
+def db_backfill_bm25(
+    project_id: str | None = typer.Option(None, "--project-id", help="이 프로젝트의 청크만 처리한다 (기본: 전체)."),
+    overwrite: bool = typer.Option(False, "--overwrite", help="이미 색인된 청크도 다시 (토크나이저를 바꾼 뒤)."),
+) -> None:
+    """한국어 BM25 역색인(`chunk_terms`)을 아직 색인되지 않은 청크에 채운다(`KF_SEARCH_BM25`, `korean` extra 필요).
+    `KF_SEARCH_BM25=true`로 적재한 청크는 저장 때 색인되므로 이 명령은 그 전에 쌓인 청크용이고, 재실행해도 안전하다."""
+    database_url = settings.database_url
+    if not database_url:
+        typer.echo("KF_DATABASE_URL이 설정되지 않았습니다.", err=True)
+        raise typer.Exit(1)
+
+    async def _run() -> int:
+        async with PipelineStore(database_url, settings.data_dir) as store:
+            await store.init_schema()
+            return await store.backfill_chunk_terms(project_id, overwrite=overwrite)
+
+    typer.echo(f"BM25 색인 완료: 청크 {asyncio.run(_run())}건", err=True)
+
+
 @db_app.command("normalize-unicode")
 def db_normalize_unicode(
     project_id: str | None = typer.Option(

@@ -184,6 +184,30 @@ class Settings(BaseSettings):
     # 0.0으로 두면 하한이 꺼지고 임베딩 채운 직후의 동작(ndcg 0.870)으로 돌아간다.
     vector_min_score: float = 0.45
 
+    # RRF 융합 단위(wiki/search-architecture.md "융합 단위"). False(기본)는 소스 리스트마다 한 표 -
+    # 어휘 쪽은 term fallback의 `lexical_search#<term>` 때문에 최대 10표, 벡터는 1표라 투표가
+    # 불균형하다. True는 소스 계열(document_search/lexical_search/vector_search...)당 1표로 묶고
+    # (계열 안 리스트들은 먼저 문서 id 기준 RRF로 한 순위표로 합친다) 문서 id 기준으로 융합한다.
+    search_arm_fusion: bool = False
+    # 규칙으로 뽑은 메타데이터 중 `source_type` 힌트를 하드 필터(교집합/`no_overlap_fallback_to_filter`)
+    # 대신 점수 부스트(RRF 한 표)로 쓴다. 작성자/참여자/시간/확장자/MIME 같은 명시적 구조 조건은
+    # 그대로 하드 필터다. 기본 False = 기존 동작.
+    search_metadata_soft_filter: bool = False
+    # 어휘 arm(`semantic_query` 통째 본문 조회)을 pg_trgm substring(전부 1.0점) 대신 한국어 형태소 BM25로 한다
+    # (wiki/2026-10-19-search-core-v2.md). True면 청크 저장 때 `chunk_terms` 색인도 갱신하고(`kiwipiepy`,
+    # `korean` extra 필요), 기존 청크는 `knowledge-forge db backfill-bm25`로 채운다. 식별자·따옴표 구절·제목
+    # 조회는 계속 pg_trgm이다. BM25가 0히트면(미색인) 예전 trigram 경로로 되돌아간다.
+    search_bm25: bool = False
+    # 융합 상위 `reranker_top_n`건을 외부 크로스 인코더로 재정렬한다(`search/remote_rerank.py`, Cohere/Jina 호환
+    # `{base_url}/v1/rerank`). 엔드포인트(`reranker_base_url`)가 없으면 비활성 - 기본값이다. 실패하면 융합 순서 그대로.
+    reranker_base_url: str | None = None
+    reranker_model: str | None = None
+    # 엔드포인트 형식: cohere(Cohere/Jina 호환 /v1/rerank) 또는 tei(HuggingFace TEI 네이티브 /rerank).
+    reranker_api: Literal["cohere", "tei"] = "cohere"
+    reranker_api_key: str | None = None
+    reranker_top_n: int = 50
+    reranker_timeout: float = 10.0
+
     embedding_enabled: bool = False
     # Which embedding backend embedding/factory.py builds (mirrors
     # llm_provider/get_extractor). "openrouter" talks to OpenRouter's

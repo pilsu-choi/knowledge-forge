@@ -17,10 +17,12 @@ import json
 import os
 from datetime import datetime, timezone
 
+import httpx
 import pytest
 import pytest_asyncio
 
 from knowledge_forge.chat_provider import AssistantTurn, ChatProvider
+from knowledge_forge.config import settings as _settings
 from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.document import Document, DocumentMetadata, TextBlock
 from knowledge_forge.models.source import Source, SourceRef, SourceType
@@ -587,6 +589,40 @@ async def test_source_type_hint_alone_never_hard_filters_the_relevance_ranking(m
     assert result.document_ids == ["mail1", "fd"]
 
 
+async def test_soft_filter_mode_turns_a_source_hint_into_a_boost_not_a_cut(monkeypatch):
+    """`search_metadata_soft_filter`: source_type 힌트는 후보를 자르지 않고 힌트에 맞는 후보(fd)를 RRF 한 표로
+    올린다. 힌트에 안 맞는 mail1은 결과에 그대로 남는다. 기본(off)은 위 테스트가 못 박은 대로 순위를 안 건드린다."""
+    from knowledge_forge.config import settings
+
+    monkeypatch.setattr(settings, "search_metadata_soft_filter", True)
+    store = _FakeStore(filter_rows=[_filter_row("fd", datetime(2026, 9, 1, tzinfo=timezone.utc))])
+    _patch_vector(monkeypatch, [_chunk_hit("mail1", "c1", 0.9), _chunk_hit("fd", "c2", 0.5)])
+
+    result = await retrieve("Google Drive 폴더 공유 시 부여할 수 있는 역할", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.strategy == "metadata_filter")
+    assert step.detail["mode"] == "soft" and step.detail["hard"] is False
+    assert step.detail["applied"] == "source_hint_boosted"
+    boost = next(s for s in result.steps if s.strategy == "metadata_boost")
+    assert boost.n_hits == 1 and boost.detail["promoted"] == 1
+    assert result.document_ids == ["fd", "mail1"]
+
+
+async def test_soft_filter_mode_keeps_structural_predicates_as_hard_filters(monkeypatch):
+    from knowledge_forge.config import settings
+
+    monkeypatch.setattr(settings, "search_metadata_soft_filter", True)
+    store = _FakeStore(filter_rows=[_filter_row("mail1", datetime(2026, 9, 1, tzinfo=timezone.utc))])
+    _patch_vector(monkeypatch, [_chunk_hit("noise", "c1", 0.9)])
+
+    result = await retrieve("nonghyup.com 도메인 발신자가 보낸 메일", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.strategy == "metadata_filter")
+    assert step.detail["hard"] is True
+    assert step.detail["applied"] == "no_overlap_fallback_to_filter"
+    assert "source_type IN" not in step.detail["sql"]
+
+
 async def test_no_overlap_still_falls_back_to_a_filter_with_structural_predicates(monkeypatch):
     """반대로 작성자/참여자/시간 같은 **구조적 술어**가 든 필터는 교집합 0에서도 믿는다.
 
@@ -690,6 +726,49 @@ async def test_term_fallback_runs_when_the_whole_query_matched_only_one_document
 
     assert [s for s in result.steps if s.detail.get("mode") == "per_term"]
     assert "d2" in result.document_ids
+
+
+class _Bm25Store(_FakeStore):
+    def __init__(self, bm25_hits: list[dict], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.bm25_hits = bm25_hits
+        self.bm25_calls: list[str] = []
+
+    async def search_chunks_bm25(self, query, *, project_id=None, since=None, until=None, limit=10):
+        self.bm25_calls.append(query)
+        return [dict(h) for h in self.bm25_hits][:limit]
+
+
+async def test_bm25_arm_replaces_the_trigram_body_lookup_and_the_term_fallback(monkeypatch):
+    """`search_bm25`가 켜지면 arm 본문 조회는 BM25다. 히트가 하나뿐이어도 term 구제 경로(최대 10회 조회)는 돌지 않는다
+    (BM25가 질의 term 전체를 한 번에 점수화한다). 식별자 조회(trigram)는 이 플래그와 무관하다."""
+    from knowledge_forge.config import settings
+
+    monkeypatch.setattr(settings, "search_bm25", True)
+    store = _Bm25Store([_chunk_hit("d2", "c2", 7.5)], title_hits={"codex README": [_doc_hit("d1", 0.4)]})
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("codex README", store=store, now=_NOW)
+
+    assert store.bm25_calls == ["codex README"] and store.chunk_calls == []
+    step = next(s for s in result.steps if s.source == "lexical_search#semantic")
+    assert step.detail["ranker"] == "bm25"
+    assert not [s for s in result.steps if s.detail.get("mode") == "per_term"]
+    assert set(result.document_ids) == {"d1", "d2"}
+
+
+async def test_bm25_arm_falls_back_to_trigram_when_the_index_is_empty(monkeypatch):
+    from knowledge_forge.config import settings
+
+    monkeypatch.setattr(settings, "search_bm25", True)
+    store = _Bm25Store([], chunk_hits={"codex README": [_chunk_hit("d2", "c2", 1.0)]})
+    _patch_vector(monkeypatch, [])
+
+    result = await retrieve("codex README", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.source == "lexical_search#semantic")
+    assert step.detail["ranker"] == "trigram"
+    assert result.document_ids == ["d2"]
 
 
 async def test_term_fallback_splits_the_query_and_ranks_by_term_coverage(monkeypatch):
@@ -1545,3 +1624,54 @@ async def test_multihop_is_fetched_with_the_first_wave_but_applied_after_the_tim
     assert strategies.count("multihop") == 1 and strategies[-1] == "multihop"
     assert strategies.index("time_range_relaxed") < strategies.index("multihop")
     assert {"doc", "planned"} <= set(result.document_ids)
+
+
+def _hits():
+    return [_chunk_hit("d1", "c1", 0.9), _chunk_hit("d2", "c2", 0.8), _chunk_hit("d3", "c3", 0.7)]
+
+
+async def test_rerank_step_is_absent_while_the_endpoint_is_unset(monkeypatch):
+    monkeypatch.setattr(_settings, "reranker_base_url", None)
+    _patch_vector(monkeypatch, _hits())
+
+    result = await retrieve("운영 매뉴얼 내용 알려줘", store=_FakeStore(), now=_NOW)
+
+    assert not any(s.strategy == "rerank" for s in result.steps)
+    assert result.document_ids[:3] == ["d1", "d2", "d3"]
+
+
+async def test_rerank_reorders_the_fused_top_n_and_leaves_the_rest(monkeypatch):
+    monkeypatch.setattr(_settings, "reranker_base_url", "http://rerank.test")
+    monkeypatch.setattr(_settings, "reranker_top_n", 2)
+    _patch_vector(monkeypatch, _hits())
+    sent = {}
+
+    async def fake_scores(query, documents):
+        sent["query"], sent["documents"] = query, documents
+        return [0.1, 0.9]  # 상위 2건(d1, d2)만 받는다: d2가 위로
+
+    monkeypatch.setattr(retrieve_module, "rerank_scores", fake_scores)
+
+    result = await retrieve("운영 매뉴얼 내용 알려줘", store=_FakeStore(), now=_NOW)
+
+    assert sent["query"] == "운영 매뉴얼 내용 알려줘" and len(sent["documents"]) == 2
+    assert result.document_ids[:3] == ["d2", "d1", "d3"]
+    step = next(s for s in result.steps if s.strategy == "rerank")
+    assert step.n_hits == 2 and step.detail["top_document_changed"] is True and step.detail["moved_documents"] == 2
+    assert "reranker" in result.hits[0]["retrieval_sources"]
+
+
+async def test_rerank_failure_keeps_the_fused_order(monkeypatch):
+    monkeypatch.setattr(_settings, "reranker_base_url", "http://rerank.test")
+    _patch_vector(monkeypatch, _hits())
+
+    async def boom(query, documents):
+        raise httpx.ConnectError("down")
+
+    monkeypatch.setattr(retrieve_module, "rerank_scores", boom)
+
+    result = await retrieve("운영 매뉴얼 내용 알려줘", store=_FakeStore(), now=_NOW)
+
+    assert result.document_ids[:3] == ["d1", "d2", "d3"]
+    step = next(s for s in result.steps if s.strategy == "rerank")
+    assert step.n_hits == 0 and step.detail["error"].startswith("ConnectError")

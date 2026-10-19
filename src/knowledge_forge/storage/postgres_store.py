@@ -18,6 +18,7 @@ from pgvector import Vector
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from knowledge_forge import korean_tokens
 from knowledge_forge.config import settings
 from knowledge_forge.exceptions import EmbeddingError
 from knowledge_forge.models.chunk import Chunk, HierarchyLevel
@@ -63,6 +64,8 @@ def schema_sql() -> str:
 # `limit` would (agent/tools.py::_MAX_SEARCH_LIMIT) - the agent can
 # `read_file` the resource for the full text once it has picked a hit.
 _CHUNK_HIT_SUMMARY_CHARS = 500
+_BM25_K1 = 1.2
+_BM25_B = 0.75
 
 # 읽기 전용 검색 경로(`_pooled_conn`)가 쓰는 커넥션 풀 크기.
 #
@@ -553,6 +556,8 @@ class PostgresStore:
         ]
         if document_id is None and not rows:
             return
+        # BM25 색인(`KF_SEARCH_BM25`)은 트랜잭션 밖에서 토큰화한다 - 형태소 분석은 CPU 작업이라 커넥션을 쥔 채 하지 않는다.
+        terms = await self._chunk_terms([(chunk.chunk_id, chunk.text) for chunk in chunks]) if settings.search_bm25 else []
         async with self._pooled_conn() as conn, conn.transaction(), conn.cursor() as cur:
             if document_id is not None:
                 stale = "SELECT chunk_id FROM chunks WHERE document_id = %(doc)s AND NOT chunk_id = ANY(%(keep)s)"
@@ -574,6 +579,8 @@ class PostgresStore:
                     hierarchy_level = EXCLUDED.hierarchy_level,
                     sequence_index = EXCLUDED.sequence_index,
                     parent_chunk_id = EXCLUDED.parent_chunk_id,
+                    -- 본문이 바뀌면 BM25 색인은 낡았다 - 미색인(NULL)으로 돌려 검색에서 빼고, 아래/백필이 다시 채운다.
+                    lex_len = CASE WHEN chunks.text = EXCLUDED.text THEN chunks.lex_len ELSE NULL END,
                     text = EXCLUDED.text,
                     token_count = EXCLUDED.token_count,
                     element_ids = EXCLUDED.element_ids,
@@ -583,6 +590,144 @@ class PostgresStore:
                 """,
                 rows,
             )
+            await self._write_chunk_terms(cur, terms)
+
+    @staticmethod
+    async def _chunk_terms(chunks: list[tuple[str, str]]) -> list[tuple[str, dict[str, int]]]:
+        """(chunk_id, text) -> (chunk_id, {term: tf}) - Kiwi 분석을 스레드에서 돌린다."""
+
+        def analyze() -> list[tuple[str, dict[str, int]]]:
+            out = []
+            for chunk_id, text in chunks:
+                counts: dict[str, int] = {}
+                for term in korean_tokens.tokenize(text):
+                    counts[term] = counts.get(term, 0) + 1
+                out.append((chunk_id, counts))
+            return out
+
+        return await asyncio.to_thread(analyze)
+
+    @staticmethod
+    async def _write_chunk_terms(cur: psycopg.AsyncCursor, terms: list[tuple[str, dict[str, int]]]) -> None:
+        """`chunk_terms`를 청크별로 갈아끼우고 `chunks.lex_len`(term 수)을 채운다. 호출자의 트랜잭션 안에서 돈다."""
+        if not terms:
+            return
+        await cur.execute("DELETE FROM chunk_terms WHERE chunk_id = ANY(%s)", ([chunk_id for chunk_id, _ in terms],))
+        await cur.executemany(
+            "INSERT INTO chunk_terms (chunk_id, term, tf) VALUES (%s, %s, %s)",
+            [(chunk_id, term, tf) for chunk_id, counts in terms for term, tf in counts.items()],
+        )
+        await cur.executemany(
+            "UPDATE chunks SET lex_len = %s WHERE chunk_id = %s",
+            [(sum(counts.values()), chunk_id) for chunk_id, counts in terms],
+        )
+
+    async def backfill_chunk_terms(self, project_id: str | None = None, *, overwrite: bool = False, batch: int = 500) -> int:
+        """`knowledge-forge db backfill-bm25` - `lex_len IS NULL`(미색인)인 청크에 BM25 색인을 채운다. `overwrite`면
+        전부 다시(토크나이저를 바꾼 뒤). 배치마다 트랜잭션을 끊어 오래 걸려도 락을 길게 쥐지 않는다."""
+        done = 0
+        last = ""
+        while True:
+            async with self.conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    SELECT c.chunk_id, c.text FROM chunks c JOIN documents d ON d.document_id = c.document_id
+                    WHERE c.chunk_id > %s AND (%s::text IS NULL OR d.project_id = %s) AND (%s::boolean OR c.lex_len IS NULL)
+                    ORDER BY c.chunk_id LIMIT %s
+                    """,
+                    (last, project_id, project_id, overwrite, batch),
+                )
+                rows = await cur.fetchall()
+            if not rows:
+                return done
+            terms = await self._chunk_terms([(chunk_id, text) for chunk_id, text in rows])
+            async with self._pooled_conn() as conn, conn.transaction(), conn.cursor() as cur:
+                await self._write_chunk_terms(cur, terms)
+            done += len(rows)
+            last = rows[-1][0]
+
+    async def search_chunks_bm25(
+        self,
+        query: str,
+        *,
+        project_id: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """청크 본문 BM25 검색(`search/service.py::lexical_search`가 `KF_SEARCH_BM25`일 때 부른다). 질의를 색인과 같은
+        Kiwi 토큰으로 쪼개 `chunk_terms`에서 posting을 읽고 Okapi BM25(k1=1.2, b=0.75)를 SQL에서 합산한다.
+        N/평균 길이는 색인된 청크 전체, df는 질의 term별 posting 수다 - `project_id`/시간 조건은 점수에 안
+        들어가고 후보만 거른다(프로젝트마다 IDF가 달라지지 않게). 히트 모양은 `search_chunks_lexical`과 같고
+        `score`는 BM25 원점수(상한이 없다 - 소스 안 순위용이지 소스 간 비교용이 아니다)."""
+        terms = sorted(set(await asyncio.to_thread(korean_tokens.tokenize, query)))
+        if not terms:
+            return []
+        async with self._read_transaction() as cur:
+            await cur.execute(
+                """
+                WITH stats AS (SELECT count(*)::float AS n, avg(lex_len)::float AS avgdl FROM chunks WHERE lex_len IS NOT NULL),
+                df AS (SELECT term, count(*)::float AS df FROM chunk_terms WHERE term = ANY(%(terms)s) GROUP BY term),
+                scored AS (
+                    SELECT ct.chunk_id,
+                           sum(ln(1 + (stats.n - df.df + 0.5) / (df.df + 0.5))
+                               * ct.tf * (%(k1)s + 1) / (ct.tf + %(k1)s * (1 - %(b)s + %(b)s * c.lex_len / stats.avgdl))) AS bm25
+                    FROM chunk_terms ct
+                    JOIN df ON df.term = ct.term
+                    JOIN chunks c ON c.chunk_id = ct.chunk_id AND c.lex_len IS NOT NULL
+                    JOIN documents d ON d.document_id = c.document_id
+                    JOIN sources s ON s.source_id = d.source_id
+                    CROSS JOIN stats
+                    WHERE ct.term = ANY(%(terms)s)
+                      AND (%(project_id)s::text IS NULL OR d.project_id = %(project_id)s)
+                      AND (%(since)s::timestamptz IS NULL OR COALESCE(s.modified_at, s.collected_at) >= %(since)s)
+                      AND (%(until)s::timestamptz IS NULL OR COALESCE(s.modified_at, s.collected_at) < %(until)s)
+                    GROUP BY ct.chunk_id
+                )
+                SELECT c.chunk_id, c.document_id, c.source_id, c.hierarchy_level, c.sequence_index, c.text,
+                       d.title, d.project_id, s.source_type, s.uri, s.modified_at,
+                       COALESCE(s.modified_at, s.collected_at) AS content_at, scored.bm25
+                FROM scored
+                JOIN chunks c ON c.chunk_id = scored.chunk_id
+                JOIN documents d ON d.document_id = c.document_id
+                JOIN sources s ON s.source_id = d.source_id
+                ORDER BY scored.bm25 DESC, c.document_id, c.sequence_index
+                LIMIT %(limit)s
+                """,
+                {
+                    "terms": terms,
+                    "k1": _BM25_K1,
+                    "b": _BM25_B,
+                    "project_id": project_id,
+                    "since": since,
+                    "until": until,
+                    "limit": limit,
+                },
+            )
+            rows = await cur.fetchall()
+        return [
+            {
+                "target_kind": "chunk",
+                "knowledge_object_id": None,
+                "chunk_id": row[0],
+                "document_id": row[1],
+                "source_id": row[2],
+                "type": "chunk",
+                "summary": _lexical_snippet(row[5], " ".join(terms), _CHUNK_HIT_SUMMARY_CHARS),
+                "topics": [],
+                "document_type": None,
+                "hierarchy_level": row[3],
+                "sequence_index": row[4],
+                "title": row[6],
+                "project_id": row[7],
+                "source_type": row[8],
+                "uri": row[9],
+                "modified_at": row[10].isoformat() if row[10] is not None else None,
+                "content_at": row[11].isoformat(),
+                "score": float(row[12]),
+            }
+            for row in rows
+        ]
 
     async def list_chunks_by_document(
         self, document_id: str, *, hierarchy_level: HierarchyLevel | None = None

@@ -349,6 +349,7 @@ async def lexical_search(
     limit: int = 10,
     since: datetime | None = None,
     until: datetime | None = None,
+    bm25: bool = False,
 ) -> list[dict[str, Any]]:
     """청크 본문의 문자열 일치 검색 - 에러 코드("ERR_CONNECTION_RESET"), 티켓/문서 ID, 정확한
     문구처럼 임베딩으로는 "가까울" 수가 없는 리터럴(Exact/Identifier 질의)을 위한 `vector_search`의
@@ -358,10 +359,19 @@ async def lexical_search(
 
     히트 모양은 `vector_search`의 chunk grain 히트와 같다(`target_kind="chunk"`, `document_id`,
     `chunk_id`, `summary`(일치 지점 주변 원문 500자), `score`) - `search/rerank.py`가 두 결과를
-    같은 키로 병합할 수 있게 하기 위해. `since`/`until` 계약도 `vector_search`와 같다."""
+    같은 키로 병합할 수 있게 하기 위해. `since`/`until` 계약도 `vector_search`와 같다.
+
+    `bm25=True`는 substring/trigram 대신 한국어 형태소 BM25(`store.search_chunks_bm25`, `chunk_terms` 색인)로
+    순위를 낸다 - 자연어 질의(어절 여러 개, 조사 변형)용이고, 식별자·따옴표 구절의 literal 일치는 기본
+    경로(pg_trgm)의 몫이다. 색인이 비어 있으면 0히트다(호출자가 trigram으로 되돌아갈지 정한다)."""
     query = query.strip()
     if not query:
         return []
+    if bm25:
+        hits = await store.search_chunks_bm25(query, project_id=project_id, since=since, until=until, limit=limit)
+        for hit in hits:
+            hit.setdefault("target_kind", "chunk")
+        return hits
     hits = await store.search_chunks_lexical(query, project_id=project_id, since=since, until=until, limit=limit)
     for hit in hits:
         hit.setdefault("target_kind", "chunk")

@@ -67,7 +67,8 @@ from knowledge_forge.search.constraints import (
 )
 from knowledge_forge.search.document import read_document
 from knowledge_forge.search.planner import plan_and_search
-from knowledge_forge.search.rerank import DEFAULT_RRF_K, merge_and_rerank
+from knowledge_forge.search.remote_rerank import rerank_scores
+from knowledge_forge.search.rerank import DEFAULT_RRF_K, merge_and_rerank, merge_by_arm, source_arm
 from knowledge_forge.search.service import document_search, lexical_search, vector_search
 
 if TYPE_CHECKING:
@@ -103,6 +104,15 @@ STRATEGY_LINK_COHESION = "link_cohesion"
 STRATEGY_GRAIN_EXPANSION = "grain_expansion"
 # `_Run.relax_time_range`의 steps 이름 - 시간 범위를 풀고 후보 arm을 다시 돌렸다는 기록.
 STRATEGY_TIME_RANGE_RELAXED = "time_range_relaxed"
+# `_Run.merge`의 steps 이름 - `settings.search_arm_fusion`이 켜졌을 때 융합 단위를 남긴다.
+STRATEGY_ARM_FUSION = "arm_fusion"
+# `settings.search_metadata_soft_filter`가 켜졌을 때 `source_type` 힌트가 점수 부스트로 들어간 기록.
+STRATEGY_METADATA_BOOST = "metadata_boost"
+# `_Run.rerank`의 steps 이름 - `settings.reranker_base_url`이 설정됐을 때만 도는 융합 뒤 재정렬.
+STRATEGY_RERANK = "rerank"
+SOURCE_RERANKER = "reranker"
+# 리랭커에 보내는 히트 하나의 본문 상한(제목 + 일치 지점 발췌).
+_RERANK_TEXT_CHARS = 1000
 
 # exhaustive/negative/count에서 "전부"를 대신하는 상한 - top-k 절단은 없애되 한 질의가 테이블
 # 전체를 끌어오지는 못하게(`search/sql.py::DEFAULT_MAX_ROWS`와 같은 200).
@@ -285,8 +295,8 @@ async def _gather_ordered(*aws: Awaitable[Any]) -> list[Any]:
 
 
 async def _capture_exception(
-    coro: Coroutine[Any, Any, list[dict[str, Any]]],
-) -> tuple[list[dict[str, Any]], BaseException | None]:
+    coro: Coroutine[Any, Any, Any],
+) -> tuple[Any, BaseException | None]:
     """코루틴을 돌리고 (결과, 예외) 쌍으로 돌려준다 - `asyncio.gather`에 실패해도 되는
     코루틴을 넣을 때 쓴다.
 
@@ -348,7 +358,31 @@ def _narrow_to_anchor(hits: list[dict[str, Any]], anchor: str | None) -> tuple[l
 # --- metadata_filter SQL ----------------------------------------------------------
 
 
-def _metadata_filter_where(constraints: QueryConstraints, project_id: str | None) -> list[str]:
+def _hint_source_types(constraints: QueryConstraints) -> list[str]:
+    """`source_type` 힌트 - `source_types`와 소스로 매핑되는 `document_types`("메일" → gmail)."""
+    source_types = list(constraints.source_types)
+    for label in constraints.document_types:
+        mapped = _DOCUMENT_TYPE_AS_SOURCE.get(label)
+        if mapped and mapped not in source_types:
+            source_types.append(mapped)
+    return source_types
+
+
+def _has_structural_predicate(constraints: QueryConstraints) -> bool:
+    """질의가 **명시한** 구조 조건이 있는가(작성자/참여자/시간/확장자/MIME). `source_type` 힌트는 표면 어휘로
+    찍은 추측이라 여기 없다 - `search_metadata_soft_filter`가 켜지면 이쪽만 하드 필터가 된다."""
+    return bool(
+        constraints.authors
+        or constraints.participants
+        or constraints.time_range is not None
+        or constraints.file_extensions
+        or constraints.mime_types
+    )
+
+
+def _metadata_filter_where(
+    constraints: QueryConstraints, project_id: str | None, *, source_hint: bool = True, structural: bool = True
+) -> list[str]:
     """`sources`/`documents`에 거는 WHERE 조건 목록(AND). 어느 키를 보는지는 개발 DB의 실제
     `sources.metadata` 모양에서 정했다: gmail은 `participants`(["이름 <주소>", ...])/`subject`,
     slack은 `participants`(user id 배열)/`channel`, google_drive는 `name`뿐이다. 작성자/참여자는
@@ -360,13 +394,11 @@ def _metadata_filter_where(constraints: QueryConstraints, project_id: str | None
     if project_id:
         where.append(f"d.project_id = {_sql_literal(project_id)}")
 
-    source_types = list(constraints.source_types)
-    for label in constraints.document_types:
-        mapped = _DOCUMENT_TYPE_AS_SOURCE.get(label)
-        if mapped and mapped not in source_types:
-            source_types.append(mapped)
-    if source_types:
+    source_types = _hint_source_types(constraints)
+    if source_types and source_hint:
         where.append("s.source_type IN (" + ", ".join(_sql_literal(t) for t in source_types) + ")")
+    if not structural:
+        return where
 
     # 파일 종류. Drive 소스만 `name`을 들고 있으므로 다른 소스 타입은 이 술어에 절대 안 걸린다 -
     # 그건 의도다("xlsx 파일"을 물으면 슬랙 스레드는 답이 아니다).
@@ -660,6 +692,9 @@ class _Run:
         self.filter_hits: list[dict[str, Any]] = []
         self.filter_where: list[str] = []
         self.filter_step: RetrievalStep | None = None
+        # soft 모드(`search_metadata_soft_filter`)의 `source_type` 힌트 집합 - 교집합이 아니라 부스트에만 쓴다.
+        self.soft_ids: set[str] = set()
+        self.soft_hits: list[dict[str, Any]] = []
         self.documents_read: list[str] = []
         self.predicted_count: int | None = None
         self.time_range_relaxed = False
@@ -872,19 +907,30 @@ class _Run:
                 )
 
             return skip
-        where = _metadata_filter_where(self.c, self.project_id)
+        soft = settings.search_metadata_soft_filter
+        hints = _hint_source_types(self.c)
+        # soft 모드: 하드 필터는 명시적 구조 조건만, source_type 힌트는 따로 조회해 부스트 집합으로 쓴다.
+        hard = _has_structural_predicate(self.c) or not soft
+        where = _metadata_filter_where(self.c, self.project_id, source_hint=not soft) if hard else []
         sql = _metadata_filter_sql(where)
-        rows, _columns = await self.store.execute_readonly_query(sql, _FILTER_MAX_ROWS)
+        soft_where = _metadata_filter_where(self.c, self.project_id, structural=False) if soft and hints else []
+        soft_sql = _metadata_filter_sql(soft_where)
+        rows, _columns = await self.store.execute_readonly_query(sql, _FILTER_MAX_ROWS) if hard else ([], [])
+        soft_rows, _ = await self.store.execute_readonly_query(soft_sql, _FILTER_MAX_ROWS) if soft_where else ([], [])
 
         async def apply() -> None:
-            self.filter_where = where
-            self.filter_hits = [_filter_row_to_hit(row) for row in rows]
-            self.filter_ids = {hit["document_id"] for hit in self.filter_hits}
+            if hard:
+                self.filter_where = where
+                self.filter_hits = [_filter_row_to_hit(row) for row in rows]
+                self.filter_ids = {hit["document_id"] for hit in self.filter_hits}
+            if soft_where:
+                self.soft_hits = [_filter_row_to_hit(row) for row in soft_rows]
+                self.soft_ids = {hit["document_id"] for hit in self.soft_hits}
             self.filter_step = self.step(
                 STRATEGY_METADATA_FILTER,
                 SOURCE_SQL_SEARCH,
-                len(self.filter_hits),
-                sql=sql,
+                len(self.filter_hits) if hard else len(self.soft_hits),
+                sql=sql if hard else soft_sql,
                 filters={
                     "authors": self.c.authors,
                     "participants": self.c.participants,
@@ -893,7 +939,8 @@ class _Run:
                     "since": _iso(self.since),
                     "until": _iso(self.until),
                 },
-                truncated=len(rows) >= _FILTER_MAX_ROWS,
+                truncated=max(len(rows), len(soft_rows)) >= _FILTER_MAX_ROWS,
+                **({"mode": "soft", "hard": hard, "soft_hint": hints} if soft else {}),
             )
 
         return apply
@@ -982,17 +1029,27 @@ class _Run:
         query = self.c.semantic_query
         if not query:
             return _noop
-        title_hits, body_hits = await _gather_ordered(
+        title_hits, (body_hits, ranker) = await _gather_ordered(
             document_search(
                 query, self.store, project_id=self.project_id, limit=self.fetch_limit, since=self.since, until=self.until
             ),
-            lexical_search(
-                query, self.store, project_id=self.project_id, limit=self.fetch_limit, since=self.since, until=self.until
-            ),
+            self._arm_body_hits(query),
         )
-        return lambda: self._apply_keyword_arm(query, title_hits, body_hits)
+        return lambda: self._apply_keyword_arm(query, title_hits, body_hits, ranker)
 
-    async def _apply_keyword_arm(self, query: str, title_hits: list[dict[str, Any]], body_hits: list[dict[str, Any]]) -> None:
+    async def _arm_body_hits(self, query: str) -> tuple[list[dict[str, Any]], str]:
+        """arm의 본문 조회. `search_bm25`가 켜져 있으면 한국어 BM25를 먼저 보고, 0히트(미색인 등)면 trigram으로
+        되돌아간다. 반환의 두 번째 값이 실제로 쓴 순위 방식이다."""
+        kwargs = {"project_id": self.project_id, "limit": self.fetch_limit, "since": self.since, "until": self.until}
+        if settings.search_bm25:
+            hits = await lexical_search(query, self.store, bm25=True, **kwargs)
+            if hits:
+                return hits, "bm25"
+        return await lexical_search(query, self.store, **kwargs), "trigram"
+
+    async def _apply_keyword_arm(
+        self, query: str, title_hits: list[dict[str, Any]], body_hits: list[dict[str, Any]], ranker: str = "trigram"
+    ) -> None:
         # anchor 판정을 `document_lookup`과 공유한다(`_claim_anchor` docstring 참고). 이미
         # anchor가 잡혀 있으면 다시 판정하지 않는다 - 그건 `document_reference`/`identifiers`
         # 같은 명시적 신호에서 나온 더 강한 anchor라 semantic_query가 덮어쓰면 안 된다.
@@ -1012,7 +1069,14 @@ class _Run:
         )
         body_hits, _ = self.narrow(body_hits)
         self.add_hits(SOURCE_LEXICAL_SEARCH_SEMANTIC, body_hits)
-        self.step(STRATEGY_LEXICAL, SOURCE_LEXICAL_SEARCH_SEMANTIC, len(body_hits), query=query, arm="semantic_query")
+        self.step(
+            STRATEGY_LEXICAL,
+            SOURCE_LEXICAL_SEARCH_SEMANTIC,
+            len(body_hits),
+            query=query,
+            arm="semantic_query",
+            **({"ranker": ranker} if settings.search_bm25 else {}),
+        )
         # 질의 문자열 통째로 뭔가 **강하게** 걸렸으면 그게 term 하나하나보다 강한 신호다 -
         # term 분해는 그 신호가 약할 때만 도는 구제 경로다. 항상 돌리면 "codex README"처럼
         # 제목이 정확히 맞은 질의에서 term별 히트가 정답을 밀어낸다(v0-navigational-002:
@@ -1039,7 +1103,8 @@ class _Run:
             {hit["document_id"] for hit in [*title_hits, *body_hits] if hit.get("document_id")}
         )
         # wide 질의에서는 anchor가 "이 문서가 답"이 아니므로(`narrow`) 강한 신호로 치지 않는다.
-        if (self.anchor is None or self.wide) and arm_documents < _ARM_STRONG_DOCUMENTS:
+        # BM25는 질의 term 전체를 한 번에 점수화하므로 term별 구제 경로(최대 10회 조회 + df 질의)가 필요 없다.
+        if (self.anchor is None or self.wide) and arm_documents < _ARM_STRONG_DOCUMENTS and ranker != "bm25":
             await self._term_fallback()
 
     async def _term_fallback(self) -> None:
@@ -1316,20 +1381,98 @@ class _Run:
             ],
         )
 
+    async def rerank(self, merged: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """융합 상위 `reranker_top_n`건을 외부 크로스 인코더 점수 순으로 다시 세운다(나머지는 뒤에 그대로).
+        필터/링크 응집도 **뒤**, anchor 고정 **앞**이다 - 후보 집합은 이미 정해졌고, 명시 신호(anchor)는 리랭커가 뒤집지 못한다.
+        히트마다 `reranker_score`가 붙고 `retrieval_sources`에 `reranker`가 더해진다. 실패하면 융합 순서를 그대로 두고
+        `steps`에 `error`만 남긴다(벡터 arm 실패와 같은 방침)."""
+        top = merged[: max(0, settings.reranker_top_n)]
+        if not top:
+            return merged
+        texts = [
+            f"{hit.get('title') or ''}\n{hit.get('summary') or ''}".strip()[:_RERANK_TEXT_CHARS] for hit in top
+        ]
+        started = time.perf_counter()
+        scores, error = await _capture_exception(rerank_scores(self.c.query, texts))
+        detail: dict[str, Any] = {
+            "model": settings.reranker_model,
+            "top_n": settings.reranker_top_n,
+            "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
+        }
+        if error is not None:
+            logger.warning("reranker failed, keeping the fused order: %s", error)
+            self.step(STRATEGY_RERANK, SOURCE_RERANKER, 0, error=f"{type(error).__name__}: {error}", **detail)
+            return merged
+        for hit, score in zip(top, scores, strict=True):
+            hit["reranker_score"] = score
+            hit.setdefault("retrieval_sources", []).append(SOURCE_RERANKER)
+        # 안정 정렬 - 점수가 같으면(응답에서 빠진 -inf끼리 포함) 융합 순서를 지킨다.
+        reranked = sorted(top, key=lambda hit: -hit["reranker_score"])
+        before, _ = _dedupe_documents(top)
+        after, _ = _dedupe_documents(reranked)
+        self.step(
+            STRATEGY_RERANK,
+            SOURCE_RERANKER,
+            len(top),
+            moved_documents=sum(1 for i, d in enumerate(after) if before[i] != d),
+            top_document_changed=bool(before and before[0] != after[0]),
+            **detail,
+        )
+        return reranked + merged[len(top) :]
+
+    def boost_source_hint(self, merged: list[dict[str, Any]]) -> None:
+        """`source_type` 힌트에 맞는 **이미 후보인** 문서를 RRF 한 표(`1/(k+rank)`, 현재 순위 순)로 올린다 -
+        후보를 자르거나 새로 데려오지 않는다(`link_cohesion`과 같은 형태). 힌트가 틀려도 정답은 순위만 조금 밀린다."""
+        ranked_documents, _ = _dedupe_documents(merged)
+        voted = [d for d in ranked_documents if d in self.soft_ids]
+        if not voted:
+            return
+        boost = {d: 1.0 / (DEFAULT_RRF_K + rank) for rank, d in enumerate(voted, start=1)}
+        for hit in merged:
+            delta = boost.get(hit["document_id"])
+            if delta is not None:
+                hit["rerank_score"] = float(hit.get("rerank_score") or 0.0) + delta
+                hit.setdefault("retrieval_sources", []).append(SOURCE_SQL_SEARCH)
+        merged.sort(key=lambda hit: -float(hit.get("rerank_score") or 0.0))
+        after, _ = _dedupe_documents(merged)
+        self.step(
+            STRATEGY_METADATA_BOOST,
+            SOURCE_SQL_SEARCH,
+            len(voted),
+            source_types=_hint_source_types(self.c),
+            promoted=sum(1 for d in voted if after.index(d) < ranked_documents.index(d)),
+        )
+
     async def merge(self) -> list[dict[str, Any]]:
         """관련도 랭킹(`merged`)에 메타데이터 필터(`filter_ids`)를 겹쳐 최종 순위를 만든다.
 
         **필터는 관련도 랭킹을 좁히는 도구지 대체하는 도구가 아니다.** 아래 분기들은 전부 그
         원칙과, "이 필터를 얼마나 믿을 수 있나"(`_is_source_hint_only_filter`)의 조합이다."""
         candidate_sources = {k: _with_document_id(v) for k, v in self.results_by_source.items() if v}
-        merged = merge_and_rerank(candidate_sources)
+        if settings.search_arm_fusion:
+            merged = merge_by_arm(candidate_sources)
+            arms: dict[str, list[str]] = {}
+            for source in candidate_sources:
+                arms.setdefault(source_arm(source), []).append(source)
+            self.step(STRATEGY_ARM_FUSION, "rrf", len(merged), votes=len(arms), arms=arms)
+        else:
+            merged = merge_and_rerank(candidate_sources)
         # 링크 응집도는 **필터/anchor 앞**이다. 이 단계는 후보 집합을 바꾸지 않고 순서만
         # 바꾸므로 아래 교집합(`filter_ids`)의 결과 집합은 그대로고, anchor 고정은 어차피
         # 순서와 무관하게 맨 앞으로 옮기는 partition이라 영향을 받지 않는다.
         if merged:
             await self.link_cohesion(merged)
+            if self.soft_ids:
+                self.boost_source_hint(merged)
 
         filter_note: str | None = None
+        if self.filter_ids is None and self.soft_ids:
+            filter_note = "source_hint_boosted"
+            if not candidate_sources:
+                # 질의에 내용어가 없고 힌트뿐이면 후보가 비므로 힌트 집합을 그대로 답으로 쓴다(`filter_only`와 같은
+                # 안전망). 이름을 나눈 이유: `count()`는 `filter_only`에서 `filter_where`로 세는데 여기는 그 WHERE가 없다.
+                merged = merge_and_rerank({SOURCE_SQL_SEARCH: self.soft_hits})
+                filter_note = "source_hint_only"
         if self.filter_ids is not None:
             if not self.filter_ids:
                 filter_note = "filter_empty_ignored"
@@ -1410,6 +1553,9 @@ class _Run:
                     filter_note = "no_overlap_fallback_to_filter"
         if self.filter_step is not None:
             self.filter_step.detail["applied"] = filter_note
+
+        if settings.reranker_base_url and merged:
+            merged = await self.rerank(merged)
 
         # anchor → comparison 대상 순으로 최상위 고정. 순서를 지키는 partition이라 나머지 랭킹은 그대로.
         for document_id in reversed([*([self.anchor] if self.anchor else []), *self.pinned]):

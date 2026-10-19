@@ -245,6 +245,22 @@ class PipelineStore:
         `PostgresStore.search_chunks_lexical`."""
         return await self._db.search_chunks_lexical(query, project_id=project_id, since=since, until=until, limit=limit)
 
+    async def search_chunks_bm25(
+        self,
+        query: str,
+        *,
+        project_id: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """`lexical_search(bm25=True)`'s entry point - see `PostgresStore.search_chunks_bm25`."""
+        return await self._db.search_chunks_bm25(query, project_id=project_id, since=since, until=until, limit=limit)
+
+    async def backfill_chunk_terms(self, project_id: str | None = None, *, overwrite: bool = False) -> int:
+        """`knowledge-forge db backfill-bm25` - see `PostgresStore.backfill_chunk_terms`."""
+        return await self._db.backfill_chunk_terms(project_id, overwrite=overwrite)
+
     async def backfill_document_titles(self, project_id: str | None = None, *, overwrite: bool = False) -> int:
         """`knowledge-forge db backfill-titles` - see `PostgresStore.backfill_document_titles`."""
         return await self._db.backfill_document_titles(project_id, overwrite=overwrite)

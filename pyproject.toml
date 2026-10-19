@@ -58,7 +58,7 @@ hwpx = ["python-hwpx>=6.3"]
 slack = ["slack-sdk>=3.27"]
 google = ["google-api-python-client>=2.100", "google-auth>=2.30"]
 notion = ["notion-client>=2.2"]
-korean = ["kss>=6.0.4"]
+korean = ["kss>=6.0.4", "kiwipiepy>=0.18"]
 # Local dev only - docker-compose runs Flower from the standalone
 # `mher/flower` image instead (no app code needed, see docker-compose.yml).
 flower = ["flower>=2.0"]
