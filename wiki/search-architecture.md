@@ -15,7 +15,7 @@ Grounding까지)을 레이어별로 정리한다. 실제 프로덕션 엔터프�
 | ② Query Planning (multi-hop 분해) | **구현됨** — `search/planner.py`, 아래 절 참고 |
 | Query Routing (소스 선택) | **구현됨** — `search/router.py`, 아래 절 참고 |
 | ③ Hybrid Retrieval (BM25+Vector+Metadata+Graph) | **부분 구현** — 어휘 검색은 기본이 BM25가 아니라 pg_trgm 유사도+ILIKE이고, 한국어 BM25는 `KF_SEARCH_BM25` 플래그 뒤에 있다([`2026-10-19-search-core-v2.md`](2026-10-19-search-core-v2.md)). keyword(`file_search`)+semantic(`vector_search`)+metadata(`project_id`/`type`/시간 범위) 병행 실행 + RRF reranking까지 있음. 문서 제목/원문 청크의 pg_trgm 렉시컬 검색(`document_search`/`lexical_search`)도 있음. Graph 전용 API(`graph_search`)는 미구현이지만 `sql_search`로 `relations` 테이블을 직접 JOIN하는 것으로 상당 부분 대체 가능 |
-| Multi-stage Retrieval / Reranking | **부분 구현** — `search/rerank.py`의 Reciprocal Rank Fusion, 아래 절 참고. Cross-Encoder/LLM reranker는 미구현 |
+| Multi-stage Retrieval / Reranking | **부분 구현** — `search/rerank.py`의 Reciprocal Rank Fusion, 아래 절 참고. 외부 크로스 인코더 훅(`KF_RERANKER_BASE_URL`, 기본 비활성)은 있고, LLM reranker는 미구현 — [`2026-10-19-search-core-v2.md`](2026-10-19-search-core-v2.md) |
 | ④ Context Engineering (dedup/conflict/compression) | **부분 구현** — 토큰 예산 압축(`agent/compaction.py`), cross-source dedup(`search/rerank.py`, knowledge_object_id 기준)은 있음. conflict 탐지/source reliability/temporal consistency/evidence clustering은 없음 |
 | ⑤ Map-Reduce / Hierarchical Retrieval | 설계만, 미구현 |
 | ⑥ Temporal Search (자연어 시간 표현 → 범위 필터 / Text-to-SQL) | **구현됨** — `search/temporal.py`(자연어→범위 필터)와 `search/sql.py`(Text-to-SQL, `sql_search` 도구)로 시간 범위와 속성값 조건을 SQL WHERE/JOIN 하나로 결합하는 temporal join까지 가능해졌다. 아래 절 참고 |

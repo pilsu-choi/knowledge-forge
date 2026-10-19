@@ -67,6 +67,7 @@ from knowledge_forge.search.constraints import (
 )
 from knowledge_forge.search.document import read_document
 from knowledge_forge.search.planner import plan_and_search
+from knowledge_forge.search.remote_rerank import rerank_scores
 from knowledge_forge.search.rerank import DEFAULT_RRF_K, merge_and_rerank, merge_by_arm, source_arm
 from knowledge_forge.search.service import document_search, lexical_search, vector_search
 
@@ -107,6 +108,11 @@ STRATEGY_TIME_RANGE_RELAXED = "time_range_relaxed"
 STRATEGY_ARM_FUSION = "arm_fusion"
 # `settings.search_metadata_soft_filter`가 켜졌을 때 `source_type` 힌트가 점수 부스트로 들어간 기록.
 STRATEGY_METADATA_BOOST = "metadata_boost"
+# `_Run.rerank`의 steps 이름 - `settings.reranker_base_url`이 설정됐을 때만 도는 융합 뒤 재정렬.
+STRATEGY_RERANK = "rerank"
+SOURCE_RERANKER = "reranker"
+# 리랭커에 보내는 히트 하나의 본문 상한(제목 + 일치 지점 발췌).
+_RERANK_TEXT_CHARS = 1000
 
 # exhaustive/negative/count에서 "전부"를 대신하는 상한 - top-k 절단은 없애되 한 질의가 테이블
 # 전체를 끌어오지는 못하게(`search/sql.py::DEFAULT_MAX_ROWS`와 같은 200).
@@ -289,8 +295,8 @@ async def _gather_ordered(*aws: Awaitable[Any]) -> list[Any]:
 
 
 async def _capture_exception(
-    coro: Coroutine[Any, Any, list[dict[str, Any]]],
-) -> tuple[list[dict[str, Any]], BaseException | None]:
+    coro: Coroutine[Any, Any, Any],
+) -> tuple[Any, BaseException | None]:
     """코루틴을 돌리고 (결과, 예외) 쌍으로 돌려준다 - `asyncio.gather`에 실패해도 되는
     코루틴을 넣을 때 쓴다.
 
@@ -1375,6 +1381,45 @@ class _Run:
             ],
         )
 
+    async def rerank(self, merged: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """융합 상위 `reranker_top_n`건을 외부 크로스 인코더 점수 순으로 다시 세운다(나머지는 뒤에 그대로).
+        필터/링크 응집도 **뒤**, anchor 고정 **앞**이다 - 후보 집합은 이미 정해졌고, 명시 신호(anchor)는 리랭커가 뒤집지 못한다.
+        히트마다 `reranker_score`가 붙고 `retrieval_sources`에 `reranker`가 더해진다. 실패하면 융합 순서를 그대로 두고
+        `steps`에 `error`만 남긴다(벡터 arm 실패와 같은 방침)."""
+        top = merged[: max(0, settings.reranker_top_n)]
+        if not top:
+            return merged
+        texts = [
+            f"{hit.get('title') or ''}\n{hit.get('summary') or ''}".strip()[:_RERANK_TEXT_CHARS] for hit in top
+        ]
+        started = time.perf_counter()
+        scores, error = await _capture_exception(rerank_scores(self.c.query, texts))
+        detail: dict[str, Any] = {
+            "model": settings.reranker_model,
+            "top_n": settings.reranker_top_n,
+            "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
+        }
+        if error is not None:
+            logger.warning("reranker failed, keeping the fused order: %s", error)
+            self.step(STRATEGY_RERANK, SOURCE_RERANKER, 0, error=f"{type(error).__name__}: {error}", **detail)
+            return merged
+        for hit, score in zip(top, scores, strict=True):
+            hit["reranker_score"] = score
+            hit.setdefault("retrieval_sources", []).append(SOURCE_RERANKER)
+        # 안정 정렬 - 점수가 같으면(응답에서 빠진 -inf끼리 포함) 융합 순서를 지킨다.
+        reranked = sorted(top, key=lambda hit: -hit["reranker_score"])
+        before, _ = _dedupe_documents(top)
+        after, _ = _dedupe_documents(reranked)
+        self.step(
+            STRATEGY_RERANK,
+            SOURCE_RERANKER,
+            len(top),
+            moved_documents=sum(1 for i, d in enumerate(after) if before[i] != d),
+            top_document_changed=bool(before and before[0] != after[0]),
+            **detail,
+        )
+        return reranked + merged[len(top) :]
+
     def boost_source_hint(self, merged: list[dict[str, Any]]) -> None:
         """`source_type` 힌트에 맞는 **이미 후보인** 문서를 RRF 한 표(`1/(k+rank)`, 현재 순위 순)로 올린다 -
         후보를 자르거나 새로 데려오지 않는다(`link_cohesion`과 같은 형태). 힌트가 틀려도 정답은 순위만 조금 밀린다."""
@@ -1508,6 +1553,9 @@ class _Run:
                     filter_note = "no_overlap_fallback_to_filter"
         if self.filter_step is not None:
             self.filter_step.detail["applied"] = filter_note
+
+        if settings.reranker_base_url and merged:
+            merged = await self.rerank(merged)
 
         # anchor → comparison 대상 순으로 최상위 고정. 순서를 지키는 partition이라 나머지 랭킹은 그대로.
         for document_id in reversed([*([self.anchor] if self.anchor else []), *self.pinned]):

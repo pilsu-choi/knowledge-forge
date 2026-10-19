@@ -23,6 +23,7 @@ sources:
 | `KF_SEARCH_ARM_FUSION` | false | `arm_fusion` |
 | `KF_SEARCH_METADATA_SOFT_FILTER` | false | `metadata_boost` |
 | `KF_SEARCH_BM25` | false | `lexical_search#semantic`의 `ranker` |
+| `KF_RERANKER_BASE_URL` (+`_MODEL`, `_API_KEY`, `_TOP_N`=50, `_TIMEOUT`=10) | 미설정=비활성 | `rerank` |
 
 ## S3: RRF 융합 단위
 
@@ -89,3 +90,24 @@ sources:
   `ranker: bm25|trigram`이 남는다.
 - 비용/한계: 색인은 청크당 고유 term 수만큼의 행이다. 질의 때 `count(*)`/`avg(lex_len)`를 매번 센다(청크 수만 개
   규모까지는 무시할 수준으로 보이나 측정하지 않았다 - 커지면 통계를 캐시). Kiwi 모델 로딩은 프로세스당 첫 호출에 약 0.5초.
+
+## S1: 리랭커 훅
+
+`KF_RERANKER_BASE_URL`이 있으면 `merge()`가 융합 상위 `KF_RERANKER_TOP_N`(50)건을 외부 크로스 인코더로
+재정렬한다(`search/remote_rerank.py`, `_Run.rerank`). 엔드포인트가 없으면 이 단계는 존재하지 않는다.
+
+- 프로토콜: Cohere/Jina 호환 `POST {base_url}/v1/rerank`, 요청 `{model, query, documents, top_n}`, 응답
+  `{results: [{index, relevance_score}]}`. vLLM·Infinity·Jina·Cohere가 이 형식이다. TEI 고유의 `/rerank`는
+  지원하지 않는다(필요하면 `remote_rerank.py` 한 함수에 분기 추가). 모델은 `KF_RERANKER_MODEL`.
+- 위치: 메타데이터 필터·링크 응집도 **뒤**, anchor/비교 대상 고정 **앞**. 후보 집합은 건드리지 않고 순서만 바꾸며,
+  명시 신호(제목 anchor)는 리랭커가 뒤집지 못한다. 상위 N건 밖은 융합 순서 그대로 뒤에 붙는다.
+- 입력 텍스트: 히트의 `title` + `summary`(일치 지점 발췌, 최대 1000자). 문서 본문 전체가 아니다.
+- 실패 시: 융합 순서 유지, `steps`의 `rerank`에 `error`가 남는다(벡터 arm 실패와 같은 방침).
+- `steps.rerank`: `n_hits`, `moved_documents`, `top_document_changed`, `elapsed_ms`. 히트에는 `reranker_score`.
+- 리랭커가 효과를 내면 `vector_min_score`·anchor 고정 같은 수작업 규칙을 걷어낼 수 있다(S6). 그 판단은 A/B 뒤.
+
+## A/B 제안
+
+각 플래그는 독립이다. 권장 순서: (1) 기준선 (2) `SEARCH_ARM_FUSION` (3) `SEARCH_METADATA_SOFT_FILTER`
+(4) `SEARCH_BM25`(백필 필요) (5) 셋 모두 (6) 리랭커 추가. BM25는 임베딩 노이즈와 별개로 어휘 쪽 변화만 보도록
+`strategies_override`로 `keyword_arm`만 돌린 실행도 함께 본다.

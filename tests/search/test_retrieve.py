@@ -17,10 +17,12 @@ import json
 import os
 from datetime import datetime, timezone
 
+import httpx
 import pytest
 import pytest_asyncio
 
 from knowledge_forge.chat_provider import AssistantTurn, ChatProvider
+from knowledge_forge.config import settings as _settings
 from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.document import Document, DocumentMetadata, TextBlock
 from knowledge_forge.models.source import Source, SourceRef, SourceType
@@ -1622,3 +1624,54 @@ async def test_multihop_is_fetched_with_the_first_wave_but_applied_after_the_tim
     assert strategies.count("multihop") == 1 and strategies[-1] == "multihop"
     assert strategies.index("time_range_relaxed") < strategies.index("multihop")
     assert {"doc", "planned"} <= set(result.document_ids)
+
+
+def _hits():
+    return [_chunk_hit("d1", "c1", 0.9), _chunk_hit("d2", "c2", 0.8), _chunk_hit("d3", "c3", 0.7)]
+
+
+async def test_rerank_step_is_absent_while_the_endpoint_is_unset(monkeypatch):
+    monkeypatch.setattr(_settings, "reranker_base_url", None)
+    _patch_vector(monkeypatch, _hits())
+
+    result = await retrieve("운영 매뉴얼 내용 알려줘", store=_FakeStore(), now=_NOW)
+
+    assert not any(s.strategy == "rerank" for s in result.steps)
+    assert result.document_ids[:3] == ["d1", "d2", "d3"]
+
+
+async def test_rerank_reorders_the_fused_top_n_and_leaves_the_rest(monkeypatch):
+    monkeypatch.setattr(_settings, "reranker_base_url", "http://rerank.test")
+    monkeypatch.setattr(_settings, "reranker_top_n", 2)
+    _patch_vector(monkeypatch, _hits())
+    sent = {}
+
+    async def fake_scores(query, documents):
+        sent["query"], sent["documents"] = query, documents
+        return [0.1, 0.9]  # 상위 2건(d1, d2)만 받는다: d2가 위로
+
+    monkeypatch.setattr(retrieve_module, "rerank_scores", fake_scores)
+
+    result = await retrieve("운영 매뉴얼 내용 알려줘", store=_FakeStore(), now=_NOW)
+
+    assert sent["query"] == "운영 매뉴얼 내용 알려줘" and len(sent["documents"]) == 2
+    assert result.document_ids[:3] == ["d2", "d1", "d3"]
+    step = next(s for s in result.steps if s.strategy == "rerank")
+    assert step.n_hits == 2 and step.detail["top_document_changed"] is True and step.detail["moved_documents"] == 2
+    assert "reranker" in result.hits[0]["retrieval_sources"]
+
+
+async def test_rerank_failure_keeps_the_fused_order(monkeypatch):
+    monkeypatch.setattr(_settings, "reranker_base_url", "http://rerank.test")
+    _patch_vector(monkeypatch, _hits())
+
+    async def boom(query, documents):
+        raise httpx.ConnectError("down")
+
+    monkeypatch.setattr(retrieve_module, "rerank_scores", boom)
+
+    result = await retrieve("운영 매뉴얼 내용 알려줘", store=_FakeStore(), now=_NOW)
+
+    assert result.document_ids[:3] == ["d1", "d2", "d3"]
+    step = next(s for s in result.steps if s.strategy == "rerank")
+    assert step.n_hits == 0 and step.detail["error"].startswith("ConnectError")

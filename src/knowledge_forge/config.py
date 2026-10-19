@@ -198,6 +198,13 @@ class Settings(BaseSettings):
     # `korean` extra 필요), 기존 청크는 `knowledge-forge db backfill-bm25`로 채운다. 식별자·따옴표 구절·제목
     # 조회는 계속 pg_trgm이다. BM25가 0히트면(미색인) 예전 trigram 경로로 되돌아간다.
     search_bm25: bool = False
+    # 융합 상위 `reranker_top_n`건을 외부 크로스 인코더로 재정렬한다(`search/remote_rerank.py`, Cohere/Jina 호환
+    # `{base_url}/v1/rerank`). 엔드포인트(`reranker_base_url`)가 없으면 비활성 - 기본값이다. 실패하면 융합 순서 그대로.
+    reranker_base_url: str | None = None
+    reranker_model: str | None = None
+    reranker_api_key: str | None = None
+    reranker_top_n: int = 50
+    reranker_timeout: float = 10.0
 
     embedding_enabled: bool = False
     # Which embedding backend embedding/factory.py builds (mirrors
