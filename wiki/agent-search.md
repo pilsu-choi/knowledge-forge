@@ -25,7 +25,7 @@
 **도구가 구현돼 있다는 것과 에이전트에게 기본으로 보인다는 것은 다르다** — 어떤 검색 도구가
 `default_tools()`에 실리는지는 `KF_AGENT_TOOL_SURFACE`가 정한다
 ([`agent-runtime.md`](agent-runtime.md)의 "도구 표면" 절에 표가 있다). 기본값은
-`search` + `read_document` + `sql_search`(DB 없으면 `file_search`)뿐이다.
+`search` + `read_document` + `sql_search`(+ 스키마 조회용 `describe_schema`)(DB 없으면 `file_search`)뿐이다.
 
 이 문서의 나머지 절 중 "구현됨"이라고 표시되지 않은 것은 전부 설계 스케치이며, 실제로 동작하는
 코드가 없다. 코드로 이미 존재하는 부분(스키마/파이프라인/agent 도구)은 이 문서가 아니라

@@ -683,9 +683,25 @@ def _make_sql_search_tool(store: _LazyPipelineStore) -> ToolSpec:
             "구조화된 질문(특정 사람/속성이 언급된 항목, 여러 조건의 AND/OR, 집계(COUNT 등), "
             "시간 범위와 속성값을 함께 거는 조건)에 쓸 것. 키워드/의미 검색이나 문서 찾기에는 "
             "search가 더 빠르고 적합하다 - 먼저 search를 부르고, 그걸로 안 되는 것만 여기서 풀 것. 읽기 전용만 "
-            f"허용된다(쓰기/DDL은 거부).\n\n{describe_schema()}"
+            "허용된다(쓰기/DDL은 거부). 처음 쓰기 전에 describe_schema를 먼저 호출해 테이블·컬럼을 확인할 것."
         ),
         input_schema=SQL_SEARCH_INPUT_SCHEMA,
+        handler=_handler,
+    )
+
+
+def _make_describe_schema_tool() -> ToolSpec:
+    """SQL 스키마 설명(약 2K 토큰)은 매 요청의 도구 정의 프리픽스를 부풀리므로 `sql_search`
+    설명에서 떼어 필요할 때만 읽는 도구로 둔다(wiki/improvement-plan-2026-09-15.md L3). 값은
+    정적이라 호출 결과도 항상 같다."""
+
+    async def _handler(args: dict[str, Any]) -> str:
+        return describe_schema()
+
+    return ToolSpec(
+        name="describe_schema",
+        description="sql_search가 조회하는 테이블·컬럼·JSONB 키 스키마와 SQL 작성 규칙을 돌려준다. sql_search 전에 한 번 호출할 것.",
+        input_schema={"type": "object", "properties": {}},
         handler=_handler,
     )
 
@@ -804,7 +820,7 @@ def default_tools(
     write_memory/write_plan/delegate_task)는 표면과 무관하게 항상 같다.
 
     "minimal"(기본) + `KF_DATABASE_URL` 설정됨:
-        search, read_document, sql_search + 비검색 도구
+        search, read_document, sql_search, describe_schema + 비검색 도구
     "minimal" + DB 없음(OKF 전용 배포):
         (file_search - `KF_AGENT_FILE_SEARCH_ENABLED`가 켜져 있을 때만) + 비검색 도구
     "full" + DB 설정됨:
@@ -871,6 +887,7 @@ def default_tools(
     if lazy_store is not None:
         tools.append(_make_read_document_tool(lazy_store))
         tools.append(_make_sql_search_tool(lazy_store))
+        tools.append(_make_describe_schema_tool())
         if not minimal:
             tools.append(_make_vector_search_tool(lazy_store, project_id=project_id))
             tools.append(_make_document_search_tool(lazy_store, project_id=project_id))

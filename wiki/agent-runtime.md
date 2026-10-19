@@ -250,12 +250,37 @@ Anthropic·OpenAI-호환은 실제 스트림). `run_agent(on_text=...)`가 이�
 reasoning만 있는 최종 턴은 빈 답 대신 `AgentError`다. 자세한 내용은
 [`2026-10-19-agent-oss-runtime.md`](2026-10-19-agent-oss-runtime.md).
 
+**지연 절감 4종 (`wiki/improvement-plan-2026-09-15.md` L1/L3/R3/R8)**:
+
+- **첫 턴 search 선실행(L1, `KF_AGENT_PREFETCH_SEARCH`, 기본 `true`)**: 실측상 첫 턴 150회 중 136회가
+  `search(질문 원문)` 호출 결정에만 쓰였다. 도구 목록에 `search`가 있으면 첫 모델 호출 전에 하네스가
+  `search(query=질문 원문)`을 `_dispatch`로 실행해 `assistant(tool_call)` + `tool(_wrap_untrusted 결과)`
+  쌍으로 대화에 넣는다 - 모델이 불렀을 때와 같은 내부 `Message` 형태라 Anthropic/OpenAI 호환 어댑터가
+  그대로 변환한다. 시스템 프롬프트의 첫 원칙은 이 설정에 따라 "이미 실행됨, 같은 질의로 다시 부르지
+  말 것"/"최소 1회 search를 부를 것"으로 갈린다. 끄면 A/B 비교용 예전 동작. 평가 e2e의 도구 호출
+  기록에도 선실행 search가 첫 호출로 잡힌다.
+- **반복 호출 차단(R8)**: 같은 (도구, 정규화된 인자)를 한 `run_agent` 안에서 다시 부르면 실행하지 않고
+  "이미 같은 도구를 같은 인자로 호출해 결과를 받았다"를 도구 결과로 돌려준다(선실행 search도 포함,
+  같은 턴 안의 중복도 첫 호출만 실행). 오류로 끝난 호출은 재시도할 수 있고, 상태를 바꾸는 도구
+  (`write_*`/`edit_file`/`write_memory`/`write_plan`/`delegate_task`)는 차단하지 않고 캐시를 비운다.
+- **마크업 감지·무도구 답변(R3)**: 도구 호출 없는 최종 답변 본문에 `<tool_call>`, harmony 토큰
+  (`<|channel|>` 등), `<function=`, 도구 호출 JSON(`{"name":..,"arguments":..}`)이 있으면 서빙 측
+  도구 호출 파서(vLLM `--tool-call-parser` 등) 설정 오류로 보고 `AgentError`를 올린다. 도구 결과가
+  대화에 한 번도 없는데(선실행 포함, 이전 턴 도구 결과도 인정) `search`가 있는 구성에서 답하면 한 번
+  "search로 확인하라"고 되돌려 보내고, 그래도 안 부르면 `[주의: 도구를 한 번도 호출하지 않고 ...]`
+  표시를 붙여 내보낸다. 선실행이 켜져 있으면 선실행을 근거로 인정한다(첫 턴 무도구 답변이 정상 경로).
+- **프리픽스 축소(L3)**: `sql_search` 설명에 박혀 있던 SQL 스키마(약 2K 토큰)를 `describe_schema`
+  도구(인자 없음, 정적 문자열)로 분리했다. `sql_search` 설명은 "먼저 describe_schema를 호출" 한 줄.
+  시스템 프롬프트+도구 정의 합계 약 6.0K -> 3.8K 토큰(cl100k 근사, DB 구성 minimal). 시스템 프롬프트의
+  동적 부분(project_id 힌트, 이전 세션 기억)은 이미 맨 끝이고 도구 정의에는 동적 값이 없어 요청 간
+  프리픽스가 동일하다(vLLM prefix caching).
+
 ## 설정 (config.py, `.env.example`)
 
 `KF_AGENT_PROVIDER`(anthropic 기본) / `KF_AGENT_MODEL` / `KF_AGENT_OPENAI_COMPATIBLE_MODEL` /
 `KF_AGENT_OPENAI_COMPATIBLE_BASE_URL` / `KF_AGENT_MAX_ITERATIONS` /
 `KF_AGENT_MAX_TOKENS` / `KF_AGENT_TEMPERATURE` / `KF_AGENT_SEED` / `KF_AGENT_REQUEST_TIMEOUT_S` /
-`KF_AGENT_REASONING` /
+`KF_AGENT_REASONING` / `KF_AGENT_PREFETCH_SEARCH`(기본 true) /
 `KF_AGENT_CONTEXT_COMPACTION_ENABLED` / `KF_AGENT_CONTEXT_COMPACTION_MAX_TOKENS` /
 `KF_AGENT_CONTEXT_COMPACTION_PROTECT_TAIL`(`agent/compaction.py` 참고) / `KF_AGENT_MEMORY_DIR`
 (`agent/memory.py` 참고). `llm_provider`(Knowledge Extraction용)와 별도 키로 뒀다 - 두 관심사가 다른
@@ -449,6 +474,9 @@ Decimal/UUID/bytes)을 `agent/loop.py`의 무설정(`default=` 없는) `json.dum
 안내하지만, 실수로 걸리는 경우의 안전망).
 
 ### `agent/tools.py::_make_sql_search_tool`
+
+스키마 설명은 별도 `describe_schema` 도구(같은 조건에서 함께 추가)로 분리됐다 - 아래 `run_agent`의
+"프리픽스 축소(L3)" 참고.
 
 `vector_search`와 같은 조건(`KF_DATABASE_URL` 설정)에서만 도구 목록에 추가되고, 호출마다
 `PipelineStore`를 열고 닫는다(같은 "그때그때 연결" 패턴). `project_id`로 범위를 좁히는 전용

@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Callable
 
 # `agent/providers/openai_compatible.py`가 도구 호출 인자 JSON 파싱에 실패했을 때, 예외를
@@ -70,6 +71,22 @@ _TOOL_BUDGET_EXHAUSTED_NOTE = (
     "없이 추측으로 채우지 말 것."
 )
 
+_NO_TOOL_NUDGE = (
+    "도구를 한 번도 호출하지 않고 답했다. 근거 없는 답변은 허용되지 않는다 - search로 먼저 확인한 뒤 "
+    "그 결과에 근거해 다시 답할 것."
+)
+_UNGROUNDED_ANSWER_NOTE = "[주의: 도구를 한 번도 호출하지 않고 작성된 답변 - 근거가 확인되지 않았다.]\n\n"
+
+_DUPLICATE_CALL_NOTE = "이미 같은 도구를 같은 인자로 호출해 결과를 받았다 - 앞선 도구 결과를 다시 읽고 다른 인자나 다른 도구로 보충할 것."
+
+# 상태를 바꾸는 도구 - 같은 인자의 재호출도 의미가 있고(덮어쓰기·계획 갱신), 실행하면 앞선 읽기
+# 결과가 낡을 수 있어 중복 차단 캐시를 비운다.
+_STATEFUL_TOOLS = frozenset({"write_file", "edit_file", "write_memory", "write_plan", "delegate_task"})
+
+# 서빙 측 도구 호출 파서가 모델의 도구 호출을 `tool_calls`로 올리지 못했을 때 본문에 그대로
+# 남는 흔적(Qwen/Hermes `<tool_call>`, gpt-oss harmony 토큰, `<function=...>`).
+_TOOL_MARKUP_RE = re.compile(r"<tool_call>|</tool_call>|<\|(?:channel|start|call|constrain)\|>|<function=|<tool_use>")
+
 _TRUNCATED_ANSWER_NOTE = "\n\n[잘림: 모델의 max_tokens 한도에 걸려 답변이 중간에서 끊겼다 - 위 내용은 미완성이다.]"
 
 
@@ -80,6 +97,14 @@ def _wrap_untrusted(tool_name: str, result: object) -> str:
     it goes back into the conversation, rather than splicing it in raw."""
     payload = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
     return f'<tool_result tool="{tool_name}">\n{_UNTRUSTED_NOTE}\n---\n{payload}\n---\n</tool_result>'
+
+
+def _call_key(call: ToolCall) -> tuple[str, str]:
+    return call.name, json.dumps(call.arguments, sort_keys=True, ensure_ascii=False, default=str)
+
+
+async def _skip_duplicate(call: ToolCall) -> str:
+    return _wrap_untrusted(call.name, _DUPLICATE_CALL_NOTE)
 
 
 async def _dispatch(call: ToolCall, tools_by_name: dict[str, ToolSpec]) -> str:
@@ -99,6 +124,33 @@ async def _dispatch(call: ToolCall, tools_by_name: dict[str, ToolSpec]) -> str:
         logger.warning("tool %s failed: %s", call.name, exc)
         return _wrap_untrusted(call.name, f"error: {exc}")
     return _wrap_untrusted(call.name, result)
+
+
+def _is_error_result(result_text: str) -> bool:
+    return "\n---\nerror: " in result_text
+
+
+def _looks_like_tool_call_json(text: str) -> bool:
+    stripped = text.strip()
+    if not (stripped.startswith("{") and stripped.endswith("}")):
+        return False
+    try:
+        obj = json.loads(stripped)
+    except ValueError:
+        return False
+    return isinstance(obj, dict) and "name" in obj and ("arguments" in obj or "parameters" in obj)
+
+
+def _check_tool_markup(text: str | None) -> None:
+    """도구 호출이 없는 최종 답변 본문에 도구 호출 마크업이 있으면 서빙 설정 오류다 - 모델은 도구를
+    부르려 했는데 파서가 `tool_calls`로 못 올린 것이라, 그대로 내보내면 사용자에게 깨진 마크업이 답이
+    된다(wiki/improvement-plan-2026-09-15.md R3)."""
+    if text and (_TOOL_MARKUP_RE.search(text) or _looks_like_tool_call_json(text)):
+        raise AgentError(
+            "답변 본문에 도구 호출 마크업(<tool_call>/harmony/도구 호출 JSON)이 있다 - 서빙 측 도구 호출 "
+            "파서 설정 오류로 보인다(예: vLLM --tool-call-parser / --enable-auto-tool-choice). "
+            f"본문 앞부분: {text.strip()[:200]!r}"
+        )
 
 
 async def _compact_if_enabled(messages: list[Message], provider: ChatProvider) -> list[Message]:
@@ -205,21 +257,66 @@ async def run_agent(
     tools_by_name = {t.name: t for t in tools}
     messages: list[Message] = list(history) if history else []
     messages.append(Message(role="user", content=user_message))
+    # 같은 (도구, 인자)의 성공 결과를 이미 받았는지 - 반복 호출은 실행하지 않고 안내만 돌려준다.
+    seen_calls: set[tuple[str, str]] = set()
+    grounded = any(m.role == "tool" for m in messages)  # 대화에 도구 결과가 있는지(선실행·이전 턴 포함)
+    nudged = False
+
+    if settings.agent_prefetch_search and "search" in tools_by_name:
+        # 첫 턴은 거의 항상 `search(질문 원문)` 호출 결정에만 쓰였다 - 모델이 불렀을 때와 같은 형태로
+        # 하네스가 대신 실행해 LLM 왕복 한 번을 없앤다(wiki/improvement-plan-2026-09-15.md L1).
+        call = ToolCall(id=f"prefetch_search_{len(messages)}", name="search", arguments={"query": user_message})
+        result_text = await _dispatch(call, tools_by_name)
+        messages.append(Message(role="assistant", content=None, tool_calls=[call]))
+        messages.append(Message(role="tool", content=result_text, tool_call_id=call.id))
+        if not _is_error_result(result_text):
+            seen_calls.add(_call_key(call))
+        grounded = True
 
     for _ in range(max_iterations):
         messages = await _compact_if_enabled(messages, provider)
         turn: AssistantTurn = await _send(provider, messages, tools, system, on_text)
 
         if not turn.tool_calls:
+            _check_tool_markup(turn.text)
+            if not grounded and "search" in tools_by_name:
+                # 선실행이 꺼진 상태에서 도구 없이 답했다 - 한 번 되돌려 보내고, 그래도 안 부르면 표시를 달아 내보낸다.
+                if not nudged:
+                    nudged = True
+                    messages.append(Message(role="assistant", content=turn.text))
+                    messages.append(Message(role="user", content=_NO_TOOL_NUDGE))
+                    continue
+                return _UNGROUNDED_ANSWER_NOTE + _finalize(turn, messages), messages
             return _finalize(turn, messages), messages
 
+        grounded = True
         messages.append(Message(role="assistant", content=turn.text, tool_calls=turn.tool_calls, reasoning=turn.reasoning))
         # Concurrent, but order-preserving: `gather` returns results in
         # argument order, so `messages` keeps one `tool` message per call in
         # `turn.tool_calls` order (this module's docstring has why that
         # ordering is load-bearing). `_dispatch` never raises, so one failing
         # tool can't cancel its siblings either.
-        results = await asyncio.gather(*(_dispatch(call, tools_by_name) for call in turn.tool_calls))
+        duplicates = set()
+        for i, call in enumerate(turn.tool_calls):
+            key = _call_key(call)
+            if call.name in _STATEFUL_TOOLS:
+                seen_calls.clear()
+            elif key in seen_calls:
+                duplicates.add(i)
+            else:
+                seen_calls.add(key)  # 같은 턴 안의 중복도 첫 호출만 실행한다
+        results = list(
+            await asyncio.gather(
+                *(
+                    _skip_duplicate(call) if i in duplicates else _dispatch(call, tools_by_name)
+                    for i, call in enumerate(turn.tool_calls)
+                )
+            )
+        )
+        # 오류 결과는 "받은 결과"가 아니다 - 재시도가 막히지 않게 캐시에서 뺀다.
+        for call, result_text in zip(turn.tool_calls, results, strict=True):
+            if _is_error_result(result_text):
+                seen_calls.discard(_call_key(call))
         messages.extend(
             Message(role="tool", content=result_text, tool_call_id=call.id)
             for call, result_text in zip(turn.tool_calls, results, strict=True)

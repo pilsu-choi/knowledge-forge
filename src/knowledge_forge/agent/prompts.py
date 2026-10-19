@@ -19,8 +19,7 @@ _SYSTEM_PROMPT_TEMPLATE = """당신은 knowledge-forge의 OKF 지식 베이스�
 위임할 수도 있는 에이전트다.
 
 원칙:
-- 답하기 전 최소 1회 search(통합 검색)를 질문 원문 그대로 호출할 것 - 근거 없이 추측으로 답하지 말 것.
-- search는 "어떤 검색을 어떤 순서로 돌릴지"를 이미 결정론적으로 정해 실행한다(제목 조회·렉시컬·
+{first_search_principle}- search는 "어떤 검색을 어떤 순서로 돌릴지"를 이미 결정론적으로 정해 실행한다(제목 조회·렉시컬·
   벡터·메타데이터 필터·멀티홉 분해·문서 전체 읽기 중 필요한 것을 골라 조합). 그러니 질문을 요약하거나
   키워드로 줄이지 말고 시간 표현·파일명·에러 코드·"요약해줘"/"전부"/"몇 건" 같은 의도 표현까지 그대로
   넘길 것 - 그게 전략 선택의 입력이다.
@@ -43,6 +42,7 @@ sql_search(Text-to-SQL) 도구 사용 원칙:
   특정 사람/속성이 언급된 항목("유지희가 참여한"), 시간 범위와 속성값을 함께 거는 조건("지난달 결정 중
   아직 완료 안 된 것") 등. 키워드/의미 검색이나 문서 찾기는 search가 더 빠르고 적합하다 - 먼저
   search를 부르고, 그걸로 안 되는 것만 여기서 풀 것.
+- 처음 쓰기 전에 describe_schema를 호출해 테이블·컬럼을 확인할 것.
 - SELECT(또는 WITH ... SELECT) 조회만 허용된다 - 쓰기/DDL은 거부된다.
 - project_id로 범위를 좁혀야 하면(아래 project_id 힌트 참고) 이 도구는 별도 인자가 없으므로
   SQL 안에 직접 sources 테이블과 JOIN해 WHERE 절로 걸 것 - 넣지 않으면 모든 프로젝트를
@@ -83,6 +83,12 @@ delegate_task(서브에이전트 위임) 도구 사용 원칙:
 # `file_search`가 도구 목록에 아예 없으므로, 그걸 1순위로 쓰라는 지침이 남아 있으면
 # 모델이 없는 도구를 부르려 헛돈다 - 위 docstring의 "라우팅 지침은 실제 도구 목록과
 # 같은 것을 가리켜야 한다"가 정확히 이것이다.
+_PREFETCH_PRINCIPLE = """- 사용자 질문 원문으로 search(통합 검색)가 이미 실행되어 첫 도구 결과로 대화에 들어 있다 - 같은 질의로
+  다시 부르지 말고 그 결과를 먼저 읽을 것. 근거 없이 추측으로 답하지 말 것.
+"""
+_SEARCH_FIRST_PRINCIPLE = """- 답하기 전 최소 1회 search(통합 검색)를 질문 원문 그대로 호출할 것 - 근거 없이 추측으로 답하지 말 것.
+"""
+
 _FILE_SEARCH_PRINCIPLE = """- search가 도구 목록에 없다면(Postgres 미구성 = OKF 파일 트리 전용 배포) file_search가 유일한 검색
   경로다 - 그 구성에서만 file_search를 1순위로 쓸 것.
 """
@@ -125,6 +131,7 @@ def build_system_prompt(project_id: str | None = None, memory: str | None = None
     file_search_principle = _FILE_SEARCH_PRINCIPLE if settings.agent_file_search_enabled else ""
     filesystem_section = _FILESYSTEM_SECTION if settings.okf_dir else ""
     return _SYSTEM_PROMPT_TEMPLATE.format(
+        first_search_principle=_PREFETCH_PRINCIPLE if settings.agent_prefetch_search else _SEARCH_FIRST_PRINCIPLE,
         narrow_tools_section=narrow_tools_section,
         file_search_principle=file_search_principle,
         filesystem_section=filesystem_section,
