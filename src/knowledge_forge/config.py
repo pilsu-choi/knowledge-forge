@@ -259,6 +259,10 @@ class Settings(BaseSettings):
     # tuning knob so much as a safety net against a model that keeps calling
     # tools without ever producing a final answer.
     agent_max_iterations: int = 8
+    # 첫 모델 호출 전에 하네스가 search(질문 원문)를 대신 실행해 대화에 넣는다
+    # (agent/loop.py, wiki/improvement-plan-2026-09-15.md L1). 실측상 첫 턴은 대부분
+    # "search를 질문 원문으로 부르겠다"는 결정에만 쓰였다. 끄면(A/B) 예전처럼 모델이 직접 고른다.
+    agent_prefetch_search: bool = True
     # 에이전트에게 노출할 **검색 도구 표면**(agent/tools.py::default_tools).
     #
     # "minimal"(기본): 검색 도구는 `search`(통합 검색, search/retrieve.py) +

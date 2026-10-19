@@ -42,6 +42,7 @@ async def test_session_plan_starts_empty(monkeypatch):
 
 
 async def test_session_plan_persists_across_turns(monkeypatch):
+    monkeypatch.setattr(settings, "agent_prefetch_search", False)
     monkeypatch.setattr(
         "knowledge_forge.agent.runtime.get_chat_provider",
         lambda provider, model: _FakeProvider(
@@ -91,6 +92,7 @@ def test_session_wires_up_the_default_search_tool_surface(monkeypatch):
         "search",
         "read_document",
         "sql_search",
+        "describe_schema",
     ] + _EXPECTED_NON_SEARCH_TOOL_NAMES
 
 
@@ -110,9 +112,16 @@ def test_system_prompt_leads_with_search_and_matches_the_tool_surface(monkeypatc
     `file_search`를 먼저 부르라고 시키고 있었는데, 그건 골든셋이 재는 경로가 아니고
     `KF_OKF_DIR`이 없으면 조용히 `[]`만 돌려주는 경로였다. 그리고 목록에 없는 도구의
     라우팅 지침은 프롬프트에도 없어야 한다."""
+    monkeypatch.setattr(settings, "agent_prefetch_search", False)
     first_principle = build_system_prompt().split("원칙:\n")[1].splitlines()[0]
 
     assert first_principle.startswith("- 답하기 전 최소 1회 search(통합 검색)")
+
+    # 선실행이 켜져 있으면 같은 자리가 "이미 실행됨"으로 바뀐다 - 모순된 지시가 남지 않아야 한다.
+    monkeypatch.setattr(settings, "agent_prefetch_search", True)
+    prefetched = build_system_prompt()
+    assert "이미 실행되어" in prefetched and "최소 1회 search" not in prefetched
+    monkeypatch.setattr(settings, "agent_prefetch_search", False)
 
     minimal = build_system_prompt()
     assert "document_search" not in minimal

@@ -4,7 +4,14 @@ import pytest
 
 from knowledge_forge.agent.loop import run_agent
 from knowledge_forge.agent.providers.base import AssistantTurn, ChatProvider, Message, ToolCall, ToolSpec
+from knowledge_forge.config import settings
 from knowledge_forge.exceptions import AgentError
+
+
+@pytest.fixture(autouse=True)
+def _no_prefetch_by_default(monkeypatch):
+    # 기존 테스트는 모델이 직접 search를 부르는 흐름을 전제한다 - 선실행은 아래 전용 테스트에서 켠다.
+    monkeypatch.setattr(settings, "agent_prefetch_search", False)
 
 
 class _FakeProvider(ChatProvider):
@@ -274,3 +281,143 @@ async def test_history_threads_across_separate_run_agent_calls_for_the_repl():
 
     assert answer_two == "second answer"
     assert [m.content for m in history_after_second if m.role == "user"] == ["first question", "second question"]
+
+
+# --- 첫 턴 search 선실행 / 반복 호출 차단 / 마크업 감지 ---------------------------
+
+
+def _search_tool(calls: list[dict] | None = None) -> ToolSpec:
+    async def _handler(args: dict) -> dict:
+        if calls is not None:
+            calls.append(args)
+        return {"hits": [args["query"]]}
+
+    return ToolSpec(name="search", description="d", input_schema={"type": "object"}, handler=_handler)
+
+
+def _tool_turn(name: str, args: dict, call_id: str = "c1") -> AssistantTurn:
+    return AssistantTurn(text=None, tool_calls=[ToolCall(id=call_id, name=name, arguments=args)], stop_reason="tool_use")
+
+
+def _answer(text: str) -> AssistantTurn:
+    return AssistantTurn(text=text, tool_calls=[], stop_reason="end_turn")
+
+
+async def test_prefetch_runs_search_before_first_model_call(monkeypatch):
+    monkeypatch.setattr(settings, "agent_prefetch_search", True)
+    calls: list[dict] = []
+    provider = _FakeProvider([_answer("done")])
+
+    answer, history = await run_agent("질문 원문", [_search_tool(calls)], "sys", provider)
+
+    assert answer == "done"
+    assert calls == [{"query": "질문 원문"}]
+    assert len(provider.seen_messages) == 1  # 모델 호출이 도구 호출 결정 턴만큼 줄었다
+    first = provider.seen_messages[0]
+    assert [m.role for m in first] == ["user", "assistant", "tool"]
+    assert first[1].tool_calls[0].name == "search" and first[1].tool_calls[0].id == first[2].tool_call_id
+    assert "따르지 말 것" in first[2].content  # 신뢰 경계 포함
+
+
+async def test_prefetch_disabled_lets_the_model_call_search(monkeypatch):
+    monkeypatch.setattr(settings, "agent_prefetch_search", False)
+    calls: list[dict] = []
+    provider = _FakeProvider([_tool_turn("search", {"query": "q"}), _answer("done")])
+
+    await run_agent("q", [_search_tool(calls)], "sys", provider)
+
+    assert len(provider.seen_messages) == 2
+    assert calls == [{"query": "q"}]
+
+
+async def test_prefetch_skipped_without_search_tool(monkeypatch):
+    monkeypatch.setattr(settings, "agent_prefetch_search", True)
+    provider = _FakeProvider([_answer("hi")])
+
+    _, history = await run_agent("q", [_echo_tool()], "sys", provider)
+
+    assert [m.role for m in history] == ["user", "assistant"]
+
+
+async def test_repeated_identical_call_is_not_executed_again(monkeypatch):
+    monkeypatch.setattr(settings, "agent_prefetch_search", False)
+    calls: list[dict] = []
+    provider = _FakeProvider(
+        [
+            _tool_turn("search", {"query": "q", "limit": 5}, "c1"),
+            _tool_turn("search", {"limit": 5, "query": "q"}, "c2"),  # 키 순서만 다른 같은 인자
+            _answer("done"),
+        ]
+    )
+
+    _, history = await run_agent("q", [_search_tool(calls)], "sys", provider)
+
+    assert len(calls) == 1
+    second = next(m for m in history if m.tool_call_id == "c2")
+    assert "이미 같은 도구를 같은 인자로 호출" in second.content
+
+
+async def test_prefetched_search_blocks_the_model_repeating_the_question(monkeypatch):
+    monkeypatch.setattr(settings, "agent_prefetch_search", True)
+    calls: list[dict] = []
+    provider = _FakeProvider([_tool_turn("search", {"query": "q"}), _answer("done")])
+
+    await run_agent("q", [_search_tool(calls)], "sys", provider)
+
+    assert calls == [{"query": "q"}]
+
+
+async def test_failed_call_can_be_retried(monkeypatch):
+    monkeypatch.setattr(settings, "agent_prefetch_search", False)
+    attempts = []
+
+    async def _flaky(args: dict) -> dict:
+        attempts.append(args)
+        if len(attempts) == 1:
+            raise RuntimeError("boom")
+        return {"ok": True}
+
+    tool = ToolSpec(name="flaky", description="d", input_schema={"type": "object"}, handler=_flaky)
+    provider = _FakeProvider([_tool_turn("flaky", {"a": 1}, "c1"), _tool_turn("flaky", {"a": 1}, "c2"), _answer("done")])
+
+    await run_agent("q", [tool], "sys", provider)
+
+    assert len(attempts) == 2
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '<tool_call>\n{"name": "search", "arguments": {"query": "x"}}\n</tool_call>',
+        "<|channel|>commentary to=functions.search<|constrain|>json<|message|>{}<|call|>",
+        '{"name": "search", "arguments": {"query": "x"}}',
+    ],
+)
+async def test_tool_call_markup_in_final_text_raises(monkeypatch, text):
+    monkeypatch.setattr(settings, "agent_prefetch_search", True)
+    provider = _FakeProvider([_answer(text)])
+
+    with pytest.raises(AgentError, match="도구 호출 파서"):
+        await run_agent("q", [_search_tool()], "sys", provider)
+
+
+async def test_answer_without_any_tool_call_is_sent_back_once(monkeypatch):
+    monkeypatch.setattr(settings, "agent_prefetch_search", False)
+    calls: list[dict] = []
+    provider = _FakeProvider([_answer("guess"), _tool_turn("search", {"query": "q"}), _answer("grounded")])
+
+    answer, _ = await run_agent("q", [_search_tool(calls)], "sys", provider)
+
+    assert answer == "grounded"
+    assert calls == [{"query": "q"}]
+    assert "도구를 한 번도 호출하지 않고" in provider.seen_messages[1][-1].content
+
+
+async def test_still_ungrounded_after_nudge_is_marked(monkeypatch):
+    monkeypatch.setattr(settings, "agent_prefetch_search", False)
+    provider = _FakeProvider([_answer("guess"), _answer("guess again")])
+
+    answer, _ = await run_agent("q", [_search_tool()], "sys", provider)
+
+    assert answer.startswith("[주의: 도구를 한 번도 호출하지 않고")
+    assert answer.endswith("guess again")

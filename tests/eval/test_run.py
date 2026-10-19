@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from knowledge_forge.agent.providers.base import ToolSpec
+from knowledge_forge.config import settings
 from knowledge_forge.eval import run
 from knowledge_forge.eval.goldenset import Evidence, GoldenItem, GoldenSet, resolve_gold
 from knowledge_forge.eval.run import lookup_metrics, run_eval, score_item, summarize
@@ -139,6 +140,8 @@ async def test_run_eval_retrieval_reports_metrics_stale_and_grain(fakes, monkeyp
 
 
 async def test_e2e_ranking_follows_call_order_not_completion_order(fakes, monkeypatch, fingerprint):
+    monkeypatch.setattr(settings, "agent_prefetch_search", False)  # 호출 순서 = 스크립트 순서로 고정
+
     async def _fp(store):
         return fingerprint
 
