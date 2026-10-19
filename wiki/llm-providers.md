@@ -49,6 +49,10 @@ uv run knowledge-forge extract <path> --pretty
 | `CLAUDE_CODE_OAUTH_TOKEN` | (없음) | `claude setup-token`으로 발급하는 장기 OAuth 토큰. `KF_` 접두사가 아님 — `claude` CLI가 직접 읽는 표준 환경변수라 여기서 중복 관리하지 않는다. headless/CI 환경에서 브라우저 로그인 대신 사용 |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` | (없음) | `claude` CLI 자체가 인식하는 표준 자격 증명 — 이미 로그인돼 있지 않아도 이 경로로 동작한다 |
 
+추출 요청은 thinking을 항상 끈다(OpenRouter `reasoning: {enabled: false}`, vLLM 등은
+`chat_template_kwargs.enable_thinking: false` - `chat_provider.py::reasoning_extra_body`). 구조화 출력
+한 번이라 thinking은 지연과 `max_tokens`만 먹는다. 별도 설정은 두지 않았다(`KF_AGENT_REASONING`은 에이전트 전용).
+
 에이전트(`KF_AGENT_PROVIDER=openai_compatible`)를 OpenRouter의 `qwen/qwen3.8-27b`나 로컬 vLLM에 붙이는
 방법과 thinking 토글(`KF_AGENT_REASONING`)은 [`dev-guide.md`](dev-guide.md#에이전트를-오픈소스-모델로-돌리기)와
 [`2026-10-19-agent-oss-runtime.md`](2026-10-19-agent-oss-runtime.md)에 있다.
