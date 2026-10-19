@@ -277,7 +277,7 @@ class Settings(BaseSettings):
     agent_request_timeout_s: float = 120.0
     # thinking 사용 여부(openai_compatible 전용). 기본 False = 끈다: 에이전트 턴마다 thinking을
     # 돌리면 지연이 수 배가 되고 max_tokens를 먹는다. 끄는 방법은 서빙마다 달라서
-    # providers/openai_compatible.py::_reasoning_extra_body가 base_url로 고른다.
+    # chat_provider.py::reasoning_extra_body가 base_url로 고른다.
     agent_reasoning: bool = False
     # 에이전트에게 노출할 **검색 도구 표면**(agent/tools.py::default_tools).
     #

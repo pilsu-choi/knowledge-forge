@@ -102,9 +102,9 @@ CLI: `knowledge-forge agent "질문" [--project-id ID] [--provider anthropic|ope
 
 | `KF_AGENT_TOOL_SURFACE` | `KF_DATABASE_URL` | 검색 도구 |
 | --- | --- | --- |
-| `minimal` (기본) | 설정됨 | `search`, `read_document`, `sql_search` |
+| `minimal` (기본) | 설정됨 | `search`, `read_document`, `sql_search`, `lookup_entity`, `neighbors` |
 | `minimal` (기본) | 없음 | (없음 — `file_search`가 꺼져 있으면) |
-| `full` | 설정됨 | `search`, `read_document`, `sql_search`, `vector_search`, `document_search`, `lexical_search`, `plan_search`(provider 있을 때) |
+| `full` | 설정됨 | `search`, `read_document`, `sql_search`, `lookup_entity`, `neighbors`, `vector_search`, `document_search`, `lexical_search`, `plan_search`(provider 있을 때) |
 | `full` | 없음 | `plan_search`(provider 있을 때) |
 
 위 표에 `file_search`가 없는 것은 오타가 아니다 — **`file_search`는 표면과 무관하게 따로
@@ -114,7 +114,7 @@ CLI: `knowledge-forge agent "질문" [--project-id ID] [--provider anthropic|ope
 비검색 도구(`read_file`/`write_file`/`edit_file`/`list_dir`/`write_memory`/`write_plan`/
 `delegate_task`)는 표면과 무관하게 항상 같다.
 
-기본 표면에 남은 셋을 고른 기준:
+기본 표면에 남은 검색 도구 셋과 온톨로지 도구 둘을 고른 기준:
 
 - **`search`** — 1순위. `search/retrieve.py::retrieve`를 얇게 감싼 어댑터로, 질의 제약
   (`search/constraints.py`)에서 전략을 골라 제목 조회/렉시컬/벡터/메타데이터 필터/비교/멀티홉/
@@ -125,6 +125,11 @@ CLI: `knowledge-forge agent "질문" [--project-id ID] [--provider anthropic|ope
   전략 목록에 없어서, 그게 필요한 질문은 다른 도구로는 아예 답이 안 나온다.
 - **`read_document`** — 검색 도구가 아니라 "검색으로 특정한 문서를 끝까지 읽는" 후속 동작.
   top-k로 답이 안 되는 전체 요약/부재 확인/순서 비교에 필요하다.
+- **`lookup_entity`/`neighbors`** — 검색이 아니라 온톨로지 읽기(`search/graph.py`). 이름 → 정규
+  엔티티 → 그 엔티티의 KO, KO → 관계로 연결된 KO. `search`의 전략 목록에 없고, `sql_search`로
+  여러 홉 재귀를 매번 바르게 쓰길 기대하기 어렵다. 세션 `project_id`만 쓰고, 탐색은 출발 객체의
+  프로젝트를 벗어나지 않으며 대체된 객체는 빠진다. 추출된 KO가 없는 코퍼스에선 빈 결과다.
+  설계와 MCP 노출은 [`2026-10-19-mcp-server.md`](2026-10-19-mcp-server.md).
 
 ### `file_search`를 왜 껐는가 (`KF_AGENT_FILE_SEARCH_ENABLED`, 기본 `False`)
 
@@ -501,13 +506,12 @@ harness 전체가 이미 전제하는 "접근 제어 없음, 로컬/단일 사�
 
 ## 다음 단계
 
-1. `GET /relations/expand`처럼 `depth>1` 재귀 그래프 탐색을 전용 API/도구로 만드는 것 -
-   `sql_search`가 1-hop JOIN 수준은 이미 대체하지만, 여러 단계 재귀 탐색을 모델이 매번 정확한
-   재귀 CTE로 쓰길 기대하긴 어렵다(`agent-search.md`의 `GET /relations/expand` 설계 참고).
+1. ~~`depth>1` 그래프 탐색 전용 API/도구~~ - `neighbors` 도구와 `GET /relations/expand`로 구현
+   ([`2026-10-19-mcp-server.md`](2026-10-19-mcp-server.md)).
 2. `POST /search/vector`/`POST /search/sql` 같은 HTTP 엔드포인트 - agent 도구가 이미 있는
    `search/service.py::vector_search()`/`search/sql.py::sql_search()`를 그대로 감싸는 얇은
    FastAPI 라우터만 추가하면 됨.
-3. `knowledge-forge mcp-server`(stdio) - 외부 host(Claude Code/Claude Desktop 등) 노출.
+3. ~~MCP 서버(stdio)~~ - `knowledge-forge mcp --project-id`로 구현(읽기 전용 네 도구, 프로젝트 고정).
 4. permission mode(쓰기 도구 승인 흐름) / Skills 연동 - 별도 설계 문서.
 5. `wiki/search-architecture.md`가 정리한 더 넓은 RAG 레이어 중 남은 것(Context Engineering의
    conflict 탐지/reliability/clustering, Map-Reduce, Evidence Grounding 파이프라인, Feedback

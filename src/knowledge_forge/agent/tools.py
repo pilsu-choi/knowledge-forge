@@ -23,6 +23,7 @@ from knowledge_forge.agent.plan import PlanState, make_plan_tool
 from knowledge_forge.agent.providers.base import ChatProvider, ToolSpec
 from knowledge_forge.config import settings
 from knowledge_forge.okf.fs_service import edit_file, list_dir, read_file, write_file
+from knowledge_forge.search import graph
 from knowledge_forge.search.constraints import STRATEGY_COUNT, STRATEGY_EXHAUSTIVE, STRATEGY_NEGATIVE
 from knowledge_forge.search.document import read_document
 from knowledge_forge.search.planner import DEFAULT_LIMIT_PER_SUBQUERY, plan_and_search
@@ -307,6 +308,50 @@ SEARCH_INPUT_SCHEMA: dict[str, Any] = {
         },
     },
     "required": ["query"],
+}
+
+LOOKUP_ENTITY_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "name": {
+            "type": "string",
+            "description": "찾을 인물/조직/제품 등의 이름 - 호칭·직함은 붙어 있어도 된다('정민찬 팀장님').",
+        },
+        "entity_type": {
+            "type": "string",
+            "description": "person/organization/product/location/project 중 하나로 좁힌다. 생략하면 전부.",
+        },
+        "limit": {"type": "integer", "description": "반환할 최대 엔티티 수.", "default": 5, "maximum": 20},
+    },
+    "required": ["name"],
+}
+
+NEIGHBORS_INPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "object_id": {
+            "type": "string",
+            "description": "출발 knowledge_object_id - lookup_entity/search 결과의 값을 그대로 쓸 것.",
+        },
+        "depth": {
+            "type": "integer",
+            "description": f"따라갈 관계 홉 수 (기본 1, 서버가 {graph.MAX_DEPTH}로 상한을 둔다).",
+            "default": 1,
+            "maximum": graph.MAX_DEPTH,
+        },
+        "relation_types": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "따라갈 관계 타입(mentions/related_to/caused_by/depends_on/references). 생략하면 전부.",
+        },
+        "limit": {
+            "type": "integer",
+            "description": f"반환할 최대 객체 수 (서버가 {_MAX_SEARCH_LIMIT}로 상한을 둔다).",
+            "default": 20,
+            "maximum": _MAX_SEARCH_LIMIT,
+        },
+    },
+    "required": ["object_id"],
 }
 
 SQL_SEARCH_INPUT_SCHEMA: dict[str, Any] = {
@@ -596,6 +641,92 @@ def _make_search_tool(
     )
 
 
+def _make_graph_tools(store: _LazyPipelineStore, *, project_id: str | None) -> list[ToolSpec]:
+    """`lookup_entity`/`neighbors` (온톨로지 읽기, `search/graph.py`) - 추출된
+    KnowledgeObject가 있어야 결과가 나온다(청크만 적재한 코퍼스에선 빈 결과). `project_id`는
+    `_make_search_tool`과 같은 이유로 세션 값만 쓰고, 저장소가 프로젝트 경계와
+    "대체된(superseded) 객체 제외"를 강제한다. 없는 object_id는 `read_document`처럼
+    LookupError로 올린다."""
+
+    async def _lookup(args: dict[str, Any]) -> list[dict[str, Any]]:
+        return await graph.lookup_entity(
+            await store.get(),
+            args["name"],
+            project_id=project_id,
+            entity_type=args.get("entity_type"),
+            limit=_clamp_limit(args.get("limit"), default=5, maximum=20),
+        )
+
+    async def _neighbors(args: dict[str, Any]) -> dict[str, Any]:
+        result = await graph.neighbors(
+            await store.get(),
+            args["object_id"],
+            project_id=project_id,
+            depth=_clamp_limit(args.get("depth"), default=1, maximum=graph.MAX_DEPTH),
+            relation_types=args.get("relation_types"),
+            limit=_clamp_limit(args.get("limit"), default=20, maximum=_MAX_SEARCH_LIMIT),
+        )
+        if result is None:
+            raise LookupError(f"knowledge object not found: {args['object_id']}")
+        return result
+
+    return [
+        ToolSpec(
+            name="lookup_entity",
+            description=(
+                "이름으로 정규 엔티티(인물·조직 등)를 찾고, 그 엔티티를 언급하거나 결정자·담당자·참여자로 "
+                "가진 KnowledgeObject(결정·할 일·사건·사실)를 함께 돌려준다 - '정민찬이 결정한 것', "
+                "'에이지소다 관련 이슈'처럼 특정 대상 기준 질문에 쓴다."
+            ),
+            input_schema=LOOKUP_ENTITY_INPUT_SCHEMA,
+            handler=_lookup,
+        ),
+        ToolSpec(
+            name="neighbors",
+            description=(
+                "KnowledgeObject 하나에서 관계(언급·원인·관련)를 양방향으로 depth 홉까지 따라가 연결된 "
+                "객체를 돌려준다 - '이 결정의 이유는?', '이 이슈 때문에 생긴 일은?' 같은 질문에 쓴다."
+            ),
+            input_schema=NEIGHBORS_INPUT_SCHEMA,
+            handler=_neighbors,
+        ),
+    ]
+
+
+def _make_get_object_tool(store: _LazyPipelineStore, *, project_id: str | None) -> ToolSpec:
+    async def _handler(args: dict[str, Any]) -> dict[str, Any]:
+        result = await graph.get_object(await store.get(), args["object_id"], project_id=project_id)
+        if result is None:
+            raise LookupError(f"knowledge object not found: {args['object_id']}")
+        return result
+
+    return ToolSpec(
+        name="get_object",
+        description="knowledge_object_id 하나의 전체 내용(타입별 content, confidence, 근거 chunk_id, 출처)을 돌려준다.",
+        input_schema={
+            "type": "object",
+            "properties": {"object_id": {"type": "string", "description": "읽을 knowledge_object_id."}},
+            "required": ["object_id"],
+        },
+        handler=_handler,
+    )
+
+
+def read_only_tools(database_url: str, project_id: str) -> _ToolList:
+    """The read-only set a second consumer gets (mcp_server.py): `search`,
+    `lookup_entity`, `neighbors`, `get_object`, all pinned to one
+    `project_id` the caller fixes up front - none of them takes a project
+    argument. `search` runs rules-only (`provider=None`): an LLM call per
+    MCP request would make every consumer pay for this server's model."""
+    lazy_store = _LazyPipelineStore(database_url)
+    tools = [
+        _make_search_tool(lazy_store, provider=None, project_id=project_id),
+        *_make_graph_tools(lazy_store, project_id=project_id),
+        _make_get_object_tool(lazy_store, project_id=project_id),
+    ]
+    return _ToolList(tools, lazy_store)
+
+
 def _make_document_search_tool(store: _LazyPipelineStore, *, project_id: str | None) -> ToolSpec:
     """`document_search`(`search/service.py`) - 도구 세트가 공유하는
     `_LazyPipelineStore`를 쓴다(결함10). 별도 도구로 두는 이유: "2025_SH_업무_보고서
@@ -820,11 +951,12 @@ def default_tools(
     write_memory/write_plan/delegate_task)는 표면과 무관하게 항상 같다.
 
     "minimal"(기본) + `KF_DATABASE_URL` 설정됨:
-        search, read_document, sql_search, describe_schema + 비검색 도구
+        search, read_document, sql_search, describe_schema, lookup_entity, neighbors + 비검색 도구
     "minimal" + DB 없음(OKF 전용 배포):
         (file_search - `KF_AGENT_FILE_SEARCH_ENABLED`가 켜져 있을 때만) + 비검색 도구
     "full" + DB 설정됨:
-        search, read_document, sql_search, vector_search, document_search,
+        search, read_document, sql_search, describe_schema, lookup_entity, neighbors,
+        vector_search, document_search,
         lexical_search, plan_search(provider 있을 때) + 비검색 도구
         (+ file_search - `KF_AGENT_FILE_SEARCH_ENABLED`가 켜져 있을 때만)
     "full" + DB 없음:
@@ -888,6 +1020,7 @@ def default_tools(
         tools.append(_make_read_document_tool(lazy_store))
         tools.append(_make_sql_search_tool(lazy_store))
         tools.append(_make_describe_schema_tool())
+        tools.extend(_make_graph_tools(lazy_store, project_id=project_id))
         if not minimal:
             tools.append(_make_vector_search_tool(lazy_store, project_id=project_id))
             tools.append(_make_document_search_tool(lazy_store, project_id=project_id))

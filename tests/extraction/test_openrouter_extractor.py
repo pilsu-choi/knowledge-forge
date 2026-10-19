@@ -140,6 +140,13 @@ async def test_extract_maps_extraction_result_into_typed_knowledge_objects_and_r
     fmt = client.chat.completions.last_kwargs["response_format"]
     assert fmt["type"] == "json_schema"
     assert fmt["json_schema"]["strict"] is True
+    # thinking off, in the serving backend's own parameter name (chat_provider.reasoning_extra_body)
+    assert client.chat.completions.last_kwargs["extra_body"] == {"reasoning": {"enabled": False}}
+
+
+def test_reasoning_off_uses_chat_template_kwargs_for_a_self_hosted_backend():
+    extractor = OpenRouterExtractor(client=_FakeClient([]), base_url="http://localhost:8001/v1")
+    assert extractor._extra_body == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
 async def test_retries_once_on_rate_limit_then_succeeds():

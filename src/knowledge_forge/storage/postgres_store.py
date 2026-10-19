@@ -30,7 +30,7 @@ from knowledge_forge.models.knowledge_object import (
     validate_content,
 )
 from knowledge_forge.models.link import DocumentLink
-from knowledge_forge.models.relation import Relation
+from knowledge_forge.models.relation import TRAVERSAL_RELATION_TYPES, Neighbor, Relation
 from knowledge_forge.models.source import Source, SourceRef
 from knowledge_forge.storage.document_title import (
     derive_document_title,
@@ -739,12 +739,18 @@ class PostgresStore:
         return [_ko_from_row(row) for row in rows]
 
     async def list_knowledge_objects(
-        self, source_id: str | None = None, type: str | None = None, limit: int = 50, offset: int = 0
+        self,
+        source_id: str | None = None,
+        type: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        *,
+        project_id: str | None = None,
     ) -> list[KnowledgeObject]:
         """General-purpose paginated listing for the read API (wiki/api.md),
         as opposed to `list_knowledge_objects_by_source` above which exists
-        specifically for supersedes-matching. `type`/`source_id` are
-        optional filters (%s::text IS NULL trick short-circuits an unset
+        specifically for supersedes-matching. `type`/`source_id`/`project_id`
+        are optional filters (%s::text IS NULL trick short-circuits an unset
         filter without a second SQL string)."""
         async with self.conn.cursor() as cur:
             await cur.execute(
@@ -752,18 +758,23 @@ class PostgresStore:
                 SELECT {_KO_COLUMNS}
                 FROM knowledge_objects ko
                 JOIN sources s ON s.source_id = ko.source_id
-                WHERE (%s::text IS NULL OR ko.source_id = %s)
-                  AND (%s::text IS NULL OR ko.type = %s)
+                WHERE (%(source)s::text IS NULL OR ko.source_id = %(source)s)
+                  AND (%(type)s::text IS NULL OR ko.type = %(type)s)
+                  AND (%(project)s::text IS NULL OR s.project_id = %(project)s)
                 ORDER BY ko.extracted_at DESC
-                LIMIT %s OFFSET %s
+                LIMIT %(limit)s OFFSET %(offset)s
                 """,
-                (source_id, source_id, type, type, limit, offset),
+                {"source": source_id, "type": type, "project": project_id, "limit": limit, "offset": offset},
             )
             rows = await cur.fetchall()
 
         return [_ko_from_row(row) for row in rows]
 
-    async def get_knowledge_object(self, knowledge_object_id: str) -> KnowledgeObject | None:
+    async def get_knowledge_object(
+        self, knowledge_object_id: str, *, project_id: str | None = None
+    ) -> KnowledgeObject | None:
+        """None also when the object belongs to a project other than
+        `project_id` - a scoped caller can't tell "elsewhere" from "absent"."""
         async with self.conn.cursor() as cur:
             await cur.execute(
                 f"""
@@ -771,8 +782,9 @@ class PostgresStore:
                 FROM knowledge_objects ko
                 JOIN sources s ON s.source_id = ko.source_id
                 WHERE ko.knowledge_object_id = %s
+                  AND (%s::text IS NULL OR s.project_id = %s)
                 """,
-                (knowledge_object_id,),
+                (knowledge_object_id, project_id, project_id),
             )
             row = await cur.fetchone()
         if row is None:
@@ -909,11 +921,12 @@ class PostgresStore:
                 )
 
     async def find_entities(
-        self, project_id: str, name: str, *, entity_type: str | None = None, limit: int = 10
+        self, project_id: str | None, name: str, *, entity_type: str | None = None, limit: int = 10
     ) -> list[Entity]:
-        """Exact lookup within one project: `name` is normalized the same
-        way resolution does (so "정민찬 팀장님" finds 정민찬), and an exact
-        alias match also counts. Never crosses `project_id`."""
+        """Exact lookup: `name` is normalized the same way resolution does
+        (so "정민찬 팀장님" finds 정민찬), and an exact alias match also
+        counts. `project_id=None` searches every project - each Entity still
+        carries its own, since an entity never spans two."""
         from knowledge_forge.entity_resolution import clean_surface, normalize_entity_name, normalize_entity_type
 
         types = [normalize_entity_type(entity_type)] if entity_type else ["person", "organization", ""]
@@ -923,7 +936,7 @@ class PostgresStore:
                 """
                 SELECT entity_id, project_id, entity_type, name, display_name, aliases
                 FROM entities
-                WHERE project_id = %(project)s
+                WHERE (%(project)s::text IS NULL OR project_id = %(project)s)
                   AND (%(type)s::text IS NULL OR entity_type = %(type)s)
                   AND (name = ANY(%(keys)s) OR aliases ? %(surface)s)
                 ORDER BY entity_type, name
@@ -960,6 +973,100 @@ class PostgresStore:
             EntityMention(entity_id=r[0], knowledge_object_id=r[1], role=r[2], surface_form=r[3], evidence=r[4])
             for r in rows
         ]
+
+    async def list_entity_objects(
+        self, entity_id: str, *, roles: list[str] | None = None, limit: int = 50
+    ) -> list[tuple[str, KnowledgeObject]]:
+        """Entity -> KnowledgeObject expansion: `(role, object)` for every
+        current (not superseded) object that mentions `entity_id`, newest
+        first. Scoping is the entity's own - a mention never crosses
+        projects (entity_resolution.py)."""
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                SELECT m.role, {_KO_COLUMNS}
+                FROM entity_mentions m
+                JOIN knowledge_objects ko ON ko.knowledge_object_id = m.knowledge_object_id
+                JOIN sources s ON s.source_id = ko.source_id
+                WHERE m.entity_id = %(entity)s
+                  AND (%(roles)s::text[] IS NULL OR m.role = ANY(%(roles)s))
+                  AND {_HEAD_KO}
+                ORDER BY ko.extracted_at DESC, ko.knowledge_object_id, m.role
+                LIMIT %(limit)s
+                """,
+                {"entity": entity_id, "roles": roles, "limit": limit},
+            )
+            rows = await cur.fetchall()
+        return [(row[0], _ko_from_row(row[1:])) for row in rows]
+
+    async def neighbors(
+        self,
+        object_id: str,
+        *,
+        project_id: str | None = None,
+        depth: int = 1,
+        relation_types: list[str] | None = None,
+        limit: int = 50,
+    ) -> tuple[KnowledgeObject, list[Neighbor]] | None:
+        """Breadth-first walk over `relations` in both directions from
+        `object_id`, at most `depth` hops and `limit` objects, one query per
+        hop. None if the start object doesn't exist or is outside
+        `project_id`. Two invariants regardless of what the caller passes:
+        the walk never leaves the start object's project, and superseded
+        objects (an older version some newer object `supersedes`) are never
+        returned - their successor is the current claim. Each object comes
+        back once, with the edge that first reached it (shortest path);
+        within a hop, higher-confidence edges win the `limit`.
+        `relation_types` defaults to TRAVERSAL_RELATION_TYPES."""
+        start = await self.get_knowledge_object(object_id, project_id=project_id)
+        if start is None:
+            return None
+        types = relation_types if relation_types is not None else [t.value for t in TRAVERSAL_RELATION_TYPES]
+        seen = {object_id}
+        frontier = [object_id]
+        found: list[Neighbor] = []
+        for hop in range(1, depth + 1):
+            if not frontier or len(found) >= limit:
+                break
+            async with self.conn.cursor() as cur:
+                await cur.execute(
+                    f"""
+                    SELECT r.relation_id, r.type, r.subject_id, r.object_id, r.label, r.confidence,
+                           r.evidence, r.created_at, {_KO_COLUMNS}
+                    FROM relations r
+                    JOIN knowledge_objects ko ON ko.knowledge_object_id =
+                         CASE WHEN r.subject_id = ANY(%(frontier)s) THEN r.object_id ELSE r.subject_id END
+                    JOIN sources s ON s.source_id = ko.source_id
+                    WHERE (r.subject_id = ANY(%(frontier)s) OR r.object_id = ANY(%(frontier)s))
+                      AND r.type = ANY(%(types)s)
+                      AND s.project_id = %(project)s
+                      AND NOT ko.knowledge_object_id = ANY(%(seen)s)
+                      AND {_HEAD_KO}
+                    ORDER BY r.confidence DESC NULLS LAST, r.relation_id
+                    LIMIT %(limit)s
+                    """,
+                    {
+                        "frontier": frontier,
+                        "types": types,
+                        "project": start.source.project_id,
+                        "seen": list(seen),
+                        "limit": limit - len(found),
+                    },
+                )
+                rows = await cur.fetchall()
+            frontier = []
+            for row in rows:
+                ko = _ko_from_row(row[8:])
+                if ko.knowledge_object_id in seen:
+                    continue
+                seen.add(ko.knowledge_object_id)
+                frontier.append(ko.knowledge_object_id)
+                relation = Relation(
+                    relation_id=row[0], type=row[1], subject_id=row[2], object_id=row[3],
+                    label=row[4], confidence=row[5], evidence=row[6], created_at=row[7],
+                )
+                found.append(Neighbor(knowledge_object=ko, depth=hop, relation=relation))
+        return start, found
 
     async def get_sync_cursor(self, source: str) -> dict[str, Any] | None:
         """Returns the persisted `Cursor.data` for `source` (e.g. "slack"),
@@ -2077,6 +2184,13 @@ _MAX_QUERY_TOKENS = 8
 _TITLE_TOKEN_OVERFETCH = 4
 _TITLE_TOKEN_MAX_FETCH = 200
 
+
+# "Not superseded" - the current head of a claim's version chain (see
+# list_knowledge_objects_by_source for the definition), for reads that
+# should only see current claims. Served by idx_ko_supersedes.
+_HEAD_KO = """NOT EXISTS (
+    SELECT 1 FROM knowledge_objects newer WHERE newer.supersedes = ko.knowledge_object_id
+)"""
 
 # Column order `_ko_from_row` reads - every KnowledgeObject read path selects
 # exactly this, joined to `sources s` for the SourceRef fields.

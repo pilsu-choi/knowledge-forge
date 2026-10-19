@@ -93,6 +93,8 @@ def test_session_wires_up_the_default_search_tool_surface(monkeypatch):
         "read_document",
         "sql_search",
         "describe_schema",
+        "lookup_entity",
+        "neighbors",
     ] + _EXPECTED_NON_SEARCH_TOOL_NAMES
 
 

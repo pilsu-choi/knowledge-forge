@@ -27,6 +27,7 @@ import os
 
 import openai
 
+from knowledge_forge.chat_provider import reasoning_extra_body
 from knowledge_forge.config import settings
 from knowledge_forge.exceptions import KnowledgeExtractionError
 from knowledge_forge.extraction.auth import OPENROUTER_CREDENTIAL_HINT_KO
@@ -107,6 +108,13 @@ class OpenRouterExtractor(Extractor):
         )
         self._model = model
         self._max_tokens = max_tokens
+        # Thinking is always off for extraction: it's a single structured-
+        # output call, where reasoning tokens only add latency and eat
+        # `max_tokens` (and some strict-schema backends emit the thinking
+        # into the JSON). No setting of its own - KF_AGENT_REASONING is the
+        # agent's knob; add one here only if extraction ever measures better
+        # with thinking on.
+        self._extra_body = reasoning_extra_body(base_url, enabled=False)
         self._semaphore = asyncio.Semaphore(max_concurrency or settings.max_concurrent_llm_requests)
 
     async def extract(self, chunks: list[Chunk], document: Document, source: Source) -> ExtractionOutcome:
@@ -125,6 +133,7 @@ class OpenRouterExtractor(Extractor):
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": render_user_prompt(chunks, document)},
                     ],
+                    extra_body=self._extra_body,
                     response_format={
                         "type": "json_schema",
                         "json_schema": {

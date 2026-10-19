@@ -102,12 +102,20 @@ class _FakeReadStore:
         self.list_sources_kwargs = None
         self.list_documents_kwargs = None
 
-    async def list_knowledge_objects(self, source_id=None, type=None, limit=50, offset=0):
-        self.list_kwargs = {"source_id": source_id, "type": type, "limit": limit, "offset": offset}
+    async def list_knowledge_objects(self, source_id=None, type=None, limit=50, offset=0, *, project_id=None):
+        self.list_kwargs = {"source_id": source_id, "type": type, "limit": limit, "offset": offset, "project_id": project_id}
         return [_sample_ko()]
 
-    async def get_knowledge_object(self, knowledge_object_id: str):
-        return _sample_ko() if knowledge_object_id == "ko-1" else None
+    async def get_knowledge_object(self, knowledge_object_id: str, *, project_id=None):
+        ko = _sample_ko()
+        if knowledge_object_id != "ko-1" or project_id not in (None, ko.source.project_id):
+            return None
+        return ko
+
+    async def neighbors(self, object_id, **kwargs):
+        self.neighbors_kwargs = kwargs
+        start = await self.get_knowledge_object(object_id, project_id=kwargs["project_id"])
+        return None if start is None else (start, [])
 
     async def list_relations(self, subject_id=None, object_id=None, type=None, limit=50, offset=0):
         return [_sample_relation()]
@@ -335,13 +343,34 @@ def test_list_knowledge_objects_forwards_filters():
     read_store = _FakeReadStore()
     client = _make_client(_FakeJobStore(), read_store)
 
-    resp = client.get("/knowledge-objects", params={"source_id": "src-1", "type": "fact", "limit": 10, "offset": 5})
+    resp = client.get(
+        "/knowledge-objects", params={"source_id": "src-1", "type": "fact", "limit": 10, "offset": 5, "project_id": "p"}
+    )
 
     assert resp.status_code == 200
     body = resp.json()
     assert len(body["items"]) == 1
     assert body["items"][0]["knowledge_object_id"] == "ko-1"
-    assert read_store.list_kwargs == {"source_id": "src-1", "type": "fact", "limit": 10, "offset": 5}
+    assert read_store.list_kwargs == {"source_id": "src-1", "type": "fact", "limit": 10, "offset": 5, "project_id": "p"}
+
+
+def test_get_knowledge_object_outside_project_is_404():
+    client = _make_client(_FakeJobStore(), _FakeReadStore())
+    assert client.get("/knowledge-objects/ko-1", params={"project_id": "other"}).status_code == 404
+
+
+def test_expand_relations_clamps_depth_validates_types_and_404s():
+    read_store = _FakeReadStore()
+    client = _make_client(_FakeJobStore(), read_store)
+
+    resp = client.get("/relations/expand", params={"object_id": "ko-1", "depth": 9, "relation_types": ["caused_by"]})
+    assert resp.status_code == 200
+    assert resp.json()["object"]["knowledge_object_id"] == "ko-1"
+    assert read_store.neighbors_kwargs["depth"] == 3
+    assert read_store.neighbors_kwargs["relation_types"] == ["caused_by"]
+
+    assert client.get("/relations/expand", params={"object_id": "ko-1", "relation_types": ["nope"]}).status_code == 400
+    assert client.get("/relations/expand", params={"object_id": "missing"}).status_code == 404
 
 
 def test_get_knowledge_object_404():

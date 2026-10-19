@@ -317,7 +317,7 @@ async def test_default_tools_default_surface_exposes_only_search_read_document_a
 
     tools = default_tools(provider=_FakeProvider())
 
-    assert [t.name for t in tools] == ["search", "read_document", "sql_search", "describe_schema"] + _EXPECTED_BASE_TOOL_NAMES
+    assert [t.name for t in tools] == ["search", "read_document", "sql_search", "describe_schema", "lookup_entity", "neighbors"] + _EXPECTED_BASE_TOOL_NAMES
 
 
 async def test_default_tools_default_surface_falls_back_to_file_search_without_database_url(monkeypatch):
@@ -354,6 +354,8 @@ async def test_default_tools_full_surface_restores_every_narrow_search_tool(monk
         "read_document",
         "sql_search",
         "describe_schema",
+        "lookup_entity",
+        "neighbors",
         "vector_search",
         "document_search",
         "lexical_search",
@@ -574,6 +576,8 @@ async def test_default_tools_orders_plan_search_after_every_other_search_tool(mo
         "read_document",
         "sql_search",
         "describe_schema",
+        "lookup_entity",
+        "neighbors",
         "vector_search",
         "document_search",
         "lexical_search",

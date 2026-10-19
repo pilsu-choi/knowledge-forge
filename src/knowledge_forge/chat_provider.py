@@ -28,6 +28,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 
 @dataclass
@@ -98,3 +99,18 @@ class ChatProvider(ABC):
         if turn.text:
             on_text(turn.text)
         return turn
+
+
+def reasoning_extra_body(base_url: str, enabled: bool) -> dict[str, Any]:
+    """thinking 켜기/끄기 요청 파라미터 - 서빙마다 이름이 달라 base_url로 고른다.
+    OpenRouter는 통합 `reasoning` 객체, 그 밖의 OpenAI 호환 서버(vLLM/SGLang의 Qwen 등)는 챗
+    템플릿 인자 `chat_template_kwargs.enable_thinking`이다. 둘을 항상 같이 보내지 않는 이유:
+    api.openai.com 같은 엄격한 서버는 모르는 파라미터를 400으로 거부하므로 그쪽은 아무것도
+    보내지 않는다. 에이전트(agent/providers/openai_compatible.py)와 추출
+    (extraction/openrouter_extractor.py)이 같이 쓰므로 `agent/` 밖에 둔다."""
+    host = urlparse(base_url).hostname or ""
+    if host.endswith("openrouter.ai"):
+        return {"reasoning": {"enabled": enabled}}
+    if host.endswith("openai.com"):
+        return {}
+    return {"chat_template_kwargs": {"enable_thinking": enabled}}

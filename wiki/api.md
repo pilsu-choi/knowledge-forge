@@ -94,7 +94,7 @@ enqueue할 수도 있다 — `knowledge-forge schedule`처럼 별도 프로세�
 
 FastAPI가 자동 생성하는 대화형 문서도 있다: `GET /docs`(Swagger UI), `GET /redoc`, `GET
 /openapi.json`. 라우터별로 태그(Health/Ingest/Jobs/Sources/Documents/Knowledge
-Objects/Relations)가 붙어 있어 Swagger UI에서 리소스별로 묶여 보인다.
+Objects/Relations/Entities)가 붙어 있어 Swagger UI에서 리소스별로 묶여 보인다.
 
 | 메서드/경로 | 설명 |
 |---|---|
@@ -106,9 +106,11 @@ Objects/Relations)가 붙어 있어 Swagger UI에서 리소스별로 묶여 보�
 | `GET /sources/{source_id}` | 단건 조회, 없으면 `404` |
 | `GET /documents?project_id=&source_id=&limit=&offset=` | 저장된 Document 조회 |
 | `GET /documents/{document_id}` | 단건 조회(전체 `elements` 포함), 없으면 `404` |
-| `GET /knowledge-objects?source_id=&type=&limit=&offset=` | 저장된 KnowledgeObject 조회 |
-| `GET /knowledge-objects/{id}` | 단건 조회, 없으면 `404` |
+| `GET /knowledge-objects?source_id=&type=&project_id=&limit=&offset=` | 저장된 KnowledgeObject 조회 |
+| `GET /knowledge-objects/{id}?project_id=` | 단건 조회, 없거나 다른 프로젝트면 `404` |
 | `GET /relations?subject_id=&object_id=&type=` | Relation 조회 |
+| `GET /relations/expand?object_id=&depth=&relation_types=&project_id=&limit=` | 한 KO에서 관계를 양방향으로 따라간 결과(최대 3홉, 출발 객체 프로젝트 안, 대체된 객체 제외). 모르는 타입 `400`, 없는 객체 `404` - [`2026-10-19-mcp-server.md`](2026-10-19-mcp-server.md) |
+| `GET /entities?name=&project_id=&entity_type=` | 정규 엔티티 조회 + 각 엔티티를 언급한 현재 KO |
 
 위 표의 라우트는 전부 `KF_DATABASE_URL`(Postgres) 없이는 `503`이다(`/health` 제외,
 `api/deps.py`). `GET /okf/*`(태그 "OKF")는 그 반대로 Postgres/Celery/Redis 없이 `KF_OKF_DIR`
@@ -140,7 +142,8 @@ Objects/Relations)가 붙어 있어 Swagger UI에서 리소스별로 묶여 보�
 | `POST /ingest` | body에 `"project_id": "..."` (생략 시 `"default"`) |
 | `knowledge-forge extract` | `--project-id` |
 | `knowledge-forge schedule` | `--project-id` |
-| `GET /sources`, `/documents`, `/jobs` | 쿼리 파라미터 `?project_id=...`로 해당 프로젝트만 필터링 (생략 시 전체) |
+| `GET /sources`, `/documents`, `/jobs`, `/knowledge-objects`, `/relations/expand`, `/entities` | 쿼리 파라미터 `?project_id=...`로 해당 프로젝트만 필터링 (생략 시 전체) |
+| `knowledge-forge mcp` | `--project-id`(필수) - 서버 프로세스 전체가 그 프로젝트에 고정된다. 이 표에서 유일하게 요청자가 범위를 넓힐 수 없는 진입점이다 |
 
 **알려진 한계 - `project_id`는 필터이지, 접근 제어가 아니다**: 이 API에는 인증/인가 계층이
 전혀 없다(`api/deps.py`는 DB 연결 여부만 확인한다). 즉 어떤 클라이언트든 임의의 `project_id`로
