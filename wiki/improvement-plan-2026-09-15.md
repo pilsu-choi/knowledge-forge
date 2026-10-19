@@ -5,7 +5,7 @@ main `cef6edc` 기준 진단이다. 코드는 고치지 않았다.
 ## 전제
 
 - **지향점**: 팔란티어 Foundry형 구조. 사내 지식을 모아 온톨로지로 만들고, 여러 형태의 Agent가 소비한다. 검색 Agent는 첫 소비자다.
-- **대상 LLM**: gpt-oss-120b 같은 오픈소스 모델을 OpenAI 호환 엔드포인트(vLLM 등)로 붙인다.
+- **대상 LLM**: Qwen3.8-27B 같은 오픈소스 모델을 OpenAI 호환 엔드포인트(vLLM 등)로 붙인다. 2026-10-19에 테스트 모델을 gpt-oss-120b에서 Qwen3.8-27B로 바꿨다.
 - **요구 조건**: 품질을 유지하면서 지연시간도 낮아야 한다.
 - 이 전제는 `PRD.md`와 [`roadmap.md`](roadmap.md)에 없다. PRD는 Graph DB·Ontology·Agent를 MVP 제외 범위로 두었다. 그래서 아래 5장 온톨로지 항목은 결함 수정이 아니라 새 범위다.
 
@@ -13,7 +13,7 @@ main `cef6edc` 기준 진단이다. 코드는 고치지 않았다.
 
 ## 결론
 
-- **gpt-oss-120b를 붙이면 돌아가지만, 잘 동작한다는 근거는 없다.** 현재 main에서 오픈소스 모델로 잰 e2e 결과가 한 건도 없다.
+- **Qwen3.8-27B를 붙이면 돌아가지만, 잘 동작한다는 근거는 없다.** 현재 main에서 오픈소스 모델로 잰 e2e 결과가 한 건도 없다.
 - **에이전트 품질의 상한은 검색 파이프라인 품질이다.** 프롬프트가 search를 질문 원문으로 먼저 부르게 하고, 실측에서 150회 중 136회가 search 1회로 끝났다([`search-code-review-2026-09-14.md`](search-code-review-2026-09-14.md)).
 - **지연시간은 DB가 아니라 LLM 호출 횟수와 프리필 크기가 정한다.** DB 조회는 이미 p50 141ms(임베딩 고정)까지 줄였다. 남은 비용은 질문당 LLM 호출 3~4회다.
 - **품질을 올릴 싼 부품이 빠져 있다.** 리랭커·BM25·온프렘 임베딩은 LLM 호출 하나보다 싸다.
@@ -23,7 +23,7 @@ main `cef6edc` 기준 진단이다. 코드는 고치지 않았다.
 
 | # | 문제 | 개선 |
 |---|---|---|
-| M1 | 현재 main에서 `eval run --e2e`가 실행된 적이 없다. 남은 e2e 수치(gpt-4o-mini 0.817, Qwen3-30B 0.266)는 삭제된 평가 코드와 `project_id` 수정 전 코드에서 나왔다 | 임베딩을 고정하고 Claude 1개 + gpt-oss-120b 1개로 e2e를 돈다. 이것이 "검색 Agent가 잘 동작하는가"에 답하는 첫 숫자다 |
+| M1 | 현재 main에서 `eval run --e2e`가 실행된 적이 없다. 남은 e2e 수치(gpt-4o-mini 0.817, Qwen3-30B 0.266)는 삭제된 평가 코드와 `project_id` 수정 전 코드에서 나왔다 | 임베딩을 고정하고 Claude 1개 + Qwen3.8-27B 1개로 e2e를 돈다. 이것이 "검색 Agent가 잘 동작하는가"에 답하는 첫 숫자다 |
 | M2 | 골든셋 v1은 gpt-4o-mini가 만들었고 사람이 검수하지 않았다(status `draft`). dev/test split도 누수가 있던 옛 방식이다 | 50~100개를 사람이 검수한 부분집합을 만들고, 새 `split_for`로 재생성한다 |
 | M3 | 지연 SLO가 없다. e2e 결과에 `latency_ms`·`llm_calls` 필드는 있지만 목표값이 없다 | 종단 p50/p95와 첫 토큰까지 시간 목표를 정하고, 모든 A/B에 품질과 함께 기록한다 |
 | M4 | 원격 질의 임베딩 흔들림으로 같은 코드도 562건 중 137건 결과가 달라진다. 고정·재생이 `eval run`에 연결되지 않았다 | 질의 임베딩 고정·재생을 `eval run` 옵션으로 넣는다. ±0.03 이하 차이는 고정 없이 판단하지 않는다 |
@@ -35,9 +35,9 @@ main `cef6edc` 기준 진단이다. 코드는 고치지 않았다.
 
 | # | 문제 | 영향 | 개선 |
 |---|---|---|---|
-| R1 ✔ | OpenAI 호환 어댑터가 `content`와 `tool_calls`만 읽는다. `reasoning_content`/`reasoning`은 버려지고 다음 턴에 되돌려 보내지 않는다(`agent/providers/openai_compatible.py`) | harmony 계열 모델의 멀티턴 도구 호출 품질 저하. 답이 reasoning 필드에만 오면 빈 문자열이 정답처럼 반환된다 | `AssistantTurn`에 reasoning 필드를 추가하고, 읽기·되돌려 보내기·빈 content일 때 대체를 넣는다 |
+| R1 ✔ | OpenAI 호환 어댑터가 `content`와 `tool_calls`만 읽는다. `reasoning_content`/`reasoning`은 버려지고 다음 턴에 되돌려 보내지 않는다(`agent/providers/openai_compatible.py`) | reasoning 모델(Qwen thinking, gpt-oss harmony 등)의 멀티턴 도구 호출 품질 저하. 답이 reasoning 필드에만 오면 빈 문자열이 정답처럼 반환된다 | `AssistantTurn`에 reasoning 필드를 추가하고, 읽기·되돌려 보내기·빈 content일 때 대체를 넣는다 |
 | R2 ✔ | `max_tokens`가 4096 고정이고 설정 키가 없다 | reasoning 토큰이 같은 예산을 먹어 답변이나 도구 호출 JSON이 잘린다. 도구 호출 중 잘리면 `finish_reason`이 무시되어 "invalid JSON arguments"로 위장된다 | `KF_AGENT_MAX_TOKENS`, temperature, seed, 요청 timeout 설정을 추가한다 |
-| R3 | 도구 호출 0회로 끝난 답변을 그대로 반환한다(`agent/loop.py`) | 서빙 쪽에 gpt-oss 도구 호출 파서가 꺼져 있으면 호출이 본문 텍스트로 오고, 검색 없는 답이 아무 표시 없이 나간다 | 도구 호출 0회 답변은 한 번 재촉하거나 오류로 올린다. 본문에 harmony 마크업이나 도구 호출 JSON이 보이면 설정 오류로 알린다 |
+| R3 | 도구 호출 0회로 끝난 답변을 그대로 반환한다(`agent/loop.py`) | 서빙 쪽 도구 호출 파서(vLLM `--tool-call-parser`)가 꺼져 있으면 호출이 본문 텍스트로 오고, 검색 없는 답이 아무 표시 없이 나간다 | 도구 호출 0회 답변은 한 번 재촉하거나 오류로 올린다. 본문에 `<tool_call>`·harmony 같은 마크업이나 도구 호출 JSON이 보이면 설정 오류로 알린다 |
 | R4 ✔ | CLI 사전검사가 `KF_OKF_DIR`과 `OPENROUTER_API_KEY`/`OPENAI_API_KEY`를 요구한다 | 키 없는 로컬 vLLM에 붙이려면 더미 환경변수가 필요하다. OKF 경로 때문에 파일시스템 도구 4개가 항상 실린다 | base_url이 로컬이면 키 검사를 건너뛴다. `KF_OKF_DIR` 필수 조건을 없앤다. CLI docstring의 "file_search로" 문구도 현행화한다 |
 | R5 | 기본 모델 문자열이 전부 Claude다(`agent_openai_compatible_model="anthropic/claude-sonnet-5"`) | `openai_compatible`로 바꾸고 모델을 빠뜨리면 조용히 Claude로 간다 | 오픈소스 배포용 설정 예시를 `.env.example`과 [`dev-guide.md`](dev-guide.md)에 둔다 |
 | R6 | 400 "context length exceeded" 같은 비재시도 오류가 질의 전체를 죽인다 | 32K 로컬 서버에서 긴 검색 결과 뒤에 곧바로 실패 | 컨텍스트 초과는 압축 후 한 번 재시도한다. 압축 임계값(현재 100K 고정)을 서빙 컨텍스트 길이에 맞춘다 |
@@ -90,7 +90,7 @@ main `cef6edc` 기준 진단이다. 코드는 고치지 않았다.
 | O4 | KO grain이 골든셋 v1의 5개 지표 전부에서 chunk grain보다 낮고 27% 느리다([`evaluation.md`](evaluation.md)). 그런데 `config.py`의 `embedding_source` 기본값은 여전히 `knowledge_object`다(로컬 `.env`는 `chunk`) ✔ | 기본값을 `chunk`로 바꾼다. KO grain은 O1·O2 이후 다시 잰다 |
 | O5 | 추출 항목의 `confidence`를 받고도 버린다. KO에 confidence 컬럼이 없다. evidence는 청크 묶음 단위라 주장 하나가 최대 4000토큰을 근거로 가리킨다 | confidence를 저장하고, 가능하면 인용 구절이나 오프셋 단위 evidence를 남긴다. 향후 쓰기(action) 게이트의 신뢰 신호다 |
 | O6 | 두 번째 소비 Agent가 쓸 인터페이스가 없다. MCP 서버가 없고, `list_knowledge_objects`에 `project_id` 필터가 없어 다른 소비자가 프로젝트 경계를 넘어 읽을 수 있다 | `lookup_entity`, `get_object`, `neighbors`, `search` 네 개의 읽기 전용 MCP 서버를 만든다. 모든 도구에 `project_id` 범위를 강제한다. O1·O3의 수용 시험 역할도 한다 |
-| O7 | gpt-oss-120b로 추출하려면 strict `json_schema`가 필요한데, `_to_strict_json_schema`가 `default`·`title` 키를 남긴다. 실제 라우팅 모델로 검증된 적이 없다 | 두 키를 제거하고, 대상 서빙 백엔드에서 strict 모드 지원을 확인한다. 미지원이면 JSON 파싱 재시도 경로를 둔다 |
+| O7 | Qwen3.8-27B 같은 오픈소스 모델로 추출하려면 strict `json_schema`가 필요한데, `_to_strict_json_schema`가 `default`·`title` 키를 남긴다. 실제 라우팅 모델로 검증된 적이 없다 | 두 키를 제거하고, 대상 서빙 백엔드에서 strict 모드 지원을 확인한다. 미지원이면 JSON 파싱 재시도 경로를 둔다 |
 
 ## 추천 순서
 
