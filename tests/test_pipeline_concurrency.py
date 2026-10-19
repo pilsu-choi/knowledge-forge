@@ -125,6 +125,9 @@ class _Store:
     async def record_relations(self, relations):
         pass
 
+    async def record_entities(self, resolution):
+        pass
+
 
 class _OKF:
     def __init__(self):

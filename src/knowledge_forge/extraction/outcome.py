@@ -10,15 +10,21 @@ resolution), so it lives here once instead of being duplicated per provider.
 """
 
 from datetime import datetime, timezone
+from typing import get_args
 
 import knowledge_forge
 from knowledge_forge.extraction.base import ExtractionOutcome
-from knowledge_forge.extraction.schemas import ExtractionResult
+from knowledge_forge.extraction.schemas import ExtractionItem, ExtractionResult
 from knowledge_forge.ids import stable_id
 from knowledge_forge.models.chunk import Chunk
 from knowledge_forge.models.document import Document
 from knowledge_forge.models.knowledge_object import (
+    ActionItemContent,
+    ActionItemStatus,
+    DecisionContent,
+    DecisionStatus,
     DocumentRef,
+    EventContent,
     Evidence,
     KnowledgeObject,
     KnowledgeObjectType,
@@ -29,6 +35,27 @@ from knowledge_forge.models.source import Source, SourceRef
 
 def _valid_index(index: int, items: list[str], skip: int) -> bool:
     return 0 <= index < len(items) and index != skip
+
+
+def _item_content(item: ExtractionItem) -> dict:
+    """The flat `people`/`date`/`status` attributes mapped onto the item
+    type's typed content model. A status from the other type's vocabulary
+    (a decision marked "done") is dropped rather than stored."""
+    if item.type == "decision":
+        status = item.status if item.status in get_args(DecisionStatus) else None
+        content = DecisionContent(statement=item.statement, decided_by=item.people, decided_at=item.date, status=status)
+    elif item.type == "action_item":
+        status = item.status if item.status in get_args(ActionItemStatus) else None
+        content = ActionItemContent(statement=item.statement, assignees=item.people, due=item.date, status=status)
+    elif item.type == "event":
+        content = EventContent(statement=item.statement, occurred_at=item.date, participants=item.people)
+    else:
+        return {"statement": item.statement}
+    return content.model_dump(mode="json")
+
+
+def _confidence(value: float | None) -> float | None:
+    return value if value is not None and 0.0 <= value <= 1.0 else None
 
 
 def build_extraction_outcome(
@@ -52,7 +79,14 @@ def build_extraction_outcome(
     bundle_id = stable_id(*(c.chunk_id for c in chunks))
     now = datetime.now(timezone.utc)
 
-    def make_object(kind: str, kind_type: KnowledgeObjectType, index: int, summary: str, content: dict) -> KnowledgeObject:
+    def make_object(
+        kind: str,
+        kind_type: KnowledgeObjectType,
+        index: int,
+        summary: str,
+        content: dict,
+        confidence: float | None = None,
+    ) -> KnowledgeObject:
         return KnowledgeObject(
             knowledge_object_id=stable_id(bundle_id, kind, str(index)),
             type=kind_type,
@@ -65,6 +99,7 @@ def build_extraction_outcome(
             document_type=result.document_type,
             extracted_at=now,
             model_used=model_used,
+            confidence=confidence,
             pipeline_version=knowledge_forge.__version__,
             source_hash=source.content_hash,
         )
@@ -79,7 +114,7 @@ def build_extraction_outcome(
             KnowledgeObjectType.ENTITY,
             i,
             summary=entity.description or entity.name,
-            content={"name": entity.name, "entity_type": entity.type, "description": entity.description},
+            content=entity.model_dump(mode="json"),
         )
         objects.append(ko)
         entity_ko_id_by_name[entity.name.strip().lower()] = ko.knowledge_object_id
@@ -121,7 +156,8 @@ def build_extraction_outcome(
             KnowledgeObjectType(item.type),
             i,
             summary=item.statement,
-            content={"statement": item.statement},
+            content=_item_content(item),
+            confidence=_confidence(item.confidence),
         )
         objects.append(ko)
         item_ko_ids.append(ko.knowledge_object_id)

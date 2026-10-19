@@ -32,10 +32,16 @@ NOT EXISTS` — 여러 번 실행해도 안전). `save_source`/`save_document`/`
 `save_knowledge_objects`/`save_relations` 다섯 메서드가 각각 `INSERT ... ON CONFLICT (id) DO
 UPDATE`로 upsert한다(`save_knowledge_objects`/`save_relations`는 리스트를 받아
 `executemany`로 배치 upsert한다 — 한 청크가 여러 `KnowledgeObject`/`Relation`을 낳으므로).
+`save_knowledge_objects`는 쓰기 전에 `content`를 타입별 모델로 검증한다
+(`validate_content`, [`knowledge-object-schema.md`](knowledge-object-schema.md) "타입별
+`content` 모양") — 형식이 틀린 decision/action_item/event/entity는 `ValidationError`로
+거부되고 아무 행도 쓰지 않는다. `save_entities(entities, mentions)`는 해소된 엔티티와 그
+mention을 upsert한다(아래 "`entities`와 `entity_mentions`").
 
 읽기 쪽은 `list_sources`/`get_source`/`list_documents`/`get_document`(둘 다 `project_id`로
 필터 가능, `list_documents`는 `source_id`로도 필터 가능) + 기존 `list_knowledge_objects`/
-`get_knowledge_object`/`list_relations` — 읽기 API(`api/routes/`)는 이 `PostgresStore`를
+`get_knowledge_object`/`list_relations` + 엔티티 조회 `find_entities(project_id, name)`/
+`list_entity_mentions(entity_id)` — 읽기 API(`api/routes/`)는 이 `PostgresStore`를
 직접 의존한다(`PipelineStore`는 쓰기 경로 전용 파사드, `api/deps.py`의 `get_read_store` 참고).
 
 **멱등성(idempotency)**: 모든 테이블의 기본키는 각 모델의 결정론적 `stable_id`
@@ -51,8 +57,10 @@ Postgres 컨테이너(`docker run postgres:16-alpine`)로 스키마 생성·저�
 | `sources` | `source_id` | `source_type`, `uri`, `content_hash`, `raw_path`(디스크 경로), `metadata`(JSONB), `project_id`(테넌시 키, 기본 `'default'`) | - |
 | `documents` | `document_id` | `elements`(JSONB, 요소 전체 직렬화), `metadata`(JSONB), `title`(검색용 파생 제목, NULL 가능, trigram GIN 인덱스), `project_id`(연결된 `sources.project_id`에서 파생) | → `sources` |
 | `chunks` | `chunk_id` | `hierarchy_level`, `sequence_index`, `text`(trigram GIN 인덱스), `token_count`, `element_ids`(JSONB), `page_start`/`page_end` | → `documents`, `sources` |
-| `knowledge_objects` | `knowledge_object_id` | `type`, `evidence`(JSONB, 이 객체를 뒷받침하는 청크 목록), `summary`, `content`(JSONB, 타입별 payload), `topics`(JSONB), `document_type`, `model_used`, `version`/`pipeline_version`/`source_hash`/`supersedes`(재처리 이력) | → `sources`, `documents` |
+| `knowledge_objects` | `knowledge_object_id` | `type`, `evidence`(JSONB, 이 객체를 뒷받침하는 청크 목록), `summary`, `content`(JSONB, 타입별 payload, 저장 시 검증), `topics`(JSONB), `document_type`, `model_used`, `confidence`(추출기의 0~1 점수, NULL 가능), `version`/`pipeline_version`/`source_hash`/`supersedes`(재처리 이력) | → `sources`, `documents` |
 | `relations` | `relation_id` | `type`, `subject_id`/`object_id`(둘 다 `knowledge_object_id`를 가리키는 typed edge), `label`, `confidence`, `evidence`(JSONB, chunk_id 목록) | → `knowledge_objects`(양쪽) |
+| `entities` | `entity_id`(`stable_id("entity", project_id, entity_type, name)`) | `project_id`, `entity_type`(정규화 타입), `name`(정규화 해소 키), `display_name`(처음 본 표기), `aliases`(JSONB, 본 표기 전부), `UNIQUE(project_id, entity_type, name)` | - |
+| `entity_mentions` | `(entity_id, knowledge_object_id, role)` | `role`(`entity`/`mentions`/`decided_by`/`assignee`/`participant`), `surface_form`, `evidence`(JSONB, chunk_id 목록), `project_id` | → `entities`, `knowledge_objects`(둘 다 CASCADE) |
 | `document_links` | `link_id`(`stable_id("document_link", type, from, to)`) | `from_document_id`/`to_document_id`(문서 간 typed edge), `link_type`, `confidence`, `metadata`(JSONB) — 아래 "문서 버전 메타데이터와 document_links" 절 | → `documents`(양쪽, CASCADE) |
 | `knowledge_object_embeddings` | `embedding_id`(`stable_id(target_kind, 대상 id, embedding_model)`) | `target_kind`(`knowledge_object`/`chunk`), `knowledge_object_id`/`chunk_id`(grain에 따라 하나만), `document_id`(항상), `embedding`(`vector(1536)`, HNSW/cosine 인덱스), `embedded_text`, `embedded_text_hash`, `project_id` | → `knowledge_objects` 또는 `chunks`, `documents` |
 
@@ -60,6 +68,30 @@ Postgres 컨테이너(`docker run postgres:16-alpine`)로 스키마 생성·저�
 여러 청크에 걸쳐 근거를 가질 수 있어(`evidence`가 리스트) 단일 FK로는 표현이 안 되기
 때문이다(`wiki/architecture.md`의 "Chunk와 KnowledgeObject는 1:1이 아니다" 참고). 대신 관계형
 질의가 필요하면 `evidence @> '[{"chunk_id": "..."}]'` 같은 JSONB 연산자를 쓴다.
+
+**`entities`와 `entity_mentions`** (온톨로지 층 1단계): ENTITY 타입 `KnowledgeObject`는 추출
+한 번의 *언급*이라, 같은 인물이 문서 수만큼 객체로 흩어진다. `entity_resolution.py`가 그
+언급들(과 decision 결정자·action_item 담당자·event 참여자)을 프로젝트 안에서 정규화 이름으로
+해소해 `entities` 한 행으로 모으고, `entity_mentions`가 엔티티 ↔ KO를 잇는다. 해소 규칙은
+[`knowledge-object-schema.md`](knowledge-object-schema.md) "엔티티 해소" 절. 파이프라인은
+`record_knowledge_objects`/`record_relations` 직후 문서 단위로 `record_entities`를 부른다.
+충돌 시 `display_name`은 처음 값을 유지하고 `aliases`만 순서를 지켜 합친다 — 다른 문서·다른
+실행에서 같은 이름이 해소돼도 같은 행에 별칭만 늘어난다. 인덱스는 이후 단계(엔티티 조회,
+엔티티 기준 KO 펼치기)를 위한 것이다:
+
+| 인덱스 | 용도 |
+|---|---|
+| `entities` PK / `UNIQUE(project_id, entity_type, name)` | 해소 불변식(프로젝트·타입을 넘지 않음), 타입을 아는 정확 조회 |
+| `idx_entities_project_name (project_id, name)` | 타입을 모르는 정확 조회 |
+| `idx_entities_aliases` (GIN) | 원래 표기로 조회(`aliases ? '정민찬 팀장'`) |
+| `idx_entities_name_trgm` (trigram GIN) | 이름 퍼지 조회 |
+| `entity_mentions` PK `(entity_id, …)` | 엔티티 → KO 펼치기 |
+| `idx_entity_mentions_ko` | KO → 엔티티 역조회 |
+| `idx_entity_mentions_project` | 프로젝트 필터 |
+
+재추출로 이전 KO가 `supersedes`되면 그 KO의 mention은 남는다(KO 행이 남으므로). 최신 객체만
+원하면 소비자가 `supersedes`로 거른다. KO 행을 지우면 mention은 CASCADE로 지워지지만, mention이
+하나도 없는 엔티티 행은 남는다.
 
 중첩 구조(리스트, 딕셔너리)는 전부 JSONB로 저장한다 — psycopg3가 JSONB ↔ Python
 dict/list를 자동 변환해줘서 애플리케이션 코드에서 별도 직렬화가 필요 없다.
@@ -108,7 +140,7 @@ DEFAULT 'default'` 컬럼을 갖는다. `Source`가 만들어질 때(`pipeline._
 `RawBlobStore` + `PostgresStore`를 하나로 묶은 파사드. `pipeline.py`는 이 객체 하나만 알면
 된다: `record_source(source, item)`(내부적으로 raw 저장 후 경로를 Postgres에 기록),
 `record_document`, `record_chunks`, `record_knowledge_objects(objects)`,
-`record_relations(relations)`. 컨텍스트 매니저라 `with PipelineStore(...) as store:`로
+`record_relations(relations)`, `record_entities(resolution)`. 컨텍스트 매니저라 `with PipelineStore(...) as store:`로
 커넥션 수명을 관리한다.
 
 ## 켜고 끄기

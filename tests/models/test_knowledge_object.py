@@ -1,9 +1,11 @@
 from datetime import datetime, timezone
 
+import pytest
+from pydantic import ValidationError
+
 from knowledge_forge.models import (
     Document,
     DocumentRef,
-    Entity,
     Evidence,
     Heading,
     HierarchyLevel,
@@ -16,6 +18,7 @@ from knowledge_forge.models import (
     TableElement,
     TextBlock,
 )
+from knowledge_forge.models.knowledge_object import validate_content
 
 
 def _sample_ko(**overrides) -> KnowledgeObject:
@@ -92,9 +95,38 @@ def test_relation_links_two_knowledge_object_ids():
     assert restored.object_id == "ko2"
 
 
-def test_entity_value_object_is_reusable_as_content_payload():
-    entity = Entity(name="Acme", type="ORG", description="A company")
-    assert entity.model_dump() == {"name": "Acme", "type": "ORG", "description": "A company"}
+def test_validate_content_fills_typed_defaults_for_decision_action_item_event_and_entity():
+    assert validate_content(KnowledgeObjectType.DECISION, {"statement": "s"}) == {
+        "statement": "s", "decided_by": [], "decided_at": None, "status": None,
+    }
+    assert validate_content(KnowledgeObjectType.ACTION_ITEM, {"statement": "s", "assignees": ["정민찬"], "status": "open"}) == {
+        "statement": "s", "assignees": ["정민찬"], "due": None, "status": "open",
+    }
+    assert validate_content(KnowledgeObjectType.EVENT, {"statement": "s", "occurred_at": "2026-10-01"}) == {
+        "statement": "s", "occurred_at": "2026-10-01", "participants": [],
+    }
+    assert validate_content(KnowledgeObjectType.ENTITY, {"name": "Acme", "entity_type": "ORG"}) == {
+        "name": "Acme", "entity_type": "ORG", "description": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "type_, content",
+    [
+        (KnowledgeObjectType.DECISION, {"statement": "s", "status": "done"}),  # action_item vocabulary
+        (KnowledgeObjectType.ACTION_ITEM, {"assignees": ["a"]}),  # no statement
+        (KnowledgeObjectType.EVENT, {"statement": "s", "where": "x"}),  # unknown key
+        (KnowledgeObjectType.ENTITY, {"name": "Acme", "type": "ORG"}),  # pre-O2 key
+    ],
+)
+def test_validate_content_rejects_malformed_typed_content(type_, content):
+    with pytest.raises(ValidationError):
+        validate_content(type_, content)
+
+
+def test_validate_content_leaves_untyped_kinds_free_form():
+    content = {"statement": "s", "anything": 1}
+    assert validate_content(KnowledgeObjectType.FACT, content) is content
 
 
 def test_document_discriminates_mixed_element_types():

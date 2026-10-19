@@ -21,6 +21,7 @@ from knowledge_forge.storage.raw_store import RawBlobStore
 
 if TYPE_CHECKING:
     from knowledge_forge.embedding.base import EmbeddingProvider
+    from knowledge_forge.entity_resolution import EntityResolution
 
 
 class PipelineStore:
@@ -59,6 +60,11 @@ class PipelineStore:
 
     async def record_relations(self, relations: list[Relation]) -> None:
         await self._db.save_relations(relations)
+
+    async def record_entities(self, resolution: "EntityResolution") -> None:
+        """Resolved entities + mentions (entity_resolution.py) - after
+        `record_knowledge_objects`, which the mentions' FK needs."""
+        await self._db.save_entities(resolution.entities, resolution.mentions)
 
     async def list_prior_knowledge_objects(self, source_id: str) -> list[KnowledgeObject]:
         """The current "head" (not-yet-superseded) KnowledgeObjects for this

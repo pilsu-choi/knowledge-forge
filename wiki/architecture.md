@@ -119,6 +119,11 @@ KnowledgeObject는 1:1이 아니다" 참고.
   엔티티마다 하나씩 `ENTITY` 타입 `KnowledgeObject`를, 각 타입 항목(item)마다 하나씩
   Fact/Event/Decision/ActionItem/... 타입 `KnowledgeObject`를 만들고, 엔티티-엔티티 관계·
   item-엔티티 mentions·item 간 caused_by/relates_to를 각각 `Relation`으로 만든다.
+  decision/action_item/event는 타입별 속성(결정자·담당·기한·시점·참여자·상태)을 `content`에
+  담고, item마다 `confidence`를 저장한다.
+- **엔티티 해소(온톨로지 층 1단계)**: 저장 직후 `entity_resolution.py::resolve_entities()`가
+  ENTITY 객체와 인물 속성을 프로젝트 범위의 정규 `Entity`로 해소해 `entities`/`entity_mentions`에
+  쓴다. 규칙 기반·정밀도 우선이다.
 - 스키마와 프롬프트 설계는 [`knowledge-object-schema.md`](knowledge-object-schema.md) 참고.
 - **동시 실행**: `pipeline.run_pipeline`은 한 문서의 청크 그룹들을 `asyncio.gather`로 동시에
   추출한다. `ClaudeExtractor`/`OpenRouterExtractor`(그리고 두 Vision 구현) 각각이 자체

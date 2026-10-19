@@ -6,10 +6,10 @@ import httpx2
 import pytest
 
 from knowledge_forge.extraction.claude_extractor import ClaudeExtractor
-from knowledge_forge.extraction.schemas import ExtractionEntity, ExtractionItem, ExtractionRelation, ExtractionResult
+from knowledge_forge.extraction.schemas import ExtractionItem, ExtractionRelation, ExtractionResult
 from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.document import Document, DocumentMetadata, TextBlock
-from knowledge_forge.models.knowledge_object import KnowledgeObjectType
+from knowledge_forge.models.knowledge_object import EntityContent, KnowledgeObjectType
 from knowledge_forge.models.relation import RelationType
 from knowledge_forge.models.source import Source, SourceRef, SourceType
 
@@ -33,7 +33,7 @@ def _bad_request_error() -> anthropic.BadRequestError:
 def _sample_result() -> ExtractionResult:
     return ExtractionResult(
         summary="A short summary.",
-        entities=[ExtractionEntity(name="Acme Corp", type="ORG"), ExtractionEntity(name="the Board", type="ORG")],
+        entities=[EntityContent(name="Acme Corp", entity_type="ORG"), EntityContent(name="the Board", entity_type="ORG")],
         relations=[ExtractionRelation(subject="Acme Corp", predicate="reports to", object="the Board")],
         items=[
             ExtractionItem(

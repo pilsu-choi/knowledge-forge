@@ -89,6 +89,7 @@ class _FakeStore:
         self._prior_objects = prior_objects
         self.saved_objects: list[KnowledgeObject] = []
         self.saved_relations = []
+        self.saved_entities = []
         self.embedded_objects: list[KnowledgeObject] | None = None
         self.embedded_model: str | None = None
         self.saved_chunks: list = []
@@ -118,6 +119,9 @@ class _FakeStore:
 
     async def record_relations(self, relations):
         self.saved_relations.extend(relations)
+
+    async def record_entities(self, resolution):
+        self.saved_entities.append(resolution)
 
     async def list_prior_knowledge_objects(self, source_id):
         return self._prior_objects

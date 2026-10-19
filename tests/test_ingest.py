@@ -107,6 +107,9 @@ class _FakeCursorStore:
     async def record_relations(self, relations):
         pass
 
+    async def record_entities(self, resolution):
+        pass
+
     async def list_prior_knowledge_objects(self, source_id):
         return []
 

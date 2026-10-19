@@ -16,6 +16,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from knowledge_forge.models.knowledge_object import ActionItemStatus, DecisionStatus, EntityContent
+
 ExtractionItemType = Literal[
     "fact",
     "event",
@@ -26,12 +28,6 @@ ExtractionItemType = Literal[
     "issue",
     "concept",
 ]
-
-
-class ExtractionEntity(BaseModel):
-    name: str
-    type: str
-    description: str | None = None
 
 
 class ExtractionRelation(BaseModel):
@@ -66,12 +62,34 @@ class ExtractionItem(BaseModel):
     relates_to_indices: list[int] = Field(
         default_factory=list, description="Indices into `items` of other items this one is generically related to."
     )
-    confidence: float | None = None
+    # Type-specific attributes (O2), deliberately flat and shared across
+    # types rather than one nested object per type: a flat optional field
+    # is what small open models fill most reliably under strict
+    # json_schema. extraction/outcome.py maps them onto the typed `content`
+    # models (DecisionContent.decided_by, ActionItemContent.assignees, ...).
+    people: list[str] = Field(
+        default_factory=list,
+        description="decision: who decided; action_item: who is responsible; event: who took part. "
+        "Names exactly as written. Empty for other types or when not stated.",
+    )
+    date: str | None = Field(
+        default=None,
+        description="decision: when decided; action_item: due date; event: when it happens/happened. "
+        "YYYY-MM-DD if the text gives an absolute date, otherwise the expression as written. Null if not stated.",
+    )
+    status: DecisionStatus | ActionItemStatus | None = Field(
+        default=None,
+        description="decision: proposed/decided/rejected; action_item: open/in_progress/done/cancelled. "
+        "Null for other types or when not stated.",
+    )
+    confidence: float | None = Field(
+        default=None, description="0-1: how explicitly the text states this item (1.0 = stated directly)."
+    )
 
 
 class ExtractionResult(BaseModel):
     summary: str
-    entities: list[ExtractionEntity] = Field(default_factory=list)
+    entities: list[EntityContent] = Field(default_factory=list)
     relations: list[ExtractionRelation] = Field(default_factory=list)
     items: list[ExtractionItem] = Field(default_factory=list)
     topics: list[str] = Field(default_factory=list)

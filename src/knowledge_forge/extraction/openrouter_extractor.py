@@ -21,6 +21,7 @@ extraction/outcome.py - that part has no provider-specific shape to leak.
 """
 
 import asyncio
+import copy
 import logging
 import os
 
@@ -51,25 +52,33 @@ def _to_strict_json_schema(schema: dict) -> dict:
     its properties in `required` (truly-optional fields stay expressed as
     Pydantic already does, via a nullable `anyOf`, but must still be
     *listed* as required under strict mode) - Pydantic's own
-    `model_json_schema()` does neither. Walks `$defs` and the schema body
-    to patch every object node. Best-effort: this can't be verified against
-    a live OpenRouter-routed model in this environment (no API key here),
-    so it follows OpenAI's documented strict-mode shape but isn't
-    guaranteed correct against every model OpenRouter might route to.
+    `model_json_schema()` does neither. It also emits `title` on every node
+    and `default` on optional fields, which strict mode rejects (OpenAI
+    lists `default` as unsupported; vLLM-style guided decoding backends are
+    stricter still), so both are dropped - the defaults still apply when
+    `ExtractionResult` validates the response. Walks `$defs` and the schema
+    body; `properties`/`$defs` are maps of *names*, so a field literally
+    called "title" is never mistaken for the keyword. Returns a deep copy.
     """
 
     def _patch(node):
         if isinstance(node, dict):
+            node.pop("title", None)
+            node.pop("default", None)
             if node.get("type") == "object" and "properties" in node:
                 node["additionalProperties"] = False
                 node["required"] = list(node["properties"].keys())
-            for value in node.values():
-                _patch(value)
+            for key, value in node.items():
+                if key in ("properties", "$defs") and isinstance(value, dict):
+                    for sub in value.values():
+                        _patch(sub)
+                else:
+                    _patch(value)
         elif isinstance(node, list):
             for item in node:
                 _patch(item)
 
-    schema = dict(schema)
+    schema = copy.deepcopy(schema)
     _patch(schema)
     return schema
 

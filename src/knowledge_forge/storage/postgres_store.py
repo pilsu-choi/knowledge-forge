@@ -22,10 +22,12 @@ from knowledge_forge.config import settings
 from knowledge_forge.exceptions import EmbeddingError
 from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.document import Document
+from knowledge_forge.models.entity import Entity, EntityMention
 from knowledge_forge.models.knowledge_object import (
     DocumentRef,
     Evidence,
     KnowledgeObject,
+    validate_content,
 )
 from knowledge_forge.models.link import DocumentLink
 from knowledge_forge.models.relation import Relation
@@ -629,6 +631,10 @@ class PostgresStore:
         ]
 
     async def save_knowledge_objects(self, objects: list[KnowledgeObject]) -> None:
+        """`content` is checked against the object type's typed model
+        (models/knowledge_object.py::validate_content) before anything is
+        written - a malformed decision/action_item/event/entity raises
+        pydantic.ValidationError instead of landing as an arbitrary dict."""
         rows: list[tuple[Any, ...]] = [
             (
                 ko.knowledge_object_id,
@@ -637,11 +643,12 @@ class PostgresStore:
                 ko.document.document_id,
                 Jsonb([e.model_dump(mode="json") for e in ko.evidence]),
                 ko.summary,
-                Jsonb(ko.content),
+                Jsonb(validate_content(ko.type, ko.content)),
                 Jsonb(ko.topics),
                 ko.document_type,
                 ko.extracted_at,
                 ko.model_used,
+                ko.confidence,
                 ko.version,
                 ko.pipeline_version,
                 ko.source_hash,
@@ -656,9 +663,9 @@ class PostgresStore:
                 """
                 INSERT INTO knowledge_objects (knowledge_object_id, type, source_id, document_id,
                                                 evidence, summary, content, topics, document_type,
-                                                extracted_at, model_used, version, pipeline_version,
-                                                source_hash, supersedes)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                                extracted_at, model_used, confidence, version,
+                                                pipeline_version, source_hash, supersedes)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (knowledge_object_id) DO UPDATE SET
                     type = EXCLUDED.type,
                     source_id = EXCLUDED.source_id,
@@ -670,6 +677,7 @@ class PostgresStore:
                     document_type = EXCLUDED.document_type,
                     extracted_at = EXCLUDED.extracted_at,
                     model_used = EXCLUDED.model_used,
+                    confidence = EXCLUDED.confidence,
                     version = EXCLUDED.version,
                     pipeline_version = EXCLUDED.pipeline_version,
                     source_hash = EXCLUDED.source_hash,
@@ -714,11 +722,8 @@ class PostgresStore:
         SourceRef note on why those stay lightweight refs)."""
         async with self.conn.cursor() as cur:
             await cur.execute(
-                """
-                SELECT ko.knowledge_object_id, ko.type, ko.document_id, ko.evidence, ko.summary,
-                       ko.content, ko.topics, ko.document_type, ko.extracted_at, ko.model_used,
-                       ko.version, ko.pipeline_version, ko.source_hash, ko.supersedes,
-                       s.source_type, s.uri, s.project_id
+                f"""
+                SELECT {_KO_COLUMNS}
                 FROM knowledge_objects ko
                 JOIN sources s ON s.source_id = ko.source_id
                 WHERE ko.source_id = %s
@@ -731,26 +736,7 @@ class PostgresStore:
             )
             rows = await cur.fetchall()
 
-        return [
-            KnowledgeObject(
-                knowledge_object_id=row[0],
-                type=row[1],
-                source=SourceRef(source_id=source_id, source_type=row[14], uri=row[15], project_id=row[16]),
-                document=DocumentRef(document_id=row[2]),
-                evidence=[Evidence(**e) for e in row[3]],
-                summary=row[4],
-                content=row[5],
-                topics=row[6],
-                document_type=row[7],
-                extracted_at=row[8],
-                model_used=row[9],
-                version=row[10],
-                pipeline_version=row[11],
-                source_hash=row[12],
-                supersedes=row[13],
-            )
-            for row in rows
-        ]
+        return [_ko_from_row(row) for row in rows]
 
     async def list_knowledge_objects(
         self, source_id: str | None = None, type: str | None = None, limit: int = 50, offset: int = 0
@@ -762,11 +748,8 @@ class PostgresStore:
         filter without a second SQL string)."""
         async with self.conn.cursor() as cur:
             await cur.execute(
-                """
-                SELECT ko.knowledge_object_id, ko.type, ko.document_id, ko.evidence, ko.summary,
-                       ko.content, ko.topics, ko.document_type, ko.extracted_at, ko.model_used,
-                       ko.version, ko.pipeline_version, ko.source_hash, ko.supersedes,
-                       s.source_id, s.source_type, s.uri, s.project_id
+                f"""
+                SELECT {_KO_COLUMNS}
                 FROM knowledge_objects ko
                 JOIN sources s ON s.source_id = ko.source_id
                 WHERE (%s::text IS NULL OR ko.source_id = %s)
@@ -778,35 +761,13 @@ class PostgresStore:
             )
             rows = await cur.fetchall()
 
-        return [
-            KnowledgeObject(
-                knowledge_object_id=row[0],
-                type=row[1],
-                source=SourceRef(source_id=row[14], source_type=row[15], uri=row[16], project_id=row[17]),
-                document=DocumentRef(document_id=row[2]),
-                evidence=[Evidence(**e) for e in row[3]],
-                summary=row[4],
-                content=row[5],
-                topics=row[6],
-                document_type=row[7],
-                extracted_at=row[8],
-                model_used=row[9],
-                version=row[10],
-                pipeline_version=row[11],
-                source_hash=row[12],
-                supersedes=row[13],
-            )
-            for row in rows
-        ]
+        return [_ko_from_row(row) for row in rows]
 
     async def get_knowledge_object(self, knowledge_object_id: str) -> KnowledgeObject | None:
         async with self.conn.cursor() as cur:
             await cur.execute(
-                """
-                SELECT ko.knowledge_object_id, ko.type, ko.document_id, ko.evidence, ko.summary,
-                       ko.content, ko.topics, ko.document_type, ko.extracted_at, ko.model_used,
-                       ko.version, ko.pipeline_version, ko.source_hash, ko.supersedes,
-                       s.source_id, s.source_type, s.uri, s.project_id
+                f"""
+                SELECT {_KO_COLUMNS}
                 FROM knowledge_objects ko
                 JOIN sources s ON s.source_id = ko.source_id
                 WHERE ko.knowledge_object_id = %s
@@ -816,23 +777,7 @@ class PostgresStore:
             row = await cur.fetchone()
         if row is None:
             return None
-        return KnowledgeObject(
-            knowledge_object_id=row[0],
-            type=row[1],
-            source=SourceRef(source_id=row[14], source_type=row[15], uri=row[16], project_id=row[17]),
-            document=DocumentRef(document_id=row[2]),
-            evidence=[Evidence(**e) for e in row[3]],
-            summary=row[4],
-            content=row[5],
-            topics=row[6],
-            document_type=row[7],
-            extracted_at=row[8],
-            model_used=row[9],
-            version=row[10],
-            pipeline_version=row[11],
-            source_hash=row[12],
-            supersedes=row[13],
-        )
+        return _ko_from_row(row)
 
     async def list_relations(
         self,
@@ -903,6 +848,118 @@ class PostgresStore:
                 """,
                 rows,
             )
+
+    async def save_entities(self, entities: list[Entity], mentions: list[EntityMention]) -> None:
+        """Upserts resolved entities (entity_resolution.py) and their
+        mentions. On conflict an entity keeps its first `display_name` and
+        unions `aliases`, so resolving the same person in a later document
+        only adds the new surface forms. Mentions' objects must already be
+        saved (FK to knowledge_objects)."""
+        now = datetime.now(timezone.utc)
+        entity_rows = [
+            (e.entity_id, e.project_id, e.entity_type, e.name, e.display_name, Jsonb(e.aliases), now, now)
+            for e in entities
+        ]
+        project_by_entity = {e.entity_id: e.project_id for e in entities}
+        mention_rows = [
+            (
+                m.entity_id,
+                m.knowledge_object_id,
+                m.role.value,
+                m.surface_form,
+                Jsonb(m.evidence),
+                project_by_entity[m.entity_id],
+                now,
+            )
+            for m in mentions
+        ]
+        if not entity_rows:
+            return
+        async with self.conn.cursor() as cur:
+            await cur.executemany(
+                """
+                INSERT INTO entities (entity_id, project_id, entity_type, name, display_name, aliases,
+                                      created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (entity_id) DO UPDATE SET
+                    aliases = (
+                        SELECT jsonb_agg(alias ORDER BY first_seen)
+                        FROM (
+                            SELECT alias, min(ord) AS first_seen
+                            FROM jsonb_array_elements_text(entities.aliases || EXCLUDED.aliases)
+                                 WITH ORDINALITY AS a(alias, ord)
+                            GROUP BY alias
+                        ) merged
+                    ),
+                    updated_at = EXCLUDED.updated_at
+                """,
+                entity_rows,
+            )
+            if mention_rows:
+                await cur.executemany(
+                    """
+                    INSERT INTO entity_mentions (entity_id, knowledge_object_id, role, surface_form,
+                                                 evidence, project_id, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (entity_id, knowledge_object_id, role) DO UPDATE SET
+                        surface_form = EXCLUDED.surface_form,
+                        evidence = EXCLUDED.evidence
+                    """,
+                    mention_rows,
+                )
+
+    async def find_entities(
+        self, project_id: str, name: str, *, entity_type: str | None = None, limit: int = 10
+    ) -> list[Entity]:
+        """Exact lookup within one project: `name` is normalized the same
+        way resolution does (so "정민찬 팀장님" finds 정민찬), and an exact
+        alias match also counts. Never crosses `project_id`."""
+        from knowledge_forge.entity_resolution import clean_surface, normalize_entity_name, normalize_entity_type
+
+        types = [normalize_entity_type(entity_type)] if entity_type else ["person", "organization", ""]
+        keys = sorted({k for t in types if (k := normalize_entity_name(name, t))})
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT entity_id, project_id, entity_type, name, display_name, aliases
+                FROM entities
+                WHERE project_id = %(project)s
+                  AND (%(type)s::text IS NULL OR entity_type = %(type)s)
+                  AND (name = ANY(%(keys)s) OR aliases ? %(surface)s)
+                ORDER BY entity_type, name
+                LIMIT %(limit)s
+                """,
+                {
+                    "project": project_id,
+                    "type": normalize_entity_type(entity_type) if entity_type else None,
+                    "keys": keys,
+                    "surface": clean_surface(name),
+                    "limit": limit,
+                },
+            )
+            rows = await cur.fetchall()
+        return [
+            Entity(entity_id=r[0], project_id=r[1], entity_type=r[2], name=r[3], display_name=r[4], aliases=r[5])
+            for r in rows
+        ]
+
+    async def list_entity_mentions(self, entity_id: str, *, limit: int = 100) -> list[EntityMention]:
+        async with self.conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT entity_id, knowledge_object_id, role, surface_form, evidence
+                FROM entity_mentions
+                WHERE entity_id = %s
+                ORDER BY created_at, knowledge_object_id, role
+                LIMIT %s
+                """,
+                (entity_id, limit),
+            )
+            rows = await cur.fetchall()
+        return [
+            EntityMention(entity_id=r[0], knowledge_object_id=r[1], role=r[2], surface_form=r[3], evidence=r[4])
+            for r in rows
+        ]
 
     async def get_sync_cursor(self, source: str) -> dict[str, Any] | None:
         """Returns the persisted `Cursor.data` for `source` (e.g. "slack"),
@@ -1035,11 +1092,8 @@ class PostgresStore:
         forward progress instead of re-scanning the same head of the table."""
         async with self.conn.cursor() as cur:
             await cur.execute(
-                """
-                SELECT ko.knowledge_object_id, ko.type, ko.document_id, ko.evidence, ko.summary,
-                       ko.content, ko.topics, ko.document_type, ko.extracted_at, ko.model_used,
-                       ko.version, ko.pipeline_version, ko.source_hash, ko.supersedes,
-                       s.source_id, s.source_type, s.uri, s.project_id
+                f"""
+                SELECT {_KO_COLUMNS}
                 FROM knowledge_objects ko
                 JOIN sources s ON s.source_id = ko.source_id
                 LEFT JOIN knowledge_object_embeddings e
@@ -1053,26 +1107,7 @@ class PostgresStore:
             )
             rows = await cur.fetchall()
 
-        return [
-            KnowledgeObject(
-                knowledge_object_id=row[0],
-                type=row[1],
-                source=SourceRef(source_id=row[14], source_type=row[15], uri=row[16], project_id=row[17]),
-                document=DocumentRef(document_id=row[2]),
-                evidence=[Evidence(**e) for e in row[3]],
-                summary=row[4],
-                content=row[5],
-                topics=row[6],
-                document_type=row[7],
-                extracted_at=row[8],
-                model_used=row[9],
-                version=row[10],
-                pipeline_version=row[11],
-                source_hash=row[12],
-                supersedes=row[13],
-            )
-            for row in rows
-        ]
+        return [_ko_from_row(row) for row in rows]
 
     async def embedding_coverage(self, embedding_model: str, project_id: str | None = None) -> dict[str, Any]:
         """벡터 검색이 왜 0히트인지 사람이 30초 안에 판정하기 위한 읽기 전용 진단.
@@ -2041,6 +2076,35 @@ _MAX_QUERY_TOKENS = 8
 # exhaustive 질의의 limit이 200이라 곱하면 조회가 커지기 때문.
 _TITLE_TOKEN_OVERFETCH = 4
 _TITLE_TOKEN_MAX_FETCH = 200
+
+
+# Column order `_ko_from_row` reads - every KnowledgeObject read path selects
+# exactly this, joined to `sources s` for the SourceRef fields.
+_KO_COLUMNS = """ko.knowledge_object_id, ko.type, ko.document_id, ko.evidence, ko.summary,
+                       ko.content, ko.topics, ko.document_type, ko.extracted_at, ko.model_used,
+                       ko.version, ko.pipeline_version, ko.source_hash, ko.supersedes,
+                       s.source_id, s.source_type, s.uri, s.project_id, ko.confidence"""
+
+
+def _ko_from_row(row: tuple[Any, ...]) -> KnowledgeObject:
+    return KnowledgeObject(
+        knowledge_object_id=row[0],
+        type=row[1],
+        source=SourceRef(source_id=row[14], source_type=row[15], uri=row[16], project_id=row[17]),
+        document=DocumentRef(document_id=row[2]),
+        evidence=[Evidence(**e) for e in row[3]],
+        summary=row[4],
+        content=row[5],
+        topics=row[6],
+        document_type=row[7],
+        extracted_at=row[8],
+        model_used=row[9],
+        version=row[10],
+        pipeline_version=row[11],
+        source_hash=row[12],
+        supersedes=row[13],
+        confidence=row[18],
+    )
 
 
 def _like_pattern(text: str) -> str:

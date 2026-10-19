@@ -20,6 +20,7 @@ from knowledge_forge.context.registry import default_reconstructor_for
 from knowledge_forge.dedup import merge_duplicates
 from knowledge_forge.document_links import apply_version_metadata
 from knowledge_forge.embedding.base import EmbeddingProvider
+from knowledge_forge.entity_resolution import resolve_entities
 from knowledge_forge.exceptions import KnowledgeExtractionError
 from knowledge_forge.extraction.base import ExtractionOutcome, Extractor
 from knowledge_forge.extraction.grouping import group_chunks
@@ -369,6 +370,7 @@ async def run_pipeline(
             if store is not None:
                 await store.record_knowledge_objects(merged_outcome.objects)
                 await store.record_relations(merged_outcome.relations)
+                await store.record_entities(resolve_entities(merged_outcome.objects, merged_outcome.relations))
                 if embed_objects:
                     assert embedder is not None
                     try:

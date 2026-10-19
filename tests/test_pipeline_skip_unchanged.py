@@ -54,6 +54,9 @@ class _FakeUnchangedStore:
     async def record_relations(self, relations):
         self.calls.append("record_relations")
 
+    async def record_entities(self, resolution):
+        self.calls.append("record_entities")
+
     async def list_prior_knowledge_objects(self, source_id):
         return []
 
