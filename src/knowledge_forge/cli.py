@@ -634,6 +634,23 @@ def serve(
 
 
 @app.command()
+def mcp(
+    project_id: str = typer.Option(
+        ..., "--project-id", envvar="KF_MCP_PROJECT_ID", help="The one project every tool is pinned to."
+    ),
+) -> None:
+    """Run the read-only MCP server over stdio (lookup_entity/get_object/
+    neighbors/search, wiki/2026-10-19-mcp-server.md). The project is fixed
+    here, not per request - one server process serves one project."""
+    if not settings.database_url:
+        typer.echo("KF_DATABASE_URL이 설정되지 않았습니다 - MCP 서버는 Postgres가 필수입니다.", err=True)
+        raise typer.Exit(1)
+    from knowledge_forge.mcp_server import build_server
+
+    build_server(settings.database_url, project_id).run("stdio")
+
+
+@app.command()
 def worker(
     concurrency: int = typer.Option(4, "--concurrency", help="Number of concurrent Celery worker processes."),
     loglevel: str = typer.Option("info", "--loglevel", help="Celery worker log level."),

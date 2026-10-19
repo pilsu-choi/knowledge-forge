@@ -145,6 +145,9 @@ ALTER TABLE knowledge_objects ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISI
 CREATE INDEX IF NOT EXISTS idx_ko_type ON knowledge_objects(type);
 CREATE INDEX IF NOT EXISTS idx_ko_source_id ON knowledge_objects(source_id);
 CREATE INDEX IF NOT EXISTS idx_ko_document_id ON knowledge_objects(document_id);
+-- "Is this object superseded?" - the NOT EXISTS every current-claims-only
+-- read (graph walks, entity expansion) runs per candidate row.
+CREATE INDEX IF NOT EXISTS idx_ko_supersedes ON knowledge_objects(supersedes) WHERE supersedes IS NOT NULL;
 
 -- Relation: a typed edge between two KnowledgeObjects (models/relation.py).
 -- Graph-DB-shaped on purpose (see wiki/architecture.md "Layer 4") - a

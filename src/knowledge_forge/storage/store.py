@@ -182,6 +182,21 @@ class PipelineStore:
         다른 프로젝트)을 한 번에 보여준다. `PostgresStore.embedding_coverage` 참고."""
         return await self._db.embedding_coverage(embedding_model, project_id)
 
+    async def get_knowledge_object(
+        self, knowledge_object_id: str, *, project_id: str | None = None
+    ) -> KnowledgeObject | None:
+        return await self._db.get_knowledge_object(knowledge_object_id, project_id=project_id)
+
+    async def find_entities(self, project_id: str | None, name: str, *, entity_type: str | None = None, limit: int = 10):
+        return await self._db.find_entities(project_id, name, entity_type=entity_type, limit=limit)
+
+    async def list_entity_objects(self, entity_id: str, *, roles: list[str] | None = None, limit: int = 50):
+        return await self._db.list_entity_objects(entity_id, roles=roles, limit=limit)
+
+    async def neighbors(self, object_id: str, **kwargs: Any):
+        """search/graph.py's entry points (with the three above) - see `PostgresStore.neighbors`."""
+        return await self._db.neighbors(object_id, **kwargs)
+
     async def get_document(self, document_id: str) -> Document | None:
         return await self._db.get_document(document_id)
 

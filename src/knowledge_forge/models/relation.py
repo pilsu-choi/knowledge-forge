@@ -16,6 +16,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from knowledge_forge.models.knowledge_object import KnowledgeObject
+
 
 class RelationType(str, Enum):
     """Extensible relation vocabulary. Extraction currently produces a
@@ -30,6 +32,19 @@ class RelationType(str, Enum):
     REFERENCES = "references"  # cites another object/document
     SUPERSEDES = "supersedes"  # a re-extraction replacing a prior object
     DUPLICATE_OF = "duplicate_of"  # a near-duplicate merged into a canonical object
+
+
+# What a graph walk (PostgresStore.neighbors) follows by default. SUPERSEDES
+# and DUPLICATE_OF are bookkeeping between versions/copies of one claim, not
+# edges between different claims - following them only returns the same
+# statement again.
+TRAVERSAL_RELATION_TYPES = (
+    RelationType.MENTIONS,
+    RelationType.RELATED_TO,
+    RelationType.CAUSED_BY,
+    RelationType.DEPENDS_ON,
+    RelationType.REFERENCES,
+)
 
 
 class Relation(BaseModel):
@@ -53,3 +68,12 @@ class Relation(BaseModel):
     # grounded in a different (sub)set of chunks than either endpoint object.
     evidence: list[str] = Field(default_factory=list)
     created_at: datetime
+
+
+class Neighbor(BaseModel):
+    """One object a graph walk reached: how many hops out, and the edge that
+    first reached it (its `subject_id`/`object_id` say which way it points)."""
+
+    knowledge_object: KnowledgeObject
+    depth: int
+    relation: Relation

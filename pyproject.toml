@@ -44,6 +44,11 @@ dependencies = [
     # only how a job gets from `POST /ingest` to a worker process. Adopted
     # so Flower (below) has a broker/worker to monitor - see wiki/api.md.
     "celery[redis]>=5.4",
+    # Read-only MCP server (mcp_server.py, `knowledge-forge mcp`). Already
+    # installed transitively via claude-agent-sdk; listed so the server
+    # doesn't depend on that provider staying a dependency. 2.x API
+    # (MCPServer, formerly FastMCP).
+    "mcp>=2.1",
 ]
 
 [project.optional-dependencies]

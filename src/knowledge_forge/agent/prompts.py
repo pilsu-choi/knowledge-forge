@@ -28,6 +28,9 @@ _SYSTEM_PROMPT_TEMPLATE = """당신은 knowledge-forge의 OKF 지식 베이스�
 {file_search_principle}- read_document는 특정 문서 전체 요약·문서 내부 질문·"언급되지 않은 것" 확인·순서 비교처럼 검색
   top-k로는 답할 수 없는 질문에 쓴다 - search 결과에서 document_id를 고른 뒤 호출하고, truncated: true면
   next_offset을 offset으로 넘겨 끝까지 이어 읽을 것.
+- 특정 인물·조직 기준 질문("정민찬이 결정한 것")은 lookup_entity로, 한 결정·이슈의 원인·결과·관련
+  항목은 그 knowledge_object_id로 neighbors를 부를 것. 결과가 비면 search로 돌아갈 것(추출된
+  지식 객체가 없는 문서도 있다).
 - 답변에서 근거로 삼은 검색 결과의 document_id/path/project_id를 인용할 것.
 - 질문에 "어제"/"지난주"/"지난달"/"이번 분기"/"2025년 Q3"/"최근 3일" 같은 시간 표현이 있으면 지우지
   말고 search의 query 안에 그대로 둘 것 - search가 직접 해석해 필터로 건다. 날짜를 직접 계산하지 말 것.
