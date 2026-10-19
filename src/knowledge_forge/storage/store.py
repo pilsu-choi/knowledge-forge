@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from knowledge_forge.collectors.base import RawItem
+from knowledge_forge.config import settings
 from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.document import Document
 from knowledge_forge.models.knowledge_object import KnowledgeObject
@@ -83,7 +84,7 @@ class PipelineStore:
         from knowledge_forge.ids import content_hash
 
         texts = [build_embedding_text(ko) for ko in objects]
-        vectors = await embedder.embed(texts)
+        vectors = await embedder.embed([settings.embedding_passage_prefix + t for t in texts])
         records = [
             EmbeddingRecord(
                 target_kind="knowledge_object",
@@ -121,7 +122,7 @@ class PipelineStore:
         from knowledge_forge.ids import content_hash
 
         texts = [build_chunk_embedding_text(chunk) for chunk in chunks]
-        vectors = await embedder.embed(texts)
+        vectors = await embedder.embed([settings.embedding_passage_prefix + t for t in texts])
         records = [
             EmbeddingRecord(
                 target_kind="chunk",

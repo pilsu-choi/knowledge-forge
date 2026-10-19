@@ -117,5 +117,26 @@ services:
     ports:
       - "5555:5555"
 
+  # 로컬 GPU 임베딩 서버 (HuggingFace text-embeddings-inference, OpenAI 호환
+  # /v1/embeddings). 원격 임베딩은 호출마다 벡터가 흔들려 평가 재현성이 깨져서
+  # 온프렘으로 옮긴다 (wiki/embeddings.md). 89-* 태그는 Ada(RTX 40xx, sm_89)용.
+  # 쓰려면 KF_EMBEDDING_BASE_URL=http://localhost:18080/v1 (wiki/embeddings.md).
+  embedding:
+    profiles: ["gpu"]  # 옵트인: docker compose -p knowledge-forge --profile gpu up -d embedding
+    image: ghcr.io/huggingface/text-embeddings-inference:89-1.8
+    command: ["--model-id", "BAAI/bge-m3", "--dtype", "float16", "--max-client-batch-size", "2048"]
+    ports:
+      - "18080:80"
+    volumes:
+      - kf-embedding-cache:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
 volumes:
   kf-postgres-data:
+  kf-embedding-cache:

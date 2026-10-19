@@ -17,7 +17,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel
 
-from knowledge_forge.storage.postgres_store import _SCHEMA_PATH
+from knowledge_forge.storage.postgres_store import schema_sql
 
 
 class JobStatus(str, Enum):
@@ -88,7 +88,7 @@ class JobStore:
         # Same schema.sql as PostgresStore (CREATE TABLE IF NOT EXISTS
         # throughout) - safe to call from both without coordinating who
         # "owns" schema creation.
-        await self.conn.execute(_SCHEMA_PATH.read_text(encoding="utf-8"))
+        await self.conn.execute(schema_sql())
 
     async def enqueue(self, job_type: str, payload: dict, project_id: str = "default") -> Job:
         job_id = uuid.uuid4().hex

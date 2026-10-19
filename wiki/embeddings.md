@@ -379,3 +379,20 @@ psql "postgresql://kf:kf@localhost:15432/knowledge_forge" -c \
   `store`가 있어도 호출되지 않는지), `embedding_source="chunk"`면 추출 전에 청크만 임베딩하고
   KO는 임베딩하지 않는지, `extractor=None`이면 추출을 건너뛰고도 청크 저장/임베딩과 문서당 빈
   outcome yield가 되는지를 가짜 `EmbeddingProvider`/`PipelineStore`로 검증한다.
+
+## 로컬(온프렘) 임베딩 서버와 차원 설정
+
+`KF_EMBEDDING_BASE_URL`로 임의의 OpenAI 호환 임베딩 서버(TEI, vLLM)를 가리킬 수 있고, 로컬이면 키가
+필요 없다. compose에 `embedding` 서비스(HF text-embeddings-inference, `BAAI/bge-m3`, 포트 18080)가
+`profiles: [gpu]` 옵트인으로 정의돼 있다(`--profile gpu up -d embedding`).
+
+- `vector(N)`은 `KF_EMBEDDING_DIMENSIONS`를 따른다(`storage/schema.sql`의 자리표시자를
+  `postgres_store.schema_sql()`이 치환). 기존 DB와 차원이 다르면 `init_schema()`가 에러로 막고,
+  `knowledge-forge db migrate-embedding-dimensions`가 임베딩을 지운 뒤 컬럼과 HNSW 인덱스를 새 차원으로
+  바꾼다(이후 `embed`로 재적재).
+- `KF_EMBEDDING_QUERY_PREFIX`/`KF_EMBEDDING_PASSAGE_PREFIX`: 접두어가 필요한 모델용. 저장되는
+  `embedded_text`는 원문.
+- `KF_EMBEDDING_SOURCE` 기본값은 `chunk`.
+- 예비 측정(RTX 4070, fp16, bge-m3 1024차원): 단일 요청 20회 비트 동일, 그러나 배치 4개 이상은 같은
+  배치를 반복해도 ~1e-4 수준으로 비트가 달라짐(OpenAI보다 훨씬 작지만 완전 결정적이지 않음);
+  512개 x 약 275자 배치 441문장/초, 단일 질의 약 11ms. fp32 결정성은 GPU 회수로 미검증.
