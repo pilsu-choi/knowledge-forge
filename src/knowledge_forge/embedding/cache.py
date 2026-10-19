@@ -24,7 +24,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import OrderedDict
+from pathlib import Path
 
 
 class BoundedEmbeddingCache:
@@ -73,3 +76,34 @@ class BoundedEmbeddingCache:
 QUERY_EMBEDDING_CACHE_MAX_ENTRIES = 256
 
 query_embedding_cache = BoundedEmbeddingCache(QUERY_EMBEDDING_CACHE_MAX_ENTRIES)
+
+
+class PinnedEmbeddingCache(BoundedEmbeddingCache):
+    """파일에 저장되는 무제한 `(model, text) -> vector` 캐시 - 평가가 질의 임베딩을 고정·재생하는 데 쓴다.
+
+    원격 임베딩은 같은 문장에도 벡터가 조금씩 달라서(골든 562질의 두 번 실행에 137건 결과 차이) 작은
+    delta의 A/B가 노이즈에 묻힌다. 파일이 있으면 읽어 재생하고, 없는 텍스트만 원격에서 받아 `put`으로
+    쌓이며 `save()`가 파일에 되돌려 쓴다. 키에 모델이 있어 다른 모델의 벡터가 섞이지 않는다."""
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(max_entries=2**31)
+        self.path = path
+        if path.exists():
+            for e in json.loads(path.read_text(encoding="utf-8"))["entries"]:
+                self.put(e["model"], e["text"], e["embedding"])
+        self.loaded = len(self)
+
+    def save(self) -> str:
+        """파일에 쓰고 내용 sha256을 돌려준다(provenance용)."""
+        entries = [{"model": m, "text": t, "embedding": v} for (m, t), v in self._entries.items()]
+        data = json.dumps({"entries": entries}, ensure_ascii=False).encode("utf-8")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_bytes(data)
+        return hashlib.sha256(data).hexdigest()
+
+
+def install_query_embedding_cache(cache: BoundedEmbeddingCache) -> BoundedEmbeddingCache:
+    """`vector_search`가 쓰는 프로세스 전역 캐시를 `cache`로 바꾸고 이전 것을 돌려준다(복원용)."""
+    global query_embedding_cache
+    previous, query_embedding_cache = query_embedding_cache, cache
+    return previous
