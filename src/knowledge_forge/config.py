@@ -259,6 +259,17 @@ class Settings(BaseSettings):
     # tuning knob so much as a safety net against a model that keeps calling
     # tools without ever producing a final answer.
     agent_max_iterations: int = 8
+    # 오픈소스 모델 배포용 요청 파라미터(두 provider 공통). max_tokens는 답변과 (reasoning을
+    # 켠 경우) thinking이 함께 쓰는 예산이다. temperature/seed는 None이면 서버 기본값을 쓴다
+    # (seed는 Anthropic이 지원하지 않아 openai_compatible에서만 쓰인다).
+    agent_max_tokens: int = 4096
+    agent_temperature: float | None = None
+    agent_seed: int | None = None
+    agent_request_timeout_s: float = 120.0
+    # thinking 사용 여부(openai_compatible 전용). 기본 False = 끈다: 에이전트 턴마다 thinking을
+    # 돌리면 지연이 수 배가 되고 max_tokens를 먹는다. 끄는 방법은 서빙마다 달라서
+    # providers/openai_compatible.py::_reasoning_extra_body가 base_url로 고른다.
+    agent_reasoning: bool = False
     # 에이전트에게 노출할 **검색 도구 표면**(agent/tools.py::default_tools).
     #
     # "minimal"(기본): 검색 도구는 `search`(통합 검색, search/retrieve.py) +
