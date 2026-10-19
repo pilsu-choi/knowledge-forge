@@ -390,6 +390,22 @@ async def test_vector_hit_survives_rrf_next_to_a_lexical_only_hit(store):
     assert result.document_ids[0] == "test-vp-d2"
 
 
+async def test_arm_fusion_flag_gives_one_vote_per_source_family(store, monkeypatch):
+    """플래그를 켜면 융합이 문서 id 기준·계열당 1표가 되고 steps에 `arm_fusion`이 남는다.
+    꺼진 기본 실행에는 그 step이 없다."""
+    query = f'"롤백 절차" {_LEAVE_QUERY}'
+    off = await retrieve(query, store=store, project_id=_PROJECT, now=_NOW)
+    assert not any(s.strategy == "arm_fusion" for s in off.steps)
+
+    monkeypatch.setattr(settings, "search_arm_fusion", True)
+    on = await retrieve(query, store=store, project_id=_PROJECT, now=_NOW)
+    step = next(s for s in on.steps if s.strategy == "arm_fusion")
+    assert step.detail["votes"] == len(step.detail["arms"])
+    assert set(on.document_ids) >= {"test-vp-d1", "test-vp-d2"}
+    assert len(on.document_ids) == len(set(on.document_ids))
+    assert all("#" not in src for hit in on.hits for src in hit["retrieval_sources"])
+
+
 def store_hits(result, source: str) -> list[dict]:
     """소스 계열(`#` 앞 이름)로 거른다 - 질의·term별 리스트는 `lexical_search#<질의>`처럼 이름이 갈린다."""
     return [h for h in result.hits if any(s.split("#")[0] == source for s in h.get("retrieval_sources", []))]

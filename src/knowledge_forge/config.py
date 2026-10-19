@@ -184,6 +184,16 @@ class Settings(BaseSettings):
     # 0.0으로 두면 하한이 꺼지고 임베딩 채운 직후의 동작(ndcg 0.870)으로 돌아간다.
     vector_min_score: float = 0.45
 
+    # RRF 융합 단위(wiki/search-architecture.md "융합 단위"). False(기본)는 소스 리스트마다 한 표 -
+    # 어휘 쪽은 term fallback의 `lexical_search#<term>` 때문에 최대 10표, 벡터는 1표라 투표가
+    # 불균형하다. True는 소스 계열(document_search/lexical_search/vector_search...)당 1표로 묶고
+    # (계열 안 리스트들은 먼저 문서 id 기준 RRF로 한 순위표로 합친다) 문서 id 기준으로 융합한다.
+    search_arm_fusion: bool = False
+    # 규칙으로 뽑은 메타데이터 중 `source_type` 힌트를 하드 필터(교집합/`no_overlap_fallback_to_filter`)
+    # 대신 점수 부스트(RRF 한 표)로 쓴다. 작성자/참여자/시간/확장자/MIME 같은 명시적 구조 조건은
+    # 그대로 하드 필터다. 기본 False = 기존 동작.
+    search_metadata_soft_filter: bool = False
+
     embedding_enabled: bool = False
     # Which embedding backend embedding/factory.py builds (mirrors
     # llm_provider/get_extractor). "openrouter" talks to OpenRouter's

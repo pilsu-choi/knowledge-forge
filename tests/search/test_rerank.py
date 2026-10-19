@@ -1,4 +1,4 @@
-from knowledge_forge.search.rerank import DEFAULT_RRF_K, merge_and_rerank
+from knowledge_forge.search.rerank import DEFAULT_RRF_K, merge_and_rerank, merge_by_arm
 
 
 def test_merge_and_rerank_preserves_order_for_a_single_source():
@@ -107,3 +107,30 @@ def test_merge_and_rerank_dedups_chunk_grain_hits_by_chunk_id_without_merging_in
     assert sorted(chunk_hit["retrieval_sources"]) == ["plan_search", "vector_search"]
     ko_hit = next(hit for hit in result if hit.get("knowledge_object_id") == "ko1")
     assert ko_hit["retrieval_sources"] == ["vector_search"]
+
+
+def _doc(document_id, chunk_id=None):
+    return {"document_id": document_id, "chunk_id": chunk_id or f"c-{document_id}"}
+
+
+def test_merge_by_arm_gives_each_arm_one_vote_regardless_of_list_count():
+    # 어휘 arm이 term 리스트 3개를 내도 벡터와 같은 한 표다: 어휘 1위 L, 벡터 1위 V.
+    # 소스 리스트마다 투표하면 L이 3표를 받아 V를 이긴다.
+    sources = {
+        "lexical_search#a": [_doc("L"), _doc("X")],
+        "lexical_search#b": [_doc("L")],
+        "lexical_search#c": [_doc("L")],
+        "vector_search": [_doc("V"), _doc("X")],
+    }
+    per_list = [h["document_id"] for h in merge_and_rerank(sources)]
+    per_arm = merge_by_arm(sources)
+    assert per_list[0] == "L"
+    assert per_arm[0]["document_id"] == "X"  # 두 arm이 모두 찾은 문서가 위
+    assert {h["document_id"]: h["rerank_score"] for h in per_arm}["L"] == {h["document_id"]: h["rerank_score"] for h in per_arm}["V"]
+    assert per_arm[0]["retrieval_sources"] == ["lexical_search", "vector_search"]
+
+
+def test_merge_by_arm_folds_chunk_hits_of_one_document_into_one_hit():
+    result = merge_by_arm({"vector_search": [_doc("D", "c1"), _doc("D", "c2"), _doc("E")]})
+    assert [h["document_id"] for h in result] == ["D", "E"]
+    assert result[0]["rerank_score"] == 1.0 / (DEFAULT_RRF_K + 1)

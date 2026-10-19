@@ -28,7 +28,7 @@ from typing import Any
 DEFAULT_RRF_K = 60
 
 
-def _identity_key(source: str, hit: dict[str, Any]) -> Hashable:
+def _identity_key(source: str, hit: dict[str, Any], by_document: bool = False) -> Hashable:
     """The two sources use different identifier spaces - `vector_search`
     always has `knowledge_object_id` for KO-grain hits (and `chunk_id` for
     chunk-grain ones, `KF_EMBEDDING_SOURCE=chunk`), `file_search` only has
@@ -38,7 +38,11 @@ def _identity_key(source: str, hit: dict[str, Any]) -> Hashable:
     `vector_search` so it dedups within that source; anything else (a
     `file_search` resource hit, or a hit shape this module doesn't
     recognize) gets a source-scoped fallback key so it is never
-    accidentally merged with an unrelated hit from another source."""
+    accidentally merged with an unrelated hit from another source.
+
+    `by_document`면 `document_id`가 있는 히트는 그것으로 묶는다(청크/KO 단위 히트도 문서 하나로)."""
+    if by_document and hit.get("document_id"):
+        return ("doc", hit["document_id"])
     knowledge_object_id = hit.get("knowledge_object_id")
     if knowledge_object_id:
         return ("ko", knowledge_object_id)
@@ -51,7 +55,9 @@ def _identity_key(source: str, hit: dict[str, Any]) -> Hashable:
     return ("id", source, id(hit))
 
 
-def merge_and_rerank(results_by_source: dict[str, list[dict[str, Any]]], k: int = DEFAULT_RRF_K) -> list[dict[str, Any]]:
+def merge_and_rerank(
+    results_by_source: dict[str, list[dict[str, Any]]], k: int = DEFAULT_RRF_K, *, by_document: bool = False
+) -> list[dict[str, Any]]:
     """`results_by_source` is e.g. `{"file_search": [...], "vector_search":
     [...]}`, each list already ranked best-first by its own source. Returns
     one list, ranked by summed RRF score (`1/(k+rank)` per list a hit
@@ -73,7 +79,7 @@ def merge_and_rerank(results_by_source: dict[str, list[dict[str, Any]]], k: int 
 
     for source, hits in results_by_source.items():
         for rank, hit in enumerate(hits, start=1):
-            key = _identity_key(source, hit)
+            key = _identity_key(source, hit, by_document)
             if key not in merged:
                 merged[key] = {field: value for field, value in hit.items() if field != "retrieval_source"}
                 sources_seen[key] = []
@@ -94,3 +100,20 @@ def merge_and_rerank(results_by_source: dict[str, list[dict[str, Any]]], k: int 
         fused.append(hit)
     fused.sort(key=lambda h: -h["rerank_score"])
     return fused
+
+
+def source_arm(source: str) -> str:
+    """소스 이름의 계열 - `lexical_search#<term>`, `document_search#semantic`은 `#` 앞이 계열이다."""
+    return source.split("#", 1)[0]
+
+
+def merge_by_arm(results_by_source: dict[str, list[dict[str, Any]]], k: int = DEFAULT_RRF_K) -> list[dict[str, Any]]:
+    """소스 계열(arm)당 1표로 문서 id 기준 RRF를 한다. 계열 안의 리스트들(term별 fallback 등)은 먼저
+    문서 id 기준 RRF로 한 순위표가 되고(여러 term에 걸린 문서가 위로 온다), 그 순위표가 바깥 RRF의
+    한 표가 된다. 그래서 어휘 arm이 리스트를 몇 개 내든 벡터와 같은 한 표다. 반환된 히트의
+    `retrieval_sources`는 계열 이름이다."""
+    arms: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for source, hits in results_by_source.items():
+        arms.setdefault(source_arm(source), {})[source] = hits
+    ranked = {arm: merge_and_rerank(lists, k, by_document=True) for arm, lists in arms.items()}
+    return merge_and_rerank(ranked, k, by_document=True)

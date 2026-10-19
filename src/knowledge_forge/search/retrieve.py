@@ -67,7 +67,7 @@ from knowledge_forge.search.constraints import (
 )
 from knowledge_forge.search.document import read_document
 from knowledge_forge.search.planner import plan_and_search
-from knowledge_forge.search.rerank import DEFAULT_RRF_K, merge_and_rerank
+from knowledge_forge.search.rerank import DEFAULT_RRF_K, merge_and_rerank, merge_by_arm, source_arm
 from knowledge_forge.search.service import document_search, lexical_search, vector_search
 
 if TYPE_CHECKING:
@@ -103,6 +103,8 @@ STRATEGY_LINK_COHESION = "link_cohesion"
 STRATEGY_GRAIN_EXPANSION = "grain_expansion"
 # `_Run.relax_time_range`의 steps 이름 - 시간 범위를 풀고 후보 arm을 다시 돌렸다는 기록.
 STRATEGY_TIME_RANGE_RELAXED = "time_range_relaxed"
+# `_Run.merge`의 steps 이름 - `settings.search_arm_fusion`이 켜졌을 때 융합 단위를 남긴다.
+STRATEGY_ARM_FUSION = "arm_fusion"
 
 # exhaustive/negative/count에서 "전부"를 대신하는 상한 - top-k 절단은 없애되 한 질의가 테이블
 # 전체를 끌어오지는 못하게(`search/sql.py::DEFAULT_MAX_ROWS`와 같은 200).
@@ -1322,7 +1324,14 @@ class _Run:
         **필터는 관련도 랭킹을 좁히는 도구지 대체하는 도구가 아니다.** 아래 분기들은 전부 그
         원칙과, "이 필터를 얼마나 믿을 수 있나"(`_is_source_hint_only_filter`)의 조합이다."""
         candidate_sources = {k: _with_document_id(v) for k, v in self.results_by_source.items() if v}
-        merged = merge_and_rerank(candidate_sources)
+        if settings.search_arm_fusion:
+            merged = merge_by_arm(candidate_sources)
+            arms: dict[str, list[str]] = {}
+            for source in candidate_sources:
+                arms.setdefault(source_arm(source), []).append(source)
+            self.step(STRATEGY_ARM_FUSION, "rrf", len(merged), votes=len(arms), arms=arms)
+        else:
+            merged = merge_and_rerank(candidate_sources)
         # 링크 응집도는 **필터/anchor 앞**이다. 이 단계는 후보 집합을 바꾸지 않고 순서만
         # 바꾸므로 아래 교집합(`filter_ids`)의 결과 집합은 그대로고, anchor 고정은 어차피
         # 순서와 무관하게 맨 앞으로 옮기는 partition이라 영향을 받지 않는다.
