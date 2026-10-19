@@ -105,6 +105,8 @@ STRATEGY_GRAIN_EXPANSION = "grain_expansion"
 STRATEGY_TIME_RANGE_RELAXED = "time_range_relaxed"
 # `_Run.merge`의 steps 이름 - `settings.search_arm_fusion`이 켜졌을 때 융합 단위를 남긴다.
 STRATEGY_ARM_FUSION = "arm_fusion"
+# `settings.search_metadata_soft_filter`가 켜졌을 때 `source_type` 힌트가 점수 부스트로 들어간 기록.
+STRATEGY_METADATA_BOOST = "metadata_boost"
 
 # exhaustive/negative/count에서 "전부"를 대신하는 상한 - top-k 절단은 없애되 한 질의가 테이블
 # 전체를 끌어오지는 못하게(`search/sql.py::DEFAULT_MAX_ROWS`와 같은 200).
@@ -350,7 +352,31 @@ def _narrow_to_anchor(hits: list[dict[str, Any]], anchor: str | None) -> tuple[l
 # --- metadata_filter SQL ----------------------------------------------------------
 
 
-def _metadata_filter_where(constraints: QueryConstraints, project_id: str | None) -> list[str]:
+def _hint_source_types(constraints: QueryConstraints) -> list[str]:
+    """`source_type` 힌트 - `source_types`와 소스로 매핑되는 `document_types`("메일" → gmail)."""
+    source_types = list(constraints.source_types)
+    for label in constraints.document_types:
+        mapped = _DOCUMENT_TYPE_AS_SOURCE.get(label)
+        if mapped and mapped not in source_types:
+            source_types.append(mapped)
+    return source_types
+
+
+def _has_structural_predicate(constraints: QueryConstraints) -> bool:
+    """질의가 **명시한** 구조 조건이 있는가(작성자/참여자/시간/확장자/MIME). `source_type` 힌트는 표면 어휘로
+    찍은 추측이라 여기 없다 - `search_metadata_soft_filter`가 켜지면 이쪽만 하드 필터가 된다."""
+    return bool(
+        constraints.authors
+        or constraints.participants
+        or constraints.time_range is not None
+        or constraints.file_extensions
+        or constraints.mime_types
+    )
+
+
+def _metadata_filter_where(
+    constraints: QueryConstraints, project_id: str | None, *, source_hint: bool = True, structural: bool = True
+) -> list[str]:
     """`sources`/`documents`에 거는 WHERE 조건 목록(AND). 어느 키를 보는지는 개발 DB의 실제
     `sources.metadata` 모양에서 정했다: gmail은 `participants`(["이름 <주소>", ...])/`subject`,
     slack은 `participants`(user id 배열)/`channel`, google_drive는 `name`뿐이다. 작성자/참여자는
@@ -362,13 +388,11 @@ def _metadata_filter_where(constraints: QueryConstraints, project_id: str | None
     if project_id:
         where.append(f"d.project_id = {_sql_literal(project_id)}")
 
-    source_types = list(constraints.source_types)
-    for label in constraints.document_types:
-        mapped = _DOCUMENT_TYPE_AS_SOURCE.get(label)
-        if mapped and mapped not in source_types:
-            source_types.append(mapped)
-    if source_types:
+    source_types = _hint_source_types(constraints)
+    if source_types and source_hint:
         where.append("s.source_type IN (" + ", ".join(_sql_literal(t) for t in source_types) + ")")
+    if not structural:
+        return where
 
     # 파일 종류. Drive 소스만 `name`을 들고 있으므로 다른 소스 타입은 이 술어에 절대 안 걸린다 -
     # 그건 의도다("xlsx 파일"을 물으면 슬랙 스레드는 답이 아니다).
@@ -662,6 +686,9 @@ class _Run:
         self.filter_hits: list[dict[str, Any]] = []
         self.filter_where: list[str] = []
         self.filter_step: RetrievalStep | None = None
+        # soft 모드(`search_metadata_soft_filter`)의 `source_type` 힌트 집합 - 교집합이 아니라 부스트에만 쓴다.
+        self.soft_ids: set[str] = set()
+        self.soft_hits: list[dict[str, Any]] = []
         self.documents_read: list[str] = []
         self.predicted_count: int | None = None
         self.time_range_relaxed = False
@@ -874,19 +901,30 @@ class _Run:
                 )
 
             return skip
-        where = _metadata_filter_where(self.c, self.project_id)
+        soft = settings.search_metadata_soft_filter
+        hints = _hint_source_types(self.c)
+        # soft 모드: 하드 필터는 명시적 구조 조건만, source_type 힌트는 따로 조회해 부스트 집합으로 쓴다.
+        hard = _has_structural_predicate(self.c) or not soft
+        where = _metadata_filter_where(self.c, self.project_id, source_hint=not soft) if hard else []
         sql = _metadata_filter_sql(where)
-        rows, _columns = await self.store.execute_readonly_query(sql, _FILTER_MAX_ROWS)
+        soft_where = _metadata_filter_where(self.c, self.project_id, structural=False) if soft and hints else []
+        soft_sql = _metadata_filter_sql(soft_where)
+        rows, _columns = await self.store.execute_readonly_query(sql, _FILTER_MAX_ROWS) if hard else ([], [])
+        soft_rows, _ = await self.store.execute_readonly_query(soft_sql, _FILTER_MAX_ROWS) if soft_where else ([], [])
 
         async def apply() -> None:
-            self.filter_where = where
-            self.filter_hits = [_filter_row_to_hit(row) for row in rows]
-            self.filter_ids = {hit["document_id"] for hit in self.filter_hits}
+            if hard:
+                self.filter_where = where
+                self.filter_hits = [_filter_row_to_hit(row) for row in rows]
+                self.filter_ids = {hit["document_id"] for hit in self.filter_hits}
+            if soft_where:
+                self.soft_hits = [_filter_row_to_hit(row) for row in soft_rows]
+                self.soft_ids = {hit["document_id"] for hit in self.soft_hits}
             self.filter_step = self.step(
                 STRATEGY_METADATA_FILTER,
                 SOURCE_SQL_SEARCH,
-                len(self.filter_hits),
-                sql=sql,
+                len(self.filter_hits) if hard else len(self.soft_hits),
+                sql=sql if hard else soft_sql,
                 filters={
                     "authors": self.c.authors,
                     "participants": self.c.participants,
@@ -895,7 +933,8 @@ class _Run:
                     "since": _iso(self.since),
                     "until": _iso(self.until),
                 },
-                truncated=len(rows) >= _FILTER_MAX_ROWS,
+                truncated=max(len(rows), len(soft_rows)) >= _FILTER_MAX_ROWS,
+                **({"mode": "soft", "hard": hard, "soft_hint": hints} if soft else {}),
             )
 
         return apply
@@ -1318,6 +1357,29 @@ class _Run:
             ],
         )
 
+    def boost_source_hint(self, merged: list[dict[str, Any]]) -> None:
+        """`source_type` 힌트에 맞는 **이미 후보인** 문서를 RRF 한 표(`1/(k+rank)`, 현재 순위 순)로 올린다 -
+        후보를 자르거나 새로 데려오지 않는다(`link_cohesion`과 같은 형태). 힌트가 틀려도 정답은 순위만 조금 밀린다."""
+        ranked_documents, _ = _dedupe_documents(merged)
+        voted = [d for d in ranked_documents if d in self.soft_ids]
+        if not voted:
+            return
+        boost = {d: 1.0 / (DEFAULT_RRF_K + rank) for rank, d in enumerate(voted, start=1)}
+        for hit in merged:
+            delta = boost.get(hit["document_id"])
+            if delta is not None:
+                hit["rerank_score"] = float(hit.get("rerank_score") or 0.0) + delta
+                hit.setdefault("retrieval_sources", []).append(SOURCE_SQL_SEARCH)
+        merged.sort(key=lambda hit: -float(hit.get("rerank_score") or 0.0))
+        after, _ = _dedupe_documents(merged)
+        self.step(
+            STRATEGY_METADATA_BOOST,
+            SOURCE_SQL_SEARCH,
+            len(voted),
+            source_types=_hint_source_types(self.c),
+            promoted=sum(1 for d in voted if after.index(d) < ranked_documents.index(d)),
+        )
+
     async def merge(self) -> list[dict[str, Any]]:
         """관련도 랭킹(`merged`)에 메타데이터 필터(`filter_ids`)를 겹쳐 최종 순위를 만든다.
 
@@ -1337,8 +1399,17 @@ class _Run:
         # 순서와 무관하게 맨 앞으로 옮기는 partition이라 영향을 받지 않는다.
         if merged:
             await self.link_cohesion(merged)
+            if self.soft_ids:
+                self.boost_source_hint(merged)
 
         filter_note: str | None = None
+        if self.filter_ids is None and self.soft_ids:
+            filter_note = "source_hint_boosted"
+            if not candidate_sources:
+                # 질의에 내용어가 없고 힌트뿐이면 후보가 비므로 힌트 집합을 그대로 답으로 쓴다(`filter_only`와 같은
+                # 안전망). 이름을 나눈 이유: `count()`는 `filter_only`에서 `filter_where`로 세는데 여기는 그 WHERE가 없다.
+                merged = merge_and_rerank({SOURCE_SQL_SEARCH: self.soft_hits})
+                filter_note = "source_hint_only"
         if self.filter_ids is not None:
             if not self.filter_ids:
                 filter_note = "filter_empty_ignored"

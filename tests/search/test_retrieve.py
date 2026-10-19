@@ -587,6 +587,40 @@ async def test_source_type_hint_alone_never_hard_filters_the_relevance_ranking(m
     assert result.document_ids == ["mail1", "fd"]
 
 
+async def test_soft_filter_mode_turns_a_source_hint_into_a_boost_not_a_cut(monkeypatch):
+    """`search_metadata_soft_filter`: source_type 힌트는 후보를 자르지 않고 힌트에 맞는 후보(fd)를 RRF 한 표로
+    올린다. 힌트에 안 맞는 mail1은 결과에 그대로 남는다. 기본(off)은 위 테스트가 못 박은 대로 순위를 안 건드린다."""
+    from knowledge_forge.config import settings
+
+    monkeypatch.setattr(settings, "search_metadata_soft_filter", True)
+    store = _FakeStore(filter_rows=[_filter_row("fd", datetime(2026, 9, 1, tzinfo=timezone.utc))])
+    _patch_vector(monkeypatch, [_chunk_hit("mail1", "c1", 0.9), _chunk_hit("fd", "c2", 0.5)])
+
+    result = await retrieve("Google Drive 폴더 공유 시 부여할 수 있는 역할", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.strategy == "metadata_filter")
+    assert step.detail["mode"] == "soft" and step.detail["hard"] is False
+    assert step.detail["applied"] == "source_hint_boosted"
+    boost = next(s for s in result.steps if s.strategy == "metadata_boost")
+    assert boost.n_hits == 1 and boost.detail["promoted"] == 1
+    assert result.document_ids == ["fd", "mail1"]
+
+
+async def test_soft_filter_mode_keeps_structural_predicates_as_hard_filters(monkeypatch):
+    from knowledge_forge.config import settings
+
+    monkeypatch.setattr(settings, "search_metadata_soft_filter", True)
+    store = _FakeStore(filter_rows=[_filter_row("mail1", datetime(2026, 9, 1, tzinfo=timezone.utc))])
+    _patch_vector(monkeypatch, [_chunk_hit("noise", "c1", 0.9)])
+
+    result = await retrieve("nonghyup.com 도메인 발신자가 보낸 메일", store=store, now=_NOW)
+
+    step = next(s for s in result.steps if s.strategy == "metadata_filter")
+    assert step.detail["hard"] is True
+    assert step.detail["applied"] == "no_overlap_fallback_to_filter"
+    assert "source_type IN" not in step.detail["sql"]
+
+
 async def test_no_overlap_still_falls_back_to_a_filter_with_structural_predicates(monkeypatch):
     """반대로 작성자/참여자/시간 같은 **구조적 술어**가 든 필터는 교집합 0에서도 믿는다.
 

@@ -36,3 +36,21 @@ sources:
 
 `retrieval_sources`는 계열 이름이 된다. 09-15의 "문서 합의 보너스 기각"은 투표 불균형이 남은 채로 잰
 것이라, 이 플래그로 다시 잴 수 있다.
+
+## S5: 메타데이터 하드 필터 강등
+
+기존에는 규칙이 뽑은 `source_type` 힌트가 WHERE에 들어가 교집합으로 후보를 자르거나(`intersected`),
+교집합이 0이면 필터 집합으로 통째로 대체했다(`no_overlap_fallback_to_filter`). 켜면
+(`KF_SEARCH_METADATA_SOFT_FILTER`) 둘로 나눈다.
+
+- **하드**: 질의가 명시한 구조 조건 - 작성자/참여자, 시간 범위, 파일 확장자·MIME. 동작은 기존과 같다
+  (교집합, 교집합 0이면 필터 집합). 이때 WHERE에서 `source_type` 술어는 빠진다.
+- **소프트**: `source_type` 힌트(`document_types`의 "메일" 매핑 포함). 힌트만 따로 한 번 조회해 얻은 문서
+  집합을, **이미 후보인** 문서에 한해 RRF 한 표로 얹는다(`link_cohesion`과 같은 방식). 후보를 자르거나
+  새로 데려오지 않는다. `steps`에 `metadata_boost`(올라간 문서 수 `promoted`)가 남고
+  `metadata_filter.applied`는 `source_hint_boosted`다. 후보가 아예 없고 힌트뿐이면 힌트 집합이 답이다
+  (`source_hint_only`, `filter_only`와 이름을 나눈 이유는 `count()`가 그 이름으로 SQL COUNT를 고르기 때문).
+
+따옴표 구절·식별자는 metadata_filter가 아니라 `lexical` 전략이 이미 다루므로 여기서 하드 필터가 아니다.
+이 플래그는 "파일명 질의는 `semantic_query`가 비어 벡터 arm이 안 돈다"를 고치지 않는다(보류 중인
+`9aa9d8f`는 리랭커 뒤 재측정).
