@@ -65,6 +65,35 @@ export할 필요 없이 `.env`에 값을 채워 넣으면 된다. 템플릿은 [
 | `KF_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API 엔드포인트 |
 | `OPENROUTER_API_KEY` | (없음) | OpenRouter API 키(`KF_` 접두사 아님, `ANTHROPIC_API_KEY`처럼 `Settings`에 중복 저장하지 않음) |
 
+### 에이전트를 오픈소스 모델로 돌리기
+
+`knowledge-forge agent`는 OpenAI 호환 엔드포인트로 Qwen3.8-27B 같은 오픈소스 모델을 붙일 수 있다.
+thinking은 기본으로 끈다(`KF_AGENT_REASONING=false`). 답변은 토큰 단위로 흘려 출력되고 첫 토큰까지
+시간(TTFT)이 stderr에 찍힌다. base_url이 localhost/사설망이면 API 키 사전검사를 건너뛰고,
+`KF_OKF_DIR`이 없으면 파일시스템 도구만 빠진다. 배경은 [`2026-10-19-agent-oss-runtime.md`](2026-10-19-agent-oss-runtime.md).
+
+```bash
+# (a) OpenRouter
+export KF_AGENT_PROVIDER=openai_compatible
+export KF_AGENT_OPENAI_COMPATIBLE_MODEL=qwen/qwen3.8-27b
+export KF_AGENT_OPENAI_COMPATIBLE_BASE_URL=https://openrouter.ai/api/v1
+export OPENROUTER_API_KEY=sk-or-...
+
+# (b) 온프렘 vLLM (vllm serve Qwen/Qwen3.8-27B --enable-auto-tool-choice --tool-call-parser hermes)
+export KF_AGENT_PROVIDER=openai_compatible
+export KF_AGENT_OPENAI_COMPATIBLE_MODEL=Qwen/Qwen3.8-27B
+export KF_AGENT_OPENAI_COMPATIBLE_BASE_URL=http://localhost:8000/v1
+
+uv run knowledge-forge agent "질문"
+```
+
+| 환경변수 | 기본값 | 설명 |
+|---|---|---|
+| `KF_AGENT_REASONING` | `false` | thinking 사용 여부. OpenRouter는 `reasoning.enabled`, 그 밖의 서버는 `chat_template_kwargs.enable_thinking`을 보낸다(api.openai.com은 아무것도 안 보냄) |
+| `KF_AGENT_MAX_TOKENS` | `4096` | 응답당 최대 토큰(답변 + thinking). 도구 호출이 이 한도에 잘리면 "잘림"으로 보고된다 |
+| `KF_AGENT_TEMPERATURE` / `KF_AGENT_SEED` | (서버 기본) | 샘플링 온도 / 시드(seed는 openai_compatible만) |
+| `KF_AGENT_REQUEST_TIMEOUT_S` | `120` | 요청 타임아웃(초) |
+
 SaaS 커넥터(Slack/Gmail/Google Drive/Notion) 자격 증명용 `KF_*` 변수는 별도 표로
 ["SaaS 커넥터 사용하기"](#saas-커넥터-사용하기) 절에 정리되어 있다.
 

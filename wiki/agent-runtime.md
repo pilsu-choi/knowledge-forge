@@ -242,6 +242,14 @@ TodoWrite와 같은 설계: 호출할 때마다 `PlanState.steps` 전체를 통�
 `extraction/claude_extractor.py`/`extraction/openrouter_extractor.py`의 클라이언트 생성·재시도
 (`anthropic_retry`/`openai_retry`, `retry.py`)·에러 래핑 패턴을 그대로 따른다.
 
+스트리밍은 `ChatProvider.send_stream(..., on_text)`가 맡는다(기본 구현은 `send` 결과를 한 번에 흘림,
+Anthropic·OpenAI-호환은 실제 스트림). `run_agent(on_text=...)`가 이를 쓰고, `agent` CLI가 토큰을
+흘려 출력하며 TTFT를 stderr에 남긴다(`AssistantTurn.ttft_s`는 로그용). 도구 호출 앞의 텍스트도
+흘러나온다 - 최종 턴인지는 끝나야 알 수 있기 때문이다. reasoning은 `AssistantTurn.reasoning`/
+`Message.reasoning`으로 실려 `KF_AGENT_REASONING=true`일 때만 다음 요청에 되돌려 보낸다. 본문 없이
+reasoning만 있는 최종 턴은 빈 답 대신 `AgentError`다. 자세한 내용은
+[`2026-10-19-agent-oss-runtime.md`](2026-10-19-agent-oss-runtime.md).
+
 **지연 절감 4종 (`wiki/improvement-plan-2026-09-15.md` L1/L3/R3/R8)**:
 
 - **첫 턴 search 선실행(L1, `KF_AGENT_PREFETCH_SEARCH`, 기본 `true`)**: 실측상 첫 턴 150회 중 136회가
@@ -270,7 +278,9 @@ TodoWrite와 같은 설계: 호출할 때마다 `PlanState.steps` 전체를 통�
 ## 설정 (config.py, `.env.example`)
 
 `KF_AGENT_PROVIDER`(anthropic 기본) / `KF_AGENT_MODEL` / `KF_AGENT_OPENAI_COMPATIBLE_MODEL` /
-`KF_AGENT_OPENAI_COMPATIBLE_BASE_URL` / `KF_AGENT_MAX_ITERATIONS` / `KF_AGENT_PREFETCH_SEARCH`(기본 true) /
+`KF_AGENT_OPENAI_COMPATIBLE_BASE_URL` / `KF_AGENT_MAX_ITERATIONS` /
+`KF_AGENT_MAX_TOKENS` / `KF_AGENT_TEMPERATURE` / `KF_AGENT_SEED` / `KF_AGENT_REQUEST_TIMEOUT_S` /
+`KF_AGENT_REASONING` / `KF_AGENT_PREFETCH_SEARCH`(기본 true) /
 `KF_AGENT_CONTEXT_COMPACTION_ENABLED` / `KF_AGENT_CONTEXT_COMPACTION_MAX_TOKENS` /
 `KF_AGENT_CONTEXT_COMPACTION_PROTECT_TAIL`(`agent/compaction.py` 참고) / `KF_AGENT_MEMORY_DIR`
 (`agent/memory.py` 참고). `llm_provider`(Knowledge Extraction용)와 별도 키로 뒀다 - 두 관심사가 다른
@@ -477,7 +487,7 @@ harness 전체가 이미 전제하는 "접근 제어 없음, 로컬/단일 사�
 
 ## 알려진 제약
 
-- 스트리밍 미지원 - 한 턴이 끝나야 출력.
+- 스트리밍은 CLI `agent`만 쓴다(`run_agent(on_text=)`) - API/UI 경로는 아직 한 턴이 끝나야 출력.
 - 도구 호출이 여러 개 와도 순차 실행 - 지연 시간만 손해(FileSystem 쓰기 도구가 추가된 뒤에도 동일한
   단일 세션 실행 전제라 동시 쓰기 경합은 없음).
 - failover 없음 - 선택한 프로바이더가 실패하면 그대로 에러.

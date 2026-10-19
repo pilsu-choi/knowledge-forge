@@ -49,6 +49,10 @@ uv run knowledge-forge extract <path> --pretty
 | `CLAUDE_CODE_OAUTH_TOKEN` | (없음) | `claude setup-token`으로 발급하는 장기 OAuth 토큰. `KF_` 접두사가 아님 — `claude` CLI가 직접 읽는 표준 환경변수라 여기서 중복 관리하지 않는다. headless/CI 환경에서 브라우저 로그인 대신 사용 |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` | (없음) | `claude` CLI 자체가 인식하는 표준 자격 증명 — 이미 로그인돼 있지 않아도 이 경로로 동작한다 |
 
+에이전트(`KF_AGENT_PROVIDER=openai_compatible`)를 OpenRouter의 `qwen/qwen3.8-27b`나 로컬 vLLM에 붙이는
+방법과 thinking 토글(`KF_AGENT_REASONING`)은 [`dev-guide.md`](dev-guide.md#에이전트를-오픈소스-모델로-돌리기)와
+[`2026-10-19-agent-oss-runtime.md`](2026-10-19-agent-oss-runtime.md)에 있다.
+
 `--model` CLI 옵션(`extract`/`schedule`)은 기본값이 `None`으로 바뀌어, 지정하지 않으면
 활성 프로바이더 자신의 기본 모델을 쓴다(Anthropic이면 `claude-opus-5`, OpenRouter면
 `KF_OPENROUTER_EXTRACTION_MODEL`) — 프로바이더와 무관하게 항상 Anthropic 모델명이 기본값으로

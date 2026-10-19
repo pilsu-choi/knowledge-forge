@@ -9,6 +9,8 @@ path - both call the exact same `run_agent`, per wiki/agent-runtime.md's
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from knowledge_forge.agent.loop import run_agent
 from knowledge_forge.agent.memory import read_memory
 from knowledge_forge.agent.plan import PlanState
@@ -24,13 +26,17 @@ async def run_query(
     project_id: str | None = None,
     provider: str | None = None,
     model: str | None = None,
+    on_text: Callable[[str], None] | None = None,
 ) -> str:
-    """One-shot: ask a single question, get the answer - no retained history."""
+    """One-shot: ask a single question, get the answer - no retained history.
+    `on_text`를 주면 답변 텍스트를 도착하는 대로 흘린다(스트리밍)."""
     chat_provider = get_chat_provider(provider=provider, model=model)
     system = build_system_prompt(project_id=project_id, memory=read_memory(project_id))
     tools = default_tools(project_id=project_id, provider=chat_provider, system=system)
     try:
-        answer, _ = await run_agent(question, tools, system, chat_provider, max_iterations=settings.agent_max_iterations)
+        answer, _ = await run_agent(
+            question, tools, system, chat_provider, max_iterations=settings.agent_max_iterations, on_text=on_text
+        )
     finally:
         await tools.aclose()
     return answer
@@ -64,7 +70,7 @@ class AgentSession:
         answer and message history."""
         return self._plan_state
 
-    async def ask(self, question: str) -> str:
+    async def ask(self, question: str, on_text: Callable[[str], None] | None = None) -> str:
         answer, self._history = await run_agent(
             question,
             self._tools,
@@ -72,6 +78,7 @@ class AgentSession:
             self._provider,
             max_iterations=settings.agent_max_iterations,
             history=self._history,
+            on_text=on_text,
         )
         return answer
 

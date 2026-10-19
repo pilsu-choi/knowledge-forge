@@ -37,6 +37,7 @@ import asyncio
 import json
 import logging
 import re
+from collections.abc import Callable
 
 # `agent/providers/openai_compatible.py`가 도구 호출 인자 JSON 파싱에 실패했을 때, 예외를
 # 올려 `run_agent` 전체를 죽이는 대신 `ToolCall.arguments`에 이 키 하나만 든 dict를 담아
@@ -177,16 +178,40 @@ def _finalize(turn: AssistantTurn, messages: list[Message]) -> str:
     caller - human reader, parent agent - sees it without having
     to opt in. The transcript keeps the model's raw text, since that is what
     the model actually said."""
-    messages.append(Message(role="assistant", content=turn.text))
+    messages.append(Message(role="assistant", content=turn.text, reasoning=turn.reasoning))
     text = turn.text or ""
+    if not text.strip():
+        # 빈 문자열을 정답으로 돌려주지 않는다 - thinking만 쓰다 max_tokens에 걸렸거나(reasoning이
+        # 있다) 모델이 아무것도 안 낸 경우다.
+        cause = "thinking만 있고 답변 텍스트가 없다" if turn.reasoning else "답변 텍스트가 비어 있다"
+        raise AgentError(
+            f"모델이 빈 답변을 냈다: {cause} (stop_reason={turn.stop_reason}) - KF_AGENT_MAX_TOKENS/KF_AGENT_REASONING 확인"
+        )
     if turn.stop_reason == "max_tokens":
         logger.warning("answer truncated by the provider's max_tokens - returning it marked as incomplete")
         return text + _TRUNCATED_ANSWER_NOTE
     return text
 
 
+async def _send(
+    provider: ChatProvider,
+    messages: list[Message],
+    tools: list[ToolSpec],
+    system: str,
+    on_text: Callable[[str], None] | None,
+) -> AssistantTurn:
+    """`on_text`가 있으면 스트리밍 경로(`send_stream`), 없으면 기존 `send`."""
+    if on_text is None:
+        return await provider.send(messages, tools, system)
+    return await provider.send_stream(messages, tools, system, on_text)
+
+
 async def _forced_final_turn(
-    messages: list[Message], system: str, provider: ChatProvider, max_iterations: int
+    messages: list[Message],
+    system: str,
+    provider: ChatProvider,
+    max_iterations: int,
+    on_text: Callable[[str], None] | None = None,
 ) -> tuple[str, list[Message]]:
     """Last resort when `max_iterations` tool-call round trips are used up:
     ask once more with NO tools, so the only thing left for the model to do
@@ -199,7 +224,7 @@ async def _forced_final_turn(
     logger.warning("tool-call loop hit max_iterations=%d - forcing a final answer with no tools", max_iterations)
     messages.append(Message(role="user", content=_TOOL_BUDGET_EXHAUSTED_NOTE))
     messages = await _compact_if_enabled(messages, provider)
-    turn: AssistantTurn = await provider.send(messages, [], system)
+    turn: AssistantTurn = await _send(provider, messages, [], system, on_text)
     if not turn.text:
         raise AgentError(
             f"도구 호출 루프가 max_iterations={max_iterations}를 초과했고, 도구 없이 요청한 마지막 답변도 비어 있었다."
@@ -214,6 +239,7 @@ async def run_agent(
     provider: ChatProvider,
     max_iterations: int = 8,
     history: list[Message] | None = None,
+    on_text: Callable[[str], None] | None = None,
 ) -> tuple[str, list[Message]]:
     """Runs one user turn to completion (calling tools as needed) and
     returns `(answer, updated_history)`. `history` in/out is how
@@ -224,7 +250,10 @@ async def run_agent(
     exception (see `_forced_final_turn`), and an answer the provider
     truncated (`stop_reason="max_tokens"`) comes back with an explicit
     "incomplete" marker appended (see `_finalize`) - a caller never has to
-    infer either condition."""
+    infer either condition.
+
+    `on_text`를 주면 각 턴의 텍스트 조각을 도착하는 대로 그 콜백에 흘린다(`ChatProvider.send_stream`).
+    반환값은 스트리밍 여부와 무관하게 같다."""
     tools_by_name = {t.name: t for t in tools}
     messages: list[Message] = list(history) if history else []
     messages.append(Message(role="user", content=user_message))
@@ -246,7 +275,7 @@ async def run_agent(
 
     for _ in range(max_iterations):
         messages = await _compact_if_enabled(messages, provider)
-        turn: AssistantTurn = await provider.send(messages, tools, system)
+        turn: AssistantTurn = await _send(provider, messages, tools, system, on_text)
 
         if not turn.tool_calls:
             _check_tool_markup(turn.text)
@@ -261,7 +290,7 @@ async def run_agent(
             return _finalize(turn, messages), messages
 
         grounded = True
-        messages.append(Message(role="assistant", content=turn.text, tool_calls=turn.tool_calls))
+        messages.append(Message(role="assistant", content=turn.text, tool_calls=turn.tool_calls, reasoning=turn.reasoning))
         # Concurrent, but order-preserving: `gather` returns results in
         # argument order, so `messages` keeps one `tool` message per call in
         # `turn.tool_calls` order (this module's docstring has why that
@@ -293,4 +322,4 @@ async def run_agent(
             for call, result_text in zip(turn.tool_calls, results, strict=True)
         )
 
-    return await _forced_final_turn(messages, system, provider, max_iterations)
+    return await _forced_final_turn(messages, system, provider, max_iterations, on_text)

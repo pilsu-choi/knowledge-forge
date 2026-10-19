@@ -40,6 +40,12 @@ def compare_runs(a: dict[str, Any], b: dict[str, Any], metric: str = "ndcg@10", 
     if diff:
         note = " - none_correct 등 delta는 검색 품질이 아니라 이 설정 차이를 반영할 수 있다" if "vector_min_score" in diff else ""
         warnings.append(f"provenance.settings 차이: {', '.join(diff)}{note}")
+    # 질의 임베딩 고정: 한쪽만 고정이거나 파일이 다르면 임베딩 노이즈가 delta에 섞인다.
+    pin_a, pin_b = (run.get("provenance", {}).get("query_embeddings") or {"pinned": False} for run in (a, b))
+    if pin_a["pinned"] != pin_b["pinned"]:
+        warnings.append("질의 임베딩 고정이 한쪽에만 있다 - 원격 임베딩 노이즈가 delta에 섞일 수 있다")
+    elif pin_a["pinned"] and pin_a["sha256"] != pin_b["sha256"]:
+        warnings.append("질의 임베딩 고정 파일이 다르다(sha256) - 같은 벡터로 잰 비교가 아니다")
     warnings += [f"{run['run_id']}: {w}" for run in (a, b) for w in run.get("warnings", [])]
 
     def _scores(run: dict[str, Any]) -> dict[str, float]:

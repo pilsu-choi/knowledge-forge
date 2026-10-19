@@ -85,3 +85,16 @@ def test_compare_cli_prints_delta(tmp_path):
 
     assert result.exit_code == 0, result.output
     assert "delta +0.0000" in result.output and "승 0 / 패 0 / 무 6" in result.output
+
+
+def _pinned(sha: str | None) -> dict:
+    return {"provenance": {"query_embeddings": {"pinned": True, "sha256": sha} if sha else {"pinned": False}}}
+
+
+def test_compare_warns_when_query_embedding_pin_differs():
+    one_sided = compare_runs(_report("a", A, **_pinned("x")), _report("b", B, **_pinned(None)))
+    assert any("한쪽에만" in w for w in one_sided["warnings"])
+    other_file = compare_runs(_report("a", A, **_pinned("x")), _report("b", B, **_pinned("y")))
+    assert any("파일이 다르다" in w for w in other_file["warnings"])
+    same = compare_runs(_report("a", A, **_pinned("x")), _report("b", B, **_pinned("x")))
+    assert not any("질의 임베딩" in w for w in same["warnings"])

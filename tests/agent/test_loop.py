@@ -283,6 +283,13 @@ async def test_history_threads_across_separate_run_agent_calls_for_the_repl():
     assert [m.content for m in history_after_second if m.role == "user"] == ["first question", "second question"]
 
 
+async def test_reasoning_only_final_turn_raises_instead_of_returning_empty():
+    provider = _FakeProvider([AssistantTurn(text="", tool_calls=[], stop_reason="max_tokens", reasoning="생각만")])
+
+    with pytest.raises(AgentError, match="thinking"):
+        await run_agent("question", [], "sys", provider)
+
+
 # --- 첫 턴 search 선실행 / 반복 호출 차단 / 마크업 감지 ---------------------------
 
 

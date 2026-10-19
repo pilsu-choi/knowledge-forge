@@ -126,3 +126,36 @@ async def test_cache_breakpoints_mark_only_the_end_of_the_stable_prefix():
     assert call["system"][-1]["cache_control"] == {"type": "ephemeral"}
     breakpoints = sum("cache_control" in block for block in call["tools"] + call["system"])
     assert breakpoints == 2
+
+
+class _FakeStream:
+    def __init__(self, texts, final):
+        self.text_stream = self._gen(texts)
+        self._final = final
+
+    @staticmethod
+    async def _gen(texts):
+        for t in texts:
+            yield t
+
+    async def get_final_message(self):
+        return self._final
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+async def test_send_stream_emits_text_and_returns_the_final_turn():
+    final = _response([_text_block("안녕하세요")])
+    client = SimpleNamespace(messages=SimpleNamespace(stream=lambda **kw: _FakeStream(["안녕", "하세요"], final)))
+    provider = AnthropicChatProvider(client=client, temperature=0.3)
+    seen: list[str] = []
+
+    turn = await provider.send_stream([Message(role="user", content="hi")], [], "sys", seen.append)
+
+    assert seen == ["안녕", "하세요"]
+    assert turn.text == "안녕하세요"
+    assert turn.ttft_s is not None

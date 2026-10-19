@@ -9,7 +9,9 @@ are intentionally not duplicated here - an edge case `extraction/auth.py`
 covers that agent sessions can pick up later if it turns out to matter.
 """
 
+import ipaddress
 import os
+from urllib.parse import urlparse
 
 from knowledge_forge.config import settings
 
@@ -22,6 +24,19 @@ def _has_anthropic_credentials() -> bool:
     return os.path.isdir(_ANTHROPIC_PROFILE_DIR) and bool(os.listdir(_ANTHROPIC_PROFILE_DIR))
 
 
+def is_local_base_url(base_url: str) -> bool:
+    """localhost/루프백/사설망/점 없는 호스트명(docker 서비스명)이면 True - 온프렘 vLLM 같은
+    서버는 키가 없는 경우가 많아서 사전검사를 건너뛴다."""
+    host = urlparse(base_url).hostname or ""
+    if host == "localhost" or "." not in host:
+        return bool(host)
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return host.endswith(".local") or host.endswith(".internal")
+    return ip.is_loopback or ip.is_private
+
+
 def _has_openai_compatible_credentials() -> bool:
     # OPENROUTER_API_KEY covers the default base_url (OpenRouter);
     # OPENAI_API_KEY is accepted too since KF_AGENT_OPENAI_COMPATIBLE_BASE_URL
@@ -31,7 +46,7 @@ def _has_openai_compatible_credentials() -> bool:
 
 def has_resolvable_agent_credentials() -> bool:
     if settings.agent_provider == "openai_compatible":
-        return _has_openai_compatible_credentials()
+        return is_local_base_url(settings.agent_openai_compatible_base_url) or _has_openai_compatible_credentials()
     return _has_anthropic_credentials()
 
 

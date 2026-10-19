@@ -25,6 +25,7 @@ from knowledge_forge.agent.providers.base import ToolSpec
 from knowledge_forge.agent.tools import default_tools
 from knowledge_forge.chat_provider import AssistantTurn, ChatProvider, Message
 from knowledge_forge.config import settings
+from knowledge_forge.embedding.cache import PinnedEmbeddingCache, install_query_embedding_cache
 from knowledge_forge.eval import gather_bounded
 from knowledge_forge.eval.goldenset import GoldenItem, GoldenSet, corpus_fingerprint, ranked_ids, resolve_gold
 from knowledge_forge.search.constraints import _extract_json_object
@@ -196,13 +197,18 @@ async def run_eval(
     llm_constraints: bool = False,
     concurrency: int = 4,
     models: dict[str, str] | None = None,
+    query_embeddings: Path | None = None,
 ) -> dict[str, Any]:
     """골든셋 하나를 실행해 결과 dict를 돌려준다. `provider`는 e2e 에이전트·judge, 또는 `llm_constraints`의
-    제약 보강(이때 retrieve의 multihop planner도 켜진다)에 쓴다 - 둘 다 아니면 LLM 호출 0회."""
+    제약 보강(이때 retrieve의 multihop planner도 켜진다)에 쓴다 - 둘 다 아니면 LLM 호출 0회.
+    `query_embeddings`가 있으면 그 파일의 질의 임베딩을 재생하고 없는 텍스트만 원격에서 받아 파일에 추가한다
+    (파일이 없으면 이번 실행 것을 기록) - 원격 임베딩의 실행 간 노이즈를 없앤다."""
     if (e2e or llm_constraints) and provider is None:
         raise ValueError("e2e/llm_constraints에는 provider가 필요하다")
     grain = golden.grain
     items = [item for item in golden.items if split is None or item.split == split]
+    pinned = PinnedEmbeddingCache(query_embeddings) if query_embeddings else None
+    previous_cache = install_query_embedding_cache(pinned) if pinned is not None else None
     corpus_before = await corpus_fingerprint(store)
 
     async def _one(item: GoldenItem) -> dict[str, Any]:
@@ -227,7 +233,11 @@ async def run_eval(
         metrics.update(extra.pop("metrics", {}))
         return {**record, **extra, "status": "ok", "gold": sorted(gold), "ranked": ranked, "metrics": metrics}
 
-    records = await gather_bounded((_one(item) for item in items), concurrency)
+    try:
+        records = await gather_bounded((_one(item) for item in items), concurrency)
+    finally:
+        if previous_cache is not None:
+            install_query_embedding_cache(previous_cache)
     corpus_after = await corpus_fingerprint(store)
     warnings = []
     if corpus_before != corpus_after:
@@ -247,6 +257,9 @@ async def run_eval(
             "git": git_revision(),
             "settings": {name: getattr(settings, name) for name in RANKING_SETTINGS},
             "models": {**(models or {}), "llm_constraints": llm_constraints},
+            "query_embeddings": {"pinned": False}
+            if pinned is None
+            else {"pinned": True, "sha256": pinned.save(), "loaded": pinned.loaded, "added": len(pinned) - pinned.loaded},
         },
         "corpus_golden": golden.corpus,
         "corpus_before": corpus_before,

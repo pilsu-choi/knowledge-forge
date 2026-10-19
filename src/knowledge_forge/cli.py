@@ -1,6 +1,7 @@
 import asyncio
 import json
 import sys
+import time
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -736,13 +737,39 @@ def embed(
     typer.echo(f"{total}개의 {unit} 임베딩 완료 (모델: {embedding_model})", err=True)
 
 
+class _TokenStream:
+    """에이전트 답변 토큰을 stdout으로 흘리고, 첫 토큰까지 시간(TTFT)을 stderr에 남긴다.
+    스트리밍이 못 흘린 꼬리(예: loop가 붙이는 "잘림" 표식)는 `finish`가 마저 찍는다."""
+
+    def __init__(self) -> None:
+        self._start = time.perf_counter()
+        self._parts: list[str] = []
+        self.ttft_s: float | None = None
+
+    def write(self, text: str) -> None:
+        if self.ttft_s is None:
+            self.ttft_s = time.perf_counter() - self._start
+        self._parts.append(text)
+        typer.echo(text, nl=False)
+
+    def finish(self, answer: str) -> None:
+        streamed = "".join(self._parts)
+        if not streamed:
+            typer.echo(answer)
+        else:
+            tail = answer[len(streamed) :] if answer.startswith(streamed) else f"\n{answer}"
+            typer.echo(tail)
+        if self.ttft_s is not None:
+            typer.echo(f"[TTFT {self.ttft_s:.2f}s, 총 {time.perf_counter() - self._start:.2f}s]", err=True)
+
+
 @app.command()
 def agent(
     question: str | None = typer.Argument(
         None, help="One-shot question to ask the agent. Omit and pass --interactive for a REPL instead."
     ),
     project_id: str | None = typer.Option(
-        None, "--project-id", help="Default project_id hint for file_search (the agent can still search other projects)."
+        None, "--project-id", help="Default project_id hint for the search tools (the agent can still search other projects)."
     ),
     provider: str | None = typer.Option(
         None, "--provider", help="anthropic (default) or openai_compatible. Defaults to KF_AGENT_PROVIDER."
@@ -750,12 +777,11 @@ def agent(
     model: str | None = typer.Option(None, "--model", help="Overrides the active provider's default model."),
     interactive: bool = typer.Option(False, "--interactive", help="REPL mode instead of a single one-shot question."),
 ) -> None:
-    """OKF 지식 베이스를 file_search로 검색해 답하는 에이전트(wiki/agent-runtime.md) - 1회성
-    쿼리든 --interactive든 동일한 벤더 중립 harness(agent/loop.py) 위에서 돈다. 두
-    --provider(anthropic/openai_compatible) 모두 동일하게 동작한다."""
-    if not settings.okf_dir:
-        typer.echo("KF_OKF_DIR이 설정되지 않았습니다 - agent는 OKF 파일 트리가 필수입니다.", err=True)
-        raise typer.Exit(1)
+    """색인된 지식(search/read_document/sql_search 등 도구)을 검색해 답하는 에이전트
+    (wiki/agent-runtime.md) - 1회성 쿼리든 --interactive든 동일한 벤더 중립 harness
+    (agent/loop.py) 위에서 돈다. 두 --provider(anthropic/openai_compatible) 모두 동일하게
+    동작하며, 답변은 토큰 단위로 스트리밍되고 첫 토큰까지 시간(TTFT)을 stderr에 남긴다.
+    KF_OKF_DIR이 있을 때만 OKF 파일시스템 도구가 추가된다."""
     if not interactive and not question:
         typer.echo("질문을 인자로 주거나 --interactive를 쓰세요.", err=True)
         raise typer.Exit(1)
@@ -777,8 +803,9 @@ def agent(
                         break
                     if not line.strip():
                         continue
-                    answer = await session.ask(line)
-                    typer.echo(answer)
+                    stream = _TokenStream()
+                    answer = await session.ask(line, on_text=stream.write)
+                    stream.finish(answer)
                     if session.plan.steps:
                         typer.echo(f"\n[계획]\n{session.plan.render()}\n", err=True)
             finally:
@@ -788,8 +815,9 @@ def agent(
         return
 
     assert question is not None  # guaranteed above: not interactive and not question already exits
-    answer = asyncio.run(run_query(question, project_id=project_id, provider=provider, model=model))
-    typer.echo(answer)
+    stream = _TokenStream()
+    answer = asyncio.run(run_query(question, project_id=project_id, provider=provider, model=model, on_text=stream.write))
+    stream.finish(answer)
 
 
 @db_app.command("init")
@@ -1133,6 +1161,7 @@ def eval_run(
     provider: str = typer.Option(DEFAULT_PROVIDER, "--provider"),
     concurrency: int = typer.Option(4, "--concurrency"),
     llm_constraints: bool = typer.Option(False, "--llm-constraints", help="retrieval에서 LLM 제약 보강 + multihop을 켠다(기본 꺼짐, 결정론)."),
+    query_embeddings: Path | None = typer.Option(None, "--query-embeddings", help="질의 임베딩 고정 파일. 있으면 재생(없는 텍스트만 원격 호출·추가), 없으면 이번 실행 것을 기록."),
 ) -> None:
     """골든셋 실행 - 결과 전체는 out/eval/<run_id>.json, 화면에는 kind별 요약."""
     database_url = _eval_database_url()
@@ -1150,6 +1179,7 @@ def eval_run(
                 provider=chat_provider,
                 llm_constraints=llm_constraints,
                 concurrency=concurrency,
+                query_embeddings=query_embeddings,
                 models={"provider": provider, "model": model} if use_llm else {},
             )
 

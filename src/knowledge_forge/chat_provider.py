@@ -47,6 +47,11 @@ class Message:
     # Tool-only: which call this result answers - Anthropic needs this to
     # rebuild `tool_use_id`, OpenAI-compatible needs it for `tool_call_id`.
     tool_call_id: str | None = None
+    # Assistant-only: the model's thinking text (OpenAI-compatible
+    # `reasoning_content`/`reasoning`). Kept so it can be echoed back on the
+    # next request - a thinking model that calls tools expects its own chain
+    # of thought in the history.
+    reasoning: str | None = None
 
 
 StopReason = Literal["tool_use", "end_turn", "max_tokens"]
@@ -57,6 +62,10 @@ class AssistantTurn:
     text: str | None
     tool_calls: list[ToolCall]
     stop_reason: StopReason
+    reasoning: str | None = None
+    # Seconds from request start to the first streamed text token; only set
+    # by `send_stream` (None for plain `send`, or when no text was streamed).
+    ttft_s: float | None = None
 
 
 @dataclass
@@ -76,3 +85,16 @@ class ChatProvider(ABC):
 
     @abstractmethod
     async def send(self, messages: list[Message], tools: list[ToolSpec], system: str) -> AssistantTurn: ...
+
+    async def send_stream(
+        self, messages: list[Message], tools: list[ToolSpec], system: str, on_text: Callable[[str], None]
+    ) -> AssistantTurn:
+        """Same as `send`, but calls `on_text(delta)` for each text fragment as
+        it arrives. The default has no streaming: it sends normally and emits
+        the whole text once, so a provider that can't stream (or a test fake)
+        still satisfies the interface. Text that precedes a tool call is
+        streamed too - the loop can't know a turn is final until it ends."""
+        turn = await self.send(messages, tools, system)
+        if turn.text:
+            on_text(turn.text)
+        return turn
