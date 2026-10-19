@@ -18,6 +18,8 @@ from pgvector import Vector
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
+from knowledge_forge.config import settings
+from knowledge_forge.exceptions import EmbeddingError
 from knowledge_forge.models.chunk import Chunk, HierarchyLevel
 from knowledge_forge.models.document import Document
 from knowledge_forge.models.knowledge_object import (
@@ -42,6 +44,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+
+
+def schema_sql() -> str:
+    """schema.sql with the embedding vector width (KF_EMBEDDING_DIMENSIONS)
+    filled in - the one place the placeholder is resolved, shared with
+    JobStore.init_schema()."""
+    return _SCHEMA_PATH.read_text(encoding="utf-8").replace(
+        "__EMBEDDING_DIMENSIONS__", str(settings.embedding_dimensions)
+    )
 
 # How much of a chunk-grain embedding's `embedded_text` a vector_search hit
 # carries as its `summary` (see `search_by_embedding`). A chunk can be up to
@@ -234,13 +245,55 @@ class PostgresStore:
         return self._conn
 
     async def init_schema(self) -> None:
-        await self.conn.execute(_SCHEMA_PATH.read_text(encoding="utf-8"))
+        await self.conn.execute(schema_sql())
+        await self._ensure_embedding_dimensions()
         # The schema above is what actually creates the `vector` extension
         # on a brand new database - `connect()`'s registration attempt was
         # a no-op if this is the first time this database has ever seen it,
         # so retry it now that the type genuinely exists.
         await self._register_vector_types()
         await self._configure_ann_search()
+
+    async def _stored_embedding_dimensions(self) -> int | None:
+        """Declared width of knowledge_object_embeddings.embedding (the
+        pgvector typmod is the dimension itself), None if no such table."""
+        cur = await self.conn.execute(
+            "SELECT atttypmod FROM pg_attribute "
+            "WHERE attrelid = to_regclass('knowledge_object_embeddings') AND attname = 'embedding'"
+        )
+        row = await cur.fetchone()
+        return row[0] if row else None
+
+    async def _ensure_embedding_dimensions(self) -> None:
+        stored = await self._stored_embedding_dimensions()
+        if stored is not None and stored != settings.embedding_dimensions:
+            raise EmbeddingError(
+                f"DB의 임베딩 차원은 {stored}인데 KF_EMBEDDING_DIMENSIONS={settings.embedding_dimensions}입니다. "
+                "기존 임베딩을 지우고 컬럼과 HNSW 인덱스를 새 차원으로 바꾸려면 "
+                "`knowledge-forge db migrate-embedding-dimensions`를 실행한 뒤 `knowledge-forge embed`로 다시 채우세요."
+            )
+
+    async def migrate_embedding_dimensions(self) -> bool:
+        """Converts knowledge_object_embeddings to KF_EMBEDDING_DIMENSIONS. Vectors of
+        another width can't be cast, so ALL existing embeddings are deleted (they are
+        derivable - re-run `knowledge-forge embed`); the HNSW index is rebuilt by the
+        column type change. Returns False when the width already matches."""
+        await self.conn.execute(schema_sql())  # creates the table if absent
+        stored = await self._stored_embedding_dimensions()
+        if stored == settings.embedding_dimensions:
+            return False
+        async with self.conn.transaction():
+            await self.conn.execute("DELETE FROM knowledge_object_embeddings")
+            await self.conn.execute("DROP INDEX IF EXISTS idx_koe_embedding_hnsw")
+            await self.conn.execute(
+                f"ALTER TABLE knowledge_object_embeddings ALTER COLUMN embedding "
+                f"TYPE vector({settings.embedding_dimensions})"
+            )
+            await self.conn.execute(
+                "CREATE INDEX idx_koe_embedding_hnsw ON knowledge_object_embeddings "
+                "USING hnsw (embedding vector_cosine_ops)"
+            )
+        return True
 
     async def save_source(self, source: Source, raw_path: str | None) -> None:
         await self.conn.execute(
@@ -1034,7 +1087,7 @@ class PostgresStore:
           (`WHERE e.embedding_model = %s`).
         - `chunks_total`/`chunks_embedded`, `knowledge_objects_total`/`knowledge_objects_embedded`:
           그 모델 기준 grain별 커버리지(백필이 어디까지 갔는지).
-        - `dimensions`: 실제로 저장된 벡터 차원 집합. 스키마가 `vector(1536)` 고정이라 다른
+        - `dimensions`: 실제로 저장된 벡터 차원 집합. 스키마 차원(KF_EMBEDDING_DIMENSIONS)과 다른
           차원은 애초에 INSERT가 실패하지만, 모델을 바꿨을 때 "왜 적재가 멈췄나"를 여기서 본다.
 
         `project_id`가 None이면 전체. 순수 SELECT라 `execute_readonly_query`와 달리 트랜잭션을

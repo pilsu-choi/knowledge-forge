@@ -233,7 +233,12 @@ class Settings(BaseSettings):
     # `embed`'s `--embedding-source` if the choice needs to differ from this
     # default (e.g. speed problems -> "chunk", precision problems ->
     # "knowledge_object").
-    embedding_source: Literal["knowledge_object", "chunk"] = "knowledge_object"
+    embedding_source: Literal["knowledge_object", "chunk"] = "chunk"
+    # 모델이 요구하는 접두어/지시문. bge-m3·OpenAI는 불필요(빈 값)지만 Qwen3-Embedding 류는
+    # 질의 쪽에 "Instruct: ...\nQuery:" 형태가 필요하다. 질의는 search/service.py가, 문서(청크/KO)는
+    # storage/store.py가 **provider에 보내는 텍스트에만** 붙인다(저장되는 embedded_text/해시는 원문).
+    embedding_query_prefix: str = ""
+    embedding_passage_prefix: str = ""
 
     # Agent runtime (harness, wiki/agent-runtime.md) - a separate switch from
     # `llm_provider` above, deliberately: `llm_provider` picks Knowledge

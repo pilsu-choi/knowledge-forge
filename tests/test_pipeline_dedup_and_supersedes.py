@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from knowledge_forge.chunking import AdaptiveChunker
 from knowledge_forge.collectors.local_file import LocalFileCollector
+from knowledge_forge.config import settings
 from knowledge_forge.extraction.base import ExtractionOutcome, Extractor
 from knowledge_forge.models.chunk import HierarchyLevel
 from knowledge_forge.models.knowledge_object import DocumentRef, Evidence, KnowledgeObject, KnowledgeObjectType
@@ -178,11 +179,12 @@ class _FakeEmbedder:
         return [[0.0] for _ in texts]
 
 
-async def test_embedder_given_embeds_final_merged_objects_after_storing(tmp_path):
+async def test_embedder_given_embeds_final_merged_objects_after_storing(tmp_path, monkeypatch):
     """embedder is only meaningful together with store (nowhere to persist
     embeddings otherwise) - record_embeddings() must see the same final,
     deduped/supersede-resolved object set that was just passed to
     record_knowledge_objects(), not the pre-merge per-group objects."""
+    monkeypatch.setattr(settings, "embedding_source", "knowledge_object")  # the default is chunk
     doc_path = tmp_path / "doc.txt"
     doc_path.write_text("A short note about Acme.\n")
 

@@ -175,3 +175,19 @@ def test_base_url_defaults_to_the_openai_sdk_default_and_is_overridable(monkeypa
     # KF_EMBEDDING_BASE_URL is what makes a self-hosted OpenAI-compatible
     # server (vLLM/TEI) usable without a third provider class.
     assert str(OpenAIEmbeddingProvider(api_key="k")._client.base_url).startswith("http://localhost:8000/v1")
+
+
+def test_schema_sql_fills_in_the_configured_embedding_dimensions(monkeypatch):
+    from knowledge_forge.config import settings
+    from knowledge_forge.storage.postgres_store import schema_sql
+
+    monkeypatch.setattr(settings, "embedding_dimensions", 1024)
+    sql = schema_sql()
+    assert "vector(1024)" in sql
+    assert "__EMBEDDING_DIMENSIONS__" not in sql.replace("-- ", "").split("CREATE TABLE IF NOT EXISTS knowledge_object_embeddings")[1]
+
+
+def test_embedding_source_defaults_to_chunk():
+    from knowledge_forge.config import Settings
+
+    assert Settings(_env_file=None).embedding_source == "chunk"

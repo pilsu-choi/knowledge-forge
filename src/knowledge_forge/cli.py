@@ -836,6 +836,27 @@ def db_init() -> None:
     typer.echo("스키마 초기화 완료", err=True)
 
 
+@db_app.command("migrate-embedding-dimensions")
+def db_migrate_embedding_dimensions() -> None:
+    """임베딩 컬럼(+HNSW 인덱스)을 KF_EMBEDDING_DIMENSIONS 차원으로 바꾼다. 다른 차원의 기존
+    벡터는 변환할 수 없어 임베딩을 전부 지운다 - 이후 `embed`로 다시 채워야 한다."""
+    if not settings.database_url:
+        typer.echo("KF_DATABASE_URL이 설정되지 않았습니다.", err=True)
+        raise typer.Exit(1)
+
+    async def _run():
+        async with PipelineStore(settings.database_url, settings.data_dir) as store:
+            return await store._db.migrate_embedding_dimensions()
+
+    changed = asyncio.run(_run())
+    typer.echo(
+        f"임베딩 차원을 {settings.embedding_dimensions}으로 변경, 기존 임베딩 삭제 - `embed`로 다시 채우세요"
+        if changed
+        else "이미 같은 차원입니다",
+        err=True,
+    )
+
+
 @db_app.command("backfill-titles")
 def db_backfill_titles(
     project_id: str | None = typer.Option(None, "--project-id", help="Only backfill this project's documents."),

@@ -994,3 +994,47 @@ async def test_save_chunks_with_document_id_replaces_the_documents_chunk_set(sto
 
     await store.save_chunks([], document_id="test-d1")
     assert await store.list_chunks_by_document("test-d1") == []
+
+
+async def _fresh_db_dsn(name: str):
+    import urllib.parse
+
+    parts = urllib.parse.urlsplit(DSN)
+    admin = await psycopg.AsyncConnection.connect(
+        urllib.parse.urlunsplit(parts._replace(path="/postgres")), autocommit=True
+    )
+    await admin.execute(f"DROP DATABASE IF EXISTS {name}")
+    await admin.execute(f"CREATE DATABASE {name}")
+    return admin, urllib.parse.urlunsplit(parts._replace(path=f"/{name}"))
+
+
+async def test_embedding_dimension_follows_setting_and_mismatch_is_reported(monkeypatch):
+    """vector(N) comes from KF_EMBEDDING_DIMENSIONS; opening a DB built with another
+    width fails loudly, and migrate_embedding_dimensions() converts it (dropping rows)."""
+    from knowledge_forge.config import settings
+    from knowledge_forge.exceptions import EmbeddingError
+
+    name = "kf_embedding_dim_test"
+    admin, dsn = await _fresh_db_dsn(name)
+    try:
+        monkeypatch.setattr(settings, "embedding_dimensions", 8)
+        async with PostgresStore(dsn) as store:
+            await store.init_schema()
+            assert await store._stored_embedding_dimensions() == 8
+            await store.init_schema()  # same width: idempotent
+
+        monkeypatch.setattr(settings, "embedding_dimensions", 4)
+        async with PostgresStore(dsn) as store:
+            with pytest.raises(EmbeddingError, match="migrate-embedding-dimensions"):
+                await store.init_schema()
+            assert await store.migrate_embedding_dimensions() is True
+            assert await store._stored_embedding_dimensions() == 4
+            idx = await (await store.conn.execute(
+                "SELECT indexdef FROM pg_indexes WHERE indexname = 'idx_koe_embedding_hnsw'"
+            )).fetchone()
+            assert idx is not None and "hnsw" in idx[0]
+            await store.init_schema()
+            assert await store.migrate_embedding_dimensions() is False
+    finally:
+        await admin.execute(f"DROP DATABASE IF EXISTS {name} WITH (FORCE)")
+        await admin.close()

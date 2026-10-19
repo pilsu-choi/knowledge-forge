@@ -178,9 +178,11 @@ CREATE INDEX IF NOT EXISTS idx_relations_type ON relations(type);
 -- document-level evaluation) can compare KO-mode and chunk-mode retrieval
 -- against the same document-level truth. project_id is denormalized from the owning
 -- Source (same convention as documents.project_id) since a filtered ANN
--- query can't join out to sources cheaply. Dimension (1536) matches the
--- default embedding model, KF_EMBEDDING_MODEL=text-embedding-3-small -
--- changing models to a different dimension requires a migration.
+-- query can't join out to sources cheaply. The vector width is the
+-- __EMBEDDING_DIMENSIONS__ placeholder, substituted from KF_EMBEDDING_DIMENSIONS
+-- by postgres_store.schema_sql() before this file is executed. An existing
+-- table keeps its width - init_schema() raises when it differs from the
+-- setting (`knowledge-forge db migrate-embedding-dimensions` converts it).
 --
 -- embedding_id is stable_id(target_kind, target id, embedding_model) - a
 -- deterministic surrogate PK, because a composite PK can't span two
@@ -210,7 +212,7 @@ CREATE TABLE IF NOT EXISTS knowledge_object_embeddings (
     chunk_id            TEXT REFERENCES chunks(chunk_id),
     document_id         TEXT NOT NULL REFERENCES documents(document_id),
     embedding_model     TEXT NOT NULL,
-    embedding           vector(1536) NOT NULL,
+    embedding           vector(__EMBEDDING_DIMENSIONS__) NOT NULL,
     embedded_text       TEXT NOT NULL,
     embedded_text_hash  TEXT NOT NULL,
     project_id          TEXT NOT NULL,

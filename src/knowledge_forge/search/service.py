@@ -293,7 +293,7 @@ async def vector_search(
     vector = query_embedding_cache.get(model, query)
     if vector is None:
         embedder = get_embedding_provider(model=model)
-        [vector] = await embedder.embed([query])
+        [vector] = await embedder.embed([settings.embedding_query_prefix + query])
         query_embedding_cache.put(model, query, vector)
     return await store.search_by_embedding(
         vector,
