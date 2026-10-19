@@ -171,3 +171,59 @@ async def test_e2e_ranking_follows_call_order_not_completion_order(fakes, monkey
     assert record["metrics"]["mrr"] == 0.5
     assert record["metrics"]["llm_calls"] == 2 and record["metrics"]["tool_calls"] == 2
     assert record["metrics"]["answer_correct"] == 1.0 and record["judge"] == {"verdict": "correct", "declined": False}
+
+
+async def test_pinned_query_embeddings_record_then_replay_without_remote_calls(fakes, monkeypatch, fingerprint, tmp_path):
+    from knowledge_forge.embedding import cache as embedding_cache
+    from knowledge_forge.search.service import vector_search
+
+    async def _fp(store):
+        return fingerprint
+
+    calls: list[list[str]] = []
+
+    class _Noisy:
+        async def embed(self, texts):
+            calls.append(texts)
+            return [[float(len(calls)), 0.5] for _ in texts]  # 호출할 때마다 벡터가 달라진다
+
+    class _VectorStore(fakes.FakeStore):
+        async def search_by_embedding(self, vector, model, **kwargs):
+            return [{"chunk_id": "c1", "document_id": "d1", "score": vector[0]}]
+
+    async def _retrieve(query, *, store, provider=None, use_llm_constraints=True, grain=None):
+        return SimpleNamespace(hits=await vector_search(query, store=store), strategies=[], steps=[], elapsed_ms=1.0)
+
+    monkeypatch.setattr(run, "corpus_fingerprint", _fp)
+    monkeypatch.setattr(run, "retrieve", _retrieve)
+    monkeypatch.setattr("knowledge_forge.embedding.factory.get_embedding_provider", lambda model=None: _Noisy())
+    monkeypatch.setattr(embedding_cache, "query_embedding_cache", embedding_cache.BoundedEmbeddingCache(256))
+    original = embedding_cache.query_embedding_cache
+    store = _VectorStore(chunks={"d1": [("c1", QUOTE)]})
+    golden = _golden([_lookup(evidence=[Evidence(document_id="d1", quote=QUOTE)])], fingerprint)
+    path = tmp_path / "pinned.json"
+
+    recorded = await run_eval(golden, store, query_embeddings=path)
+    assert len(calls) == 1
+    assert recorded["provenance"]["query_embeddings"]["pinned"] and recorded["provenance"]["query_embeddings"]["added"] == 1
+
+    embedding_cache.query_embedding_cache.clear()  # 프로세스 캐시가 아니라 파일에서 재생하는지 확인
+    replayed = await run_eval(golden, store, query_embeddings=path)
+    assert len(calls) == 1  # 원격 호출 0회
+    assert replayed["items"][0]["ranked"] == recorded["items"][0]["ranked"]
+    assert replayed["provenance"]["query_embeddings"] | {"added": 0} == recorded["provenance"]["query_embeddings"] | {"added": 0, "loaded": 1}
+    assert replayed["provenance"]["query_embeddings"]["sha256"] == recorded["provenance"]["query_embeddings"]["sha256"]
+    assert embedding_cache.query_embedding_cache is original  # 실행 뒤 전역 캐시 복원
+
+    unpinned = await run_eval(golden, store)
+    assert unpinned["provenance"]["query_embeddings"] == {"pinned": False}
+
+
+def test_pinned_cache_keeps_models_apart(tmp_path):
+    from knowledge_forge.embedding.cache import PinnedEmbeddingCache
+
+    cache = PinnedEmbeddingCache(tmp_path / "p.json")
+    cache.put("m1", "q", [1.0])
+    cache.save()
+    reloaded = PinnedEmbeddingCache(tmp_path / "p.json")
+    assert reloaded.get("m1", "q") == [1.0] and reloaded.get("m2", "q") is None

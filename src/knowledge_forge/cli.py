@@ -1133,6 +1133,7 @@ def eval_run(
     provider: str = typer.Option(DEFAULT_PROVIDER, "--provider"),
     concurrency: int = typer.Option(4, "--concurrency"),
     llm_constraints: bool = typer.Option(False, "--llm-constraints", help="retrieval에서 LLM 제약 보강 + multihop을 켠다(기본 꺼짐, 결정론)."),
+    query_embeddings: Path | None = typer.Option(None, "--query-embeddings", help="질의 임베딩 고정 파일. 있으면 재생(없는 텍스트만 원격 호출·추가), 없으면 이번 실행 것을 기록."),
 ) -> None:
     """골든셋 실행 - 결과 전체는 out/eval/<run_id>.json, 화면에는 kind별 요약."""
     database_url = _eval_database_url()
@@ -1150,6 +1151,7 @@ def eval_run(
                 provider=chat_provider,
                 llm_constraints=llm_constraints,
                 concurrency=concurrency,
+                query_embeddings=query_embeddings,
                 models={"provider": provider, "model": model} if use_llm else {},
             )
 
