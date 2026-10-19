@@ -54,6 +54,7 @@ Topic/Keyword(PRD 3장④)는 여전히 `topics: list[str]`로, Document Type도
 | `document_type` | `str` | 문서 유형 (예: "계약서", "정책 문서", "회의록") |
 | `extracted_at` | `datetime` | 추출 시각 |
 | `model_used` | `str` | 추출에 사용된 LLM 모델 id |
+| `confidence` | `float \| None` | 추출기가 매긴 0~1 신뢰도(item만, 범위 밖 값은 버림). entity와 summary fallback은 `None` |
 | `version` | `int` | 기본 1. 같은 대상을 재추출해서 새 객체를 만들 때 증가 |
 | `pipeline_version` | `str` | 이 객체를 만든 파이프라인 버전(`knowledge_forge.__version__`) |
 | `source_hash` | `str` | 추출 시점 `Source.content_hash` — 원본이 바뀌었는지 나중에 비교할 수 있게 |
@@ -61,14 +62,28 @@ Topic/Keyword(PRD 3장④)는 여전히 `topics: list[str]`로, Document Type도
 
 ### 타입별 `content` 모양
 
-| `type` | `content` 예시 |
-|---|---|
-| `entity` | `{"name": "㈜에이지소다", "entity_type": "ORG", "description": "계약 당사자"}` |
-| 그 외 전부(`fact`/`event`/`decision`/`action_item`/`requirement`/`policy`/`issue`/`concept`) | `{"statement": "지급 기한은 세금계산서 발행일로부터 30일 이내이다."}` |
+decision/action_item/event/entity는 타입별 Pydantic 모델(`models/knowledge_object.py`의
+`CONTENT_MODELS`)이 모양을 정하고, `PostgresStore.save_knowledge_objects`가 저장 직전에
+`validate_content`로 검증한다(빠진 선택 필드는 기본값으로 채워 저장, 모르는 키·틀린 값은
+`ValidationError`). 나머지 타입은 여전히 `{"statement": ...}`이고 검증하지 않는다.
 
-`content`가 `dict[str, Any]`(고정 스키마가 아님)인 이유: `KnowledgeObjectType`에 새 타입을
-추가할 때마다 `KnowledgeObject` 자체의 Pydantic 스키마를 바꾸지 않아도 되게 하기 위해서다 —
-[`architecture.md`](architecture.md) 참고.
+| `type` | 모델 | 필드 |
+|---|---|---|
+| `entity` | `EntityContent` | `name`, `entity_type`(LLM 라벨 그대로, 예: `PERSON`), `description` |
+| `decision` | `DecisionContent` | `statement`, `decided_by: list[str]`, `decided_at: str \| None`, `status: proposed \| decided \| rejected \| None` |
+| `action_item` | `ActionItemContent` | `statement`, `assignees: list[str]`, `due: str \| None`, `status: open \| in_progress \| done \| cancelled \| None` |
+| `event` | `EventContent` | `statement`, `occurred_at: str \| None`, `participants: list[str]` |
+| 그 외(`fact`/`requirement`/`policy`/`issue`/`concept`) | - | `{"statement": "지급 기한은 세금계산서 발행일로부터 30일 이내이다."}` |
+
+- 세 item 모델은 `StatementContent`를 상속해 `statement`를 항상 가진다. `content["statement"]`만
+  아는 소비자(OKF writer, 임베딩 텍스트)가 그대로 동작한다.
+- 날짜는 문자열이다. 원문에 절대 날짜가 있으면 `YYYY-MM-DD`, 아니면 원문 표현("다음 주 월요일")
+  그대로. 상대 날짜를 풀려면 문서 자체의 날짜가 필요한데 추출 단계에는 그게 확실히 없다.
+- `content`가 여전히 `dict[str, Any]`인 이유: 새 타입을 추가할 때 `KnowledgeObject` 스키마와
+  DB 마이그레이션을 건드리지 않게 하려는 것이다. 검증은 모델 생성 시점이 아니라 저장 시점에
+  한다 — 그래야 자유 dict를 쓰는 기존 테스트·읽기 경로가 깨지지 않는다.
+- 예전의 `Entity` 값 객체(`name`/`type`/`description`, 아무도 안 씀)는 `EntityContent`로
+  흡수됐다. 필드 이름도 저장 모양에 맞춰 `type` → `entity_type`이다.
 
 ### `SourceRef` / `DocumentRef` / `Evidence` (Provenance 참조)
 
@@ -81,17 +96,48 @@ Topic/Keyword(PRD 3장④)는 여전히 `topics: list[str]`로, Document Type도
 | `DocumentRef` | `document_id`, `title` |
 | `Evidence` | `chunk_id`, `document_id`, `hierarchy_level`, `sequence_index` |
 
-### `Entity`
+### `Entity` / `EntityMention` (`models/entity.py`)
 
-`content`가 `entity` 타입일 때의 payload 모양과 같은 필드를 가진, 재사용 가능한 값 객체
-(추출 코드/테스트에서 편의상 사용 — `KnowledgeObject.content`에는 결국 `model_dump()`된
-dict로 들어간다).
+ENTITY 타입 `KnowledgeObject`는 추출 한 번의 *언급*이다. `Entity`는 같은 프로젝트 안의 같은
+이름 언급들이 해소되는 노드, `EntityMention`은 엔티티 ↔ KO 조인이다(DB 테이블은
+[`storage.md`](storage.md)).
 
-| 필드 | 타입 | 설명 |
-|---|---|---|
-| `name` | `str` | 엔티티 이름 |
-| `type` | `str` | 엔티티 유형 (PERSON, ORG, PRODUCT, LOCATION, DATE 등 자유 문자열) |
-| `description` | `str \| None` | 부가 설명 |
+| `Entity` 필드 | 설명 |
+|---|---|
+| `entity_id` | `stable_id("entity", project_id, entity_type, name)` |
+| `project_id` | 해소는 프로젝트를 절대 넘지 않는다 |
+| `entity_type` | 정규화 타입(`person`/`organization`/`product`/`location`/`project`, 그 외는 소문자화한 원래 라벨) |
+| `name` | 정규화 해소 키 |
+| `display_name` | 처음 본 표기 |
+| `aliases` | 이 엔티티로 해소된 표기 전부 |
+
+| `EntityMention` 필드 | 설명 |
+|---|---|
+| `entity_id`, `knowledge_object_id` | 조인 양쪽 |
+| `role` | `entity`(ENTITY KO 자신), `mentions`(그 ENTITY KO를 `MENTIONS`로 가리키는 item), `decided_by`, `assignee`, `participant` |
+| `surface_form` | 그 KO에서의 표기 |
+| `evidence` | 근거 chunk_id 목록(KO의 evidence) |
+
+### 엔티티 해소 (`entity_resolution.py`)
+
+LLM 호출 없는 규칙 기반이고 **정밀도 우선**이다. 잘못 합치면 엔티티로 펼치는 모든 소비자가
+오염되고, 못 합치면 재현율만 잃는다. `(project_id, 정규화 타입, 정규화 이름)`이 정확히 같을
+때만 합친다.
+
+- **타입**: 알려진 동의어만 접는다(`PERSON`/`인물`/`사람` → `person`, `ORG`/`회사`/`팀` →
+  `organization` 등). 모르는 라벨은 소문자화해서 그대로 쓰므로 다른 타입으로 섞이지 않는다.
+  `date`/`amount`는 값이지 사물이 아니라서 해소하지 않는다.
+- **이름 공통**: NFC, 공백을 모두 제거하고 casefold한다.
+- **인물**: 뒤쪽 호칭·직함(`님`, `씨`, `팀장`, `대표이사`, `PM` 등)과 괄호 부가어(`(PM)`), 영문
+  `Mr./Dr.`를 뗀다. 띄어 쓴 직함은 항상 떼고, 붙여 쓴 직함은 앞이 2음절 이상 한글 이름으로
+  남을 때만 뗀다("정민찬팀장" → 정민찬, "김이사"는 그대로).
+- **조직**: `㈜`, `(주)`, `주식회사`, `(유)`, `유한회사`를 뗀다.
+- **버림**: 빈 문자열, 한 음절 한글(성만 남은 "김 이사"), 직함만 있는 것("팀장님"), 역할어
+  ("담당자", "참석자", "고객" 등). 누구인지 모르면 엔티티를 만들지 않는다.
+- **인물 속성**: decision `decided_by`, action_item `assignees`, event `participants`의 값은
+  `person`으로 해소한다. 한 값에 여러 명이 들어오면(`"정민찬, 김철수"`, `"A 및 B"`) 나눈다.
+- 하지 않는 것: 한영 표기 대응("정민찬" vs "Minchan Jeong"), 성만 있는 언급, 동명이인 구분.
+  필요해지면 이 id 위에 병합 단계를 얹는다(id는 바뀌지 않는다).
 
 ### `Relation`
 
@@ -114,13 +160,24 @@ triple)/items(타입드 knowledge item)/topics/document_type. `extraction/outcom
 build_extraction_outcome()`이 청크당 한 번씩 이를 다음처럼 펼친다:
 
 ```text
-ExtractionResult.entities[i]        -> KnowledgeObject(type=ENTITY)  (엔티티당 1개)
-ExtractionResult.items[i]           -> KnowledgeObject(type=<item.type>)  (item당 1개)
+ExtractionResult.entities[i]        -> KnowledgeObject(type=ENTITY, content=EntityContent)  (엔티티당 1개)
+ExtractionResult.items[i]           -> KnowledgeObject(type=<item.type>)  (item당 1개, confidence 포함)
+items[i].people/date/status         -> 타입별 content 필드 (decision: decided_by/decided_at/status, ...)
 ExtractionResult.relations[i]       -> Relation(type=RELATED_TO)  (양쪽 이름이 모두 추출된 엔티티일 때만)
 items[i].related_entities           -> Relation(type=MENTIONS, item -> entity)
 items[i].caused_by_index            -> Relation(type=CAUSED_BY, item -> items[caused_by_index])
 items[i].relates_to_indices         -> Relation(type=RELATED_TO, item -> items[idx])
 ```
+
+`people`/`date`/`status`는 LLM 스키마에서 타입마다 따로 두지 않고 item 하나에 평평하게 둔다.
+strict `json_schema`에서 작은 오픈소스 모델이 가장 안정적으로 채우는 모양이 평평한 선택 필드라서다.
+`outcome.py::_item_content`가 이를 타입별 모델로 옮기고, 다른 타입의 status 어휘(decision에
+`done`)는 저장하지 않고 버린다. 파이프라인은 저장 후 `resolve_entities`로 이 객체들을 엔티티로
+해소한다(위 "엔티티 해소").
+
+OpenRouter 경로는 `ExtractionResult.model_json_schema()`를 `_to_strict_json_schema`로 바꿔 보낸다.
+모든 object에 `additionalProperties: false`와 전체 `required`를 넣고, strict 모드가 거부하는
+`title`·`default` 키를 지운다(기본값은 응답 검증 때 Pydantic이 채운다).
 
 엔티티도 item도 하나도 없는 청크(순수 연결어/설명문)는 `ExtractionResult.summary`를 담은
 `FACT` 타입 `KnowledgeObject` 하나로 fallback한다 — 청크에 내용이 있는데 결과가 0개
@@ -163,11 +220,17 @@ Issue와 그로 인한 Decision, 그리고 둘을 잇는 Relation 예시:
     { "chunk_id": "chk_7g...", "document_id": "doc_4d...", "hierarchy_level": "section", "sequence_index": 0 }
   ],
   "summary": "배포를 월요일로 연기하기로 했다.",
-  "content": { "statement": "배포를 월요일로 연기하기로 했다." },
+  "content": {
+    "statement": "배포를 월요일로 연기하기로 했다.",
+    "decided_by": [],
+    "decided_at": null,
+    "status": "decided"
+  },
   "topics": ["배포", "QA"],
   "document_type": "slack conversation",
   "extracted_at": "2026-09-01T12:34:56Z",
   "model_used": "claude-opus-5",
+  "confidence": 1.0,
   "version": 1,
   "pipeline_version": "0.1.0",
   "source_hash": "b7e2...",
@@ -200,6 +263,8 @@ Chunk (evidence[].chunk_id, 여러 개 가능)
 KnowledgeObject (knowledge_object_id)
   ↕ Relation (subject_id / object_id)
 KnowledgeObject (knowledge_object_id)
+  ↕ EntityMention (role, evidence)
+Entity (entity_id, project 범위)
 ```
 
 파이프라인 실행 중에는 `Source`/`Document`/`Chunk`의 전체 레코드가 각각 한 번씩만 생성되고,

@@ -372,6 +372,7 @@ class OKFWriter:
                 "document": {"document_id": ko.document.document_id, "title": ko.document.title},
                 "evidence": [e.model_dump(mode="json") for e in ko.evidence],
                 "model_used": ko.model_used,
+                "confidence": ko.confidence,
                 "version": ko.version,
                 "pipeline_version": ko.pipeline_version,
                 "source_hash": ko.source_hash,

@@ -131,6 +131,7 @@ class KnowledgeObjectResponse(BaseModel):
     topics: list[str]
     document_type: str
     extracted_at: datetime
+    confidence: float | None = None
     version: int
     supersedes: str | None = None
 

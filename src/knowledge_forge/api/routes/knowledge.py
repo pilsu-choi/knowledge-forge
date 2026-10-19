@@ -19,6 +19,7 @@ def _ko_to_response(ko) -> KnowledgeObjectResponse:
         topics=ko.topics,
         document_type=ko.document_type,
         extracted_at=ko.extracted_at,
+        confidence=ko.confidence,
         version=ko.version,
         supersedes=ko.supersedes,
     )

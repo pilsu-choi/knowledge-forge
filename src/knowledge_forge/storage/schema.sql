@@ -139,6 +139,9 @@ CREATE TABLE IF NOT EXISTS knowledge_objects (
     source_hash           TEXT NOT NULL,
     supersedes            TEXT
 );
+-- The extractor's own 0-1 score for an item (models/knowledge_object.py);
+-- NULL for entities, the summary fallback, and rows extracted before it existed.
+ALTER TABLE knowledge_objects ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION;
 CREATE INDEX IF NOT EXISTS idx_ko_type ON knowledge_objects(type);
 CREATE INDEX IF NOT EXISTS idx_ko_source_id ON knowledge_objects(source_id);
 CREATE INDEX IF NOT EXISTS idx_ko_document_id ON knowledge_objects(document_id);
@@ -160,6 +163,51 @@ CREATE TABLE IF NOT EXISTS relations (
 CREATE INDEX IF NOT EXISTS idx_relations_subject_id ON relations(subject_id);
 CREATE INDEX IF NOT EXISTS idx_relations_object_id ON relations(object_id);
 CREATE INDEX IF NOT EXISTS idx_relations_type ON relations(type);
+
+-- Resolved ontology nodes (models/entity.py, entity_resolution.py). An
+-- ENTITY knowledge_object is one extraction's mention; this is the one row
+-- the same-named mentions of a project resolve to. entity_id is
+-- stable_id('entity', project_id, entity_type, name), so the UNIQUE below
+-- is implied by the PK - it is spelled out because it is the resolution
+-- invariant (never across projects, never across types), and it doubles as
+-- the exact-name lookup index. `name` is the normalized key, display_name
+-- the first surface form, aliases every surface form seen (JSONB array,
+-- GIN for `aliases ? '정민찬 팀장'` lookups). Trigram GIN on name for a
+-- fuzzy entity lookup (same pg_trgm reasoning as idx_documents_title_trgm).
+CREATE TABLE IF NOT EXISTS entities (
+    entity_id     TEXT PRIMARY KEY,
+    project_id    TEXT NOT NULL,
+    entity_type   TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    display_name  TEXT NOT NULL,
+    aliases       JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (project_id, entity_type, name)
+);
+CREATE INDEX IF NOT EXISTS idx_entities_project_name ON entities(project_id, name);
+CREATE INDEX IF NOT EXISTS idx_entities_aliases ON entities USING gin (aliases);
+CREATE INDEX IF NOT EXISTS idx_entities_name_trgm ON entities USING gin (name gin_trgm_ops);
+
+-- Entity <-> KnowledgeObject join. One row per (entity, object, role): the
+-- same object can name the same person as decider and as a mentioned
+-- entity. evidence is the object's chunk_ids (JSONB, like
+-- relations.evidence). The PK serves "objects of an entity" (O3/O6
+-- expansion); idx_entity_mentions_ko the reverse "entities of an object".
+-- project_id is denormalized from entities for a filtered scan without the
+-- join, same convention as knowledge_object_embeddings.project_id.
+CREATE TABLE IF NOT EXISTS entity_mentions (
+    entity_id            TEXT NOT NULL REFERENCES entities(entity_id) ON DELETE CASCADE,
+    knowledge_object_id  TEXT NOT NULL REFERENCES knowledge_objects(knowledge_object_id) ON DELETE CASCADE,
+    role                 TEXT NOT NULL,
+    surface_form         TEXT NOT NULL,
+    evidence             JSONB NOT NULL DEFAULT '[]'::jsonb,
+    project_id           TEXT NOT NULL,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (entity_id, knowledge_object_id, role)
+);
+CREATE INDEX IF NOT EXISTS idx_entity_mentions_ko ON entity_mentions(knowledge_object_id);
+CREATE INDEX IF NOT EXISTS idx_entity_mentions_project ON entity_mentions(project_id);
 
 -- One embedding vector per (target, embedding_model), where the target is
 -- either a KnowledgeObject (target_kind = 'knowledge_object', the default

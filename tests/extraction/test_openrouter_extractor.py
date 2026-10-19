@@ -30,7 +30,7 @@ def _bad_request_error() -> openai.BadRequestError:
 def _sample_result_json() -> str:
     return ExtractionResult(
         summary="A short summary.",
-        entities=[{"name": "Acme Corp", "type": "ORG"}, {"name": "the Board", "type": "ORG"}],
+        entities=[{"name": "Acme Corp", "entity_type": "ORG"}, {"name": "the Board", "entity_type": "ORG"}],
         relations=[{"subject": "Acme Corp", "predicate": "reports to", "object": "the Board"}],
         items=[
             {"type": "issue", "statement": "Regulatory approval is still pending.", "related_entities": ["Acme Corp"]},

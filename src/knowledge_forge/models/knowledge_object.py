@@ -28,9 +28,9 @@ pipeline; provenance is preserved by id-chaining
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from knowledge_forge.models.chunk import HierarchyLevel
 from knowledge_forge.models.source import SourceRef
@@ -68,15 +68,73 @@ class Evidence(BaseModel):
     sequence_index: int
 
 
-class Entity(BaseModel):
-    """Value-object shape for an entity's own attributes. Used as the
-    `content` payload of an ENTITY-typed KnowledgeObject - kept as a
-    separate model (rather than inlined) so it stays reusable/typed at the
-    call site (extraction, tests) instead of a bare dict."""
+# `content` of an ENTITY KnowledgeObject - one *mention-level* extraction
+# ("정민찬 팀장" as named in one chunk bundle); the resolved, cross-document
+# node it points at is models/entity.py::Entity. Doubles as the LLM-facing
+# `ExtractionResult.entities[]` shape (extraction/schemas.py), so the stored
+# payload is exactly what the model returned. A comment, not a docstring:
+# Pydantic would ship a docstring to the LLM as the schema description.
+class EntityContent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
     name: str
-    type: str
+    entity_type: str = Field(description="PERSON, ORGANIZATION, PRODUCT, LOCATION, PROJECT, DATE, AMOUNT, ...")
     description: str | None = None
+
+
+class StatementContent(BaseModel):
+    """Base of the typed item contents below. `statement` stays on every
+    item type so readers that only know `content["statement"]` (OKF
+    writer, embedding text) keep working; fact/requirement/policy/issue/
+    concept still store just `{"statement": ...}`, unvalidated."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    statement: str
+
+
+DecisionStatus = Literal["proposed", "decided", "rejected"]
+ActionItemStatus = Literal["open", "in_progress", "done", "cancelled"]
+
+
+class DecisionContent(StatementContent):
+    decided_by: list[str] = Field(default_factory=list)
+    # Dates stay text: "YYYY-MM-DD" when the source states an absolute date,
+    # otherwise the expression as written ("다음 주 월요일") - resolving a
+    # relative date needs the document's own date, which extraction
+    # doesn't reliably have.
+    decided_at: str | None = None
+    status: DecisionStatus | None = None
+
+
+class ActionItemContent(StatementContent):
+    assignees: list[str] = Field(default_factory=list)
+    due: str | None = None
+    status: ActionItemStatus | None = None
+
+
+class EventContent(StatementContent):
+    occurred_at: str | None = None
+    participants: list[str] = Field(default_factory=list)
+
+
+CONTENT_MODELS: dict[KnowledgeObjectType, type[BaseModel]] = {
+    KnowledgeObjectType.ENTITY: EntityContent,
+    KnowledgeObjectType.DECISION: DecisionContent,
+    KnowledgeObjectType.ACTION_ITEM: ActionItemContent,
+    KnowledgeObjectType.EVENT: EventContent,
+}
+
+
+def validate_content(type_: KnowledgeObjectType, content: dict[str, Any]) -> dict[str, Any]:
+    """The storage-time check (PostgresStore.save_knowledge_objects): the
+    typed models above for the types that have one (raises
+    pydantic.ValidationError on a mismatch), `content` unchanged for the
+    rest - their shape is still free-form on purpose."""
+    model = CONTENT_MODELS.get(type_)
+    if model is None:
+        return content
+    return model.model_validate(content).model_dump(mode="json")
 
 
 class KnowledgeObject(BaseModel):
@@ -86,15 +144,19 @@ class KnowledgeObject(BaseModel):
     document: DocumentRef
     evidence: list[Evidence] = Field(default_factory=list)
     summary: str
-    # Type-specific payload: {"name", "entity_type", "description"} for
-    # ENTITY, {"statement": ...} for FACT/EVENT/DECISION/ACTION_ITEM/... .
-    # A dict (not a discriminated union of per-type models) so new types
-    # from KnowledgeObjectType don't require a schema migration here.
+    # Type-specific payload, shaped by CONTENT_MODELS for the types that
+    # have a model and `{"statement": ...}` for the rest. Kept a dict (not
+    # a discriminated union) so new types from KnowledgeObjectType don't
+    # require a schema migration here; validated at storage time instead
+    # (`validate_content`).
     content: dict[str, Any] = Field(default_factory=dict)
     topics: list[str] = Field(default_factory=list)
     document_type: str
     extracted_at: datetime
     model_used: str
+    # The extractor's own 0-1 confidence for this item (O5) - None for
+    # entities and the summary fallback, which the LLM doesn't score.
+    confidence: float | None = None
     # Versioning (wiki/architecture.md "Layer 5" / roadmap "재처리"): lets a
     # re-extraction (new pipeline_version or changed source content) be
     # recorded as a new object that supersedes the old one instead of a

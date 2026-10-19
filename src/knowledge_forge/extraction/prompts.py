@@ -26,15 +26,17 @@ source text in this pipeline is Korean; when a chunk is in Korean, write every \
 one of those fields entirely in Korean, not English (no partial/mixed-language \
 output), except for a term that appears in the source text itself in another \
 language (e.g. an English product or company name) - keep that term as-is \
-rather than translating or transliterating it. `entities[].type` and \
-`items[].type` are fixed labels (not translated prose) - always use the exact \
-values specified below regardless of the chunk's language.
+rather than translating or transliterating it. `entities[].entity_type`, \
+`items[].type` and `items[].status` are fixed labels (not translated prose) - \
+always use the exact values specified below regardless of the chunk's language. \
+Names (entity `name`, item `people`) are copied exactly as written in the text.
 
 Fields to produce:
 - summary: a concise summary of this passage's content (not the whole document).
-- entities: named entities mentioned in the chunk (people, organizations, \
-products, locations, dates, amounts, etc.), each with a `type` and, when \
-useful, a short `description` grounded in the chunk text.
+- entities: named entities mentioned in the chunk, each with an `entity_type` \
+- one of PERSON, ORGANIZATION, PRODUCT, LOCATION, PROJECT, DATE, AMOUNT, or \
+another short uppercase label when none fits - and, when useful, a short \
+`description` grounded in the chunk text. Use one entry per distinct entity.
 - relations: subject-predicate-object triples between entities in the `entities` \
 list, describing relationships stated in the chunk. Set `confidence` between 0 \
 and 1 to reflect how explicitly the text states the relation (1.0 = stated \
@@ -57,6 +59,14 @@ names (from `entities`) it mentions or is about; `caused_by_index`/\
 one item to another it is caused by or generically related to (e.g. a decision \
 item caused_by the issue item that prompted it) - omit/leave empty when the \
 chunk gives no such link.
+  Type-specific attributes - fill only what the text states, otherwise leave \
+empty/null: `people` (decision: who decided; action_item: who is responsible; \
+event: who took part), `date` (decision: when decided; action_item: due date; \
+event: when it happens/happened - YYYY-MM-DD if the text gives an absolute \
+date, otherwise the expression as written), `status` (decision: proposed, \
+decided or rejected; action_item: open, in_progress, done or cancelled). For \
+the other item types leave all three empty/null. `confidence` is between 0 \
+and 1: how explicitly the text states the item (1.0 = stated directly).
 - topics: short topic/keyword phrases describing what this chunk is about.
 - document_type: your best classification of the overall document's type (e.g. \
 "contract", "policy", "meeting notes", "email", "report", "invoice"), based on \

@@ -9,12 +9,17 @@ from knowledge_forge.models.document import (
     TableElement,
     TextBlock,
 )
+from knowledge_forge.models.entity import Entity, EntityMention, MentionRole
 from knowledge_forge.models.knowledge_object import (
+    ActionItemContent,
+    DecisionContent,
     DocumentRef,
-    Entity,
+    EntityContent,
+    EventContent,
     Evidence,
     KnowledgeObject,
     KnowledgeObjectType,
+    StatementContent,
 )
 from knowledge_forge.models.link import Link, LinkEndpoint, LinkType
 from knowledge_forge.models.relation import Relation, RelationType
@@ -35,7 +40,14 @@ __all__ = [
     "Chunk",
     "HierarchyLevel",
     "DocumentRef",
+    "ActionItemContent",
+    "DecisionContent",
+    "EntityContent",
+    "EventContent",
+    "StatementContent",
     "Entity",
+    "EntityMention",
+    "MentionRole",
     "Evidence",
     "KnowledgeObject",
     "KnowledgeObjectType",
